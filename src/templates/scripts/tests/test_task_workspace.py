@@ -354,324 +354,6 @@ def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
     )
 
 
-DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "juno-code-real-git-managed-install.lock"
-_RESOURCE_LOCK_TOKEN: Optional[str] = None
-_RESOURCE_LOCK_WORKLOAD = f"Python real-Git task workspace suite: {Path(__file__).resolve()}"
-
-
-def _configured_lock_path(value: Optional[str] = None) -> Path:
-    candidate = (value if value is not None else os.environ.get("JUNO_TEST_RESOURCE_LOCK_PATH", "")).strip()
-    if not candidate:
-        return DEFAULT_RESOURCE_LOCK_PATH
-    # Shared lexical contract: one absolute spelling, no trailing/doubled
-    # separators and no dot segments. Do not let a path library normalize first.
-    drive, tail = os.path.splitdrive(candidate)
-    root = os.sep if tail.startswith(os.sep) else ""
-    components = tail[len(root):].split(os.sep)
-    if (not os.path.isabs(candidate) or candidate != drive + root + os.sep.join(components)
-            or any(part in ("", ".", "..") for part in components)):
-        raise RuntimeError(
-            f"[test-resource-lock] lock path must be one normalized absolute path: {candidate!r}"
-        )
-    return Path(candidate)
-
-
-RESOURCE_LOCK_PATH = _configured_lock_path()
-
-
-def _assert_safe_path(pathname: Path, *, final_may_be_missing: bool = True) -> None:
-    parts = pathname.parts
-    cursor = Path(parts[0])
-    for index, part in enumerate(parts[1:], 1):
-        cursor /= part
-        try:
-            stat = cursor.lstat()
-        except FileNotFoundError:
-            if index != len(parts) - 1 or not final_may_be_missing:
-                raise RuntimeError(f"[test-resource-lock] path parent must already exist: {cursor}")
-            continue
-        if cursor.is_symlink():
-            raise RuntimeError(f"[test-resource-lock] symlinked lock path component is forbidden: {cursor}")
-        if index < len(parts) - 1 and not cursor.is_dir():
-            raise RuntimeError(f"[test-resource-lock] lock path parent is not a directory: {cursor}")
-        if index == len(parts) - 1 and not cursor.is_file():
-            raise RuntimeError(f"[test-resource-lock] lock protocol path must be a file: {cursor}")
-
-
-def _process_birth_identity(pid: object) -> Optional[str]:
-    """Return a sub-second kernel process identity, or None (never a rounded timestamp)."""
-    if not isinstance(pid, int) or pid <= 0:
-        return None
-    if sys.platform.startswith("linux"):
-        try:
-            # /proc stat field 22 is the kernel start tick. Parse after the final
-            # ')' because comm may contain spaces and parentheses.
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            return f"linux-start-ticks:{fields[19]}"
-        except (OSError, IndexError):
-            return None
-    if sys.platform == "darwin":
-        try:
-            import ctypes
-            class ProcBSDInfo(ctypes.Structure):
-                _fields_ = [
-                    ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
-                    ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
-                    ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
-                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
-                    ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
-                    ("svgid", ctypes.c_uint32), ("rfu_1", ctypes.c_uint32),
-                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
-                    ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
-                    ("pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
-                    ("e_tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
-                    ("start_tvsec", ctypes.c_uint64), ("start_tvusec", ctypes.c_uint64),
-                ]
-            library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-            info = ProcBSDInfo()
-            size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
-            if size != ctypes.sizeof(info):
-                return None
-            return f"darwin-start-time:{info.start_tvsec}:{info.start_tvusec}"
-        except (OSError, AttributeError, ValueError):
-            return None
-    return None
-
-
-def _pid_provably_absent(pid: object) -> bool:
-    try:
-        os.kill(pid, 0)
-        return False
-    except ProcessLookupError:
-        return True
-    except (PermissionError, OSError, TypeError):
-        return False
-
-
-def _read_lock_owner(lock_path: Path = RESOURCE_LOCK_PATH) -> Optional[dict]:
-    try:
-        stat = lock_path.lstat()
-        if lock_path.is_symlink() or not lock_path.is_file():
-            return None
-        value = json.loads(lock_path.read_text())
-        if not isinstance(value, dict) or not isinstance(value.get("token"), str):
-            return None
-        value["_inode"] = [stat.st_dev, stat.st_ino]
-        return value
-    except (OSError, ValueError):
-        return None
-
-
-def _owner_is_live(owner: dict) -> bool:
-    observed = _process_birth_identity(owner.get("pid"))
-    if observed is not None:
-        return observed == owner.get("processBirthId")
-    # Precise identity unavailable: only a provably absent PID is stale.
-    return not _pid_provably_absent(owner.get("pid"))
-
-
-def _owner_diagnostics(owner: Optional[dict]) -> str:
-    if not owner:
-        return "owner=<invalid-or-unavailable>"
-    return (
-        f"owner_pid={owner.get('pid')} owner_birth={owner.get('processBirthId')!r} "
-        f"owner_inode={owner.get('_inode')!r} owner_workload={owner.get('workload')!r} "
-        f"owner_process={owner.get('process')!r} owner_cwd={owner.get('cwd')!r} "
-        f"owner_started_at={owner.get('startedAt')}"
-    )
-
-
-def _load_diagnostics() -> str:
-    try:
-        load = ",".join(f"{value:.2f}" for value in os.getloadavg())
-    except (AttributeError, OSError):
-        load = "unavailable"
-    return f"waiter_pid={os.getpid()} loadavg={load} cpus={os.cpu_count()}"
-
-
-def _protocol_guard_path(lock_path: Path) -> Path:
-    return lock_path.with_name(f".{lock_path.name}.protocol")
-
-
-@contextlib.contextmanager
-def _protocol_guard(lock_path: Path, opened_hook=None):
-    import fcntl
-    _assert_safe_path(lock_path)
-    guard = _protocol_guard_path(lock_path)
-    flags = os.O_RDWR | os.O_CREAT
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-
-    descriptor: Optional[int] = None
-    while descriptor is None:
-        _assert_safe_path(guard)
-        candidate = os.open(guard, flags, 0o600)
-        try:
-            opened = os.fstat(candidate)
-            named = guard.lstat()
-            if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(named.st_mode)
-                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
-                raise RuntimeError("[test-resource-lock] protocol guard identity changed before lock")
-            if opened_hook is not None:
-                opened_hook()
-            fcntl.flock(candidate, fcntl.LOCK_EX)
-            # A waiter may have opened the old inode before another process
-            # atomically replaced the pathname. Revalidate immediately after
-            # LOCK_EX and enter the CAS domain only when the locked descriptor
-            # is still the exact regular, non-symlink pathname target.
-            try:
-                locked = os.fstat(candidate)
-                current = guard.lstat()
-            except FileNotFoundError:
-                current = None
-            if (current is None or not stat.S_ISREG(locked.st_mode)
-                    or not stat.S_ISREG(current.st_mode)
-                    or (locked.st_dev, locked.st_ino) != (current.st_dev, current.st_ino)):
-                fcntl.flock(candidate, fcntl.LOCK_UN)
-                os.close(candidate)
-                continue
-            descriptor = candidate
-        except Exception:
-            if descriptor is None:
-                try: os.close(candidate)
-                except OSError: pass
-            raise
-    try:
-        yield
-    finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
-
-
-def _protocol_guard_probe(lock_path: Path, opened: Path, entered: Path, release: Path) -> None:
-    def announce_opened() -> None:
-        opened.write_text("opened\n")
-    with _protocol_guard(lock_path, announce_opened):
-        entered.write_text("entered\n")
-        deadline = time.monotonic() + 10
-        while not release.exists():
-            if time.monotonic() >= deadline:
-                raise RuntimeError("[test-resource-lock] guard probe release timed out")
-            time.sleep(0.01)
-
-
-def _publish_owner_under_guard(lock_path: Path, owner: dict) -> None:
-    temporary = lock_path.parent / f".{lock_path.name}.owner-{os.getpid()}-{owner['token']}"
-    descriptor: Optional[int] = None
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        payload = (json.dumps(owner, indent=2) + "\n").encode()
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            descriptor = None
-            handle.write(payload); handle.flush(); os.fsync(handle.fileno())
-        os.replace(temporary, lock_path)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        try: temporary.unlink()
-        except FileNotFoundError: pass
-
-
-def _protocol_operation(lock_path: Path, action: str, payload: dict) -> dict:
-    """One CAS domain shared by Python and Node via an advisory kernel lock."""
-    target = _configured_lock_path(str(lock_path))
-    with _protocol_guard(target):
-        current = _read_lock_owner(target)
-        if action == "acquire":
-            if not payload.get("processBirthId"):
-                payload["processBirthId"] = _process_birth_identity(payload.get("pid"))
-            if not payload.get("processBirthId"):
-                raise RuntimeError("[test-resource-lock] precise process birth identity unavailable; refusing unsafe acquisition")
-            if current is None and target.exists():
-                return {"outcome": "blocked", "owner": None}
-            recovered = None
-            if current and not _owner_is_live(current):
-                # Exact token+inode proof is made while the protocol mutex blocks
-                # every compliant publisher/recoverer. Re-read immediately before
-                # unlink; no successor can publish inside this CAS section.
-                confirmed = _read_lock_owner(target)
-                if (confirmed and confirmed.get("token") == current.get("token")
-                        and confirmed.get("_inode") == current.get("_inode")):
-                    target.unlink()
-                    recovered = current
-                    current = None
-            if current is None:
-                _publish_owner_under_guard(target, payload)
-                return {"outcome": "acquired", "owner": payload, "recovered": recovered}
-            return {"outcome": "blocked", "owner": current}
-        if action == "release":
-            if not current:
-                return {"outcome": "absent"}
-            expected_inode = payload.get("inode")
-            if (current.get("token") == payload.get("token")
-                    and (expected_inode is None or current.get("_inode") == expected_inode)):
-                target.unlink()
-                return {"outcome": "released"}
-            return {"outcome": "not-owner", "owner": current}
-        if action == "inspect":
-            return {"outcome": "present" if current else "absent", "owner": current}
-        raise RuntimeError(f"unknown resource-lock operation: {action}")
-
-
-def _acquire_resource_lock(
-    workload: str, lock_path: Optional[Path] = None, timeout_seconds: float = 300,
-    poll_seconds: float = 0.05,
-) -> tuple[str, int]:
-    target = _configured_lock_path(str(lock_path) if lock_path is not None else None)
-    token = uuid.uuid4().hex
-    birth = _process_birth_identity(os.getpid())
-    if not birth:
-        raise RuntimeError("[test-resource-lock] precise process birth identity unavailable; refusing unsafe acquisition")
-    owner = {
-        "pid": os.getpid(), "processBirthId": birth, "token": token, "workload": workload,
-        "process": " ".join(sys.argv), "cwd": os.getcwd(),
-        "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    started = time.monotonic(); next_diagnostic = 1.0
-    while True:
-        result = _protocol_operation(target, "acquire", owner)
-        if result["outcome"] == "acquired":
-            waited_ms = int((time.monotonic() - started) * 1000)
-            recovered = result.get("recovered")
-            if recovered:
-                print(f"[test-resource-lock] recovered stale lock={target} {_owner_diagnostics(recovered)} {_load_diagnostics()}", file=sys.stderr)
-            if waited_ms > 0:
-                print(f"[test-resource-lock] acquired workload={workload!r} waited_ms={waited_ms} lock={target} {_load_diagnostics()}", file=sys.stderr)
-            return token, waited_ms
-        current = result.get("owner")
-        waited = time.monotonic() - started
-        if waited >= timeout_seconds:
-            raise RuntimeError(f"[test-resource-lock] acquisition timed out workload={workload!r} waited_ms={int(waited*1000)} lock={target} {_owner_diagnostics(current)} {_load_diagnostics()}")
-        if waited >= next_diagnostic:
-            print(f"[test-resource-lock] waiting workload={workload!r} waited_ms={int(waited*1000)} lock={target} {_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr)
-            next_diagnostic += 5
-        time.sleep(poll_seconds)
-
-
-def _release_resource_lock(lock_path: Path, token: str, inode: Optional[list[int]] = None) -> bool:
-    return _protocol_operation(lock_path, "release", {"token": token, "inode": inode})["outcome"] in ("released", "absent")
-
-
-def setUpModule() -> None:
-    global _RESOURCE_LOCK_TOKEN
-    _RESOURCE_LOCK_TOKEN, _ = _acquire_resource_lock(_RESOURCE_LOCK_WORKLOAD, RESOURCE_LOCK_PATH)
-
-
-def tearDownModule() -> None:
-    global _RESOURCE_LOCK_TOKEN
-    if _RESOURCE_LOCK_TOKEN:
-        _release_resource_lock(RESOURCE_LOCK_PATH, _RESOURCE_LOCK_TOKEN)
-        _RESOURCE_LOCK_TOKEN = None
-
-
-def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
-    return (
-        f"product concurrency timing failed elapsed_seconds={elapsed:.3f} "
-        f"contract_seconds={contract_seconds:.3f} lock={RESOURCE_LOCK_PATH} "
-        f"{_owner_diagnostics(_read_lock_owner())} {_load_diagnostics()}"
-    )
-
-
 RUNTIME_TEMPLATE_PARITY = (
     (".juno_task/scripts/workflow_runner.sh", "juno-code/src/templates/scripts/workflow_runner.sh"),
     (".juno_task/scripts/risk_policy.py", "juno-code/src/templates/scripts/risk_policy.py"),
@@ -855,8 +537,10 @@ class TaskWorkspaceTests(unittest.TestCase):
                 (SCRIPT.parent.parent / "config/risk-policy.json").read_bytes()
             )
 
-    def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return run(["python3", str(SCRIPT), operation, "--task", task_id, "--controller", str(self.controller)], self.controller, check)
+    def command(self, operation: str, task_id: str, check: bool = True,
+                extra: Optional[list[str]] = None) -> subprocess.CompletedProcess[str]:
+        return run(["python3", str(SCRIPT), operation, "--task", task_id,
+                    "--controller", str(self.controller), *(extra or [])], self.controller, check)
 
     def payload(self, operation: str, task_id: str) -> dict:
         return json.loads(self.command(operation, task_id).stdout)
@@ -965,6 +649,371 @@ class TaskWorkspaceTests(unittest.TestCase):
         identity = json.loads(identity_path.read_text())
         identity["executable_sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
         identity_path.write_text(json.dumps(identity) + "\n")
+
+    def write_task_scope(self, task_id: str, *, owner: Optional[str] = None,
+                         children: Optional[list[str]] = None, baseline: bool = False,
+                         selectable: Optional[list[str]] = None,
+                         required: Optional[list[str]] = None,
+                         generated: Optional[list[str]] = None,
+                         lifecycle_status: str = "todo") -> Path:
+        _path, body = task_runtime.task_manifest(self.controller, task_id)
+        target = task_runtime.task_scope_path(self.controller, task_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({
+            "schema_version": task_runtime.TASK_SCOPE_SCHEMA, "task_id": task_id,
+            "task_revision_sha256": hashlib.sha256(body).hexdigest(),
+            "lifecycle_status": lifecycle_status,
+            "umbrella_relations": {"owner": owner, "children": children or []},
+            "scope": {"baseline": baseline,
+                      "selectable_paths": sorted(selectable or []),
+                      "required_paths": sorted(required or []),
+                      "generated_paths": sorted(generated or [])},
+        }, sort_keys=True, indent=2) + "\n")
+        return target
+
+    def umbrella_fixture(self) -> Path:
+        required = {"Y": "child/one.txt", "Z": "child/two.txt"}
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\nOrdered tracking children\n[task_id]Y Z[/task_id]\n"
+        )
+        for child_id, relative in required.items():
+            target = self.repository / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{child_id} base\n")
+            task = task_runtime.task_file(self.controller, child_id)
+            task.write_text(f"---\nid: {child_id}\nstatus: todo\n---\nExact required path: {relative}\n")
+        self.write_task_scope("X", children=["Y", "Z"], baseline=True)
+        self.write_task_scope("Y", owner="X", required=[required["Y"]])
+        self.write_task_scope("Z", owner="X", required=[required["Z"]])
+        git(self.repository, "add", "child")
+        git(self.repository, "commit", "-m", "add umbrella child fixtures")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        declaration = self.root / "umbrella.json"
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": ["Y", "Z"],
+        }, indent=2) + "\n")
+        return declaration
+
+    def test_umbrella_start_freezes_exact_ordered_child_union_before_git_mutation(self) -> None:
+        declaration = self.umbrella_fixture()
+        started = task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        admission = started["creation_receipt"]["umbrella_admission"]
+        self.assertEqual(admission["ordered_child_ids"], ["Y", "Z"])
+        self.assertEqual([row["required_paths"] for row in admission["child_bindings"]],
+                         [["child/one.txt"], ["child/two.txt"]])
+        self.assertEqual(admission["union_paths_sha256"],
+                         task_runtime.stable_sha256(admission["union_paths"]))
+        self.assertTrue(all(path in started["creation_receipt"]["allowed_paths"]
+                            for path in ("child/one.txt", "child/two.txt")))
+        self.assertFalse((self.workspaces / "Y").exists())
+        self.assertFalse((self.workspaces / "Z").exists())
+        self.assertIsNone(task_runtime.optional_ref_sha(self.repository, "refs/heads/task-Y"))
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["umbrella_admission_status"]["authority"], "historical_creation")
+        self.assertEqual(status["umbrella_admission_status"]["child_revision_drift"], [])
+
+    def test_authoritative_scope_distinguishes_baseline_only_and_selectable_children(self) -> None:
+        declaration = self.umbrella_fixture()
+        self.write_task_scope("Y", owner="X", selectable=["optional"])
+        self.write_task_scope("Z", owner="X", baseline=True)
+        started = task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        bindings = {row["task_id"]: row for row in started["creation_receipt"]["umbrella_admission"]["child_bindings"]}
+        self.assertEqual(bindings["Y"]["required_paths"], ["optional"])
+        self.assertFalse(bindings["Y"]["canonical_scope"]["baseline"])
+        self.assertEqual(bindings["Z"]["required_paths"], [])
+        self.assertTrue(bindings["Z"]["canonical_scope"]["baseline"])
+        self.assertIn("optional", started["creation_receipt"]["allowed_paths"])
+
+    def test_umbrella_child_scope_includes_exact_declared_generated_output(self) -> None:
+        declaration = self.umbrella_fixture()
+        source = "juno-code/src/templates/scripts/child.py"
+        destination = ".juno_task/scripts/child.py"
+        for relative in (source, destination):
+            target = self.repository / relative; target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("paired\n")
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["admissionOutputs"].append({"source": "scripts/child.py", "destination": destination})
+        manifest.write_text(json.dumps(value) + "\n")
+        task_runtime.task_file(self.controller, "Y").write_text(
+            f"---\nid: Y\nstatus: todo\n---\nChange generated output {destination}\n"
+        )
+        self.write_task_scope("Y", owner="X", generated=[destination])
+        git(self.repository, "add", source, destination, task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "child generated binding")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        started = task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        admission = started["creation_receipt"]["umbrella_admission"]
+        self.assertIn(destination, admission["union_paths"])
+        self.assertIn(source, admission["union_paths"])
+        self.assertNotIn("juno-code", admission["union_paths"])
+        self.assertNotIn(".juno_task/scripts", admission["union_paths"])
+        self.assertEqual(admission["generated_output_bindings"]["Y"], [{
+            "source": source, "destination": destination, "kind": "managed",
+        }])
+
+    def test_real_git_7kamsq_ytk4y1_scope_is_canonically_admitted(self) -> None:
+        umbrella, first, second = "Et3fkc", "7KaMsQ", "ytk4Y1"
+        exact = ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py"
+        target = self.repository / exact; target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("resume contract\n")
+        other = self.repository / "juno-code/src/cli/commands/task.ts"
+        other.parent.mkdir(parents=True, exist_ok=True); other.write_text("task cli\n")
+        excluded = self.repository / "excluded/history-only.txt"
+        excluded.parent.mkdir(parents=True, exist_ok=True); excluded.write_text("excluded\n")
+        git(self.repository, "add", exact, "juno-code/src/cli/commands/task.ts", "excluded/history-only.txt")
+        git(self.repository, "commit", "-m", "actual umbrella scope fixture")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        for task_id, body in ((umbrella, "Ordered tracking children fixed before start."),
+                              (first, "Clarify baseline versus selectable yy task paths.\n"
+                                      "Exclusions/history: excluded/history-only.txt"),
+                              (second, "Remove stale pre-Bolt local-integration unit expectations.")):
+            path = task_runtime.task_file(self.controller, task_id); path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n{body}\n")
+        self.write_task_scope(umbrella, children=[first, second], baseline=True)
+        self.write_task_scope(first, owner=umbrella, baseline=True)
+        self.write_task_scope(second, owner=umbrella, required=[exact])
+        declaration = self.root / "actual-umbrella.json"
+        declaration.write_text(json.dumps({"schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": [first, second]}) + "\n")
+        started = task_runtime.start(self.controller, umbrella, umbrella_input=declaration)
+        self.assertIn(exact, started["creation_receipt"]["allowed_paths"])
+        self.assertNotIn("excluded/history-only.txt", started["creation_receipt"]["allowed_paths"])
+        binding = next(row for row in started["creation_receipt"]["umbrella_admission"]["child_bindings"]
+                       if row["task_id"] == second)
+        self.assertEqual(binding["required_paths"], [exact])
+        self.assertFalse((self.workspaces / second).exists())
+
+    def test_umbrella_start_refuses_unproven_child_path_and_owned_child_without_artifacts(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.task_scope_path(self.controller, "Z").unlink()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "invalid canonical child scope"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertIsNone(task_runtime.optional_ref_sha(self.repository, "refs/heads/task-X"))
+
+        self.write_task_scope("Z", owner="X", required=["child/two.txt"])
+        declaration = self.umbrella_fixture_after_existing_files()
+        task_runtime.start(self.controller, "Y")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "child Y is already owned"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def umbrella_fixture_after_existing_files(self) -> Path:
+        declaration = self.root / "umbrella-owned.json"
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": ["Y", "Z"],
+        }) + "\n")
+        return declaration
+
+    def recovery_authorization(self, plan_path: Path, declaration: Path) -> Path:
+        issued = task_runtime.issue_umbrella_recovery_authorization(
+            self.controller, "X", plan_path, declaration)
+        return Path(issued["path"])
+
+    def test_umbrella_reservations_block_child_start_and_duplicate_owner(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "tracking-only under umbrella X"):
+            task_runtime.start(self.controller, "Y")
+        task_runtime.task_file(self.controller, "X2").parent.mkdir(parents=True, exist_ok=True)
+        task_runtime.task_file(self.controller, "X2").write_text(
+            "---\nid: X2\nstatus: todo\n---\n[task_id]Y Z[/task_id]\n"
+        )
+        duplicate = self.root / "duplicate.json"
+        duplicate.write_text(json.dumps({"schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE, "children": ["Y", "Z"]}) + "\n")
+        self.write_task_scope("X2", children=["Y", "Z"], baseline=True)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "already owned by X"):
+            task_runtime.start(self.controller, "X2", umbrella_input=duplicate)
+        self.assertFalse((self.workspaces / "Y").exists())
+        self.assertFalse((self.workspaces / "X2").exists())
+
+    def test_mutation_lock_serializes_umbrella_and_ordinary_child_start_race(self) -> None:
+        declaration = self.umbrella_fixture()
+
+        def attempt(task_id: str, umbrella: Optional[Path]) -> tuple[str, bool]:
+            try:
+                task_runtime.start(self.controller, task_id, umbrella_input=umbrella)
+                return task_id, True
+            except task_runtime.TaskWorkspaceError:
+                return task_id, False
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = dict(pool.map(lambda args: attempt(*args), [
+                ("X", declaration), ("Y", None),
+            ]))
+        self.assertEqual(sum(outcomes.values()), 1, outcomes)
+        state = task_runtime.read_state(self.controller)
+        owners = task_runtime.child_reservations(state)
+        if outcomes["Y"]:
+            self.assertNotIn("Y", owners)
+        else:
+            self.assertEqual(owners.get("Y"), "X")
+            self.assertEqual(owners.get("Z"), "X")
+        self.assertLessEqual(len([path for path in self.workspaces.iterdir()]), 1)
+
+    def test_flat_umbrella_rejects_direct_child_with_nested_children_before_mutation(self) -> None:
+        declaration = self.umbrella_fixture()
+        nested = "W"
+        path = task_runtime.task_file(self.controller, nested); path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nid: W\nstatus: backlog\n---\nnested tracking task\n")
+        self.write_task_scope(nested, owner="Z", baseline=True, lifecycle_status="backlog")
+        self.write_task_scope("Z", owner="X", children=[nested], required=["child/two.txt"])
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "must not declare nested children: W"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+
+    def test_tracking_child_lifecycle_allows_only_backlog_and_todo(self) -> None:
+        self.umbrella_fixture()
+        child = task_runtime.task_file(self.controller, "Y")
+        for lifecycle in sorted(task_runtime.PRESTART_TRACKING_STATUSES):
+            with self.subTest(allowed=lifecycle):
+                child.write_text(f"---\nid: Y\nstatus: {lifecycle}\n---\npre-start\n")
+                self.write_task_scope("Y", owner="X", required=["child/one.txt"],
+                                      lifecycle_status=lifecycle)
+                paths, _evidence, _frozen = task_runtime.canonical_child_scope(
+                    self.controller, self.repository, self.base, "Y", child.read_bytes(),
+                    task_runtime.load_config(self.controller), "X")
+                self.assertEqual(paths, ["child/one.txt"])
+        for lifecycle in ("in_progress", "working", "queued", "review", "done", "mystery"):
+            with self.subTest(rejected=lifecycle):
+                child.write_text(f"---\nid: Y\nstatus: {lifecycle}\n---\nnot pre-start\n")
+                self.write_task_scope("Y", owner="X", required=["child/one.txt"],
+                                      lifecycle_status=lifecycle)
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "not an unowned pre-start tracking state"):
+                    task_runtime.canonical_child_scope(
+                        self.controller, self.repository, self.base, "Y", child.read_bytes(),
+                        task_runtime.load_config(self.controller), "X")
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def test_terminal_contradictory_and_indirect_cycle_children_refuse_before_mutation(self) -> None:
+        declaration = self.umbrella_fixture()
+        z = task_runtime.task_file(self.controller, "Z")
+        z.write_text("---\nid: Z\nstatus: done\n---\nterminal\n")
+        self.write_task_scope("Z", owner="X", required=["child/two.txt"], lifecycle_status="done")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "terminal"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        z.write_text("---\nid: Z\nstatus: todo\n---\ncycle\n")
+        self.write_task_scope("Z", owner="X", children=["X"], required=["child/two.txt"])
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "indirect umbrella cycle"):
+            task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def test_recovery_refuses_merge_parent_edge_escape_then_revert(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X")
+        worktree = self.workspaces / "X"
+        self.commit_task("X")
+        task_branch = git(worktree, "symbolic-ref", "--short", "HEAD")
+        git(worktree, "checkout", "-b", "escaped-side", self.base)
+        (worktree / "src/side.txt").write_text("allowed side\n")
+        git(worktree, "add", "src/side.txt"); git(worktree, "commit", "-m", "allowed side")
+        git(worktree, "checkout", task_branch)
+        git(worktree, "merge", "--no-ff", "--no-commit", "escaped-side")
+        (worktree / "merge-escaped.txt").write_text("introduced only by merge resolution\n")
+        git(worktree, "add", "merge-escaped.txt"); git(worktree, "commit", "-m", "ordinary merge adds escape")
+        git(worktree, "rm", "merge-escaped.txt"); git(worktree, "commit", "-m", "revert merge escape")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "commit history escaped"):
+            task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
+
+    def test_recovery_refuses_escaped_then_reverted_history(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X")
+        worktree = self.workspaces / "X"
+        (worktree / "escaped.txt").write_text("escaped\n")
+        git(worktree, "add", "escaped.txt"); git(worktree, "commit", "-m", "escaped")
+        git(worktree, "rm", "escaped.txt"); git(worktree, "commit", "-m", "revert escaped")
+        self.commit_task("X")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "commit history escaped"):
+            task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
+
+    def test_recovery_plan_audit_requires_kanban_routing_policy(self) -> None:
+        self.payload("start", "X")
+        with mock.patch.dict(os.environ, {
+            "JUNO_CONTROL_INVOCATION_ROOT": str(self.controller),
+            "JUNO_CONTROL_INVOCATION_ROLE": "controller",
+            "JUNO_CONTROL_EFFECTIVE_ROOT": str(self.controller),
+            "JUNO_CONTROL_OPERATION": "kanban",
+        }, clear=False):
+            receipt = task_runtime.record_control_audit(
+                self.controller, "task", "recovery-plan", "X")
+        self.assertEqual(json.loads(Path(receipt["path"]).read_text())["policy_operation"], "kanban")
+        with mock.patch.dict(os.environ, {
+            "JUNO_CONTROL_INVOCATION_ROOT": str(self.controller),
+            "JUNO_CONTROL_INVOCATION_ROLE": "controller",
+            "JUNO_CONTROL_EFFECTIVE_ROOT": str(self.controller),
+            "JUNO_CONTROL_OPERATION": "orchestration",
+        }, clear=False):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "expected kanban"):
+                task_runtime.record_control_audit(self.controller, "task", "recovery-plan", "X")
+
+    def test_clean_working_umbrella_recovery_preserves_predecessor_and_is_idempotent(self) -> None:
+        declaration = self.umbrella_fixture()
+        started = task_runtime.start(self.controller, "X")
+        predecessor = started["creation_receipt"]
+        predecessor_sha = started["workspace_identity"]["create_receipt_sha256"]
+        tip = self.commit_task("X")
+        plan = task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
+        self.assertEqual(plan["current_tip"], tip)
+        self.assertEqual(plan["predecessor_receipt_sha256"], predecessor_sha)
+        self.assertEqual(plan["newly_admitted_paths"], ["child/one.txt", "child/two.txt"])
+        plan_path = self.root / "reviewed-plan.json"
+        plan_path.write_text(json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n")
+        authorization = self.recovery_authorization(plan_path, declaration)
+        applied = task_runtime.apply_umbrella_recovery(
+            self.controller, "X", plan_path, declaration, authorization)
+        self.assertEqual(applied["outcome"], "applied")
+        self.assertEqual(applied["creation_receipt"], predecessor)
+        self.assertEqual(applied["workspace_identity"]["create_receipt_sha256"], predecessor_sha)
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
+        repeated = task_runtime.apply_umbrella_recovery(
+            self.controller, "X", plan_path, declaration, authorization)
+        self.assertEqual(repeated["outcome"], "already_applied")
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["umbrella_admission_status"]["authority"], "authorized_superseding")
+        self.assertEqual(status["creation_receipt"], predecessor)
+        self.assertEqual(status["admission_supersessions"][0]["predecessor_receipt_sha256"], predecessor_sha)
+
+    def test_umbrella_recovery_refuses_dirty_stale_revision_and_unauthorized_apply(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X")
+        self.commit_task("X")
+        dirty = self.workspaces / "X/src/dirty.txt"
+        dirty.write_text("dirty\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "clean branch/worktree"):
+            task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
+        dirty.unlink()
+        plan = task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
+        plan_path = self.root / "stale-plan.json"
+        plan_path.write_text(json.dumps(plan) + "\n")
+        fake = self.controller / ".juno_task/receipts/task-admission-authorizations/fake.json"
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_text(json.dumps({"schema_version": task_runtime.UMBRELLA_AUTHORIZATION_SCHEMA,
+            "authorization_id": "self-issued", "task_id": "X",
+            "action": "supersede_umbrella_admission",
+            "plan_sha256": task_runtime.stable_sha256(plan),
+            "plan_file_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+            "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"]}) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "trusted controller ledger"):
+            task_runtime.apply_umbrella_recovery(
+                self.controller, "X", plan_path, declaration, fake)
+        authorization = self.recovery_authorization(plan_path, declaration)
+        original_state = task_runtime.read_state(self.controller)
+        child = task_runtime.task_file(self.controller, "Z")
+        child.write_text(child.read_text() + "revision drift\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "stale"):
+            task_runtime.apply_umbrella_recovery(
+                self.controller, "X", plan_path, declaration, authorization)
+        self.assertEqual(task_runtime.read_state(self.controller), original_state)
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), plan["current_tip"])
 
     def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
         generated_source = "juno-code/canonical/implement.md"
@@ -2981,7 +3030,7 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
         counter = self.root / "validation-counter.txt"
-        code = f"from pathlib import Path; import time; time.sleep(.8); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
+        code = f"from pathlib import Path; import time; time.sleep(1.5); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
         self.write_policy(validation_code=code, timeout_seconds=5)
         self.payload("start", "X")
         self.payload("start", "Y")
@@ -2992,7 +3041,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             x, y = [future.result() for future in
                     [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]]
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 1.5, _timing_diagnostics(elapsed, 1.5))
+        self.assertLess(elapsed, 2.5, _timing_diagnostics(elapsed, 2.5))
         self.assertEqual({x["outcome"], y["outcome"]}, {"queued"})
         self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
 

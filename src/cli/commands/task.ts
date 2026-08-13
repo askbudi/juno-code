@@ -7,15 +7,27 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type TaskWorkspaceOperation = 'start' | 'status' | 'preflight' | 'finish';
+export type TaskWorkspaceOperation =
+  | 'start'
+  | 'status'
+  | 'preflight'
+  | 'finish'
+  | 'recovery-plan'
+  | 'recovery-authorize'
+  | 'recovery-apply';
 export type TaskWorkspaceInvoker = (
   operation: TaskWorkspaceOperation,
   taskId: string,
   requiredPaths?: string[],
+  admissionArgs?: string[],
 ) => Promise<void>;
 export type TaskWorkspaceCheckpointer = typeof checkpointControllerAfterFinalization;
 export type TaskRuntimeBootstrapOptions = { dryRun?: boolean; apply?: string };
 export type TaskRuntimeBootstrapInvoker = (options: TaskRuntimeBootstrapOptions) => Promise<void>;
+
+export function taskWorkspaceControlOperation(operation: TaskWorkspaceOperation): 'kanban' | 'orchestration' {
+  return ['status', 'preflight', 'recovery-plan'].includes(operation) ? 'kanban' : 'orchestration';
+}
 
 export function packagedTaskRuntimeCandidates(): string[] {
   const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -74,7 +86,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   exitCode: number,
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
 ): Promise<void> {
-  if (operation === 'status' || operation === 'preflight') return;
+  if (['status', 'preflight', 'recovery-plan'].includes(operation)) return;
   await checkpoint(controllerRoot, exitCode);
 }
 
@@ -82,11 +94,9 @@ export async function invokeTaskWorkspace(
   operation: TaskWorkspaceOperation,
   taskId: string,
   requiredPaths: string[] = [],
+  admissionArgs: string[] = [],
 ): Promise<void> {
-  const route = routeControlPlane(
-    process.cwd(),
-    operation === 'status' || operation === 'preflight' ? 'kanban' : 'orchestration',
-  );
+  const route = routeControlPlane(process.cwd(), taskWorkspaceControlOperation(operation));
   const controllerRoot = route.controllerRoot;
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
   if (!(await fs.pathExists(script))) {
@@ -95,7 +105,7 @@ export async function invokeTaskWorkspace(
   const taskEnv = route.env;
   const exitCode = await new Promise<number>((resolve, reject) => {
     const pathArgs = requiredPaths.flatMap((requiredPath) => ['--path', requiredPath]);
-    const child = spawn('python3', [script, operation, '--task', taskId, ...pathArgs], {
+    const child = spawn('python3', [script, operation, '--task', taskId, ...pathArgs, ...admissionArgs], {
       cwd: controllerRoot,
       env: taskEnv,
       stdio: 'inherit',
@@ -122,7 +132,12 @@ export function configureTaskWorkspaceCommand(
     .command('start')
     .argument('<task-id>', 'Canonical Kanban task ID')
     .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
-    .action((taskId: string, options: { path: string[] }) => invoke('start', taskId, options.path));
+    .option('--umbrella-admission <file>', 'Versioned ordered-child exact-scope input')
+    .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string }) => (
+      options.umbrellaAdmission
+        ? invoke('start', taskId, options.path, ['--umbrella-admission', options.umbrellaAdmission])
+        : invoke('start', taskId, options.path)
+    ));
   task.command('preflight')
     .description('Read-only finish/admission check before expensive validation')
     .argument('<task-id>', 'Canonical Kanban task ID')
@@ -132,6 +147,31 @@ export function configureTaskWorkspaceCommand(
       .argument('<task-id>', 'Canonical Kanban task ID')
       .action((taskId: string) => invoke(operation, taskId, []));
   }
+  task.command('recovery-plan')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--output <file>', 'New exclusive recovery plan path')
+    .action((taskId: string, options: { umbrellaAdmission: string; output: string }) => invoke(
+      'recovery-plan', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--output', options.output],
+    ));
+  task.command('recovery-authorize')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
+    .action((taskId: string, options: { umbrellaAdmission: string; plan: string }) => invoke(
+      'recovery-authorize', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--plan', options.plan],
+    ));
+  task.command('recovery-apply')
+    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
+    .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
+    .requiredOption('--authorization-receipt <file>', 'Canonical immutable authorization for the exact plan')
+    .action((taskId: string, options: { umbrellaAdmission: string; plan: string; authorizationReceipt: string }) => invoke(
+      'recovery-apply', taskId, [], ['--umbrella-admission', options.umbrellaAdmission,
+        '--plan', options.plan, '--authorization-receipt', options.authorizationReceipt],
+    ));
   task.command('runtime-bootstrap')
     .description('Plan or apply guarded package-bound target task-runtime recovery')
     .option('--dry-run', 'Persist and print a non-mutating target bootstrap plan')

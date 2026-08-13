@@ -51,6 +51,17 @@ MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"
 GENERATED_OUTPUT_DECLARATION = "juno-code/scripts/implementation-contract.json"
 MANAGED_OUTPUT_DECLARATION = "juno-code/src/templates/managed-assets.json"
 GENERATED_OUTPUT_SCHEMA = "juno_generated_output_contract.v1"
+UMBRELLA_INPUT_SCHEMA = "juno_task_umbrella_admission_input.v1"
+UMBRELLA_ADMISSION_SCHEMA = "juno_task_umbrella_admission.v1"
+UMBRELLA_RECOVERY_PLAN_SCHEMA = "juno_task_umbrella_recovery_plan.v1"
+UMBRELLA_SUPERSESSION_SCHEMA = "juno_task_umbrella_admission_supersession.v1"
+UMBRELLA_AUTHORIZATION_SCHEMA = "juno_task_umbrella_recovery_authorization.v1"
+UMBRELLA_EXECUTION_MODE = "umbrella_owned_sequential"
+UMBRELLA_RESERVATIONS_SCHEMA = "juno_task_umbrella_child_reservations.v1"
+TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
+AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
+TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
+PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -336,14 +347,123 @@ def stable_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def require_task(controller: Path, task_id: str) -> None:
+def task_manifest(controller: Path, task_id: str) -> tuple[Path, bytes]:
     path = task_file(controller, task_id)
     try:
-        prefix = path.read_text()[:4096]
+        data = path.read_bytes()
     except OSError as exc:
-        raise TaskWorkspaceError(f"canonical Kanban task does not exist: {task_id}") from exc
+        raise TaskWorkspaceError(f"canonical hot Kanban task does not exist: {task_id}") from exc
+    prefix = data[:4096].decode("utf-8", errors="replace")
     if not re.search(rf"(?m)^id:\s*{re.escape(task_id)}\s*$", prefix):
         raise TaskWorkspaceError(f"canonical Kanban task identity mismatch: {task_id}")
+    return path, data
+
+
+def require_task(controller: Path, task_id: str) -> None:
+    task_manifest(controller, task_id)
+
+
+def read_json_object(path: Path, label: str) -> tuple[dict[str, Any], str]:
+    try:
+        data = path.read_bytes()
+        value = json.loads(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise TaskWorkspaceError(f"invalid {label}: expected an object")
+    return value, hashlib.sha256(data).hexdigest()
+
+
+def load_umbrella_input(path: Path) -> tuple[dict[str, Any], str]:
+    value, source_sha = read_json_object(path, "umbrella admission input")
+    if (set(value) != {"schema_version", "execution_mode", "children"}
+            or value.get("schema_version") != UMBRELLA_INPUT_SCHEMA
+            or value.get("execution_mode") != UMBRELLA_EXECUTION_MODE
+            or not isinstance(value.get("children"), list) or not value["children"]
+            or not all(isinstance(item, str) and TASK_RE.fullmatch(item)
+                       for item in value["children"])):
+        raise TaskWorkspaceError(
+            f"umbrella admission input must use {UMBRELLA_INPUT_SCHEMA} and declare only ordered child IDs"
+        )
+    if len(set(value["children"])) != len(value["children"]):
+        raise TaskWorkspaceError("umbrella child set is duplicated or cyclic")
+    return value, source_sha
+
+
+def task_status(body: bytes, task_id: str) -> str:
+    match = re.search(r"(?m)^status:\s*([A-Za-z_]+)\s*$", body[:4096].decode("utf-8", errors="replace"))
+    if not match:
+        raise TaskWorkspaceError(f"canonical child {task_id} has no unambiguous lifecycle status")
+    return match.group(1).lower()
+
+
+def task_scope_path(controller: Path, task_id: str) -> Path:
+    return controller / ".juno_task/task-scopes" / task_id[:2].lower() / f"{task_id}.json"
+
+
+def load_task_scope(controller: Path, task_id: str, body: bytes) -> tuple[dict[str, Any], str]:
+    value, file_sha = read_json_object(task_scope_path(controller, task_id), f"canonical child scope {task_id}")
+    keys = {"schema_version", "task_id", "task_revision_sha256", "lifecycle_status",
+            "umbrella_relations", "scope"}
+    relation_keys = {"owner", "children"}; scope_keys = {
+        "baseline", "selectable_paths", "required_paths", "generated_paths"}
+    if (set(value) != keys or value.get("schema_version") != TASK_SCOPE_SCHEMA
+            or value.get("task_id") != task_id
+            or value.get("task_revision_sha256") != hashlib.sha256(body).hexdigest()
+            or value.get("lifecycle_status") != task_status(body, task_id)
+            or not isinstance(value.get("umbrella_relations"), dict)
+            or set(value["umbrella_relations"]) != relation_keys
+            or value["umbrella_relations"].get("owner") is not None
+               and not TASK_RE.fullmatch(str(value["umbrella_relations"].get("owner")))
+            or not isinstance(value["umbrella_relations"].get("children"), list)
+            or not all(isinstance(item, str) and TASK_RE.fullmatch(item)
+                       for item in value["umbrella_relations"]["children"])
+            or not isinstance(value.get("scope"), dict) or set(value["scope"]) != scope_keys
+            or not isinstance(value["scope"].get("baseline"), bool)):
+        raise TaskWorkspaceError(f"canonical child scope {task_id} is absent, ambiguous, stale, or malformed")
+    for field in ("selectable_paths", "required_paths", "generated_paths"):
+        rows = value["scope"].get(field)
+        if not isinstance(rows, list):
+            raise TaskWorkspaceError(f"canonical child scope {task_id}.{field} must be a list")
+        normalized = [normalized_relative(item, f"canonical child scope {task_id}.{field}") for item in rows]
+        if normalized != sorted(set(normalized)):
+            raise TaskWorkspaceError(f"canonical child scope {task_id}.{field} must be sorted and unique")
+    if len(set(value["umbrella_relations"]["children"])) != len(value["umbrella_relations"]["children"]):
+        raise TaskWorkspaceError(f"canonical child scope {task_id} has duplicate relations")
+    return value, file_sha
+
+
+def validate_umbrella_graph(controller: Path, umbrella_id: str, child_ids: list[str],
+                            umbrella_body: bytes) -> tuple[dict[str, Any], str]:
+    umbrella_scope, umbrella_scope_sha = load_task_scope(controller, umbrella_id, umbrella_body)
+    if umbrella_scope["umbrella_relations"]["children"] != child_ids:
+        raise TaskWorkspaceError("umbrella ordered children contradict canonical scope relations")
+    if umbrella_scope["umbrella_relations"]["owner"] is not None:
+        raise TaskWorkspaceError("nested/owned umbrella execution is contradictory")
+    visited: set[str] = set(); active: set[str] = set()
+    def walk(task_id: str) -> None:
+        if task_id in active: raise TaskWorkspaceError(f"indirect umbrella cycle detected at {task_id}")
+        if task_id in visited: return
+        active.add(task_id)
+        _path, body = task_manifest(controller, task_id)
+        scope, _sha = load_task_scope(controller, task_id, body)
+        for nested in scope["umbrella_relations"]["children"]: walk(nested)
+        active.remove(task_id); visited.add(task_id)
+    walk(umbrella_id)
+    return umbrella_scope, umbrella_scope_sha
+
+
+def child_reservations(state: dict[str, Any]) -> dict[str, str]:
+    value = state["queues"].setdefault("umbrella_child_reservations", {
+        "schema_version": UMBRELLA_RESERVATIONS_SCHEMA, "owners": {},
+    })
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "owners"}
+            or value.get("schema_version") != UMBRELLA_RESERVATIONS_SCHEMA
+            or not isinstance(value.get("owners"), dict)
+            or not all(TASK_RE.fullmatch(str(child)) and TASK_RE.fullmatch(str(owner))
+                       for child, owner in value["owners"].items())):
+        raise TaskWorkspaceError("umbrella child reservation state is invalid")
+    return value["owners"]
 
 
 def state_path(controller: Path) -> Path:
@@ -922,6 +1042,205 @@ def selected_task_paths(config: dict[str, Any], repository: Path, target_sha: st
     return [*config["allowed_paths"], *normalized], entries
 
 
+def canonical_child_scope(controller: Path, repository: Path, base_sha: str, child_id: str,
+                          body: bytes, config: dict[str, Any], expected_owner: str) -> tuple[list[str], list[dict[str, str]], dict[str, Any]]:
+    """Read one pre-implementation, revision-bound authoritative scope declaration."""
+    declaration, declaration_sha = load_task_scope(controller, child_id, body)
+    lifecycle = declaration["lifecycle_status"]
+    if lifecycle not in PRESTART_TRACKING_STATUSES:
+        classification = "terminal" if lifecycle in TERMINAL_TASK_STATUSES else "active or unknown"
+        raise TaskWorkspaceError(
+            f"umbrella child {child_id} lifecycle is not an unowned pre-start tracking state "
+            f"({classification}): {lifecycle}; allowed: {', '.join(sorted(PRESTART_TRACKING_STATUSES))}"
+        )
+    relation = declaration["umbrella_relations"]
+    if relation["children"]:
+        raise TaskWorkspaceError(
+            f"flat umbrella child {child_id} must not declare nested children: {', '.join(relation['children'])}"
+        )
+    if relation["owner"] != expected_owner:
+        raise TaskWorkspaceError(
+            f"umbrella child {child_id} relation contradicts owner {expected_owner}: {relation['owner']}"
+        )
+    scope = declaration["scope"]
+    selectable = scope["selectable_paths"]
+    unknown = [path for path in selectable if path not in config["selectable_paths"]]
+    if unknown:
+        raise TaskWorkspaceError(f"umbrella child {child_id} has unadmitted selectable scope: {', '.join(unknown)}")
+    selected_task_paths(config, repository, base_sha, selectable)
+    exact = [*scope["required_paths"], *scope["generated_paths"]]
+    evidence: list[dict[str, str]] = []
+    for candidate in exact:
+        output = git(repository, "ls-tree", base_sha, "--", candidate, check=False)
+        lines = [line for line in output.splitlines() if line]
+        if len(lines) != 1:
+            raise TaskWorkspaceError(f"umbrella child {child_id} exact scope is absent or ambiguous: {candidate}")
+        metadata, actual = lines[0].split("\t", 1); mode, kind, object_id = metadata.split()
+        if actual != candidate or kind != "blob" or not mode.startswith("100"):
+            raise TaskWorkspaceError(f"umbrella child {child_id} scope is not one exact tracked file: {candidate}")
+        evidence.append({"path": candidate, "mode": mode, "object": object_id})
+    if not scope["baseline"] and not selectable and not exact:
+        raise TaskWorkspaceError(f"umbrella child {child_id} authoritative scope is empty")
+    paths = [*selectable, *exact]
+    frozen = {"declaration_path": str(task_scope_path(controller, child_id).resolve()),
+              "declaration_sha256": declaration_sha, "declaration": declaration,
+              "baseline": scope["baseline"]}
+    return paths, evidence, frozen
+
+
+def derive_umbrella_admission(controller: Path, umbrella_id: str, repository: Path,
+                              target_ref: str, base_sha: str, input_path: Path,
+                              baseline_paths: list[str], state: dict[str, Any],
+                              config: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    declaration, source_sha = load_umbrella_input(input_path)
+    child_ids = declaration["children"]
+    _umbrella_path, umbrella_body = task_manifest(controller, umbrella_id)
+    umbrella_scope, umbrella_scope_sha = validate_umbrella_graph(
+        controller, umbrella_id, child_ids, umbrella_body)
+    if umbrella_id in child_ids:
+        raise TaskWorkspaceError(f"umbrella child is self-referential or cyclic: {umbrella_id}")
+    reservations = child_reservations(state)
+    bindings: list[dict[str, Any]] = []
+    union = list(baseline_paths)
+    for child_id in child_ids:
+        owner = state["tasks"].get(child_id)
+        reserved = reservations.get(child_id)
+        if owner is not None or (reserved is not None and reserved != umbrella_id):
+            identity = reserved or (owner.get("task_id", child_id) if isinstance(owner, dict) else child_id)
+            raise TaskWorkspaceError(f"umbrella child {child_id} is already owned by {identity}")
+        _path, body = task_manifest(controller, child_id)
+        exact_paths, evidence, frozen_scope = canonical_child_scope(
+            controller, repository, base_sha, child_id, body, config, umbrella_id)
+        for required in exact_paths:
+            if not path_within(required, union):
+                union.append(required)
+        bindings.append({
+            "task_id": child_id,
+            "task_revision_sha256": hashlib.sha256(body).hexdigest(),
+            "scope_evidence": evidence,
+            "scope_evidence_sha256": stable_sha256(evidence),
+            "required_paths": exact_paths, "canonical_scope": frozen_scope,
+            "target_ref": target_ref, "base_sha": base_sha,
+        })
+    admission = {
+        "schema_version": UMBRELLA_ADMISSION_SCHEMA,
+        "execution_mode": UMBRELLA_EXECUTION_MODE,
+        "input_path": str(input_path.resolve()), "input_sha256": source_sha,
+        "umbrella_scope_sha256": umbrella_scope_sha, "umbrella_scope": umbrella_scope,
+        "ordered_child_ids": child_ids,
+        "child_bindings": bindings,
+        "union_paths": sorted(union),
+        "union_paths_sha256": stable_sha256(sorted(union)),
+    }
+    return sorted(union), admission
+
+
+def finalize_umbrella_admission(repository: Path, base_sha: str, union: list[str],
+                                admission: dict[str, Any]) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
+    _all_paths, all_generated = derived_output_admission(repository, base_sha, ["juno-code"])
+    generated_by_child: dict[str, list[dict[str, str]]] = {}
+    expanded = list(union)
+    for binding in admission["child_bindings"]:
+        pairs = [row for row in all_generated["bindings"]
+                 if (path_within(row["source"], binding["required_paths"])
+                     or path_within(row["destination"], binding["required_paths"]))]
+        for row in pairs:
+            for exact in (row["source"], row["destination"]):
+                if not path_within(exact, expanded):
+                    expanded.append(exact)
+        generated_by_child[binding["task_id"]] = sorted([
+            {"source": row["source"], "destination": row["destination"], "kind": row["kind"]}
+            for row in pairs
+        ], key=lambda row: (row["source"], row["destination"], row["kind"]))
+    union, generated = derived_output_admission(repository, base_sha, expanded)
+    return sorted(union), {**admission, "union_paths": sorted(union),
+                           "union_paths_sha256": stable_sha256(sorted(union)),
+                           "generated_output_bindings": generated_by_child}, generated
+
+
+def umbrella_drift(controller: Path, repository: Path, admission: Any,
+                   generated: Any, state: dict[str, Any], umbrella_id: str) -> list[dict[str, str]]:
+    expected_keys = {"schema_version", "execution_mode", "input_path", "input_sha256",
+                     "umbrella_scope_sha256", "umbrella_scope", "ordered_child_ids",
+                     "child_bindings", "union_paths", "union_paths_sha256", "generated_output_bindings"}
+    if (not isinstance(admission, dict) or set(admission) != expected_keys
+            or admission.get("schema_version") != UMBRELLA_ADMISSION_SCHEMA
+            or admission.get("execution_mode") != UMBRELLA_EXECUTION_MODE
+            or not isinstance(admission.get("ordered_child_ids"), list)
+            or not isinstance(admission.get("child_bindings"), list)):
+        return [{"reason": "malformed_frozen_admission"}]
+    drift: list[dict[str, str]] = []
+    try:
+        _input, current_input_sha = load_umbrella_input(Path(admission["input_path"]))
+        if current_input_sha != admission["input_sha256"]:
+            drift.append({"reason": "umbrella_input_bytes_drift"})
+    except (TaskWorkspaceError, TypeError):
+        drift.append({"reason": "umbrella_input_unavailable"})
+    if (admission["ordered_child_ids"] != [row.get("task_id") for row in admission["child_bindings"]]
+            or stable_sha256(admission.get("union_paths")) != admission.get("union_paths_sha256")):
+        drift.append({"reason": "order_or_union_hash_drift"})
+    reservations = child_reservations(state)
+    try:
+        _umbrella_path, umbrella_body = task_manifest(controller, umbrella_id)
+        current_umbrella_scope, current_umbrella_sha = load_task_scope(controller, umbrella_id, umbrella_body)
+        if (current_umbrella_scope != admission["umbrella_scope"]
+                or current_umbrella_sha != admission["umbrella_scope_sha256"]):
+            drift.append({"reason": "umbrella_scope_drift"})
+    except TaskWorkspaceError:
+        drift.append({"reason": "umbrella_scope_unavailable"})
+    generated_pairs = {(row.get("source"), row.get("destination"), row.get("kind"))
+                       for row in generated.get("bindings", [])} if isinstance(generated, dict) else set()
+    bound_targets = {(row.get("target_ref"), row.get("base_sha"))
+                     for row in admission["child_bindings"] if isinstance(row, dict)}
+    if len(bound_targets) != 1:
+        drift.append({"reason": "child_target_or_base_binding_drift"})
+    for binding in admission["child_bindings"]:
+        child_id = binding.get("task_id", "unknown") if isinstance(binding, dict) else "unknown"
+        if (not isinstance(binding, dict) or set(binding) != {"task_id", "task_revision_sha256",
+                "scope_evidence", "scope_evidence_sha256", "required_paths", "canonical_scope",
+                "target_ref", "base_sha"}):
+            drift.append({"task_id": child_id, "reason": "malformed_child_binding"})
+            continue
+        try:
+            _path, body = task_manifest(controller, child_id)
+            config = load_config(controller)
+            paths, evidence, frozen_scope = canonical_child_scope(
+                controller, repository, binding.get("base_sha", ""), child_id, body, config, umbrella_id)
+        except TaskWorkspaceError:
+            drift.append({"task_id": child_id, "reason": "canonical_child_unavailable"})
+            continue
+        if (hashlib.sha256(body).hexdigest() != binding.get("task_revision_sha256")
+                or paths != binding.get("required_paths")
+                or evidence != binding.get("scope_evidence")
+                or stable_sha256(evidence) != binding.get("scope_evidence_sha256")
+                or frozen_scope != binding.get("canonical_scope")):
+            drift.append({"task_id": child_id, "reason": "revision_or_scope_drift"})
+        if reservations.get(child_id) != umbrella_id:
+            drift.append({"task_id": child_id, "reason": "child_reservation_drift"})
+        expected_generated = sorted(
+            ({"source": source, "destination": destination, "kind": kind}
+             for source, destination, kind in generated_pairs
+             if path_within(str(source), paths) or path_within(str(destination), paths)),
+            key=lambda row: (row["source"], row["destination"], row["kind"]),
+        )
+        if expected_generated != admission["generated_output_bindings"].get(child_id):
+            drift.append({"task_id": child_id, "reason": "generated_binding_drift"})
+    return drift
+
+
+def effective_admission(record: dict[str, Any]) -> tuple[list[str], Any, str]:
+    supersessions = record.get("admission_supersessions", [])
+    if supersessions:
+        latest = supersessions[-1]
+        if (len(supersessions) != 1
+                or stable_sha256(latest) != record.get("admission_supersession_sha256")):
+            raise TaskWorkspaceError("authorized umbrella superseding admission identity drifted")
+        return (latest["umbrella_admission"]["union_paths"],
+                latest["generated_output_admission"], "superseding")
+    receipt = record.get("creation_receipt", {})
+    return (receipt.get("allowed_paths", []), receipt.get("generated_output_admission"), "historical_creation")
+
+
 def _declared_submodule_urls(repository: Path, commit: str) -> dict[str, str]:
     raw = run(["git", "-C", str(repository), "show", f"{commit}:.gitmodules"],
               repository, check=False)
@@ -1075,8 +1394,11 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight"} else "orchestration")
-    if surface == "task" and operation not in {"start", "status", "preflight", "finish"}:
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan"}
+                       else "orchestration")
+    if surface == "task" and operation not in {
+            "start", "status", "preflight", "finish",
+            "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "refresh"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
@@ -1111,6 +1433,9 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
         allowed_paths, selected_entries = selected_task_paths(
             config, repository, target_sha, creation_receipt.get("requested_paths", [])
         )
+        umbrella = creation_receipt.get("umbrella_admission")
+        if isinstance(umbrella, dict):
+            allowed_paths = umbrella.get("union_paths", [])
         allowed_paths, generated_output_admission = derived_output_admission(
             repository, target_sha, allowed_paths)
         if (allowed_paths != creation_receipt.get("allowed_paths")
@@ -1141,25 +1466,57 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
     )
 
 
-def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None) -> dict[str, Any]:
+def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None,
+          umbrella_input: Optional[Path] = None) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     repository = product_repository(controller, config)
     target_sha = ref_sha(repository, config["target_ref"])
     requested_paths = requested_paths or []
     allowed_paths, selected_entries = selected_task_paths(config, repository, target_sha, requested_paths)
+    umbrella_admission = None
+    provisional_state = read_state(controller)
+    if umbrella_input is not None:
+        allowed_paths, umbrella_admission = derive_umbrella_admission(
+            controller, task_id, repository, config["target_ref"], target_sha,
+            umbrella_input.resolve(), allowed_paths, provisional_state, config)
+        allowed_paths, umbrella_admission, generated_output_admission = finalize_umbrella_admission(
+            repository, target_sha, allowed_paths, umbrella_admission)
+    else:
+        allowed_paths, generated_output_admission = derived_output_admission(
+            repository, target_sha, allowed_paths)
     generation = require_current_runtime(repository, target_sha, controller)
-    allowed_paths, generated_output_admission = derived_output_admission(
-        repository, target_sha, allowed_paths)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
     worktree = worktree_path(config, task_id)
     with state_lock(controller):
         state = read_state(controller)
+        reservations = child_reservations(state)
+        reserved_owner = reservations.get(task_id)
+        if reserved_owner is not None and reserved_owner != task_id:
+            raise TaskWorkspaceError(f"task {task_id} is tracking-only under umbrella {reserved_owner}")
+        if umbrella_input is not None:
+            locked_baseline, locked_entries = selected_task_paths(
+                config, repository, target_sha, requested_paths)
+            locked_union, locked_umbrella = derive_umbrella_admission(
+                controller, task_id, repository, config["target_ref"], target_sha,
+                umbrella_input.resolve(), locked_baseline, state, config)
+            locked_union, locked_umbrella, locked_generated = finalize_umbrella_admission(
+                repository, target_sha, locked_union, locked_umbrella)
+            if ((locked_union, locked_entries, locked_umbrella, locked_generated)
+                    != (allowed_paths, selected_entries, umbrella_admission,
+                        generated_output_admission)):
+                raise TaskWorkspaceError("umbrella admission changed before mutation")
         existing = state["tasks"].get(task_id)
         if existing:
-            if existing.get("creation_receipt", {}).get("requested_paths", []) != requested_paths:
+            receipt = existing.get("creation_receipt", {})
+            if receipt.get("requested_paths", []) != requested_paths:
                 raise TaskWorkspaceError("task start required paths differ from the frozen creation receipt")
+            frozen_umbrella = receipt.get("umbrella_admission")
+            if ((umbrella_admission is None) != (frozen_umbrella is None)
+                    or (umbrella_admission is not None and umbrella_admission != frozen_umbrella)):
+                raise TaskWorkspaceError(
+                    "task start umbrella admission differs from the frozen creation receipt")
             if clean_identity(existing, repository, target_sha, config):
                 return {**existing, "outcome": "already_started"}
             raise TaskWorkspaceError("task start identity drifted; preserve the worktree and inspect task status")
@@ -1192,6 +1549,8 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                                 "materialization": materialization, "routing": routing,
                                 "runtime_generation": generation,
                                 "generated_output_admission": generated_output_admission}
+            if umbrella_admission is not None:
+                creation_receipt["umbrella_admission"] = umbrella_admission
             create_receipt_sha256 = stable_sha256(creation_receipt)
             identity = {"manifest_identity": manifest_identity,
                         "create_receipt_sha256": create_receipt_sha256,
@@ -1203,6 +1562,9 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                       "workspace_identity": identity, "creation_receipt": creation_receipt, "routing": routing,
                       "changed_paths": [], "validation": []}
             state["tasks"][task_id] = record
+            if umbrella_admission is not None:
+                for child_id in umbrella_admission["ordered_child_ids"]:
+                    reservations[child_id] = task_id
             for key, value in (("role", "task"), ("roleBase", target_sha), ("taskId", task_id),
                                ("manifestIdentity", manifest_identity),
                                ("createReceiptSha256", create_receipt_sha256),
@@ -1227,6 +1589,193 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                     ) from creation_error
             raise
     return {**record, "outcome": "started"}
+
+
+def _recovery_plan_locked(controller: Path, task_id: str, input_path: Path,
+                          config: dict[str, Any], repository: Path,
+                          state: dict[str, Any]) -> dict[str, Any]:
+    record = state["tasks"].get(task_id)
+    if not isinstance(record, dict) or record.get("state") != "WORKING":
+        raise TaskWorkspaceError("umbrella recovery requires an already-WORKING task")
+    receipt = record.get("creation_receipt", {}); predecessor_sha = stable_sha256(receipt)
+    if predecessor_sha != record.get("workspace_identity", {}).get("create_receipt_sha256"):
+        raise TaskWorkspaceError("historical creation receipt identity drifted; preserve this umbrella and create a replacement")
+    if receipt.get("umbrella_admission") is not None:
+        raise TaskWorkspaceError("umbrella already has start-time child-union admission")
+    if (Path(record.get("repository", "")).resolve() != repository
+            or record.get("target_ref") != config["target_ref"]
+            or record.get("base_sha") != receipt.get("base_sha")
+            or record.get("branch_ref") != receipt.get("branch_ref")
+            or record.get("worktree") != receipt.get("worktree")
+            or ref_sha(repository, config["target_ref"]) != record["base_sha"]):
+        raise TaskWorkspaceError("umbrella target/base/branch/worktree identity drifted; preserve it and create a replacement")
+    worktree = exact_root(Path(record["worktree"]), "recorded umbrella worktree")
+    head = git(worktree, "rev-parse", "HEAD")
+    if (git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]
+            or optional_ref_sha(repository, record["branch_ref"]) != head
+            or git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+        raise TaskWorkspaceError("umbrella recovery requires the exact clean branch/worktree identity")
+    if run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+            record["base_sha"], head], repository, check=False).returncode:
+        raise TaskWorkspaceError("umbrella tip is rewritten or does not descend from its frozen base")
+    _path, umbrella_body = task_manifest(controller, task_id)
+    if hashlib.sha256(umbrella_body).hexdigest() != receipt.get("manifest_identity"):
+        raise TaskWorkspaceError("umbrella task body changed since start; preserve it and create a replacement")
+    baseline, _selected = selected_task_paths(config, repository, record["base_sha"], receipt.get("requested_paths", []))
+    union, admission = derive_umbrella_admission(
+        controller, task_id, repository, record["target_ref"], record["base_sha"],
+        input_path.resolve(), baseline, state, config)
+    union, admission, generated = finalize_umbrella_admission(repository, record["base_sha"], union, admission)
+    original_allowed = receipt.get("allowed_paths", [])
+    commits = git(worktree, "rev-list", "--reverse", "--parents", f"{record['base_sha']}..{head}").splitlines()
+    history: list[dict[str, Any]] = []; escaped: list[str] = []
+    for row in commits:
+        commit, *parents = row.split()
+        edges: list[dict[str, Any]] = []
+        # Every parent edge is authority. In particular, merge commits are not
+        # reduced to first-parent combined diff semantics.
+        for parent in parents:
+            paths = sorted(set(git(worktree, "diff", "--name-only", parent, commit).splitlines()))
+            edges.append({"parent": parent, "paths": paths, "paths_sha256": stable_sha256(paths)})
+            escaped.extend(path for path in paths if not path_within(path, original_allowed))
+        history.append({"commit": commit, "parent_edges": edges,
+                        "parent_edges_sha256": stable_sha256(edges)})
+    if escaped:
+        raise TaskWorkspaceError("prior umbrella commit history escaped the historical admission: " + ", ".join(sorted(set(escaped))))
+    changed = sorted(set(git(worktree, "diff", "--name-only", f"{record['base_sha']}..{head}").splitlines()))
+    return {"schema_version": UMBRELLA_RECOVERY_PLAN_SCHEMA, "task_id": task_id,
+            "repository": str(repository), "target_ref": record["target_ref"],
+            "base_sha": record["base_sha"], "branch_ref": record["branch_ref"],
+            "worktree": record["worktree"], "current_tip": head,
+            "predecessor_receipt_sha256": predecessor_sha,
+            "umbrella_manifest_identity": receipt["manifest_identity"],
+            "umbrella_input_sha256": admission["input_sha256"],
+            "umbrella_admission": admission, "generated_output_admission": generated,
+            "newly_admitted_paths": sorted(path for path in union if not path_within(path, original_allowed)),
+            "prior_changed_paths": changed, "prior_commit_history": history,
+            "prior_changes_within_predecessor": True}
+
+
+def build_umbrella_recovery_plan(controller: Path, task_id: str, input_path: Path) -> dict[str, Any]:
+    config = load_config(controller); require_task(controller, task_id)
+    repository = product_repository(controller, config)
+    with state_lock(controller):
+        return _recovery_plan_locked(controller, task_id, input_path, config, repository, read_state(controller))
+
+
+def authorization_ledger(state: dict[str, Any]) -> dict[str, Any]:
+    value = state["queues"].setdefault("umbrella_authorization_ledger", {
+        "schema_version": AUTHORIZATION_LEDGER_SCHEMA, "issued": {},
+    })
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "issued"}
+            or value.get("schema_version") != AUTHORIZATION_LEDGER_SCHEMA
+            or not isinstance(value.get("issued"), dict)):
+        raise TaskWorkspaceError("umbrella authorization ledger is invalid")
+    return value["issued"]
+
+
+def issue_umbrella_recovery_authorization(controller: Path, task_id: str,
+                                           plan_path: Path, input_path: Path) -> dict[str, Any]:
+    plan, plan_file_sha = read_json_object(plan_path, "umbrella recovery plan")
+    plan_sha = stable_sha256(plan)
+    config = load_config(controller); repository = product_repository(controller, config)
+    with state_lock(controller):
+        state = read_state(controller)
+        expected = _recovery_plan_locked(controller, task_id, input_path, config, repository, state)
+        if plan != expected:
+            raise TaskWorkspaceError("only the exact current reviewed recovery plan can be authorized")
+        issued = authorization_ledger(state)
+        for authorization_id, row in issued.items():
+            if row.get("plan_sha256") == plan_sha and row.get("plan_file_sha256") == plan_file_sha:
+                return {**row, "authorization_id": authorization_id, "outcome": "already_issued"}
+        authorization_id = secrets.token_hex(24)
+        root = controller / ".juno_task/receipts/task-admission-authorizations"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{task_id}-{authorization_id}.json"
+        receipt = {"schema_version": UMBRELLA_AUTHORIZATION_SCHEMA,
+                   "authorization_id": authorization_id, "task_id": task_id,
+                   "action": "supersede_umbrella_admission", "plan_sha256": plan_sha,
+                   "plan_file_sha256": plan_file_sha,
+                   "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"]}
+        data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        row = {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest(),
+               "plan_sha256": plan_sha, "plan_file_sha256": plan_file_sha,
+               "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"]}
+        issued[authorization_id] = row
+        try: write_state(controller, state)
+        except Exception:
+            path.unlink(missing_ok=True); raise
+    return {**row, "authorization_id": authorization_id, "outcome": "issued"}
+
+
+def apply_umbrella_recovery(controller: Path, task_id: str, plan_path: Path,
+                            input_path: Path, authorization_path: Path) -> dict[str, Any]:
+    authorization_path = authorization_path.expanduser().resolve()
+    canonical_authorizations = (controller / ".juno_task/receipts/task-admission-authorizations").resolve()
+    try:
+        authorization_path.relative_to(canonical_authorizations)
+    except ValueError as exc:
+        raise TaskWorkspaceError("authorization receipt is not in the canonical immutable controller receipt root") from exc
+    plan, plan_file_sha = read_json_object(plan_path, "umbrella recovery plan")
+    authorization, authorization_file_sha = read_json_object(authorization_path, "umbrella recovery authorization")
+    plan_sha = stable_sha256(plan)
+    if (plan.get("schema_version") != UMBRELLA_RECOVERY_PLAN_SCHEMA or plan.get("task_id") != task_id
+            or set(authorization) != {"schema_version", "authorization_id", "task_id", "action",
+                                          "plan_sha256", "plan_file_sha256", "predecessor_receipt_sha256"}
+            or authorization.get("schema_version") != UMBRELLA_AUTHORIZATION_SCHEMA
+            or authorization.get("task_id") != task_id or authorization.get("action") != "supersede_umbrella_admission"
+            or authorization.get("plan_sha256") != plan_sha
+            or authorization.get("plan_file_sha256") != plan_file_sha
+            or authorization.get("predecessor_receipt_sha256") != plan.get("predecessor_receipt_sha256")
+            or not isinstance(authorization.get("authorization_id"), str) or not authorization["authorization_id"]):
+        raise TaskWorkspaceError("canonical immutable recovery authorization does not bind this exact reviewed plan")
+    config = load_config(controller); repository = product_repository(controller, config)
+    with state_lock(controller):
+        state = read_state(controller); record = state["tasks"].get(task_id)
+        if not isinstance(record, dict): raise TaskWorkspaceError("umbrella disappeared before recovery apply")
+        ledger_row = authorization_ledger(state).get(authorization.get("authorization_id"))
+        if (not isinstance(ledger_row, dict)
+                or ledger_row.get("path") != str(authorization_path)
+                or ledger_row.get("sha256") != authorization_file_sha
+                or ledger_row.get("plan_sha256") != plan_sha
+                or ledger_row.get("plan_file_sha256") != plan_file_sha):
+            raise TaskWorkspaceError("authorization receipt was not issued by trusted controller ledger")
+        existing = record.get("admission_supersessions", [])
+        if (existing and existing[-1].get("reviewed_plan_sha256") == plan_sha
+                and existing[-1].get("authorization_receipt", {}).get("sha256") == authorization_file_sha):
+            return {**record, "outcome": "already_applied", "admission_status": "authorized_superseding"}
+        if existing: raise TaskWorkspaceError("umbrella already has a different superseding admission")
+        expected = _recovery_plan_locked(controller, task_id, input_path, config, repository, state)
+        if expected != plan:
+            raise TaskWorkspaceError("recovery plan is stale or a locked identity/scope/binding changed")
+        supersession = {"schema_version": UMBRELLA_SUPERSESSION_SCHEMA,
+            "authorization_receipt": {"path": str(authorization_path.resolve()),
+                                      "sha256": authorization_file_sha,
+                                      "authorization_id": authorization["authorization_id"]},
+            "reviewed_plan": {"path": str(plan_path.resolve()), "sha256": plan_sha,
+                              "file_sha256": plan_file_sha},
+            "reviewed_plan_sha256": plan_sha,
+            "predecessor_receipt_sha256": plan["predecessor_receipt_sha256"],
+            "current_tip": plan["current_tip"], "newly_admitted_paths": plan["newly_admitted_paths"],
+            "unaffected_prior_evidence": {"changed_paths": plan["prior_changed_paths"],
+                                          "commit_history": plan["prior_commit_history"],
+                                          "within_predecessor": True},
+            "umbrella_admission": plan["umbrella_admission"],
+            "generated_output_admission": plan["generated_output_admission"],
+            "rollback_semantics": "preserve predecessor and supersession; never narrow or rewrite either receipt",
+            "refusal_semantics": "preserve umbrella and create a newly admitted replacement; never start a child worktree"}
+        reservations = child_reservations(state)
+        for child_id in plan["umbrella_admission"]["ordered_child_ids"]:
+            if reservations.get(child_id) not in {None, task_id}:
+                raise TaskWorkspaceError(f"child ownership changed before recovery apply: {child_id}")
+            reservations[child_id] = task_id
+        updated = {**record, "admission_supersessions": [supersession],
+                   "admission_supersession_sha256": stable_sha256(supersession)}
+        state["tasks"][task_id] = updated; write_state(controller, state)
+    return {**updated, "outcome": "applied", "admission_status": "authorized_superseding"}
 
 
 def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str, Any], validations: list[dict[str, Any]]) -> None:
@@ -1325,16 +1874,24 @@ def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[
     creation_receipt = record.get("creation_receipt", {})
     if stable_sha256(creation_receipt) != record.get("workspace_identity", {}).get("create_receipt_sha256"):
         raise TaskWorkspaceError("task creation receipt identity drifted")
-    frozen_allowed = creation_receipt.get("allowed_paths")
+    frozen_allowed, frozen_generated_admission, _admission_source = effective_admission(record)
     if not isinstance(frozen_allowed, list) or not frozen_allowed:
-        raise TaskWorkspaceError("task creation receipt has no frozen allowed paths")
+        raise TaskWorkspaceError("task admission has no frozen allowed paths")
+    frozen_umbrella = (record.get("admission_supersessions", [{}])[-1].get("umbrella_admission")
+                       if record.get("admission_supersessions")
+                       else creation_receipt.get("umbrella_admission"))
+    if frozen_umbrella is not None:
+        drift = umbrella_drift(controller, repository, frozen_umbrella,
+                               frozen_generated_admission, read_state(controller), task_id)
+        if drift:
+            raise TaskWorkspaceError(
+                f"frozen umbrella child admission drifted: {json.dumps(drift, sort_keys=True)}")
     outside = [path for path in changed if not path_within(path, frozen_allowed)]
     if forbidden or outside:
         raise TaskWorkspaceError(
             f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}"
         )
-    verify_derived_output_parity(
-        repository, head, creation_receipt.get("generated_output_admission"), changed)
+    verify_derived_output_parity(repository, head, frozen_generated_admission, changed)
     policy_path = controller / ".juno_task/config/risk-policy.json"
     try:
         policy_sha256 = hashlib.sha256(policy_path.read_bytes()).hexdigest()
@@ -1351,7 +1908,7 @@ def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[
         "allowed_paths_sha256": stable_sha256(frozen_allowed),
         "creation_receipt_sha256": record["workspace_identity"]["create_receipt_sha256"],
         "generated_output_admission_sha256": stable_sha256(
-            creation_receipt.get("generated_output_admission")
+            frozen_generated_admission
         ),
         "risk_policy_sha256": policy_sha256,
         "runtime_sha256": runtime["running_sha256"],
@@ -1411,6 +1968,13 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     repository, worktree, head, changed, closure = review_ready_closure(
         controller, config, frozen_record, configured_repository, task_id, runtime
     )
+    _frozen_allowed, frozen_generated_admission, _admission_source = effective_admission(
+        frozen_record)
+    frozen_umbrella = (
+        frozen_record.get("admission_supersessions", [{}])[-1].get("umbrella_admission")
+        if frozen_record.get("admission_supersessions")
+        else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
+    )
     validations = []
     for row in config["focused_validation"]:
         cwd = (worktree / row["cwd"]).resolve()
@@ -1448,6 +2012,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
             if isinstance(current, dict) and current.get("state") == "QUEUED" and current.get("tip_sha") == head:
                 return {**current, "outcome": "already_queued"}
             raise TaskWorkspaceError("task state changed during focused validation; inspect status and retry")
+        # Final locked checkpoint: no queue mutation follows stale child,
+        # declaration, generated-binding, branch, tip, or cleanliness evidence.
+        if (git(worktree, "rev-parse", "HEAD") != head
+                or optional_ref_sha(repository, current["branch_ref"]) != head
+                or git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != current["branch_ref"]
+                or git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+            raise TaskWorkspaceError("task branch/tip/worktree changed before queue mutation")
+        if frozen_umbrella is not None:
+            final_drift = umbrella_drift(controller, repository, frozen_umbrella,
+                                         frozen_generated_admission, state, task_id)
+            if final_drift:
+                raise TaskWorkspaceError(
+                    f"frozen umbrella admission drifted before queue mutation: {json.dumps(final_drift, sort_keys=True)}"
+                )
         queued["enqueue_sequence"] = assign_enqueue_sequence(state)
         state["tasks"][task_id] = queued
         write_state(controller, state)
@@ -1480,6 +2058,21 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
             record, configured_repository, config, task_id
         )
         result.update({"tip_sha": live_tip, "changed_paths": live_paths})
+    frozen_umbrella = (record.get("admission_supersessions", [{}])[-1].get("umbrella_admission")
+                       if record.get("admission_supersessions")
+                       else record.get("creation_receipt", {}).get("umbrella_admission"))
+    if frozen_umbrella is not None:
+        _paths, frozen_generated, source = effective_admission(record)
+        result["umbrella_admission_status"] = {
+            "authority": ("authorized_superseding" if source == "superseding"
+                          else "historical_creation"),
+            "ordered_child_ids": frozen_umbrella.get("ordered_child_ids"),
+            "child_bindings": frozen_umbrella.get("child_bindings"),
+            "union_paths_sha256": frozen_umbrella.get("union_paths_sha256"),
+            "child_revision_drift": umbrella_drift(
+                controller, configured_repository, frozen_umbrella,
+                frozen_generated, state, task_id),
+        }
     repository = Path(record.get("repository", ""))
     if repository.is_dir():
         current = optional_ref_sha(repository, record.get("target_ref", ""))
@@ -2506,9 +3099,16 @@ def runtime_bootstrap(controller: Path, package_version: str,
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "status", "preflight", "finish", "runtime-bootstrap"))
+        "start", "status", "preflight", "finish",
+        "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
+    value.add_argument("--umbrella-admission", type=Path,
+                       help="versioned ordered-child exact-scope input")
+    value.add_argument("--plan", type=Path, help="exact reviewed recovery plan")
+    value.add_argument("--output", type=Path, help="exclusive recovery plan output")
+    value.add_argument("--authorization-receipt", type=Path,
+                       help="canonical immutable authorization binding the exact reviewed plan")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     value.add_argument("--dry-run", action="store_true")
     value.add_argument("--apply", type=Path)
@@ -2522,7 +3122,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         controller = exact_root(args.controller, "controller", physical_identity=False)
         if args.operation == "runtime-bootstrap":
-            if args.task or args.path or not args.package_version or not args.package_runtime_sha256:
+            if (args.task or args.path or args.umbrella_admission or args.plan or args.output
+                    or args.authorization_receipt or not args.package_version
+                    or not args.package_runtime_sha256):
                 raise TaskWorkspaceError("runtime-bootstrap package identity is incomplete")
             if args.dry_run == bool(args.apply):
                 raise TaskWorkspaceError("runtime-bootstrap requires exactly one of --dry-run or --apply <receipt>")
@@ -2536,9 +3138,46 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
                 raise TaskWorkspaceError("runtime-bootstrap options are not supported for task lifecycle operations")
             audit = record_control_audit(controller, "task", args.operation, args.task)
-            result = (start(controller, args.task, args.path) if args.operation == "start"
-                      else {"status": status, "preflight": preflight,
-                            "finish": finish}[args.operation](controller, args.task))
+            if args.operation == "start":
+                if args.plan or args.output or args.authorization_receipt:
+                    raise TaskWorkspaceError("recovery options are not supported for task start")
+                result = start(controller, args.task, args.path, args.umbrella_admission)
+            elif args.operation == "recovery-plan":
+                if not args.umbrella_admission or not args.output or args.authorization_receipt or args.plan:
+                    raise TaskWorkspaceError(
+                        "recovery-plan requires --umbrella-admission and --output")
+                plan = build_umbrella_recovery_plan(
+                    controller, args.task, args.umbrella_admission)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                data = (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data); handle.flush(); os.fsync(handle.fileno())
+                result = {"schema_version": UMBRELLA_RECOVERY_PLAN_SCHEMA,
+                          "task_id": args.task, "outcome": "planned",
+                          "plan_path": str(args.output.resolve()),
+                          "plan_sha256": stable_sha256(plan),
+                          "plan_file_sha256": hashlib.sha256(data).hexdigest()}
+            elif args.operation == "recovery-authorize":
+                if not args.umbrella_admission or not args.plan or args.authorization_receipt or args.output:
+                    raise TaskWorkspaceError(
+                        "recovery-authorize requires --umbrella-admission and --plan")
+                result = issue_umbrella_recovery_authorization(
+                    controller, args.task, args.plan, args.umbrella_admission)
+            elif args.operation == "recovery-apply":
+                if (not args.umbrella_admission or not args.plan
+                        or not args.authorization_receipt or args.output):
+                    raise TaskWorkspaceError(
+                        "recovery-apply requires --umbrella-admission, --plan, and --authorization-receipt")
+                result = apply_umbrella_recovery(
+                    controller, args.task, args.plan, args.umbrella_admission,
+                    args.authorization_receipt)
+            else:
+                if args.umbrella_admission or args.plan or args.output or args.authorization_receipt:
+                    raise TaskWorkspaceError(
+                        "admission/recovery options are unsupported for this operation")
+                result = {"status": status, "preflight": preflight,
+                          "finish": finish}[args.operation](controller, args.task)
             result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0

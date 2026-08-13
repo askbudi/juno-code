@@ -30,6 +30,7 @@
     ".juno_task/receipts",
     ".juno_task/specs",
     ".juno_task/state",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/tasks.md",
     ".juno_task/workflows"

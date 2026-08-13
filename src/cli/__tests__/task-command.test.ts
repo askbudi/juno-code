@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   checkpointTaskWorkspaceAfterFinalization,
   configureTaskWorkspaceCommand,
+  taskWorkspaceControlOperation,
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
@@ -18,15 +19,16 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it('exposes preflight lifecycle plus the explicit guarded runtime bootstrap below task', () => {
+  it('exposes preflight, bounded umbrella recovery, and guarded runtime bootstrap below task', () => {
     const program = new Command();
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'start', 'preflight', 'status', 'finish', 'runtime-bootstrap',
+      'start', 'preflight', 'status', 'finish',
+      'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 4).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[4]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 7).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[7]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -52,7 +54,41 @@ describe('task workspace CLI', () => {
     expect(invoke).toHaveBeenCalledWith('start', 'T123', ['juno_kanban', 'frontend']);
   });
 
-  it.each(['start', 'finish'] as const)(
+  it('forwards umbrella admission and exact recovery plan/apply arguments', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureTaskWorkspaceCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'task', 'start', 'U1',
+      '--umbrella-admission', '/tmp/umbrella.json']);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'U1', [],
+      ['--umbrella-admission', '/tmp/umbrella.json']);
+    await program.parseAsync(['node', 'yy', 'task', 'recovery-plan', 'U1',
+      '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json']);
+    expect(invoke).toHaveBeenLastCalledWith('recovery-plan', 'U1', [], [
+      '--umbrella-admission', '/tmp/umbrella.json', '--output', '/tmp/plan.json',
+    ]);
+    await program.parseAsync(['node', 'yy', 'task', 'recovery-authorize', 'U1',
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json']);
+    expect(invoke).toHaveBeenLastCalledWith('recovery-authorize', 'U1', [], [
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
+    ]);
+    await program.parseAsync(['node', 'yy', 'task', 'recovery-apply', 'U1',
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
+      '--authorization-receipt', '/tmp/authorization.json']);
+    expect(invoke).toHaveBeenLastCalledWith('recovery-apply', 'U1', [], [
+      '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
+      '--authorization-receipt', '/tmp/authorization.json',
+    ]);
+  });
+
+  it('routes recovery planning through read-only kanban policy and apply through orchestration', () => {
+    expect(taskWorkspaceControlOperation('recovery-plan')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('status')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
+    expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
+  });
+
+  it.each(['start', 'finish', 'recovery-authorize', 'recovery-apply'] as const)(
     'checkpoints durable controller state after task %s without replacing its outcome',
     async (operation) => {
       const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
@@ -62,7 +98,7 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it.each(['status', 'preflight'] as const)(
+  it.each(['status', 'preflight', 'recovery-plan'] as const)(
     'does not checkpoint after read-only task %s',
     async (operation) => {
     const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
