@@ -5,8 +5,12 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'next' | 'resolve' | 'review' | 'reopen';
-export type MergeQueueInvoker = (operation: MergeQueueOperation, taskId?: string) => Promise<void>;
+export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen';
+export type MergeQueueInvoker = (
+  operation: MergeQueueOperation,
+  taskId?: string,
+  extraArgs?: string[],
+) => Promise<void>;
 export type MergeQueueCheckpointer = typeof checkpointControllerAfterFinalization;
 
 export const MAX_MERGE_RESULT_LINE_CHARS = 1024 * 1024;
@@ -84,12 +88,13 @@ export async function invokeMergeQueueAtController(
   env: NodeJS.ProcessEnv,
   taskId?: string,
   checkpoint: MergeQueueCheckpointer = checkpointControllerAfterFinalization,
+  extraArgs: string[] = [],
 ): Promise<void> {
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'merge_queue.py');
   if (!(await fs.pathExists(script))) {
     throw new Error('Missing managed merge queue runtime. Run `yy scripts update` and retry.');
   }
-  const args = [script, operation, ...(taskId ? [taskId] : [])];
+  const args = [script, operation, ...(taskId ? [taskId] : []), ...extraArgs];
   const extractor = new TerminalMergeResultExtractor();
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', args, { cwd: controllerRoot, env, stdio: ['inherit', 'pipe', 'inherit'] });
@@ -109,12 +114,19 @@ export async function invokeMergeQueueAtController(
   if (exitCode !== 0) process.exitCode = exitCode;
 }
 
-export async function invokeMergeQueue(operation: MergeQueueOperation, taskId?: string): Promise<void> {
+export async function invokeMergeQueue(
+  operation: MergeQueueOperation,
+  taskId?: string,
+  extraArgs: string[] = [],
+): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
-    operation === 'status' ? 'kanban' : 'orchestration',
+    ['status', 'plan'].includes(operation) ? 'kanban' : 'orchestration',
   );
-  await invokeMergeQueueAtController(operation, route.controllerRoot, route.env, taskId);
+  await invokeMergeQueueAtController(
+    operation, route.controllerRoot, route.env, taskId,
+    checkpointControllerAfterFinalization, extraArgs,
+  );
 }
 
 export function configureMergeQueueCommand(
@@ -124,13 +136,36 @@ export function configureMergeQueueCommand(
   const merge = program.command('merge').description('Inspect or advance the conflict-aware product merge queue');
   merge.command('status').action(() => invoke('status'));
   merge
+    .command('plan')
+    .description('Compute an offline, non-mutating candidate feasibility report')
+    .argument('<task-id>', 'Canonical Kanban task ID')
+    .option('--against <ref>', 'Plan against an exact alternate Git ref')
+    .option('--json', 'Emit the stable versioned JSON projection')
+    .action((taskId: string, options: { against?: string; json?: boolean }) => {
+      const args = [
+        ...(options.against ? ['--against', options.against] : []),
+        ...(options.json ? ['--json'] : []),
+      ];
+      return invoke('plan', taskId, args);
+    });
+  merge
     .command('next')
     .description('Advance the queue, or continue paused evidence for TASK_ID')
     .argument('[task-id]', 'Paused task whose evidence/review processing should continue')
-    .action((taskId?: string) =>
-      taskId === undefined ? invoke('next') : invoke('next', taskId),
-    );
-  merge.command('resolve').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('resolve', taskId));
+    .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
+    .action((taskId: string | undefined, options: { planId?: string }) => {
+      if (!options.planId) return taskId === undefined ? invoke('next') : invoke('next', taskId);
+      return invoke('next', taskId, ['--plan-id', options.planId]);
+    });
+  merge.command('resolve').argument('<task-id>', 'Canonical Kanban task ID')
+    .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
+    .action((taskId: string, options: { planId?: string }) => options.planId
+      ? invoke('resolve', taskId, ['--plan-id', options.planId])
+      : invoke('resolve', taskId));
   merge.command('review').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('review', taskId));
-  merge.command('reopen').argument('<task-id>', 'Task with review findings and a new committed tip').action((taskId: string) => invoke('reopen', taskId));
+  merge.command('reopen').argument('<task-id>', 'Task with review findings and a new committed tip')
+    .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
+    .action((taskId: string, options: { planId?: string }) => options.planId
+      ? invoke('reopen', taskId, ['--plan-id', options.planId])
+      : invoke('reopen', taskId));
 }

@@ -27,6 +27,8 @@ import risk_policy as risk_runtime
 
 QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
+PLAN_SCHEMA = "juno_merge_candidate_feasibility.v1"
+PLAN_ID_SCHEMA = "juno_merge_candidate_plan_identity.v1"
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 REVIEW_PROMPT_FIELDS = {
@@ -341,6 +343,419 @@ def guard_snapshot(root: Path, paths: list[str]) -> dict[str, Any]:
         "worktree_sha256": file_digest(root / path),
         "index": task_runtime.git(root, "ls-files", "-s", "--", path, check=False),
     } for path in paths}
+
+
+def _git_tree(repository: Path, revision: str, env: Optional[dict[str, str]] = None) -> dict[str, str]:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "ls-tree", "-r", "-z", revision],
+        cwd=repository, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    if result.returncode:
+        return {}
+    rows: dict[str, str] = {}
+    for item in result.stdout.split(b"\0"):
+        if not item:
+            continue
+        metadata, _, raw_path = item.partition(b"\t")
+        fields = metadata.decode("ascii", "replace").split()
+        if len(fields) == 3:
+            rows[raw_path.decode("utf-8", "surrogateescape")] = fields[2]
+    return rows
+
+
+def _blob_bytes(repository: Path, revision: str, path: str,
+                env: Optional[dict[str, str]] = None) -> Optional[bytes]:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "show", f"{revision}:{path}"],
+        cwd=repository, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _prospective_tree(repository: Path, target_sha: str, feature_sha: str
+                      ) -> tuple[dict[str, str], list[str], Optional[str]]:
+    """Compose into an isolated object directory; repository bytes stay untouched."""
+    with tempfile.TemporaryDirectory(prefix="juno-merge-plan-") as temporary:
+        object_dir = Path(temporary) / "objects"
+        object_dir.mkdir()
+        env = os.environ.copy()
+        env["GIT_OBJECT_DIRECTORY"] = str(object_dir)
+        env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(
+            Path(repository_identity(repository)) / "objects")
+        result = subprocess.run(
+            ["git", "-C", str(repository), "merge-tree", "--write-tree",
+             "--name-only", "--messages", target_sha, feature_sha],
+            cwd=repository, env=env, stdin=subprocess.DEVNULL,
+            text=True, capture_output=True,
+        )
+        lines = result.stdout.splitlines()
+        tree_sha = lines[0] if lines and re.fullmatch(r"[0-9a-f]{40,64}", lines[0]) else None
+        conflicts: list[str] = []
+        if tree_sha:
+            for line in lines[1:]:
+                if not line:
+                    break
+                if not line.startswith(("CONFLICT ", "Auto-merging ")):
+                    conflicts.append(line)
+        tree = _git_tree(repository, tree_sha, env) if tree_sha else {}
+        return tree, sorted(set(conflicts)), tree_sha
+
+
+def _path_allowed(path: str, roots: Any) -> bool:
+    return isinstance(roots, list) and task_runtime.path_within(path, roots)
+
+
+def _finding(code: str, severity: str, phase: str, evidence: dict[str, Any],
+             repair: str, invalidates: bool = True,
+             tests_safe: bool = False) -> dict[str, Any]:
+    return {"code": code, "severity": severity, "phase": phase,
+            "evidence": evidence, "repair_command": repair,
+            "repair_invalidates_plan": invalidates,
+            "tests_safe_before_repair": tests_safe}
+
+
+def _json_file_identity(repository: Path, revision: str, path: str) -> dict[str, Any]:
+    raw = _blob_bytes(repository, revision, path)
+    if raw is None:
+        return {"path": path, "present": False, "sha256": None, "version": None,
+                "valid_semver": None}
+    version: Any = None
+    malformed = False
+    try:
+        value = json.loads(raw)
+        version = value.get("version") if isinstance(value, dict) else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        malformed = True
+    return {"path": path, "present": True, "sha256": hashlib.sha256(raw).hexdigest(),
+            "version": version, "valid_semver": (task_runtime.is_valid_semver(version)
+                                                   if version is not None else None),
+            "malformed": malformed}
+
+
+def _runtime_identities(controller: Path, repository: Path, feature_sha: str,
+                        findings: list[dict[str, Any]]) -> dict[str, Any]:
+    runtime_path = controller / ".juno_task/scripts/merge_queue.py"
+    runtime_hash = file_digest(runtime_path)
+    template_path = "juno-code/src/templates/scripts/merge_queue.py"
+    installed_path = controller / ".juno_task/runtime/identity.json"
+    installed_hash = file_digest(installed_path)
+    template = _blob_bytes(repository, feature_sha, template_path)
+    product_runtime = _blob_bytes(repository, feature_sha, ".juno_task/scripts/merge_queue.py")
+    if runtime_hash is None:
+        findings.append(_finding(
+            "runtime.missing", "error", "runtime_template_parity",
+            {"path": str(runtime_path)}, "yy scripts update --force"))
+    if template is not None and product_runtime is not None and template != product_runtime:
+        findings.append(_finding(
+            "runtime.template_mismatch", "error", "runtime_template_parity",
+            {"runtime_sha256": hashlib.sha256(product_runtime).hexdigest(),
+             "template_sha256": hashlib.sha256(template).hexdigest()},
+            "sync .juno_task/scripts/merge_queue.py with juno-code/src/templates/scripts/merge_queue.py"))
+    return {"running_path": str(runtime_path), "running_sha256": runtime_hash,
+            "installed_identity_sha256": installed_hash,
+            "feature_runtime_sha256": (hashlib.sha256(product_runtime).hexdigest()
+                                        if product_runtime is not None else None),
+            "feature_template_sha256": (hashlib.sha256(template).hexdigest()
+                                         if template is not None else None)}
+
+
+def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
+               operation: Optional[str] = None) -> dict[str, Any]:
+    """Return one byte-stable, offline feasibility report without durable writes."""
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    findings: list[dict[str, Any]] = []
+    config_path = controller / ".juno_task/config/task-workspace.json"
+    risk_path = risk_policy_path(controller)
+    try:
+        config = task_runtime.load_config(controller)
+    except (task_runtime.TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:
+        evidence = {"path": str(config_path), "sha256": file_digest(config_path),
+                    "error": str(exc)}
+        findings.append(_finding("policy.malformed", "error", "policy",
+                                 evidence, "repair .juno_task/config/task-workspace.json"))
+        body = {"schema_version": PLAN_SCHEMA, "task_id": task_id, "ready": False,
+                "operation": operation or "next", "identities": {"task_policy": evidence},
+                "composition": {"paths": [], "conflict_paths": []},
+                "validation_commands": [], "findings": findings,
+                "invalidation": {"rule": "any bound identity change invalidates this plan"}}
+        return {**body, "plan_id": digest({"schema_version": PLAN_ID_SCHEMA, "report": body})}
+    repository = task_runtime.product_repository(controller, config)
+    state = task_runtime.read_state(controller)
+    record = state.get("tasks", {}).get(task_id)
+    if not isinstance(record, dict):
+        raise MergeQueueError("task has no merge-queue record")
+    if operation is None:
+        operation = ("resolve" if record.get("state") in {"CONFLICT", "CONFLICT_RESOLVED"}
+                     else "reopen" if record.get("state") in {
+                         "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED", "REQUEUING_STALE"}
+                     else "next")
+    target_ref = against or config["target_ref"]
+    target_sha = optional_revision(repository, target_ref)
+    if target_sha is None:
+        raise MergeQueueError(f"against ref is not an exact commit: {target_ref}")
+    base_sha, frozen_feature_sha = record.get("base_sha"), record.get("tip_sha")
+    if not isinstance(base_sha, str) or not isinstance(frozen_feature_sha, str):
+        raise MergeQueueError("task record lacks frozen base/tip identity")
+    feature_sha = frozen_feature_sha
+    if operation == "reopen":
+        observed_branch_tip = task_runtime.git(
+            repository, "rev-parse", record.get("branch_ref", ""), check=False)
+        if task_runtime.SHA_RE.fullmatch(observed_branch_tip):
+            feature_sha = observed_branch_tip
+
+    policy_identity = {"task_workspace_sha256": file_digest(config_path),
+                       "risk_policy_sha256": file_digest(risk_path)}
+    try:
+        risk_runtime.load_policy(risk_path)
+    except (risk_runtime.RiskPolicyError, OSError, json.JSONDecodeError) as exc:
+        findings.append(_finding("policy.risk_malformed", "error", "policy",
+                                 {**policy_identity, "error": str(exc)},
+                                 "repair .juno_task/config/risk-policy.json"))
+
+    worktree_value = record.get("worktree")
+    worktree = Path(worktree_value).resolve() if isinstance(worktree_value, str) else None
+    if worktree is None or not worktree.is_dir():
+        findings.append(_finding("task.worktree_missing", "error", "task_queue_lifecycle",
+                                 {"worktree": worktree_value}, f"yy task status {task_id}"))
+    else:
+        dirty = task_runtime.git(worktree, "status", "--porcelain=v1",
+                                 "--untracked-files=all", check=False)
+        if dirty:
+            findings.append(_finding("task.worktree_dirty", "error", "task_queue_lifecycle",
+                                     {"paths": sorted(line[3:] for line in dirty.splitlines())},
+                                     f"git -C {worktree} status --short"))
+        observed_head = task_runtime.git(worktree, "rev-parse", "HEAD", check=False)
+        branch_tip = task_runtime.git(repository, "rev-parse", record.get("branch_ref", ""), check=False)
+        if observed_head != feature_sha or branch_tip != feature_sha:
+            findings.append(_finding("task.tip_moved", "error", "ancestry_target_movement",
+                                     {"frozen_tip": frozen_feature_sha,
+                                      "planned_tip": feature_sha,
+                                      "worktree_head": observed_head,
+                                      "branch_tip": branch_tip}, f"yy task status {task_id}"))
+    if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                         base_sha, feature_sha], repository, check=False).returncode:
+        findings.append(_finding("ancestry.forged_feature", "error", "ancestry_target_movement",
+                                 {"base_sha": base_sha, "tip_sha": feature_sha},
+                                 f"yy task status {task_id}"))
+    target_descends_base = task_runtime.run(
+        ["git", "-C", str(repository), "merge-base", "--is-ancestor", base_sha, target_sha],
+        repository, check=False).returncode == 0
+    if not target_descends_base:
+        findings.append(_finding("target.not_descendant_of_base", "error",
+                                 "ancestry_target_movement",
+                                 {"base_sha": base_sha, "target_sha": target_sha},
+                                 f"yy task refresh {task_id}"))
+
+    eligible = ({"next": {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE"}, "resolve": {"CONFLICT", "CONFLICT_RESOLVED"},
+                 "reopen": {"REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
+                            "CONFLICT_RESOLVED", "QUEUED", "AWAITING_RISK",
+                            "REOPENING", "REQUEUING_STALE"}}
+                .get(operation, {"QUEUED", "CONFLICT", "CONFLICT_RESOLVED",
+                                 "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
+                                 "REQUEUING_STALE"}))
+    if record.get("state") not in eligible:
+        findings.append(_finding("queue.state_ineligible", "error", "task_queue_lifecycle",
+                                 {"state": record.get("state"), "eligible_states": sorted(eligible)},
+                                 f"yy merge status"))
+    blockers = record.get("blocked_by") or record.get("unmet_blockers") or []
+    if blockers:
+        findings.append(_finding("queue.dependencies_unmet", "error", "task_queue_lifecycle",
+                                 {"task_ids": sorted(blockers)}, "yy merge status"))
+
+    owner_raw = task_runtime.git(repository, "config", "--local", "--get",
+                                 INTEGRATION_OWNER_CONFIG, check=False)
+    owner_identity: dict[str, Any] = {"registered": bool(owner_raw), "path": owner_raw or None}
+    if owner_raw:
+        try:
+            owner = Path(owner_raw).expanduser().resolve()
+            observed = integration_owner_readback(owner)
+            owner_identity["observed"] = observed
+            if (not observed["clean"] or not observed["detached"] or not observed["full_checkout"]
+                    or observed["role"] != "integration-owner"
+                    or observed["authority"] != INTEGRATION_OWNER_AUTHORITY
+                    or any(row["state"] != "exact" for row in observed["submodules"])):
+                findings.append(_finding("topology.integration_owner_not_ready", "error",
+                                         "topology_authority", observed, "yy integration repair --dry-run"))
+        except (OSError, MergeQueueError, KeyError) as exc:
+            findings.append(_finding("topology.integration_owner_invalid", "error",
+                                     "topology_authority", {"path": owner_raw, "error": str(exc)},
+                                     "yy integration status"))
+    target_holders = sorted(row.get("worktree", "") for row in registered_worktrees(repository)
+                            if row.get("branch") == target_ref)
+    if target_holders:
+        findings.append(_finding("topology.target_checked_out", "error", "topology_authority",
+                                 {"worktrees": target_holders, "target_ref": target_ref},
+                                 "yy integration repair --dry-run"))
+
+    base_tree = _git_tree(repository, base_sha)
+    target_tree = _git_tree(repository, target_sha)
+    feature_tree = _git_tree(repository, feature_sha)
+    prospective_tree, conflicts, prospective_tree_sha = _prospective_tree(
+        repository, target_sha, feature_sha)
+    if not prospective_tree_sha:
+        findings.append(_finding("composition.failed", "error", "prospective_composition",
+                                 {"target_sha": target_sha, "feature_sha": feature_sha},
+                                 f"git merge-tree {target_sha} {feature_sha}"))
+    if conflicts:
+        findings.append(_finding("composition.conflicts", "error", "prospective_composition",
+                                 {"paths": conflicts}, f"yy merge next {task_id}",
+                                 invalidates=False, tests_safe=False))
+    all_paths = sorted(set(base_tree) | set(target_tree) | set(feature_tree) | set(prospective_tree))
+    frozen_allowed = (record.get("creation_receipt") or {}).get("allowed_paths", config["allowed_paths"])
+    generated_paths: set[str] = set()
+    generated = (record.get("creation_receipt") or {}).get("generated_output_admission")
+    if isinstance(generated, dict):
+        generated_paths.update(path for path in generated.get("destinations", []) if isinstance(path, str))
+    classifications: list[dict[str, Any]] = []
+    for path in all_paths:
+        base_blob, target_blob = base_tree.get(path), target_tree.get(path)
+        feature_blob, merged_blob = feature_tree.get(path), prospective_tree.get(path)
+        origins: list[str] = []
+        if feature_blob != base_blob:
+            origins.append("task-authored")
+        if target_blob != base_blob and feature_blob == base_blob:
+            origins.append("unchanged target-derived")
+        if path in conflicts:
+            origins.append("conflicted")
+        if path in generated_paths:
+            origins.append("generated/managed output")
+        if merged_blob != target_blob and path not in conflicts:
+            origins.append("guarded candidate byte")
+        if (_path_allowed(path, config["controller_private_paths"])
+                or not _path_allowed(path, frozen_allowed)):
+            origins.append("disallowed/controller-private")
+        if origins and (base_blob != target_blob or base_blob != feature_blob
+                        or target_blob != merged_blob):
+            classifications.append({"path": path, "origins": origins,
+                                    "base_blob": base_blob, "target_blob": target_blob,
+                                    "feature_blob": feature_blob, "prospective_blob": merged_blob})
+    disallowed = sorted(row["path"] for row in classifications
+                        if "disallowed/controller-private" in row["origins"]
+                        and "task-authored" in row["origins"])
+    admitted = sorted(record.get("changed_paths", []))
+    authored = sorted(row["path"] for row in classifications if "task-authored" in row["origins"])
+    if disallowed or (admitted and authored != admitted):
+        findings.append(_finding("admission.path_scope", "error", "path_admission",
+                                 {"disallowed": disallowed, "authored": authored,
+                                  "admitted": admitted}, f"yy task status {task_id}"))
+
+    package_paths = sorted(path for path in set(target_tree) | set(feature_tree)
+                           if path.endswith(("package.json", "package-lock.json")))
+    packages = {"target": [_json_file_identity(repository, target_sha, path)
+                           for path in package_paths],
+                "feature": [_json_file_identity(repository, feature_sha, path)
+                            for path in package_paths]}
+    for side, identities in packages.items():
+        for identity in identities:
+            if identity["path"].endswith("package.json") and identity["present"] and (
+                    identity.get("malformed") or identity.get("valid_semver") is False):
+                findings.append(_finding("package.invalid_semver", "error",
+                                         "package_lock_version", {"side": side, **identity},
+                                         f"repair {identity['path']} with strict SemVer"))
+    for path in package_paths:
+        if path.endswith("package-lock.json"):
+            target_item = next(row for row in packages["target"] if row["path"] == path)
+            feature_item = next(row for row in packages["feature"] if row["path"] == path)
+            if target_item["present"] and feature_item["present"] and target_item["sha256"] != feature_item["sha256"]:
+                findings.append(_finding("package.lock_diverged", "error", "package_lock_version",
+                                         {"path": path, "target_sha256": target_item["sha256"],
+                                          "feature_sha256": feature_item["sha256"]},
+                                         f"yy task refresh {task_id}"))
+    versions = {row["path"]: row.get("version") for row in packages["feature"]
+                if row["path"].endswith("package.json") and isinstance(row.get("version"), str)}
+    fixture_hits: list[dict[str, str]] = []
+    stable_re = re.compile(r"(?<![0-9A-Za-z-])(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?![0-9A-Za-z.+-])")
+    for path in sorted(set(feature_tree) | set(target_tree)):
+        if not ("test" in path.lower() or "fixture" in path.lower()):
+            continue
+        raw = _blob_bytes(repository, feature_sha, path)
+        if raw is None or len(raw) > 1024 * 1024:
+            continue
+        text = raw.decode("utf-8", "ignore")
+        hits = sorted(set(stable_re.findall(text)) - set(versions.values()))
+        if hits:
+            fixture_hits.extend({"path": path, "literal": value} for value in hits)
+    if fixture_hits:
+        findings.append(_finding("validation.hardcoded_semver_fixture", "error",
+                                 "validation_plan", {"matches": fixture_hits},
+                                 "replace hardcoded fixture versions with package-bound SemVer"))
+
+    validation_commands = [{**full_suite_command(config), "phase": "full_suite"}]
+    validation_commands[0]["command"] = " ".join(validation_commands[0]["argv"])
+    focused: list[dict[str, Any]] = []
+    for row in config["focused_validation"]:
+        item = {key: row[key] for key in ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
+        item.update({"phase": "focused", "command": " ".join(item["argv"])})
+        focused.append(item)
+        cwd = Path(record.get("worktree", "")) / item["cwd"]
+        if not cwd.is_dir():
+            findings.append(_finding("validation.cwd_missing", "error", "dependency_readiness",
+                                     {"id": item["id"], "cwd": str(cwd)},
+                                     f"restore validation cwd {item['cwd']}"))
+        lock = cwd / "package-lock.json"
+        if lock.is_file() and not (cwd / "node_modules").is_dir():
+            findings.append(_finding("validation.dependencies_missing", "error",
+                                     "dependency_readiness", {"id": item["id"],
+                                     "lock_sha256": file_digest(lock)},
+                                     f"cd {item['cwd']} && npm ci"))
+    validation_commands = focused + validation_commands
+    runtime_identity = _runtime_identities(controller, repository, feature_sha, findings)
+    queue_entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
+    identities = {
+        "repository_common_dir": repository_identity(repository),
+        "controller": {"path": str(controller),
+                       "head": optional_revision(controller, "HEAD"),
+                       "ref": task_runtime.git(controller, "symbolic-ref", "-q", "HEAD", check=False)},
+        "task": {"task_id": task_id, "state": record.get("state"), "base_sha": base_sha,
+                 "frozen_tip_sha": frozen_feature_sha, "tip_sha": feature_sha,
+                 "branch_ref": record.get("branch_ref"),
+                 "worktree": worktree_value, "record_sha256": digest(record)},
+        "target": {"ref": target_ref, "sha": target_sha, "configured_ref": config["target_ref"]},
+        "queue_sha256": digest(queue_entry), "policy": policy_identity,
+        "runtime": runtime_identity, "packages": packages,
+        "integration_owner": owner_identity,
+        "prospective_tree_sha": prospective_tree_sha,
+        "validation_sha256": digest(validation_commands),
+    }
+    findings.sort(key=lambda row: (row["phase"], row["code"], canonical(row["evidence"])))
+    blocking = [row for row in findings if row["severity"] == "error"]
+    body = {"schema_version": PLAN_SCHEMA, "task_id": task_id, "operation": operation,
+            "ready": not blocking, "identities": identities,
+            "composition": {"paths": classifications, "conflict_paths": conflicts,
+                            "refresh_eligible": target_descends_base,
+                            "target_moved_from_base": target_sha != base_sha},
+            "validation_commands": validation_commands, "findings": findings,
+            "invalidation": {"rule": "any bound identity change invalidates this plan",
+                             "execution_option": "--plan-id <plan_id>"}}
+    return {**body, "plan_id": digest({"schema_version": PLAN_ID_SCHEMA, "report": body})}
+
+
+def assert_static_plan(controller: Path, task_id: str, operation: str,
+                       expected_plan_id: Optional[str] = None) -> dict[str, Any]:
+    report = merge_plan(controller, task_id, operation=operation)
+    if expected_plan_id is not None and report["plan_id"] != expected_plan_id:
+        raise MergeQueueError("merge feasibility plan is stale; rerun yy merge plan")
+    # The running script itself is execution authority; imported test harnesses
+    # may not materialize it beneath their synthetic controller. Planning still
+    # reports that packaging blocker. Existing CONFLICT/repair paths likewise
+    # own their explicit conflict surface after this shared static pass.
+    allowed = {"runtime.missing", "composition.conflicts"}
+    # These gates describe supported refresh/readiness repair and remain in the
+    # report/identity, while the established operation owns their transition.
+    if operation == "resolve":
+        allowed.update({"topology.target_checked_out",
+                        "topology.integration_owner_not_ready"})
+    blockers = [row["code"] for row in report["findings"]
+                if row["severity"] == "error" and row["code"] not in allowed]
+    if blockers:
+        prefix = ("target ref is checked out; "
+                  if "topology.target_checked_out" in blockers else
+                  "task worktree must be clean; "
+                  if "task.worktree_dirty" in blockers else "")
+        raise MergeQueueError(prefix + "merge feasibility blocked before validation: "
+                              + ", ".join(blockers))
+    return report
 
 
 def validate_record(config: dict[str, Any], repository: Path, record: dict[str, Any]) -> Path:
@@ -1276,7 +1691,8 @@ def recover_incomplete(controller: Path, config: dict[str, Any], repository: Pat
     return None
 
 
-def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any]:
+def merge_next(controller: Path, task_id: Optional[str] = None,
+               expected_plan_id: Optional[str] = None) -> dict[str, Any]:
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with target_lock(controller, repository, config["target_ref"]):
@@ -1291,8 +1707,10 @@ def merge_next(controller: Path, task_id: Optional[str] = None) -> dict[str, Any
             if not isinstance(record, dict) or record.get("state") not in {
                     "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE"}:
                 raise MergeQueueError("explicit next task is not awaiting risk or release evidence")
+            assert_static_plan(controller, task_id, "next", expected_plan_id)
             return resume_awaiting(controller, config, repository, record)
         record = select_next(controller, config)
+        assert_static_plan(controller, record["task_id"], "next", expected_plan_id)
         feature_worktree = validate_record(config, repository, record)
         target_sha = task_runtime.ref_sha(repository, config["target_ref"])
         feature_sha = record["tip_sha"]
@@ -1464,9 +1882,11 @@ def verify_committed_resolution(checkout: Path, conflict: dict[str, Any], candid
             raise MergeQueueError(f"committed resolution changed outside conflict paths: {path}")
 
 
-def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
+def merge_resolve(controller: Path, task_id: str,
+                  expected_plan_id: Optional[str] = None) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
+    initial_plan = assert_static_plan(controller, task_id, "resolve", expected_plan_id)
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with target_lock(controller, repository, config["target_ref"]):
@@ -1522,6 +1942,11 @@ def merge_resolve(controller: Path, task_id: str) -> dict[str, Any]:
         # therefore retry this exact checkout/commit without a second merge.
         persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
         try:
+            # Re-evaluate the same static implementation after the explicit
+            # resolution commit, before any validation command. The caller's
+            # reviewed pre-resolution identity was checked above.
+            assert_static_plan(controller, task_id, "resolve-validation")
+            attempt["feasibility_plan_id"] = initial_plan["plan_id"]
             attempt["validation"] = validation_rows(
                 config, checkout, task_runtime.exact_root(
                     Path(record["worktree"]), "resolved feature worktree")
@@ -2439,10 +2864,12 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         return updated
 
 
-def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
+def merge_reopen(controller: Path, task_id: str,
+                 expected_plan_id: Optional[str] = None) -> dict[str, Any]:
     """Recoverable two-phase requeue after a new validated feature tip."""
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
+    assert_static_plan(controller, task_id, "reopen", expected_plan_id)
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with target_lock(controller, repository, config["target_ref"]):
@@ -2878,34 +3305,60 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="operation", required=True)
     sub.add_parser("status")
+    plan = sub.add_parser("plan")
+    plan.add_argument("task_id")
+    plan.add_argument("--against")
+    plan.add_argument("--json", action="store_true")
     next_command = sub.add_parser("next")
     next_command.add_argument("task_id", nargs="?")
+    next_command.add_argument("--plan-id")
     resolve = sub.add_parser("resolve")
     resolve.add_argument("task_id")
+    resolve.add_argument("--plan-id")
     review = sub.add_parser("review")
     review.add_argument("task_id")
     reopen = sub.add_parser("reopen")
     reopen.add_argument("task_id")
+    reopen.add_argument("--plan-id")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
+
+
+def human_plan(report: dict[str, Any]) -> str:
+    lines = [f"Merge feasibility plan {report['plan_id']}",
+             f"task: {report['task_id']}",
+             f"ready: {'yes' if report['ready'] else 'no'}"]
+    findings = report.get("findings", [])
+    lines.append(f"findings: {len(findings)}")
+    for row in findings:
+        lines.append(f"- [{row['severity']}] {row['code']} ({row['phase']})")
+        lines.append(f"  repair: {row['repair_command']}")
+    lines.append("validation commands:")
+    for row in report.get("validation_commands", []):
+        lines.append(f"- ({row['cwd']}) {row['command']}")
+    return "\n".join(lines)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parser().parse_args(argv)
     try:
         controller = task_runtime.exact_root(args.controller, "controller")
+        if args.operation == "plan":
+            result = merge_plan(controller, args.task_id, args.against)
+            print(canonical(result) if args.json else human_plan(result))
+            return 0
         audit = task_runtime.record_control_audit(
             controller, "merge", args.operation, getattr(args, "task_id", None))
         if args.operation == "status":
             result = status(controller)
         elif args.operation == "next":
-            result = merge_next(controller, args.task_id)
+            result = merge_next(controller, args.task_id, args.plan_id)
         elif args.operation == "resolve":
-            result = merge_resolve(controller, args.task_id)
+            result = merge_resolve(controller, args.task_id, args.plan_id)
         elif args.operation == "review":
             result = merge_review(controller, args.task_id)
         else:
-            result = merge_reopen(controller, args.task_id)
+            result = merge_reopen(controller, args.task_id, args.plan_id)
         result = {**result, "control_audit": audit}
         print(canonical(result))
         return 0

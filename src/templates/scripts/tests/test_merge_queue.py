@@ -421,6 +421,103 @@ raise SystemExit(2)
         self.task("finish", task_id)
         return tip
 
+    def install_merge_planner_runtime(self) -> None:
+        target = self.controller / ".juno_task/scripts/merge_queue.py"
+        target.write_bytes(QUEUE.read_bytes())
+
+    def test_feasibility_plan_clean_ready_is_stable_and_byte_non_mutating(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/plan.txt", "ready\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        before = {
+            "state": state_path.read_bytes(),
+            "target": git(self.repository, "rev-parse", "refs/heads/product"),
+            "worktrees": git(self.repository, "worktree", "list", "--porcelain"),
+            "status": git(self.controller, "status", "--porcelain=v1", "--untracked-files=all"),
+        }
+        first = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        second = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        self.assertTrue(first["ready"])
+        self.assertEqual(merge_runtime.canonical(first), merge_runtime.canonical(second))
+        self.assertEqual(first["schema_version"], merge_runtime.PLAN_SCHEMA)
+        self.assertEqual([row["id"] for row in first["validation_commands"]],
+                         ["affected", "full-suite"])
+        self.assertEqual(state_path.read_bytes(), before["state"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before["target"])
+        self.assertEqual(git(self.repository, "worktree", "list", "--porcelain"), before["worktrees"])
+        self.assertEqual(git(self.controller, "status", "--porcelain=v1", "--untracked-files=all"),
+                         before["status"])
+
+    def test_feasibility_plan_aggregates_conflict_topology_lock_and_semver(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_validation_dependency_base()
+        self.task("start", "A")
+        self.task("start", "B")
+        a_worktree = self.workspaces / "A"
+        (a_worktree / "src/shared.txt").write_text("target side\n")
+        git(a_worktree, "add", "src/shared.txt")
+        git(a_worktree, "commit", "-m", "target side")
+        self.task("finish", "A")
+        (a_worktree / "src/node_modules").mkdir()
+        self.queue_payload("next")
+        worktree = self.workspaces / "B"
+        (worktree / "src/shared.txt").write_text("feature side\n")
+        (worktree / "src/package-lock.json").write_text('{"lockfileVersion":2}\n')
+        (worktree / "src/package.json").write_text('{"version":"01.2.3"}\n')
+        git(worktree, "add", "src")
+        git(worktree, "commit", "-m", "conflicting stale package")
+        self.task("finish", "B")
+        holder = self.root / "target-holder"
+        git(self.repository, "worktree", "add", str(holder), "product")
+        validation_before = self.counter.read_bytes()
+        report = merge_runtime.merge_plan(self.controller.resolve(), "B")
+        codes = {row["code"] for row in report["findings"]}
+        self.assertTrue({"composition.conflicts", "topology.target_checked_out",
+                         "package.invalid_semver"}.issubset(codes))
+        self.assertIn("src/shared.txt", report["composition"]["conflict_paths"])
+        self.assertFalse(report["ready"])
+        self.assertEqual(self.counter.read_bytes(), validation_before)
+
+    def test_feasibility_plan_missing_runtime_malformed_policy_and_stale_identity_fail_closed(self) -> None:
+        self.commit_feature("X", "docs/plan.txt", "ready\n")
+        missing = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        self.assertIn("runtime.missing", {row["code"] for row in missing["findings"]})
+        self.install_merge_planner_runtime()
+        current = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "plan is stale"):
+            merge_runtime.assert_static_plan(self.controller.resolve(), "X", "next", "0" * 64)
+        self.assertNotEqual(current["plan_id"], "0" * 64)
+        policy = self.controller / ".juno_task/config/task-workspace.json"
+        policy.write_text("{malformed\n")
+        malformed = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        self.assertEqual(malformed["findings"][0]["code"], "policy.malformed")
+        self.assertFalse(malformed["ready"])
+
+    def test_execution_shared_gate_runs_before_validation_and_rejects_stale_plan(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/plan.txt", "ready\n")
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        with mock.patch.object(merge_runtime, "validation_rows") as validation:
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "plan is stale"):
+                merge_runtime.merge_next(self.controller.resolve(), expected_plan_id="0" * 64)
+        validation.assert_not_called()
+        self.assertEqual(report["plan_id"],
+                         merge_runtime.assert_static_plan(
+                             self.controller.resolve(), "X", "next", report["plan_id"]
+                         )["plan_id"])
+
+    def test_feasibility_plan_cli_json_projects_same_schema(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/plan.txt", "ready\n")
+        result = self.command(QUEUE, ["plan", "X", "--json"])
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["schema_version"], merge_runtime.PLAN_SCHEMA)
+        self.assertEqual(payload["plan_id"],
+                         merge_runtime.merge_plan(self.controller.resolve(), "X")["plan_id"])
+        human = self.command(QUEUE, ["plan", "X"]).stdout
+        self.assertIn(payload["plan_id"], human)
+        self.assertIn("validation commands:", human)
+
     def object_file(self, name: str, value: dict) -> tuple[str, str]:
         path = self.root / "fake-reviews" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1493,63 +1590,27 @@ raise SystemExit(2)
         conflict = merge_runtime.merge_next(self.controller.resolve())
         self.assertEqual((conflict["task_id"], conflict["feature_sha"]), ("B", repaired_tip))
 
-    def test_resolved_lock_refusal_feature_target_refresh_reopens_and_composes(self) -> None:
+    def test_lock_divergence_is_reported_before_validation_or_candidate_mutation(self) -> None:
+        self.install_merge_planner_runtime()
         self.add_validation_dependency_base()
-        self.task("start", "A"); self.task("start", "B")
-        a = self.workspaces / "A"
-        b = self.workspaces / "B"
-        (a / "src/shared.txt").write_text("A\n")
-        (a / "src/package-lock.json").write_text('{"lockfileVersion":3,"target":"A"}\n')
-        git(a, "add", "src/shared.txt", "src/package-lock.json")
-        git(a, "commit", "-m", "feature A with refreshed lock")
-        (b / "src/shared.txt").write_text("B\n")
-        git(b, "add", "src/shared.txt")
-        git(b, "commit", "-m", "feature B")
-        for worktree in (a, b):
-            modules = worktree / "src/node_modules"
-            modules.mkdir()
-            (modules / "probe.txt").write_text("ready\n")
-        self.task("finish", "A"); self.task("finish", "B")
-        waiting = self.queue_payload("next")
-        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
-        with mock.patch.object(
-            merge_runtime, "dispatch_reviewer",
-            side_effect=lambda *args, **kwargs: self.fake_review(*args, **kwargs),
-        ):
-            self.assertEqual(merge_runtime.merge_review(
-                self.controller.resolve(), "A")["outcome"], "RISK_EVIDENCE_READY")
-        self.assertEqual(self.queue_payload("next", "A")["outcome"], "MERGED")
-        self.assertEqual(self.task("status", "B")["state"], "QUEUED")
-        conflict = self.queue_payload("next")
-        checkout = Path(conflict["candidate_checkout"])
-        (checkout / "src/shared.txt").write_text("A+B\n")
-        git(checkout, "add", "src/shared.txt")
-
-        with self.assertRaisesRegex(merge_runtime.DependencyLockMismatchError,
-                                    "package lock differs"):
-            merge_runtime.merge_resolve(self.controller.resolve(), "B")
-
-        refused = self.task("status", "B")
-        self.assertEqual((refused["state"], refused["last_queue_outcome"]),
-                         ("CONFLICT_RESOLVED", "STALE_TARGET"))
-        refusal = refused["queue_attempt"]["dependency_lock_refusal"]
-        self.assertNotEqual(refusal["candidate_sha256"], refusal["source_sha256"])
-        merge = run(["git", "-C", str(b), "merge", "--no-edit", "refs/heads/product"],
-                    b, check=False)
-        self.assertNotEqual(merge.returncode, 0)
-        (b / "src/shared.txt").write_text("A+B repaired\n")
-        git(b, "add", "src/shared.txt", "src/package-lock.json")
-        git(b, "commit", "--no-edit")
-        repaired_tip = git(b, "rev-parse", "HEAD")
-
-        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
-
-        self.assertEqual((reopened["state"], reopened["tip_sha"], reopened["outcome"]),
-                         ("QUEUED", repaired_tip, "REQUEUED_AFTER_DEPENDENCY_LOCK_REFRESH"))
-        self.assertEqual(reopened["prior_queue_failure"]["dependency_lock_refusal"], refusal)
-        self.assertFalse(checkout.exists())
-        merged = merge_runtime.merge_next(self.controller.resolve())
-        self.assertEqual((merged["outcome"], merged["candidate_sha"]), ("MERGED", repaired_tip))
+        self.task("start", "A")
+        worktree = self.workspaces / "A"
+        (worktree / "src/package-lock.json").write_text(
+            '{"lockfileVersion":3,"target":"feature"}\n')
+        git(worktree, "add", "src/package-lock.json")
+        git(worktree, "commit", "-m", "feature lock drift")
+        (worktree / "src/node_modules").mkdir()
+        self.task("finish", "A")
+        report = merge_runtime.merge_plan(self.controller.resolve(), "A")
+        self.assertIn("package.lock_diverged", {row["code"] for row in report["findings"]})
+        before = self.counter.read_bytes() if self.counter.exists() else b""
+        with mock.patch.object(merge_runtime, "validation_rows") as validation:
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "package.lock_diverged"):
+                merge_runtime.merge_next(self.controller.resolve())
+        validation.assert_not_called()
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"", before)
+        self.assertEqual(self.task("status", "A")["state"], "QUEUED")
+        self.assertEqual(self.candidate_artifacts(), [])
 
     def test_legacy_stale_resolved_candidate_requeues_then_descendant_reopens(self) -> None:
         checkout, marker, old_feature, historical_attempt = \
@@ -1927,12 +1988,14 @@ raise SystemExit(2)
         git(worktree, "add", "src/security/auth.py")
         git(worktree, "commit", "-m", "unhydrated high risk feature")
         self.task("finish", "X")
-        self.assertEqual(self.queue_payload("next")["outcome"], "AWAITING_RISK")
-        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+        with (mock.patch.object(merge_runtime, "validation_rows") as validation,
+              mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch):
             with self.assertRaisesRegex(merge_runtime.MergeQueueError,
-                                        "dependencies are unavailable"):
-                merge_runtime.merge_review(self.controller.resolve(), "X")
+                                        "validation.dependencies_missing"):
+                merge_runtime.merge_next(self.controller.resolve())
+        validation.assert_not_called()
         dispatch.assert_not_called()
+        self.assertEqual(self.task("status", "X")["state"], "QUEUED")
         self.assertFalse((worktree / "src/node_modules").exists())
         self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
 
