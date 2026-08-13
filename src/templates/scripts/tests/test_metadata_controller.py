@@ -648,6 +648,27 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(prefix.exists())
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
 
+    def policy_test_runtime_entrypoint(self) -> Path:
+        source_entrypoint = Path(__file__).resolve().parents[3] / "bin/cli.ts"
+        if source_entrypoint.is_file():
+            return source_entrypoint
+        # Managed-asset acceptance installs runtime bytes without a surrounding
+        # npm package. Materialize a private exact package layout so these tests
+        # still exercise package/source binding rather than weakening it.
+        package = self.temp / "juno-code-policy-test-package"
+        templates = package / "src/templates"
+        (templates / "scripts").mkdir(parents=True, exist_ok=True)
+        (templates / "config").mkdir(parents=True, exist_ok=True)
+        (package / "src/bin").mkdir(parents=True, exist_ok=True)
+        (package / "package.json").write_text('{"name":"juno-code","version":"0.0.0-test"}\n')
+        for name in ("metadata_controller.py", "task_workspace.py", "risk_policy.py", "integration_workspace.py"):
+            shutil.copyfile(SCRIPT.with_name(name), templates / "scripts" / name)
+        shutil.copyfile(POLICY.parent / "integration-workspace.json",
+                        templates / "config/integration-workspace.json")
+        entrypoint = package / "src/bin/cli.ts"
+        entrypoint.write_text("// exact private migration test package entrypoint\n")
+        return entrypoint
+
     def legacy_policy_controller(self) -> tuple[Path, bytes]:
         self.prepare()
         root = self.new_controller
@@ -655,7 +676,7 @@ class MetadataControllerTest(unittest.TestCase):
         command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=root)
         command("git", "config", "--local", "juno.controller.path", str(root), cwd=root)
         command("git", "config", "--local", "juno.controller.branch", branch, cwd=root)
-        runtime_entrypoint = Path(__file__).resolve().parents[3] / "bin/cli.ts"
+        runtime_entrypoint = self.policy_test_runtime_entrypoint()
         package_source = mc.package_policy_source(root, str(runtime_entrypoint))
         command("git", "config", "--worktree", "juno.controller.runtimeVersion",
                 package_source["version"], cwd=root)
