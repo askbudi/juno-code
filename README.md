@@ -111,11 +111,18 @@ controller-routed command:
 yy integration status [--fetch]     inspect local/remote drift
              |
              v
-yy integration sync                 guard -> fetch -> fast-forward -> submodules
+yy integration sync                 guard -> fetch -> remote gitlink closure -> fast-forward -> submodules
              |
-             +--> clean exact target + exact gitlinks: ready for reads/server
-             +--> dirty/diverged/ambiguous: refuse with recovery guidance
+             +--> clean exact target + exact remotely fetchable gitlinks: ready for reads/server
+             +--> dirty/diverged/ambiguous/unpublished child: refuse with recovery guidance
 ```
+
+Before moving the target or integration owner, sync recursively fetches each
+required gitlink SHA into isolated temporary repositories using only the remotes
+declared by committed `.gitmodules`. An object that exists only in another local
+worktree therefore fails as `nested_gitlink_unavailable`; the phased receipt
+records path, SHA, remote, failed check, and the child-first publication/retry
+instruction while the owner remains clean and unchanged.
 
 Every admitted `yy merge next|resolve` target transition and every target-moving
 `yy integration sync` also refreshes the ignored controller scripts from that
@@ -143,14 +150,52 @@ yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 
 A receipt-bound controller generation is Git-target-owned. `yy scripts update`
 from a mismatched (especially older) package refuses instead of replacing those
-ignored scripts. `yy info` and `yy doctor workspace` report the invoker and
+ignored scripts. It also refreshes only controller-local managed bytes; it does
+not repair a missing or stale target-tracked task runtime. For an ordinary
+consumer target (one containing neither the `juno-code` package nor template source), use
+the explicit package-bound recovery instead:
+
+```bash
+yy task runtime-bootstrap --dry-run
+# review the printed immutable receipt
+yy task runtime-bootstrap --apply RECEIPT
+```
+
+The command is restricted to the exact registered migrated sparse metadata
+controller. The plan binds controller class/identity, package version/runtime
+hash, full target ref and commit/tree, and the exact path's prior/proposed bytes.
+An absent consumer runtime is recoverable. Existing consumer bytes are
+replaceable only when their exact hash, prior package version, and template
+version agree in the committed managed inventory and that prior SemVer is older
+than the recovery package. The reviewed commit replaces the runtime and updates that inventory entry's
+template version and hashes together; it preserves the inventory-wide package
+version and every validated unrelated entry, retaining provenance for later upgrades.
+A Juno source repository is never repaired through this command: use a
+controller package/runtime matching a coherent newer target, or update an older
+source package, template, tracked runtime, and managed inventory atomically.
+Apply refuses moved refs, dirty
+worktrees, receipt tampering/completed replay, package mismatch, and customization;
+otherwise it creates a runtime recovery commit in an isolated clean worktree
+and durably records its apply intent. Before mutation it discovers exact target-ref
+holders under the merge queue's repository/target-ref lock. Every advancement uses
+expected-SHA CAS; with one exact clean unlocked holder, its planned-path index and
+files are prepared by a non-destructive Git merge and revalidated before CAS.
+Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. With
+no holder, a package-owned clean guard checkout holds the branch until immediately
+before durable completion. Dirty, locked, moved, or multiple holders refuse with explicit
+recovery guidance before mutation. If synchronization stops in an exact package-created partial state, the refusal
+prints a bounded `git restore --source=EXPECTED_SHA --staged --worktree` command
+for only the planned runtime/inventory paths; review and run it, then rerun the
+same receipt. A fully prepared holder or interrupted completion recovers directly
+from the same durable intent without another commit or unrelated ref advancement. `yy info` and `yy doctor workspace` report the invoker and
 registered controller executable versions separately from the receipt-bound
 script package/target; `yy scripts doctor` validates the receipt hashes rather
 than comparing them to the invoking package.
 
 If only the registered executable is stale, explicitly rebind it to an already
 installed `cli.mjs`; this changes controller-local identity and writes a receipt,
-but does not install, upgrade, or mutate any user package:
+but does not install, upgrade, or mutate any user package. The executable must
+be outside **every** Git worktree and Git ancestor:
 
 ```bash
 yy migrate runtime-rebind \
@@ -158,6 +203,26 @@ yy migrate runtime-rebind \
   --runtime /absolute/juno-code/dist/bin/cli.mjs --runtime-version X.Y.Z \
   --output /tmp/yy-runtime-rebind.json
 ```
+
+NVM itself is commonly a Git checkout, so an npm-global package below `~/.nvm`
+does not satisfy that immutable-path contract even when it is a released package.
+Use the supported exact-release installer instead of packing or copying files by
+hand. The prefix must be absent, outside all Git ancestors, and durable; a
+versioned location such as `~/.local/share/juno/runtimes/X.Y.Z` is recommended:
+
+```bash
+yy migrate runtime-install-rebind \
+  --root /absolute/controller --branch refs/heads/CONTROLLER \
+  --runtime-version X.Y.Z \
+  --install-prefix "$HOME/.local/share/juno/runtimes/X.Y.Z" \
+  --output /tmp/yy-runtime-install-rebind.json
+```
+
+This runs an exact `juno-code@X.Y.Z` npm install with lifecycle scripts disabled,
+validates the installed package name/version and executable, then performs the
+same clean-controller transactional rebind. A failed install or rebind removes
+only the newly created prefix. Existing prefixes and mutable source builds are
+never accepted or modified.
 
 If the installed controller launcher is itself an obsolete generation, use the
 runtime in the clean, detached, exact-target integration owner rather than editing
@@ -217,6 +282,11 @@ full suites.
 yy task start TASK_ID
 # implement, run focused tests, and commit in the returned worktree
 yy task finish TASK_ID
+
+# only when start reports a stale/absent consumer target runtime:
+yy task runtime-bootstrap --dry-run
+yy task runtime-bootstrap --apply RECEIPT
+# source targets use a matching controller runtime, or update source identities atomically
 
 yy merge status
 yy merge next
@@ -464,7 +534,9 @@ Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only
 
 `workflow_class: local_integration` is hard-rejected for lint/start/resume/recovery/amendment. Existing artifacts remain immutable and doctor-readable, and generic non-lifecycle workflows remain supported. There is no adapter or dual integration runtime. Why tests and implementation both matter: the state machine enforces phase/ref/review/cleanup boundaries, while real-Git, exact-tip clone, package-parity, and medium/high canary tests prove installed users receive those guarantees.
 
-Some historical local `vX.Y.Z` tags in the development repository do not match the package metadata at their tagged commits. They are retained as immutable history, not accepted as release truth and never rewritten by lifecycle automation. Every new package release must bind one version across `package.json`, the built CLI `--version`, and the newly created release tag before any publication; local feature automation uses only `juno-feature/...` and cannot create or repair release tags. Package release commits use the exact-path `controller_checkpoint.py release-commit` authority, which verifies an installed managed hook while leaving the ordinary integration-owner commit boundary as a hard deny.
+Some historical local `vX.Y.Z` tags in the development repository do not match the package metadata at their tagged commits. They are retained as immutable history, not accepted as release truth and never rewritten by lifecycle automation. Every new package release must bind one exact SemVer across `package.json`, the lockfile, generated frontend facts, the built and linked CLI `--version`, the release commit, and the newly created `vVERSION` tag before any publication; local feature automation uses only `juno-feature/...` and cannot create or repair release tags. Package release commits use the exact-path `controller_checkpoint.py release-commit` authority, which verifies an installed managed hook while leaving the ordinary integration-owner commit boundary as a hard deny.
+
+Rapid checkpoints use explicit, monotonically increasing `--set` values: release `v2.1.3-rc.1`, then `v2.1.3-rc.2`, and finally stable `v2.1.3`. The helper accepts exact SemVer prereleases but rejects build metadata, malformed or non-increasing versions, existing tags, and partial identities before release mutation. These checkpoints do not relax the dedicated strict integration-owner/controller topology, clean checkout, locked dependency, multi-Node link, bounded release-commit, or no-publication gates.
 
 Controller checkpoints remain local orchestration durability only. They are not product inputs or integration gates. `controller_checkpoint.py plan --json` is read-only; configured commits remain bounded to explicit controller paths. Ordinary/workflow/parallel outer finalizers may checkpoint after terminal writes, but target integration never requires an unrelated controller checkout to become clean or idle.
 
@@ -1300,6 +1372,15 @@ For managed Workflow Runner calls, separately allow exact explicit Pi selectors:
 `yy pi` without model/provider flags still inherits the configured default. `yy pi -m :luna` requires exact `:luna` membership; aliases are not expanded for authorization. `yy pi --provider openai --model gpt-4o` normalizes to `openai/gpt-4o`. The persisted additive default is `[]`, which rejects explicit selectors.
 
 ### Prompt Macros config (`@@key`)
+
+Use the shipped `@@life_cycle TASK_IDS_OR_GOAL` macro for the versioned,
+observable Bolt orchestration contract. It discovers topology, preserves the
+caller payload exactly once, requires private task-ID `mktemp -d` evidence with
+atomic PID and strict versioned footer publication, resolves the canonical
+controller watcher with `yy where controller`, and keeps review, finish, merge,
+release, push, publish, and deploy authorities separate. JSONL/framed-payload
+observation is documented in `.juno_task/wiki/watching_progress.md`; broader
+lifecycle boundaries remain in `.juno_task/wiki/git_worktree_lifecycle.md`.
 
 Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros`:
 

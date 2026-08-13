@@ -812,8 +812,10 @@ def committed_admission(root: Path, fallback_base: str | None = None, *, prefer_
     return payload
 
 
-def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
-    """Create the one explicit package-release commit without weakening the hook."""
+def release_admission(root: Path, requested_paths: list[str], *, require_changes: bool) -> dict[str, Any]:
+    """Read-only admission shared by release preflight and guarded commit."""
+    if os.environ.get("GIT_INDEX_FILE"):
+        raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for release admission")
     resolution = resolve_role(root)
     if resolution.get("role") != "integration-owner":
         raise CheckpointError("release-commit requires persisted integration-owner authority")
@@ -834,11 +836,33 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
     blocked = [path for path in dirty_paths if path not in RELEASE_PATHS]
     if blocked:
         raise CheckpointError(f"release-commit refuses non-release dirt: {blocked}")
-    if not dirty_paths:
+    if require_changes and not dirty_paths:
         raise CheckpointError("release-commit requires release metadata changes")
-    for path in dirty_paths:
+    # Protected release identity is a fixed authority boundary, not merely a
+    # dirty-path filter. Inspect every requested endpoint even when the tree is
+    # clean so a committed symlink, missing endpoint, directory, or untracked
+    # replacement cannot inherit release authority.
+    for path in paths:
         inspect_boundary(root, path)
-    before = git(root, "rev-parse", "HEAD").strip()
+        candidate = root / path
+        try:
+            mode = candidate.lstat().st_mode
+        except FileNotFoundError as exc:
+            raise CheckpointError(f"release-commit protected path is missing: {path}") from exc
+        if not stat.S_ISREG(mode):
+            raise CheckpointError(f"release-commit protected path is not a regular file: {path}")
+        if not git(root, "ls-files", "--error-unmatch", "--", path, check=False).strip():
+            raise CheckpointError(f"release-commit protected path is not tracked: {path}")
+    return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_preflight", "passed": True,
+            "role": "integration-owner", "head": git(root, "rev-parse", "HEAD").strip(),
+            "paths": list(RELEASE_PATHS), "dirty_paths": dirty_paths}
+
+
+def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
+    """Create the one explicit package-release commit without weakening the hook."""
+    admission = release_admission(root, requested_paths, require_changes=True)
+    dirty_paths = admission["dirty_paths"]
+    before = admission["head"]
     frozen = {path: fingerprint(root, path) for path in dirty_paths}
     git(root, "add", "--", *RELEASE_PATHS)
     try:
@@ -849,17 +873,41 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
             raise CheckpointError("release-commit HEAD changed after admission")
         if any(fingerprint(root, path) != frozen[path] for path in dirty_paths):
             raise CheckpointError("release-commit content changed after staging")
+        staged_tree = git(root, "write-tree").strip()
+        exact_message = validate_message(message)
         # The ordinary integration-owner classifier remains a hard deny. This
         # exact helper owns the commit and intentionally bypasses hook dispatch,
         # as controller checkpoint commits do, after verifying any managed hook.
-        git(root, "commit", "--no-verify", "-m", validate_message(message), "--", *RELEASE_PATHS)
+        git(root, "commit", "--no-verify", "-m", exact_message, "--", *RELEASE_PATHS)
+
+        # HEAD is mutable even while this process owns the Juno authority lock:
+        # unrelated Git can advance the ref immediately after `git commit`.
+        # Recover the commit created by this admission from the reflog and bind
+        # it to the frozen parent, staged tree, exact message, and changed paths.
+        reflog = git(root, "reflog", "--all", "--format=%H", check=False).splitlines()
+        candidates: list[str] = []
+        for candidate in dict.fromkeys(row.strip() for row in reflog if row.strip()):
+            parent_row = git(root, "rev-list", "--parents", "-n", "1", candidate, check=False).split()
+            if parent_row != [candidate, before]:
+                continue
+            if git(root, "show", "-s", "--format=%T", candidate).strip() != staged_tree:
+                continue
+            if git(root, "show", "-s", "--format=%B", candidate).rstrip("\n") != exact_message:
+                continue
+            changed = sorted(git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", candidate).splitlines())
+            if changed != staged or any(path not in RELEASE_PATHS for path in changed):
+                continue
+            candidates.append(candidate)
+        if len(candidates) != 1:
+            raise CheckpointError(f"release-commit could not uniquely bind created commit: candidates={candidates}")
+        created = candidates[0]
     except BaseException:
         git(root, "restore", "--staged", "--", *RELEASE_PATHS, check=False)
         raise
-    head = git(root, "rev-parse", "HEAD").strip()
-    git(root, "config", "--worktree", "juno.workspace.roleBase", head)
+    git(root, "config", "--worktree", "juno.workspace.roleBase", created)
     return {"schema_version": BOUNDARY_SCHEMA_VERSION, "action": "release_commit", "passed": True,
-            "role": "integration-owner", "before": before, "head": head, "paths": staged}
+            "role": "integration-owner", "before": before, "head": created, "tree": staged_tree,
+            "message": exact_message, "paths": staged}
 
 
 def emit(payload: dict[str, Any], as_json: bool) -> None:
@@ -896,6 +944,8 @@ def main(argv: list[str] | None = None) -> int:
     staged.add_argument("--json", action="store_true")
     committed = sub.add_parser("committed-check", help="Independent committed-tree check for hook bypass")
     committed.add_argument("--base"); committed.add_argument("--json", action="store_true")
+    preflight = sub.add_parser("release-preflight", help="Read-only exact release-commit eligibility check")
+    preflight.add_argument("--path", action="append", required=True); preflight.add_argument("--json", action="store_true")
     release = sub.add_parser("release-commit", help="Create an exact guarded package release commit")
     release.add_argument("--message", required=True); release.add_argument("--path", action="append", required=True); release.add_argument("--json", action="store_true")
     hook = sub.add_parser("hook", help="Explicit managed pre-commit adoption")
@@ -915,7 +965,14 @@ def main(argv: list[str] | None = None) -> int:
         payload = boundary_payload(root, includes, staged_paths(root)); require_boundary(payload); emit(payload, args.json); return 0
     if args.command == "committed-check":
         payload = committed_admission(root, args.base, prefer_persisted=args.base is None); emit(payload, args.json); return 0
+    if args.command == "release-preflight":
+        payload = release_admission(root, args.path, require_changes=False); emit(payload, args.json); return 0
     if args.command == "release-commit":
+        # This dispatch guard must precede acquire_lease/acquire_target_channel:
+        # alternate-index refusal is not allowed to create writer/channel state.
+        # release_admission repeats the check as defense in depth for callers.
+        if os.environ.get("GIT_INDEX_FILE"):
+            raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for release admission")
         lease = acquire_lease(root); channel = None
         try:
             channel = acquire_target_channel(root)

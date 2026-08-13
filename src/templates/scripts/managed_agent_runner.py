@@ -26,6 +26,82 @@ QUEUE_RECEIPT_ROOT = ".juno_task/state/merge-queue/"
 CAPTURE_LIMIT = 4 * 1024 * 1024
 TASK_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,64}\Z")
 SHA_RE = __import__("re").compile(r"[0-9a-f]{40}\Z")
+CANONICAL_METADATA_WORKSPACE = {
+    "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
+CANONICAL_SPARSE_WORKSPACE = {
+    "enabled": True, "policy": ".juno_task/config/controller-workspace.json"}
+# Exact committed policy bytes for the one pre-agent-surface migration
+# generation. Current policies remain admitted by the general validator below;
+# this immutable exception exists only to let that controller review its update.
+LEGACY_METADATA_POLICY = b'''{
+  "schema_version": "juno_metadata_controller_policy.v1",
+  "controller_branch": "refs/heads/juno/controller-metadata-2.1",
+  "product_ref": "refs/heads/juno-mono-002",
+  "spec_copy_mode": "top_level_files_only",
+  "copied_metadata": [
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/specs",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md"
+  ],
+  "generated_metadata": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
+    ".juno_task/config/integration-workspace.json",
+    ".juno_task/config/risk-policy.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/tasks.json"
+  ],
+  "product_forbidden": [
+    ".juno_task/artifacts",
+    ".juno_task/cutover.json",
+    ".juno_task/ledger",
+    ".juno_task/logs",
+    ".juno_task/receipts",
+    ".juno_task/specs",
+    ".juno_task/state",
+    ".juno_task/tasks",
+    ".juno_task/tasks.md",
+    ".juno_task/workflows"
+  ],
+  "tracked_exact": [
+    ".gitignore",
+    ".juno_task/config.json",
+    ".juno_task/cutover.json",
+    ".juno_task/config/metadata-controller.json",
+    ".juno_task/config/task-workspace.json",
+    ".juno_task/config/integration-workspace.json",
+    ".juno_task/config/risk-policy.json",
+    ".juno_task/receipts/controller-boundary.json",
+    ".juno_task/state/tasks.json",
+    ".juno_task/tasks.md"
+  ],
+  "tracked_recursive": [
+    ".juno_task/ledger",
+    ".juno_task/tasks"
+  ],
+  "tracked_top_level_files": [
+    ".juno_task/receipts",
+    ".juno_task/specs"
+  ],
+  "runtime": {
+    "package": "juno-code",
+    "identity_file": ".juno_task/runtime/identity.json",
+    "ignored_roots": [
+      ".juno_task/runtime",
+      ".juno_task/scripts",
+      ".venv_juno",
+      ".env.juno"
+    ]
+  }
+}
+'''
+LEGACY_METADATA_POLICY_SHA256 = "124e00a92edeec889cacbbb6cd7f308be8be164be68d81df170235b4843aeea6"
+LEGACY_METADATA_CONTROLLER_BRANCH = "refs/heads/juno/controller-metadata-2.1"
+LEGACY_METADATA_PRODUCT_REF = "refs/heads/juno-mono-002"
 
 
 class RunnerError(RuntimeError):
@@ -235,6 +311,60 @@ def resolver_policy_passes(result: subprocess.CompletedProcess[str], resolved: A
             and workspace.get("passed") is False and failed == ["clean"])
 
 
+def legacy_metadata_controller_policy(data: bytes) -> dict[str, Any]:
+    """Recognize the one receipt-bound policy that predates agent-surface roots."""
+    try:
+        value = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("legacy policy is not JSON") from exc
+    if (not isinstance(value, dict) or data != LEGACY_METADATA_POLICY
+            or value.get("schema_version") != "juno_metadata_controller_policy.v1"
+            or value.get("controller_branch") != LEGACY_METADATA_CONTROLLER_BRANCH
+            or value.get("product_ref") != LEGACY_METADATA_PRODUCT_REF):
+        raise ValueError("policy is not the exact supported legacy generation")
+    return value
+
+
+def metadata_controller_policy_identity(root: Path, branch_ref: str) -> dict[str, str]:
+    policy_path = root / CANONICAL_METADATA_WORKSPACE["policy"]
+    try:
+        import importlib.util
+        if policy_path.is_symlink() or not policy_path.is_file():
+            raise OSError("policy must be one regular non-symlink file")
+        validator_path = Path(__file__).resolve().with_name("metadata_controller.py")
+        spec = importlib.util.spec_from_file_location(
+            "juno_managed_metadata_controller_validator", validator_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("validator loader is unavailable")
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        policy_bytes = policy_path.read_bytes()
+        if not policy_bytes or len(policy_bytes) > CAPTURE_LIMIT:
+            raise ValueError("policy bytes are empty or unbounded")
+        try:
+            policy = validator.load_policy(policy_path)
+        except Exception as exc:
+            # Only the trusted validator's boundary refusal may enter the exact
+            # legacy recognizer. Import/runtime failures remain terminal.
+            if type(exc).__name__ != "BoundaryError":
+                raise
+            policy = legacy_metadata_controller_policy(policy_bytes)
+        else:
+            if policy_bytes != canonical(policy):
+                raise ValueError("policy bytes are not canonical")
+    except (ImportError, OSError, UnicodeError, ValueError) as exc:
+        raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
+    except Exception as exc:
+        if type(exc).__name__ != "BoundaryError":
+            raise
+        raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
+    if policy.get("controller_branch") != branch_ref:
+        raise RunnerError("canonical metadata controller policy branch mismatch")
+    return {"schema_version": str(policy["schema_version"]),
+            "policy_sha256": sha(policy_bytes),
+            "controller_branch": str(policy["controller_branch"])}
+
+
 def controller_identity(root: Path) -> dict[str, Any]:
     mark: dict[str, Any] = fingerprint(root)
     config = root / ".juno_task/config.json"
@@ -261,8 +391,9 @@ def controller_identity(root: Path) -> dict[str, Any]:
         ]
     mark["config_sha256"] = sha(config.read_bytes())
     resolver = root / ".juno_task/scripts/controller_resolver.py"
-    workspace_policy = root / ".juno_task/config/controller-workspace.json"
-    if resolver.is_file() and workspace_policy.is_file():
+    if resolver.is_file():
+        controller_config = load_object(config, "controller config")
+        configured_workspace = controller_config.get("controllerWorkspace")
         resolver_env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_", "JUNO_")) and k != "TASK_ROOT"}
         resolver_env.update({"JUNO_TASK_ROOT": str(root), "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict"})
         result = subprocess.run([sys.executable, str(resolver), "--cwd", str(root), "--operation", "orchestration"],
@@ -271,13 +402,29 @@ def controller_identity(root: Path) -> dict[str, Any]:
         except json.JSONDecodeError: resolved = {}
         workspace = resolved.get("controller_workspace") if isinstance(resolved, dict) else None
         queue_state_bound = bool(mark.get("queue_state"))
-        if (Path(str(resolved.get("path"))).resolve() != root
-                or resolved.get("role") != "controller"
-                or not resolver_policy_passes(
-                    result, resolved, workspace, queue_state_bound)):
+        resolver_base_passes = (
+            isinstance(resolved, dict)
+            and Path(str(resolved.get("path"))).resolve() == root
+            and resolved.get("role") == "controller")
+        if configured_workspace == CANONICAL_METADATA_WORKSPACE:
+            accepted = (resolver_base_passes and result.returncode == 0
+                        and resolved.get("valid") is True
+                        and resolved.get("diagnostics") == [] and workspace is None)
+            policy_identity = (metadata_controller_policy_identity(root, mark["branch_ref"])
+                               if accepted else None)
+        elif configured_workspace == CANONICAL_SPARSE_WORKSPACE:
+            accepted = (resolver_base_passes
+                        and (root / CANONICAL_SPARSE_WORKSPACE["policy"]).is_file()
+                        and resolver_policy_passes(
+                            result, resolved, workspace, queue_state_bound))
+            policy_identity = workspace.get("policy_identity") if accepted else None
+        else:
+            accepted = False
+            policy_identity = None
+        if not accepted or not isinstance(policy_identity, dict) or not policy_identity:
             raise RunnerError("canonical controller resolver/policy refused launch")
         mark["resolver"] = {"source": resolved.get("source"), "role": resolved.get("role"),
-                            "policy_identity": workspace.get("policy_identity"),
+                            "policy_identity": policy_identity,
                             "passed": True, "queue_state_bound": queue_state_bound}
     return mark
 
@@ -602,6 +749,32 @@ def terminate_group(pgid: int, signum: int) -> None:
     except ProcessLookupError: pass
 
 
+def record_group_signal(events: list[dict[str, Any]], pgid: int, signum: int,
+                        reason: str, started: float) -> None:
+    events.append({"at": now(), "elapsed_seconds": round(time.monotonic() - started, 3),
+                   "process_group_id": pgid, "signal": signal.Signals(signum).name,
+                   "reason": reason})
+    terminate_group(pgid, signum)
+
+
+def terminate_group_and_wait(events: list[dict[str, Any]], pgid: int, reason: str,
+                             started: float, grace_seconds: float = .5) -> None:
+    """Terminate the owned producer group and do not return while it is live."""
+    if not group_active(pgid):
+        return
+    record_group_signal(events, pgid, signal.SIGTERM, reason, started)
+    deadline = time.monotonic() + grace_seconds
+    while group_active(pgid) and time.monotonic() < deadline:
+        time.sleep(.02)
+    if group_active(pgid):
+        record_group_signal(events, pgid, signal.SIGKILL, reason + "_escalation", started)
+        deadline = time.monotonic() + 2
+        while group_active(pgid) and time.monotonic() < deadline:
+            time.sleep(.02)
+    if group_active(pgid):
+        raise RunnerError(f"managed process group {pgid} remains active after SIGKILL")
+
+
 def log_component(value: str, fallback: str) -> str:
     cleaned = __import__("re").sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
     return cleaned[:64] or fallback
@@ -626,15 +799,21 @@ def allocate_live_log(workflow: str, task: str) -> tuple[Path, Any]:
 
 def announce_completion(started: float, code: int, timed_out: bool, path: Path) -> tuple[str, float]:
     finished = now(); elapsed = round(time.monotonic() - started, 3)
-    print("yy long run complete: "
-          f"finish_time={finished} duration_seconds={elapsed} exit_code={code} "
-          f"timed_out={'true' if timed_out else 'false'} log_path={path}",
-          file=sys.stderr, flush=True)
+    exit_signal = signal.Signals(-code).name if code < 0 and -code in signal.valid_signals() else "none"
+    try:
+        print("yy long run complete: "
+              f"finish_time={finished} duration_seconds={elapsed} exit_code={code} "
+              f"exit_signal={exit_signal} timed_out={'true' if timed_out else 'false'} log_path={path}",
+              file=sys.stderr, flush=True)
+    except OSError:
+        # Parent/observer pipe loss cannot prevent durable terminal evidence.
+        pass
     return finished, elapsed
 
 
 def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
-         combined_path: Path, live: Any, timeout_seconds: float) -> bool:
+         combined_path: Path, live: Any, timeout_seconds: float,
+         interrupted: Any, termination_events: list[dict[str, Any]], started: float) -> bool:
     selector = selectors.DefaultSelector()
     assert proc.stdout and proc.stderr
     for stream, label in ((proc.stdout, b"stdout"), (proc.stderr, b"stderr")):
@@ -643,10 +822,18 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
         pending = {b"stdout": b"", b"stderr": b""}
         deadline = time.monotonic() + timeout_seconds
         timed_out = False
+        cancellation_deadline: float | None = None
         while selector.get_map():
+            if interrupted() and cancellation_deadline is None:
+                cancellation_deadline = time.monotonic() + .5
+            if cancellation_deadline is not None and time.monotonic() >= cancellation_deadline and group_active(proc.pid):
+                record_group_signal(termination_events, proc.pid, signal.SIGKILL,
+                                    "wrapper_signal_escalation", started)
+                cancellation_deadline = float("inf")
             if not timed_out and time.monotonic() >= deadline:
                 timed_out = True
-                terminate_group(proc.pid, signal.SIGKILL)
+                record_group_signal(termination_events, proc.pid, signal.SIGTERM, "timeout", started)
+                cancellation_deadline = time.monotonic() + .5
             for key, _ in selector.select(.05):
                 chunk = os.read(key.fd, 65536)
                 label = key.data
@@ -659,7 +846,8 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
                     live.write(chunk)
                     sys.stderr.buffer.write(chunk); sys.stderr.buffer.flush()
                 except OSError as exc:
-                    terminate_group(proc.pid, signal.SIGKILL)
+                    record_group_signal(termination_events, proc.pid, signal.SIGKILL,
+                                        "output_pipe_or_log_loss", started)
                     raise RunnerError(f"long-run log write failed: {exc}") from exc
                 data = pending[label] + chunk
                 lines = data.splitlines(keepends=True)
@@ -728,28 +916,34 @@ def run(args: argparse.Namespace) -> int:
     proc: subprocess.Popen[bytes] | None = None; interrupted = 0
     producer_completed = False
     timed_out = False
+    termination_events: list[dict[str, Any]] = []
     old_handlers: dict[int, Any] = {}
+    started = time.monotonic()
     def forward(signum: int, _frame: Any) -> None:
         nonlocal interrupted
         interrupted = interrupted or signum
-        if proc is not None: terminate_group(proc.pid, signum)
+        if proc is not None:
+            record_group_signal(termination_events, proc.pid, signum,
+                                "wrapper_signal", started)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         old_handlers[sig] = signal.signal(sig, forward)
-    started = time.monotonic()
     started_ns = time.time_ns()
     try:
         proc = subprocess.Popen(argv, cwd=launcher, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        active["child_pid"] = proc.pid; active["process_group_id"] = proc.pid; atomic_json(out / "active.json", active)
+        active["child_pid"] = proc.pid; active["process_group_id"] = proc.pid
+        active["owner_pid"] = os.getpid(); atomic_json(out / "active.json", active)
         timed_out = pump(proc, stdout_path, stderr_path, combined_path,
-                         live_log, args.timeout_seconds)
-        code = proc.wait(); live_log.close()
+                         live_log, args.timeout_seconds, lambda: interrupted,
+                         termination_events, started)
+        code = proc.wait()
+        if group_active(proc.pid):
+            terminate_group_and_wait(termination_events, proc.pid,
+                                     "producer_exit_with_live_descendants", started)
+        live_log.close()
         producer_completed = True
         producer_completed_at, producer_elapsed = announce_completion(
             started, code, timed_out, live_log_path)
-        if group_active(proc.pid):
-            terminate_group(proc.pid, signal.SIGTERM)
-            raise RunnerError("child process-group leaked descendants")
         if interrupted:
             raise RunnerError(f"managed child interrupted by signal {interrupted}")
         if timed_out:
@@ -791,6 +985,9 @@ def run(args: argparse.Namespace) -> int:
                     "elapsed_seconds": round(time.monotonic() - started, 3), "session_id": session.strip(),
                     "producer_completed_at": producer_completed_at,
                     "producer_elapsed_seconds": producer_elapsed, "timed_out": False,
+                    "child_pid": proc.pid, "process_group_id": proc.pid,
+                    "exit_signal": signal.Signals(-code).name if code < 0 else None,
+                    "termination_events": termination_events,
                     "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
                     "capture_source": capture_source,
@@ -810,10 +1007,13 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"receipt": str((out / "receipt.json").resolve()), "session_id": session.strip(), "response": response}))
         return 0
     except Exception as exc:
-        if proc is not None and group_active(proc.pid): terminate_group(proc.pid, signal.SIGKILL)
+        cleanup_error: Exception | None = None
+        if proc is not None and group_active(proc.pid):
+            try: terminate_group_and_wait(termination_events, proc.pid, "runner_failure", started)
+            except Exception as group_exc: cleanup_error = group_exc
         if proc is not None and proc.returncode is None:
             try: proc.wait(timeout=2)
-            except subprocess.TimeoutExpired: pass
+            except subprocess.TimeoutExpired: cleanup_error = cleanup_error or RunnerError("managed producer did not reap")
         try: live_log.close()
         except OSError: pass
         exit_code = proc.returncode if proc and proc.returncode is not None else 1
@@ -825,12 +1025,18 @@ def run(args: argparse.Namespace) -> int:
             producer_elapsed = locals().get("producer_elapsed", round(time.monotonic() - started, 3))
         terminal = {"schema_version": SCHEMA, "state": "interrupted" if interrupted else "failed", "completed_at": now(),
                     "exit_code": exit_code, "timed_out": timed_out,
+                    "child_pid": proc.pid if proc else None,
+                    "process_group_id": proc.pid if proc else None,
+                    "exit_signal": signal.Signals(-exit_code).name if exit_code < 0 else None,
+                    "interrupted_signal": signal.Signals(interrupted).name if interrupted else None,
+                    "termination_events": termination_events,
                     "producer_completed_at": producer_completed_at,
                     "producer_elapsed_seconds": producer_elapsed,
                     "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
                     "elapsed_seconds": round(time.monotonic() - started, 3), "semantic_outcome": "failed",
                     "compatible_config_sha256": compatible_config["sha256"],
-                    "failure_type": type(exc).__name__, "failure": str(exc)[:512],
+                    "failure_type": type(cleanup_error or exc).__name__,
+                    "failure": str(cleanup_error or exc)[:512],
                     "safe_next_action": "inspect_terminal_and_start_fresh_output_directory"}
         atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "tool_id": args.tool_id, "review_binding": binding, "launch": evidence(out / "launch.json")})
         (out / "active.json").unlink(missing_ok=True)

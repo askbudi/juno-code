@@ -148,6 +148,13 @@ describe('View Log Command', () => {
           cwd,
           encoding: 'utf-8',
           timeout: 10000,
+          env: {
+            ...process.env,
+            JUNO_TASK_ROOT: '',
+            JUNO_CONTROLLER_BRANCH: '',
+            JUNO_WORKSPACE_ROLE: '',
+            JUNO_WORKSPACE_ENFORCEMENT: '',
+          },
         });
         // Should not reach here
         expect(true).toBe(false);

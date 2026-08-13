@@ -989,11 +989,15 @@ export class ShellBackend implements Backend {
       // ChildProcess exists to emit an `error` event. Oversized prompt files must
       // still be cleaned in that path.
       let child: ChildProcess;
+      const ownsDetachedGroup = process.platform !== 'win32' && !shouldAttachLiveTerminal;
       try {
         child = spawn(command, args, {
           env,
           cwd: this.config!.workingDirectory,
           stdio: shouldAttachLiveTerminal ? 'inherit' : ['pipe', 'pipe', 'pipe'],
+          // Headless execution gets an owned group. Interactive Pi remains in the
+          // terminal foreground group so normal TTY job control reaches it directly.
+          detached: ownsDetachedGroup,
         });
       } catch (error) {
         await cleanupPromptFile();
@@ -1015,6 +1019,40 @@ export class ShellBackend implements Backend {
       let stdoutCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let stderrCapture: CappedTextCapture = { text: '', bytes: 0, truncated: false };
       let isProcessKilled = false;
+      let timedOutError: Error | null = null;
+      const ownedGroupIsActive = (): boolean => {
+        if (!child.pid || !ownsDetachedGroup) return false;
+        try { process.kill(-child.pid, 0); return true; } catch { return false; }
+      };
+      if (this.config?.debug) {
+        engineLogger.debug(`Shell process owner: pid=${child.pid ?? 'unknown'}, pgid=${ownsDetachedGroup ? child.pid ?? 'unknown' : 'tty-inherited'}`);
+      }
+      const signalOwnedGroup = (signal: NodeJS.Signals): void => {
+        if (!child.pid) return;
+        if (this.config?.debug) engineLogger.warn(`Signalling shell process group: pgid=${ownsDetachedGroup ? child.pid : 'tty-inherited'}, signal=${signal}`);
+        try {
+          process.kill(ownsDetachedGroup ? -child.pid : child.pid, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH' && this.config?.debug) {
+            engineLogger.warn(`Failed to signal shell process group ${child.pid}: ${String(error)}`);
+          }
+        }
+      };
+      const cancelOwnedGroup = (signal: NodeJS.Signals): void => {
+        signalOwnedGroup(signal);
+        setTimeout(() => signalOwnedGroup('SIGKILL'), 250);
+      };
+      const onSigint = (): void => cancelOwnedGroup('SIGINT');
+      const onSigterm = (): void => cancelOwnedGroup('SIGTERM');
+      const onSighup = (): void => cancelOwnedGroup('SIGHUP');
+      process.prependListener('SIGINT', onSigint);
+      process.prependListener('SIGTERM', onSigterm);
+      process.prependListener('SIGHUP', onSighup);
+      const removeSignalOwners = (): void => {
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
+        process.removeListener('SIGHUP', onSighup);
+      };
 
       // Handle stdout (JSON streaming or TEXT streaming). Keep only a bounded tail
       // in memory; the structured capture file is the source of truth for final
@@ -1086,8 +1124,13 @@ export class ShellBackend implements Backend {
       // Handle process completion
       child.on('close', (exitCode) => {
         void (async () => {
-          if (isProcessKilled) return; // Prevent double resolution
-
+          removeSignalOwners();
+          if (ownedGroupIsActive()) {
+            signalOwnedGroup('SIGTERM');
+            await new Promise((done) => setTimeout(done, 500));
+            if (ownedGroupIsActive()) signalOwnedGroup('SIGKILL');
+            await new Promise((done) => setTimeout(done, 25));
+          }
           const duration = Date.now() - startTime;
           const success = exitCode === 0;
 
@@ -1123,6 +1166,11 @@ export class ShellBackend implements Backend {
 
           await cleanupPromptFile();
 
+          if (timedOutError) {
+            reject(timedOutError);
+            return;
+          }
+
           if (this.config!.debug) {
             engineLogger.debug(
               `Script execution completed with exit code: ${exitCode}, duration: ${duration}ms`,
@@ -1157,7 +1205,8 @@ export class ShellBackend implements Backend {
       // Handle process errors
       child.on('error', (error) => {
         void (async () => {
-          if (isProcessKilled) return; // Prevent double resolution
+          removeSignalOwners();
+          if (isProcessKilled) return; // Timeout settles from the close event.
 
           await cleanupPromptFile();
 
@@ -1182,17 +1231,12 @@ export class ShellBackend implements Backend {
               engineLogger.warn(`Script execution timed out after ${timeout}ms, killing process`);
             }
 
-            child.kill('SIGTERM');
-            void cleanupPromptFile();
+            timedOutError = new Error(`Script execution timed out after ${timeout}ms`);
+            signalOwnedGroup('SIGTERM');
 
-            // Force kill after 5 seconds if SIGTERM doesn't work
-            setTimeout(() => {
-              if (!child.killed) {
-                child.kill('SIGKILL');
-              }
-            }, 5000);
-
-            reject(new Error(`Script execution timed out after ${timeout}ms`));
+            // Do not settle until close proves the complete producer group released
+            // its inherited output handles.
+            setTimeout(() => signalOwnedGroup('SIGKILL'), 500);
           }, timeout);
 
       // Clear timeout when process completes

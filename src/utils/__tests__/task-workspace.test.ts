@@ -27,7 +27,7 @@ describe('Bolt task workspace managed runtime', () => {
     }
   });
 
-  it('declares exact generator and managed parity outputs without admitting their roots', () => {
+  it('declares unique generator and managed parity destinations without admitting their roots', () => {
     const policy = JSON.parse(
       readFileSync(resolve(repository, 'juno-code/src/templates/config/task-workspace.json'), 'utf8'),
     ) as { allowed_paths: string[] };
@@ -46,6 +46,63 @@ describe('Bolt task workspace managed runtime', () => {
         '.pi/skills/ralph-loop/references/implement.md',
       ]),
     );
+    const canonicalRootDestinations = [
+      '.agents/skills/ralph-loop/references/implement.md',
+      '.claude/skills/ralph-loop/references/implement.md',
+      '.pi/skills/ralph-loop/references/implement.md',
+    ];
+    const declaredDestinationOwners = [
+      ...generated.destinations.map((destination) => ({
+        source: generated.source,
+        destination,
+      })),
+      ...managed.admissionOutputs.map(({ source, destination }) => ({
+        source: `juno-code/src/templates/${source}`,
+        destination,
+      })),
+    ];
+    expect(new Set(declaredDestinationOwners.map(({ destination }) => destination)).size).toBe(
+      declaredDestinationOwners.length,
+    );
+    for (const destination of canonicalRootDestinations) {
+      expect(declaredDestinationOwners.filter((row) => row.destination === destination)).toEqual([
+        { source: generated.source, destination },
+      ]);
+    }
+
+    const skillFiles = [
+      'kanban-workflow/SKILL.md',
+      'plan-kanban-tasks/SKILL.md',
+      'ralph-loop/SKILL.md',
+      'ralph-loop/references/first_check.md',
+      'understand-project/SKILL.md',
+    ];
+    const skillOutputs = [
+      ...skillFiles.map((file) => ({
+        source: `skills/codex/${file}`,
+        destination: `.agents/skills/${file}`,
+      })),
+      {
+        source: 'scripts/kanban.sh',
+        destination: '.agents/skills/ralph-loop/scripts/kanban.sh',
+      },
+      ...skillFiles.map((file) => ({
+        source: `skills/claude/${file}`,
+        destination: `.claude/skills/${file}`,
+      })),
+      {
+        source: 'scripts/kanban.sh',
+        destination: '.claude/skills/ralph-loop/scripts/kanban.sh',
+      },
+      ...skillFiles.map((file) => ({
+        source: `skills/pi/${file}`,
+        destination: `.pi/skills/${file}`,
+      })),
+      {
+        source: 'extensions/pi/juno-skill-preprocessor.ts',
+        destination: '.pi/extensions/juno-skill-preprocessor.ts',
+      },
+    ];
     expect(managed.admissionOutputs).toEqual(
       expect.arrayContaining([
         {
@@ -56,8 +113,14 @@ describe('Bolt task workspace managed runtime', () => {
           source: 'scripts/migration_inventory.py',
           destination: '.juno_task/scripts/migration_inventory.py',
         },
+        {
+          source: 'scripts/controller_checkpoint.py',
+          destination: '.juno_task/scripts/controller_checkpoint.py',
+        },
+        ...skillOutputs,
       ]),
     );
+    expect(managed.admissionOutputs).toHaveLength(3 + skillOutputs.length);
     expect(policy.allowed_paths).not.toEqual(
       expect.arrayContaining(['.agents', '.claude', '.pi', '.juno_task/scripts']),
     );

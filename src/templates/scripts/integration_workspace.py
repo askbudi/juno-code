@@ -1352,6 +1352,32 @@ def sync(controller: Path) -> tuple[dict[str, Any], int]:
                 raise IntegrationError("local target or fetched remote ref is unavailable")
             if rel["ahead"] and rel["behind"]:
                 raise IntegrationError("local target and remote diverged")
+            proposed = remote if rel["behind"] else local
+            root_remote_url = git(repository, "remote", "get-url", policy["remote"])
+            closure = task_workspace.nested_gitlink_remote_closure(
+                repository, proposed, root_remote_url)
+            receipt["phases"].append({"phase": "nested_gitlink_closure", "status": "complete",
+                                      "result": closure})
+            receipt["phase"] = "nested_gitlink_closure"
+            reference = write_receipt(receipt_path, receipt)
+            if not closure["available"]:
+                unavailable = next((row for row in closure["gitlinks"]
+                                    if not row.get("available")), {})
+                receipt["recovery"] = {
+                    "reason": "nested_gitlink_unavailable",
+                    "command": "publish the exact child commit through its authorized child integration, then rerun `yy integration sync`",
+                    "retry": "yy integration sync",
+                    "owner_unchanged": True,
+                }
+                reference = write_receipt(receipt_path, receipt)
+                raise IntegrationError(
+                    "nested_gitlink_unavailable: "
+                    f"root={proposed} path={unavailable.get('path', '<unknown>')} "
+                    f"sha={unavailable.get('sha', '<unknown>')} "
+                    f"remote={unavailable.get('remote', '<missing>')} "
+                    f"failed_check={unavailable.get('failed_check', 'nested_gitlink_closure')}; "
+                    "publish that exact child through its authorized integration and retry `yy integration sync`"
+                )
             if rel["behind"]:
                 git(repository, "update-ref", target_ref, remote, local)
                 target_outcome = "fast_forwarded"

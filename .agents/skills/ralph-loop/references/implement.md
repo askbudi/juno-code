@@ -26,8 +26,10 @@ task's workspace.
 1. Edit only requested product paths and preserve project sources of truth.
 2. Use focused affected tests in the edit loop. Other feature worktrees may run
    concurrently; do not wait for or modify them.
-3. Do not launch semantic reviewers. Candidate review is risk-based: low zero,
-   normal at most one, high exactly two sequential reviewers on one frozen tip.
+3. Do not launch semantic reviewers. The managed merge queue is the sole owner
+   of lifecycle-semantic review evidence. Candidate review is risk-based: low zero,
+   normal at most one, and high exactly two predecessor-bound v1 reviewers on
+   one frozen tip.
 4. If blocked, record bounded truthful state and stop without claiming success.
 
 ## 3. Queue and hand off
@@ -35,13 +37,18 @@ task's workspace.
 1. Run focused tests, required dangerous-path checks, parity checks, and
    `git diff --check`.
 2. Stage only task-owned paths, commit coherently, and leave the worktree clean.
-3. Run `yy task finish TASK_ID`; it validates the exact tip and records `QUEUED`.
-4. Record the commit and bounded response in Kanban. A lifecycle finalizer may
+3. Run `yy task preflight TASK_ID` before expensive final validation. Repair any
+   admission, generated-output, runtime, or closure refusal while the task is
+   still `WORKING`.
+4. Run `yy task finish TASK_ID`; it validates the exact preflighted tip and
+   records `QUEUED` with its immutable review-ready closure.
+5. Record the commit and bounded response in Kanban. A lifecycle finalizer may
    attempt a controller checkpoint after terminal metadata is durable; checkpoint
    failure remains a warning and must not change the task or merge outcome.
 
 Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
-moved targets/conflicts, applies risk-based review, advances by expected-SHA CAS,
-and performs deterministic readback. Never push, publish, deploy, mutate
+ moved targets/conflicts, applies one bounded risk-based review sequence, permits
+ at most one repair candidate, advances by expected-SHA CAS, and performs
+deterministic readback. Never push, publish, deploy, mutate
 production, restart services, run post-deploy E2E, or clean worktrees without
 separate authority.

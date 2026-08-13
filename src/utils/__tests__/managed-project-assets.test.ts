@@ -55,6 +55,12 @@ describe('ManagedProjectAssets', () => {
     const freshLoader = new ConfigLoader(projectDir);
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
+    expect(dictionary.life_cycle).toContain('juno.life_cycle.v1');
+    expect(dictionary.life_cycle).toContain('private task-ID `mktemp -d` run directory');
+    expect(dictionary.life_cycle).toContain('controller_root=$(yy where controller)');
+    expect(dictionary.life_cycle).toContain('$controller_root/.juno_task/scripts/watch_progress.py');
+    expect(dictionary.life_cycle).toContain('fresh read-only independent `yy pi` review');
+    expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
     expect(dictionary.clean_worktree).toContain('Low risk needs no semantic review');
@@ -148,6 +154,22 @@ describe('ManagedProjectAssets', () => {
     expect(
       await fs.readFile(path.join(projectDir, '.juno_task/wiki/git_worktree_lifecycle.md'), 'utf8'),
     ).toContain('yy task finish TASK_ID');
+    const installedWatcher = await fs.readFile(
+      path.join(projectDir, '.juno_task/scripts/watch_progress.py'),
+    );
+    const installedWatchingWiki = await fs.readFile(
+      path.join(projectDir, '.juno_task/wiki/watching_progress.md'),
+    );
+    expect(installedWatcher).toEqual(
+      await fs.readFile(path.join(process.cwd(), 'src/templates/scripts/watch_progress.py')),
+    );
+    expect(installedWatchingWiki).toEqual(
+      await fs.readFile(path.join(process.cwd(), 'src/templates/wiki/watching_progress.md')),
+    );
+    expect(installedWatchingWiki.toString()).toContain('juno.watch-footer.v1');
+    expect(installedWatchingWiki.toString()).toContain('juno.watch-event.v1');
+    expect(installedWatchingWiki.toString()).toContain('controller_root=$(yy where controller)');
+    expect(installedWatchingWiki.toString()).toContain('mktemp -d');
 
     const canonicalImplementationReference = await fs.readFile(
       path.join(process.cwd(), 'src/templates/skills/canonical/ralph-loop/references/implement.md'),

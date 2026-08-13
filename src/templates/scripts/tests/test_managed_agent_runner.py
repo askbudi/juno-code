@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib, importlib.util, json, os
 from pathlib import Path
-import shutil, subprocess, sys, tempfile, time, unittest
+import shutil, signal, subprocess, sys, tempfile, time, unittest
 
 RUNNER = Path(__file__).resolve().parents[1] / "managed_agent_runner.py"
 RUNNER_SPEC = importlib.util.spec_from_file_location("managed_agent_runner_for_test", RUNNER)
@@ -51,7 +51,7 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         stale_node.chmod(0o755)
         fake = self.bin / "yy"
         fake.write_text("""#!/usr/bin/env python3
-import json, os, pathlib, shutil, sys, time
+import json, os, pathlib, shutil, subprocess, sys, time
 assert sys.argv[1:4] == ['pi','--no-hooks','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
 assert pathlib.Path(shutil.which('node')).resolve()==pathlib.Path(os.environ['JUNO_CODE_NODE_EXECUTABLE']).resolve()
 assert not sys.stdin.read(1)
@@ -69,7 +69,18 @@ macro=pathlib.Path(config['promptMacros']['global']['reflect']['path'])
 assert macro.is_absolute() and macro.read_text()=='controller reflect\\n'
 prompt=pathlib.Path(sys.argv[sys.argv.index('-f')+1]).read_text()
 print('out-before', flush=True); print('err-before', file=sys.stderr, flush=True)
-time.sleep(10 if 'signal-wait' in prompt else .35)
+if 'orphan-wait:' in prompt:
+ marker=pathlib.Path(prompt.split('orphan-wait:',1)[1].splitlines()[0].strip())
+ grand_code=("import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+             "time.sleep(1.2); pathlib.Path(%r).write_text('late mutation')" % str(marker))
+ child_code=("import os,pathlib,signal,subprocess,sys,time; "
+  "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+  "g=subprocess.Popen([sys.executable,'-c',%r],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+  "pathlib.Path(%r).write_text(str(os.getpid())+' '+str(g.pid)); time.sleep(30)" % (grand_code,str(marker)+'.pids'))
+ subprocess.Popen([sys.executable,'-c',child_code],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+if 'orphan-wait:' in prompt:
+ for _ in range(200): print('tool-heartbeat', file=sys.stderr, flush=True); time.sleep(.05)
+else: time.sleep(10 if 'signal-wait' in prompt else .35)
 if 'transport-fail' in prompt: raise SystemExit(7)
 tool_id=os.environ.get('JUNO_TOOL_ID','managed_agent_runner')
 binding=json.loads(os.environ['JUNO_REVIEW_BINDING_JSON']) if os.environ.get('JUNO_REVIEW_BINDING_JSON') else None
@@ -91,6 +102,45 @@ print('out-after', flush=True)
         self.prompt = self.tmp / "input.md"; self.prompt.write_text("ok\n")
 
     def tearDown(self): shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def install_metadata_controller_contract(self):
+        config_path = self.controller / ".juno_task/config.json"
+        config = json.loads(config_path.read_text())
+        config["controllerWorkspace"] = dict(runner.CANONICAL_METADATA_WORKSPACE)
+        config_path.write_bytes(runner.canonical(config))
+        policy = json.loads((RUNNER.parents[1] / "config/metadata-controller.json").read_text())
+        policy["controller_branch"] = "refs/heads/controller"
+        for field in ("copied_metadata", "generated_metadata", "product_forbidden", "tracked_exact",
+                      "tracked_recursive", "tracked_top_level_files"):
+            policy[field] = sorted(policy[field])
+        policy["runtime"]["ignored_roots"] = sorted(policy["runtime"]["ignored_roots"])
+        policy_path = self.controller / ".juno_task/config/metadata-controller.json"
+        policy_path.parent.mkdir(exist_ok=True)
+        policy_path.write_bytes(runner.canonical(policy))
+        scripts = self.controller / ".juno_task/scripts"; scripts.mkdir(exist_ok=True)
+        resolver = scripts / "controller_resolver.py"
+        resolver.write_text("""#!/usr/bin/env python3
+import json, pathlib
+print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
+ 'source':'fixture','valid':True,'diagnostics':[],'controller_workspace':None}))
+""")
+        resolver.chmod(0o755)
+        subprocess.run(["git", "-C", str(self.controller), "add", ".juno_task"], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "metadata controller"],
+                       check=True, stdout=subprocess.DEVNULL)
+        return config_path, policy_path
+
+    def legacy_policy_bytes(self):
+        policy = json.loads((RUNNER.parents[1] / "config/metadata-controller.json").read_text())
+        policy["controller_branch"] = runner.LEGACY_METADATA_CONTROLLER_BRANCH
+        policy["product_ref"] = runner.LEGACY_METADATA_PRODUCT_REF
+        policy["runtime"]["ignored_roots"] = [
+            ".juno_task/runtime", ".juno_task/scripts", ".venv_juno", ".env.juno"]
+        data = (json.dumps(policy, indent=2, ensure_ascii=False) + "\n").encode()
+        self.assertEqual(data, runner.LEGACY_METADATA_POLICY)
+        self.assertEqual(hashlib.sha256(data).hexdigest(), runner.LEGACY_METADATA_POLICY_SHA256)
+        return data
 
     def test_controller_identity_binds_only_queue_owned_dirty_state(self):
         state = self.controller / runner.QUEUE_STATE_PATH
@@ -127,6 +177,139 @@ print('out-after', flush=True)
         other = subprocess.CompletedProcess([], 2, "", "controller-resolver: another failure\n")
         self.assertFalse(runner.resolver_policy_passes(other, resolved, workspace, True))
 
+    def test_canonical_metadata_controller_launches_with_null_sparse_evidence(self):
+        _, policy_path = self.install_metadata_controller_contract()
+        (self.controller / runner.QUEUE_STATE_PATH).write_text('{"state":"reviewing"}\n')
+        queue_receipt = (self.controller / runner.QUEUE_RECEIPT_ROOT
+                         / "T1/candidate/attempt-1/receipt.json")
+        queue_receipt.parent.mkdir(parents=True)
+        queue_receipt.write_text('{"outcome":"passed"}\n')
+        out = self.tmp / "metadata-launch"
+        result = subprocess.run(self.command(out), env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((out / "receipt.json").read_text())
+        resolver = receipt["controller_before"]["resolver"]
+        self.assertEqual(resolver["policy_identity"], {
+            "schema_version": "juno_metadata_controller_policy.v1",
+            "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+            "controller_branch": "refs/heads/controller",
+        })
+        self.assertTrue(resolver["passed"])
+        self.assertTrue(resolver["queue_state_bound"])
+        self.assertEqual([item["path"] for item in receipt["controller_before"]["queue_state"]],
+                         [runner.QUEUE_RECEIPT_ROOT + "T1/candidate/attempt-1/receipt.json",
+                          runner.QUEUE_STATE_PATH])
+
+    def test_exact_legacy_metadata_controller_generation_launches(self):
+        config_path, policy_path = self.install_metadata_controller_contract()
+        policy_path.write_bytes(self.legacy_policy_bytes())
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "legacy policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.controller), "branch", "-m",
+                        "juno/controller-metadata-2.1"], check=True)
+        self.assertEqual(json.loads(config_path.read_text())["controllerWorkspace"],
+                         runner.CANONICAL_METADATA_WORKSPACE)
+        out = self.tmp / "legacy-metadata-launch"
+        result = subprocess.run(self.command(out), env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = json.loads((out / "receipt.json").read_text())[
+            "controller_before"]["resolver"]["policy_identity"]
+        self.assertEqual(identity, {
+            "schema_version": "juno_metadata_controller_policy.v1",
+            "policy_sha256": runner.LEGACY_METADATA_POLICY_SHA256,
+            "controller_branch": runner.LEGACY_METADATA_CONTROLLER_BRANCH,
+        })
+
+    def test_legacy_metadata_controller_accepts_only_exact_bytes_and_identity(self):
+        root = self.tmp / "legacy-policy-cases"
+        policy_path = root / runner.CANONICAL_METADATA_WORKSPACE["policy"]
+        policy_path.parent.mkdir(parents=True)
+        exact = self.legacy_policy_bytes()
+        policy_path.write_bytes(exact)
+        identity = runner.metadata_controller_policy_identity(
+            root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+        self.assertEqual(identity["policy_sha256"], runner.LEGACY_METADATA_POLICY_SHA256)
+
+        original = json.loads(exact)
+        near_misses = []
+        for mutate in (
+            lambda value: value["runtime"]["ignored_roots"].append(".agents"),
+            lambda value: value.update({"extra": True}),
+            lambda value: value.pop("product_ref"),
+            lambda value: value.update({"product_ref": "refs/heads/not-the-product"}),
+            lambda value: value.update({"controller_branch": "refs/heads/controller"}),
+        ):
+            value = json.loads(json.dumps(original))
+            mutate(value)
+            near_misses.append((json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode())
+        near_misses.extend((runner.canonical(original), exact.rstrip(b"\n"), b"{malformed\n"))
+        for data in near_misses:
+            policy_path.write_bytes(data)
+            with self.assertRaisesRegex(runner.RunnerError, "missing or malformed"):
+                runner.metadata_controller_policy_identity(
+                    root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+
+        policy_path.unlink()
+        target = root / "legacy-target.json"; target.write_bytes(exact)
+        policy_path.symlink_to(target)
+        with self.assertRaisesRegex(runner.RunnerError, "missing or malformed"):
+            runner.metadata_controller_policy_identity(
+                root, runner.LEGACY_METADATA_CONTROLLER_BRANCH)
+
+        policy_path.unlink(); policy_path.write_bytes(exact)
+        with self.assertRaisesRegex(runner.RunnerError, "branch mismatch"):
+            runner.metadata_controller_policy_identity(root, "refs/heads/controller")
+
+    def test_metadata_controller_malformed_mismatched_and_sparse_contracts_refuse(self):
+        config_path, policy_path = self.install_metadata_controller_contract()
+        policy = json.loads(policy_path.read_text())
+        policy["controller_branch"] = "refs/heads/not-controller"
+        policy_path.write_bytes(runner.canonical(policy))
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "mismatched policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        self.assertEqual(json.loads(config_path.read_text())["controllerWorkspace"],
+                         runner.CANONICAL_METADATA_WORKSPACE)
+        resolver_result = subprocess.run(
+            [sys.executable, str(self.controller / ".juno_task/scripts/controller_resolver.py")],
+            cwd=self.controller, capture_output=True, text=True)
+        self.assertEqual(resolver_result.returncode, 0, resolver_result.stderr)
+        self.assertIsNone(json.loads(resolver_result.stdout)["controller_workspace"])
+        with self.assertRaisesRegex(runner.RunnerError, "policy branch mismatch"):
+            runner.controller_identity(self.controller.resolve())
+
+        policy_path.write_text("{malformed\n")
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "malformed policy"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "policy is missing or malformed"):
+            runner.controller_identity(self.controller.resolve())
+
+        config = json.loads(config_path.read_text())
+        config["controllerWorkspace"]["policy"] = ".juno_task/config/not-metadata.json"
+        config_path.write_bytes(runner.canonical(config))
+        subprocess.run(["git", "-C", str(self.controller), "add", str(config_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "mismatched pointer"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "resolver/policy refused"):
+            runner.controller_identity(self.controller.resolve())
+
+        config["controllerWorkspace"] = dict(runner.CANONICAL_SPARSE_WORKSPACE)
+        config_path.write_bytes(runner.canonical(config))
+        sparse = self.controller / ".juno_task/config/controller-workspace.json"
+        sparse.write_text("{}\n")
+        subprocess.run(["git", "-C", str(self.controller), "add", str(config_path), str(sparse)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "sparse null evidence"],
+                       check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(runner.RunnerError, "resolver/policy refused"):
+            runner.controller_identity(self.controller.resolve())
+
     def test_derived_child_config_translates_canonical_sparse_controller_contract(self):
         config_path = self.controller / ".juno_task/config.json"
         config = json.loads(config_path.read_text())
@@ -150,8 +333,9 @@ print('out-after', flush=True)
         }])
 
     def command(self, out: Path, prompt: Path | None = None):
+        branch_ref = git(self.controller, "symbolic-ref", "HEAD")
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
-                "--controller-branch", "refs/heads/controller", "--agent-root", str(out / "agent-root"),
+                "--controller-branch", branch_ref, "--agent-root", str(out / "agent-root"),
                 "--prompt-file", str(prompt or self.prompt), "--out-dir", str(out), "--candidate-sha", git(self.candidate, "rev-parse", "HEAD"),
                 "--candidate-root", str(self.candidate)]
 
@@ -233,8 +417,10 @@ print('out-after', flush=True)
         self.assertNotEqual(result.returncode, 0)
         terminal = json.loads((out / "terminal.json").read_text())
         self.assertTrue(terminal["timed_out"])
-        self.assertEqual(terminal["exit_code"], -9)
-        self.assertIn("timed_out=true", result.stderr)
+        self.assertEqual(terminal["exit_code"], -15)
+        self.assertEqual(terminal["exit_signal"], "SIGTERM")
+        self.assertEqual(terminal["termination_events"][0]["reason"], "timeout")
+        self.assertIn("exit_signal=SIGTERM timed_out=true", result.stderr)
         self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
                          terminal["live_log"]["sha256"])
 
@@ -488,15 +674,64 @@ print('out-after', flush=True)
                 if json.loads((out / "active.json").read_text()).get("process_group_id"): break
             except (OSError, json.JSONDecodeError): pass
             time.sleep(.01)
-        proc.terminate(); self.assertNotEqual(proc.wait(timeout=3), 0)
+        proc.send_signal(signal.SIGINT); self.assertNotEqual(proc.wait(timeout=3), 0)
         assert proc.stdout and proc.stderr; proc.stdout.close(); proc.stderr.close()
         terminal = json.loads((out / "terminal.json").read_text())
         self.assertEqual(terminal["state"], "interrupted")
+        self.assertEqual(terminal["interrupted_signal"], "SIGINT")
         self.assertFalse(terminal["timed_out"])
         self.assertLess(terminal["exit_code"], 0)
         self.assertEqual(hashlib.sha256(Path(terminal["live_log"]["path"]).read_bytes()).hexdigest(),
                          terminal["live_log"]["sha256"])
         self.assertFalse((out / "active.json").exists())
+
+    def test_signal_escalates_across_child_and_grandchild_before_terminal_receipt(self):
+        marker = self.candidate / "cancelled-agent-late-mutation"
+        prompt = self.tmp / "orphan.md"; prompt.write_text(f"orphan-wait:{marker}\n")
+        out = self.tmp / "orphan-out"
+        proc = subprocess.Popen(self.command(out, prompt), env=self.env(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pids_path = Path(str(marker) + ".pids")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not pids_path.exists(): time.sleep(.01)
+        self.assertTrue(pids_path.exists(), "adversarial descendants did not launch")
+        descendant_pids = [int(value) for value in pids_path.read_text().split()]
+        proc.terminate(); self.assertNotEqual(proc.wait(timeout=4), 0)
+        assert proc.stdout and proc.stderr; proc.stdout.close(); proc.stderr.close()
+        terminal = json.loads((out / "terminal.json").read_text())
+        self.assertEqual(terminal["state"], "interrupted")
+        self.assertEqual(terminal["interrupted_signal"], "SIGTERM")
+        self.assertEqual(terminal["child_pid"], terminal["process_group_id"])
+        self.assertTrue(any(event["signal"] == "SIGKILL" for event in terminal["termination_events"]))
+        for child_pid in descendant_pids:
+            with self.assertRaises(ProcessLookupError): os.kill(child_pid, 0)
+        # Simulate a subsequent finish/merge gate. The cancelled producer's delayed
+        # grandchild must be dead before this gate starts and cannot collide later.
+        gate_started = time.monotonic(); time.sleep(1.35)
+        self.assertFalse(marker.exists())
+        self.assertLess(terminal["producer_elapsed_seconds"], time.monotonic() - gate_started + 4)
+        footer = (out / "receipt.json").read_text()
+        self.assertIn('"process_group_id":', footer)
+        self.assertIn('"termination_events":', footer)
+
+    def test_parent_output_pipe_loss_kills_owned_group_before_return(self):
+        marker = self.candidate / "pipe-loss-late-mutation"
+        prompt = self.tmp / "pipe-loss.md"; prompt.write_text(f"orphan-wait:{marker}\n")
+        out = self.tmp / "pipe-loss-out"
+        proc = subprocess.Popen(self.command(out, prompt), env=self.env(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pids_path = Path(str(marker) + ".pids")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not pids_path.exists(): time.sleep(.01)
+        self.assertTrue(pids_path.exists())
+        assert proc.stderr and proc.stdout
+        proc.stderr.close()
+        self.assertNotEqual(proc.wait(timeout=4), 0); proc.stdout.close()
+        terminal = json.loads((out / "terminal.json").read_text())
+        self.assertTrue(any(event["reason"] == "output_pipe_or_log_loss"
+                            for event in terminal["termination_events"]))
+        time.sleep(1.35)
+        self.assertFalse(marker.exists())
 
     def test_worker_admission_and_changed_path_authority(self):
         common = str((self.candidate / git(self.candidate, "rev-parse", "--git-common-dir")).resolve())

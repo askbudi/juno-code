@@ -202,20 +202,62 @@ print(json.dumps(out))
   it('interoperates with an actual Python owner and Node successor', async () => {
     const { root, lockPath } = await fixture();
     const ready = path.join(root, 'ready');
+    const release = path.join(root, 'release');
     const code = `
 import importlib.util,pathlib,sys,time
 spec=importlib.util.spec_from_file_location("probe",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-token,_=m._acquire_resource_lock("python-owner",pathlib.Path(sys.argv[2])); pathlib.Path(sys.argv[3]).write_text("ready")
-time.sleep(.3); m._release_resource_lock(pathlib.Path(sys.argv[2]),token)
+lock,ready,release=map(pathlib.Path,sys.argv[2:5])
+token,_=m._acquire_resource_lock("python-owner",lock); ready.write_text("ready")
+while not release.exists(): time.sleep(.01)
+m._release_resource_lock(lock,token)
 `;
-    const child = spawn('python3', ['-c', code, pythonModule, lockPath, ready], { stdio: 'ignore' });
+    const child = spawn('python3', [
+      '-c', code, pythonModule, lockPath, ready, release,
+    ], { stdio: 'ignore' });
     children.push(child); await waitFor(ready);
-    const diagnostics: string[] = [];
-    const lease = await acquireTestResourceLock('node-successor', {
-      lockPath, pollMs: 5, diagnosticIntervalMs: 20,
-      onDiagnostic: (message) => diagnostics.push(message),
+
+    const pythonOwner = await fs.readJson(lockPath) as TestResourceLockOwner;
+    expect(pythonOwner.workload).toBe('python-owner');
+    expect(pythonOwner.token).toBeTruthy();
+
+    let observedBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => { observedBlocked = resolve; });
+    let successorSettled = false;
+    const pending = acquireTestResourceLock('node-successor', {
+      lockPath, pollMs: 5, diagnosticIntervalMs: 5,
+      onDiagnostic: () => observedBlocked(),
     });
-    expect(diagnostics.join('\n')).toContain('python-owner');
+    void pending.then(
+      () => { successorSettled = true; },
+      () => { successorSettled = true; },
+    );
+    let blockedTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        blocked,
+        new Promise<never>((_, reject) => {
+          blockedTimeout = setTimeout(
+            () => reject(new Error('Node successor never observed the Python owner')),
+            5_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (blockedTimeout) clearTimeout(blockedTimeout);
+    }
+
+    // Ownership publication and the still-pending successor are durable proof
+    // of serialization; a transient diagnostic can be superseded during CAS.
+    expect((await fs.readJson(lockPath)).token).toBe(pythonOwner.token);
+    expect(successorSettled).toBe(false);
+
+    await fs.writeFile(release, 'release');
+    const lease = await pending;
+    expect(lease.waitedMs).toBeGreaterThan(0);
+    expect(lease.owner.workload).toBe('node-successor');
+    expect(lease.owner.token).not.toBe(pythonOwner.token);
+    expect((await fs.readJson(lockPath)).token).toBe(lease.owner.token);
+    expect(await waitForExit(child)).toBe(0);
     await lease.release();
   });
 });

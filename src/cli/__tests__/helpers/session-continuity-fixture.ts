@@ -137,14 +137,15 @@ async function writeBranchRegistry(
   if (branches.length === 0 && fallbackSessionId === undefined) return;
   const effectiveBranches = branches.length > 0 ? branches : [{ name: 'main', sessionId: fallbackSessionId! }];
 
+  const fixtureTimestamp = new Date().toISOString();
   const branchEntries = Object.fromEntries(
-    effectiveBranches.map((branch, index) => [
+    effectiveBranches.map((branch) => [
       branch.name,
       {
         session_id: branch.sessionId,
         parent: branch.parent ?? null,
         ...(branch.sourceSessionId === undefined ? {} : { source_session_id: branch.sourceSessionId }),
-        updated_at: branch.updatedAt ?? `2026-07-08T00:0${index}:00.000Z`,
+        updated_at: branch.updatedAt ?? fixtureTimestamp,
       },
     ]),
   );
@@ -164,8 +165,8 @@ async function writeBranchRegistry(
         ...(existing.scopes ?? {}),
         [scope.scopeHash]: {
           source: scope.scopeSource,
-          createdAt: '2026-07-08T00:00:00.000Z',
-          lastUsedAt: '2026-07-08T00:00:00.000Z',
+          createdAt: fixtureTimestamp,
+          lastUsedAt: fixtureTimestamp,
           pinned: false,
           settings: settings ?? null,
           active: activeBranch ?? effectiveBranches[0]?.name ?? 'main',
