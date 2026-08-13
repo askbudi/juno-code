@@ -871,8 +871,8 @@ class MetadataControllerTest(unittest.TestCase):
         receipt_path.unlink()
         index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
         Path(str(index) + ".lock").write_bytes(index.read_bytes())
-        stale = root / ".juno_task/config/.metadata-controller.json.migration-999"
-        stale.write_text("stranded\n")
+        stale = mc.migration_temporary_endpoints(root, plan["plan_sha256"])[0]
+        stale.write_bytes(plan["policy_result_utf8"].encode())
         recovered = mc.policy_migration_apply(argparse.Namespace(
             plan=plan_path, output=receipt_path, authorize=True))
         self.assertEqual(recovered["new_head"], command("git", "rev-parse", "HEAD", cwd=root))
@@ -880,6 +880,42 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
         self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
+
+    def test_metadata_policy_recovery_refuses_unowned_index_lock(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        receipt = self.temp / "unowned-apply.json"
+        mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
+        receipt.unlink()
+        index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
+        Path(str(index) + ".lock").write_bytes(b"not this migration index")
+        with self.assertRaisesRegex(mc.BoundaryError, "busy or unowned"):
+            mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
+        Path(str(index) + ".lock").unlink()
+
+    def test_metadata_policy_direct_endpoint_race_is_detected_without_overwrite(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        pause = str(self.temp / "endpoint-pause")
+        process = subprocess.Popen([
+            "python3", str(SCRIPT), "metadata-policy-apply", "--plan", str(plan_path),
+            "--output", str(self.temp / "endpoint-race.json"), "--authorize-metadata-policy-migration",
+        ], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+           env={**os.environ, "JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE": pause})
+        for _ in range(500):
+            ready = Path(pause + ".ready")
+            if ready.exists(): break
+            import time; time.sleep(0.01)
+        else:
+            process.kill(); self.fail("migration did not reach endpoint publication seam")
+        relative = ready.read_text().strip(); endpoint = root / relative
+        endpoint.write_text("owner raced bytes\n")
+        Path(pause + ".release").write_text("release\n")
+        _, stderr = process.communicate(timeout=15)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("endpoint raced", stderr)
+        self.assertEqual(endpoint.read_text(), "owner raced bytes\n")
+        self.assertNotEqual(command("git", "rev-parse", "HEAD", cwd=root), plan["head"])
 
     def test_runtime_rebind_is_local_and_rollback_is_plan_only(self) -> None:
         self.prepare()

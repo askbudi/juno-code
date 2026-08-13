@@ -1297,9 +1297,16 @@ def assert_policy_plan_snapshot(plan: dict[str, Any], *, owned_index_lock: bool 
     return root, current
 
 
-def migration_temporary_endpoints(root: Path) -> list[Path]:
-    return [path for relative in POLICY_MIGRATION_PATHS
-            for path in (root / relative).parent.glob(f".{Path(relative).name}.migration-*")]
+def migration_temporary_endpoints(root: Path, plan_hash: str) -> list[Path]:
+    suffix = plan_hash[:16]
+    return [root / relative for relative in (
+        f".juno_task/config/.metadata-controller.json.migration-{suffix}",
+        f".juno_task/config/.integration-workspace.json.migration-{suffix}")]
+
+
+def exact_prepared_index(root: Path, index_path: Path, expected_tree: str) -> bool:
+    if index_path.is_symlink() or not index_path.is_file(): return False
+    return git(root, "write-tree", check=False, env={"GIT_INDEX_FILE": str(index_path)}) == expected_tree
 
 
 def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
@@ -1324,7 +1331,7 @@ def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
             or bytes_digest(committed_bytes(root, head, TASK_POLICY_PATH)) != plan["task_policy_sha256"]
             or bytes_digest(committed_bytes(root, head, RISK_POLICY_PATH)) != plan["risk_policy_sha256"]):
         raise BoundaryError("controller HEAD is not the exact completed metadata-policy migration")
-    temporary_endpoints = migration_temporary_endpoints(root)
+    temporary_endpoints = migration_temporary_endpoints(root, plan_hash)
     pending = set(git(root, "diff", "--name-only", check=False).splitlines()) \
         | set(git(root, "diff", "--cached", "--name-only", check=False).splitlines()) \
         | set(git(root, "ls-files", "--others", "--exclude-standard", check=False).splitlines())
@@ -1363,10 +1370,11 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
         expected_index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
         recovery_lock = Path(str(expected_index) + ".lock")
         if recovery_lock.exists() or recovery_lock.is_symlink():
-            # Only the exact completed commit may recover its own prepared index.
+            # Only an index whose exact tree equals the completed planned commit
+            # is recoverable. Never steal an ordinary Git process's lock.
             completed_probe = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
-            if completed_probe is None:
-                raise BoundaryError(f"metadata-policy migration index serialization is busy: {recovery_lock}")
+            if completed_probe is None or not exact_prepared_index(root, recovery_lock, completed_probe[1]):
+                raise BoundaryError(f"metadata-policy migration index serialization is busy or unowned: {recovery_lock}")
             recovery_lock.unlink()
         completed = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
         if completed is None:
@@ -1440,17 +1448,40 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
                         if current not in {None, before, data}:
                             raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
-                    for stale in migration_temporary_endpoints(root): stale.unlink()
+                    owned_temporaries = dict(zip(
+                        (POLICY_PATH, INTEGRATION_POLICY_PATH),
+                        migration_temporary_endpoints(root, plan_hash), strict=True))
+                    for relative, data in endpoint_payloads:
+                        stale = owned_temporaries[relative]
+                        if stale.exists() or stale.is_symlink():
+                            if stale.is_symlink() or not stale.is_file() or stale.read_bytes() != data:
+                                raise BoundaryError(f"metadata-policy migration temporary collision: {stale}")
+                            stale.unlink()
                     for relative, data in endpoint_payloads:
                         endpoint = root / relative
-                        temporary_endpoint = endpoint.with_name(f".{endpoint.name}.migration-{os.getpid()}")
+                        temporary_endpoint = owned_temporaries[relative]
                         with temporary_endpoint.open("xb") as stream:
                             stream.write(data); stream.flush(); os.fsync(stream.fileno())
+                        before_stat = endpoint.stat() if endpoint.exists() else None
                         current = endpoint.read_bytes() if endpoint.exists() else None
+                        after_stat = endpoint.stat() if endpoint.exists() else None
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
-                        if current not in {None, before, data}:
+                        if (current not in {None, before, data} or before_stat != after_stat):
                             temporary_endpoint.unlink(missing_ok=True)
                             raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
+                        race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
+                        if race_pause:
+                            ready = Path(race_pause + ".ready"); release = Path(race_pause + ".release")
+                            ready.write_text(relative + "\n")
+                            for _ in range(500):
+                                if release.exists(): break
+                                import time; time.sleep(0.01)
+                            else: raise BoundaryError("metadata-policy endpoint race test pause timed out")
+                        final_stat = endpoint.stat() if endpoint.exists() else None
+                        final_bytes = endpoint.read_bytes() if endpoint.exists() else None
+                        if final_stat != after_stat or final_bytes != current:
+                            temporary_endpoint.unlink(missing_ok=True)
+                            raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
                         os.replace(temporary_endpoint, endpoint)
                     os.replace(index_lock, index_path); index_published = True
                     if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
