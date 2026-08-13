@@ -70,8 +70,8 @@ log_warning() {
 }
 
 log_error() {
-    # Always print errors regardless of JUNO_VERBOSE
-    echo -e "${RED}[KANBAN]${NC} $1"
+    # Always print errors regardless of JUNO_VERBOSE; stdout remains machine-safe.
+    echo -e "${RED}[KANBAN]${NC} $1" >&2
 }
 
 # Function to check if we're inside .venv_juno specifically
@@ -219,6 +219,10 @@ normalize_arguments() {
                     shift
                 fi
                 ;;
+            --format=*|--config=*|--project=*)
+                NORMALIZED_GLOBAL_FLAGS+=("$1")
+                shift
+                ;;
             # Global flags that don't take a value
             -p|--pretty|--raw|-v|--verbose|--version)
                 NORMALIZED_GLOBAL_FLAGS+=("$1")
@@ -299,6 +303,29 @@ main() {
     # Normalize once before guards so read-only contract hooks can be skipped
     # without weakening validation for unknown or mutating command shapes.
     normalize_arguments "$@"
+
+    # Mutations may not use argument-level storage redirection after canonical
+    # resolution. Exact canonical spelling is tolerated for compatibility;
+    # every other config refuses before body/stdin parsing or state creation.
+    if requires_contract_write_validation; then
+        local index configured canonical_config
+        canonical_config=$(cd "$PROJECT_ROOT/.juno_task" && pwd -P)/config.json
+        for ((index = 0; index < ${#NORMALIZED_GLOBAL_FLAGS[@]}; index++)); do
+            if [[ "${NORMALIZED_GLOBAL_FLAGS[$index]}" == "-c" || "${NORMALIZED_GLOBAL_FLAGS[$index]}" == "--config" ]]; then
+                configured="${NORMALIZED_GLOBAL_FLAGS[$((index + 1))]:-}"
+            elif [[ "${NORMALIZED_GLOBAL_FLAGS[$index]}" == --config=* ]]; then
+                configured="${NORMALIZED_GLOBAL_FLAGS[$index]#--config=}"
+            else
+                continue
+            fi
+            [[ -n "$configured" ]] || { log_error "canonical mutation config is missing"; exit 1; }
+            configured=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$configured")
+            [[ "$configured" == "$canonical_config" ]] || {
+                log_error "Kanban mutation config must be canonical controller config: $canonical_config"
+                exit 1
+            }
+        done
+    fi
 
     # Sweep workers must route every Kanban operation through the coordinator's
     # assignment guard. The guard reinvokes this wrapper with the internal flag

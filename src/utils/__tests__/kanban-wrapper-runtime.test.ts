@@ -70,7 +70,7 @@ if [[ "${'$'}{1:-}" == "show-env" ]]; then
   printf '%s\\n' "${'$'}{VIRTUAL_ENV:-}"
   exit 0
 fi
-if [[ "${'$'}{1:-}" == "show-config" ]]; then
+if [[ "${'$'}{1:-}" == "get" && "${'$'}{2:-}" == "show-config" ]]; then
   printf '%s\\n' "${'$'}config"
   exit 0
 fi
@@ -160,7 +160,7 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
       JUNO_TASK_ROOT: '',
       VIRTUAL_ENV: '',
     };
-    const defaultResult = spawnSync(wrapper, ['show-config'], {
+    const defaultResult = spawnSync(wrapper, ['get', 'show-config'], {
       cwd: projectRoot, encoding: 'utf8', env,
     });
     expect(defaultResult.status, defaultResult.stderr).toBe(0);
@@ -170,11 +170,18 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
 
     const override = path.join(projectRoot, 'maintenance.json');
     await fs.writeJson(override, {});
-    const overrideResult = spawnSync(wrapper, ['show-config', '--config', override], {
+    const overrideResult = spawnSync(wrapper, ['get', 'show-config', '--config', override], {
       cwd: projectRoot, encoding: 'utf8', env,
     });
     expect(overrideResult.status, overrideResult.stderr).toBe(0);
     expect(fs.realpathSync(overrideResult.stdout.trim())).toBe(fs.realpathSync(override));
+
+    const mutationOverride = spawnSync(wrapper, ['create', '--body', 'must-not-run', '--config', override], {
+      cwd: projectRoot, encoding: 'utf8', env,
+    });
+    expect(mutationOverride.status).not.toBe(0);
+    expect(mutationOverride.stderr).toContain('mutation config must be canonical controller config');
+    expect(mutationOverride.stdout).toBe('');
   });
 
   it('normalizes --project and preserves the initialized source root', () => {

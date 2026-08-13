@@ -579,7 +579,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     integration_policy_bytes = canonical(reviewed_policies["integration_workspace"]["content"])
     risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
     generated = {
-        ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
+        ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n.juno_task/transactions/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
         CONFIG_PATH: canonical_controller_config_bytes(),
         ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/config/task-workspace.json": task_policy_bytes,

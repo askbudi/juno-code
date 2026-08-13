@@ -183,6 +183,7 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         "expected_paths_sha256": expected_paths_sha256, "role_authority": role_authority,
         "role_assertion": asserted_role, "enforcement": enforcement,
         "operation": operation, "valid": True, "diagnostics": [], "controller_workspace": None,
+        "git_common_dir": None, "controller_ref": None, "controller_head": None,
     }
 
     if repo_root_text and role in {"task", "integration-owner", "controller-retired"} \
@@ -201,6 +202,9 @@ def resolve(cwd: Path, operation: str) -> dict[str, object]:
         actual_branch = git(controller, "symbolic-ref", "--quiet", "--short", "HEAD")
         actual_full_branch = git(controller, "symbolic-ref", "--quiet", "HEAD")
         result["actual_branch"] = actual_branch
+        result["controller_ref"] = actual_full_branch
+        result["controller_head"] = git(controller, "rev-parse", "HEAD")
+        result["git_common_dir"] = repository_identity(controller)
         if repo_root_text:
             current_identity = repository_identity(current_root)
             controller_identity = repository_identity(controller)
@@ -333,6 +337,11 @@ def main() -> None:
         print(f"export JUNO_TASK_ROOT={shlex.quote(str(result['path']))}")
         print(f"export JUNO_CONTROLLER_SOURCE={shlex.quote(str(result['source']))}")
         print(f"export JUNO_WORKSPACE_ROLE={shlex.quote(str(result['role']))}")
+        binding = {"git_common_dir": result["git_common_dir"],
+                   "controller_path": result["path"],
+                   "controller_ref": result["controller_ref"],
+                   "controller_head": result["controller_head"]}
+        print(f"export JUNO_KANBAN_CONTROLLER_BINDING={shlex.quote(json.dumps(binding, sort_keys=True))}")
     else:
         print(json.dumps(result, sort_keys=True))
 
