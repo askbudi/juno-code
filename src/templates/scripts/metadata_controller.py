@@ -1382,7 +1382,8 @@ def endpoint_snapshot_at(directory_fd: int, name: str) -> tuple[bytes, tuple[int
     return data, identity(after)
 
 
-def rename_noreplace_at(directory_fd: int, source: str, destination: str) -> None:
+def rename_noreplace_between(source_fd: int, source: str,
+                             destination_fd: int, destination: str) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     if hasattr(libc, "renameatx_np"):
         operation = libc.renameatx_np
@@ -1394,41 +1395,44 @@ def rename_noreplace_at(directory_fd: int, source: str, destination: str) -> Non
         flag = 0x1
     else:
         raise BoundaryError("metadata-policy migration requires atomic no-clobber rename support")
-    if operation(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), flag) != 0:
+    if operation(source_fd, os.fsencode(source), destination_fd, os.fsencode(destination), flag) != 0:
         error = ctypes.get_errno()
         raise BoundaryError(f"metadata-policy atomic quarantine refused: {source}: {os.strerror(error)}")
 
 
 def exact_unlink_endpoint_at(directory_fd: int, name: str,
-                             expected: tuple[bytes, tuple[int, int, int, int, int]]) -> None:
-    quarantine = f".juno-unlink-{os.getpid()}-{os.urandom(16).hex()}"
-    rename_noreplace_at(directory_fd, name, quarantine)
-    if endpoint_snapshot_at(directory_fd, quarantine) != expected:
-        try: rename_noreplace_at(directory_fd, quarantine, name)
+                             expected: tuple[bytes, tuple[int, int, int, int, int]],
+                             quarantine_fd: int) -> None:
+    quarantine = f"endpoint-{os.getpid()}-{os.urandom(16).hex()}"
+    rename_noreplace_between(directory_fd, name, quarantine_fd, quarantine)
+    if endpoint_snapshot_at(quarantine_fd, quarantine) != expected:
+        try: rename_noreplace_between(quarantine_fd, quarantine, directory_fd, name)
         except BoundaryError as exc:
             raise BoundaryError(f"metadata-policy endpoint quarantine raced and restoration failed: {name}") from exc
-        raise BoundaryError(f"metadata-policy endpoint identity raced before unlink: {name}")
-    os.unlink(quarantine, dir_fd=directory_fd)
+        raise BoundaryError(f"metadata-policy endpoint identity raced before quarantine: {name}")
+    # Exact retired evidence remains preserved outside the worktree. Deleting a
+    # verified pathname would reopen the same rename/replacement TOCTOU.
+    os.fsync(quarantine_fd)
 
 
 def exact_unlink_path(path: Path, expected: dict[str, Any]) -> None:
     directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    quarantine = f".juno-unlink-{os.getpid()}-{os.urandom(16).hex()}"
+    quarantine = f"retired-{os.getpid()}-{os.urandom(16).hex()}"
     try:
-        rename_noreplace_at(directory_fd, path.name, quarantine)
+        rename_noreplace_between(directory_fd, path.name, directory_fd, quarantine)
         quarantined = path.parent / quarantine
         if not identity_matches(index_lock_identity(quarantined), expected, relocated=True):
-            try: rename_noreplace_at(directory_fd, quarantine, path.name)
+            try: rename_noreplace_between(directory_fd, quarantine, directory_fd, path.name)
             except BoundaryError as exc:
                 raise BoundaryError(f"metadata-policy path quarantine raced and restoration failed: {path}") from exc
-            raise BoundaryError(f"metadata-policy path identity raced before unlink: {path}")
-        os.unlink(quarantine, dir_fd=directory_fd)
+            raise BoundaryError(f"metadata-policy path identity raced before quarantine: {path}")
         os.fsync(directory_fd)
     finally: os.close(directory_fd)
 
 
 def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
-                            expected: tuple[bytes, tuple[int, int, int, int, int]] | None) -> None:
+                            expected: tuple[bytes, tuple[int, int, int, int, int]] | None,
+                            quarantine_fd: int) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     encoded_temporary = os.fsencode(temporary_name); encoded_name = os.fsencode(name)
     if hasattr(libc, "renameatx_np"):
@@ -1454,7 +1458,7 @@ def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
                 raise BoundaryError(
                     f"metadata-policy endpoint raced and atomic restoration failed: {name}: {os.strerror(error)}")
             raise BoundaryError(f"metadata-policy endpoint raced at atomic publication: {name}")
-        exact_unlink_endpoint_at(directory_fd, temporary_name, displaced)
+        exact_unlink_endpoint_at(directory_fd, temporary_name, displaced, quarantine_fd)
 
 
 def atomic_index_publish(index_lock: Path, index_path: Path,
@@ -1753,6 +1757,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                 raise
             index_published = False
             config_fd, config_identity = open_config_directory(root)
+            quarantine_dir = common / "juno-metadata-policy-quarantine"
+            quarantine_dir.mkdir(mode=0o700, exist_ok=True)
+            quarantine_fd = os.open(quarantine_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                                    | getattr(os, "O_NOFOLLOW", 0))
             endpoint_payloads = tuple(
                 (relative, Path(relative).name, data,
                  migration_temporary_endpoints(root, plan_hash)[index].name)
@@ -1774,7 +1782,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     if temporary is not None:
                         if temporary[0] != data:
                             raise BoundaryError(f"metadata-policy migration temporary collision: {temporary_name}")
-                        exact_unlink_endpoint_at(config_fd, temporary_name, temporary)
+                        exact_unlink_endpoint_at(config_fd, temporary_name, temporary, quarantine_fd)
                 os.fsync(config_fd)
                 if completed is None:
                     assert_policy_plan_snapshot(plan, owned_index_lock=True)
@@ -1817,7 +1825,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                             owned_temporary = endpoint_snapshot_at(config_fd, temporary_name)
                             if owned_temporary is None:
                                 raise BoundaryError(f"metadata-policy endpoint temporary disappeared: {temporary_name}")
-                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary)
+                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary, quarantine_fd)
                             raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
                         race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
                         if race_pause:
@@ -1832,9 +1840,9 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                             owned_temporary = endpoint_snapshot_at(config_fd, temporary_name)
                             if owned_temporary is None:
                                 raise BoundaryError(f"metadata-policy endpoint temporary disappeared: {temporary_name}")
-                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary)
+                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary, quarantine_fd)
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
-                        atomic_endpoint_publish(config_fd, temporary_name, name, before_snapshot)
+                        atomic_endpoint_publish(config_fd, temporary_name, name, before_snapshot, quarantine_fd)
                     os.fsync(config_fd)
                     current_config_fd, current_config_identity = open_config_directory(root)
                     os.close(current_config_fd)
@@ -1877,6 +1885,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     ) from exc
             finally:
                 os.close(config_fd)
+                os.close(quarantine_fd)
                 if committed is None and not index_published:
                     durable_unlink(index_lock)
                     if ownership_path.exists() and not ownership_path.is_symlink():

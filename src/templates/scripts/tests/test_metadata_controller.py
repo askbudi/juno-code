@@ -951,21 +951,25 @@ class MetadataControllerTest(unittest.TestCase):
         descriptor = os.open(directory, os.O_RDONLY)
         expected = mc.endpoint_snapshot_at(descriptor, target.name)
         self.assertIsNotNone(expected)
-        original = mc.rename_noreplace_at
+        quarantine = self.temp / "quarantine"
+        quarantine.mkdir()
+        quarantine_fd = os.open(quarantine, os.O_RDONLY)
+        original = mc.rename_noreplace_between
         injected = False
-        def race(directory_fd: int, source: str, destination: str) -> None:
+        def race(source_fd: int, source: str, destination_fd: int, destination: str) -> None:
             nonlocal injected
             if not injected:
                 injected = True
                 os.rename(target, directory / "preserved-owned")
                 target.write_bytes(b"attacker")
-            original(directory_fd, source, destination)
-        mc.rename_noreplace_at = race
+            original(source_fd, source, destination_fd, destination)
+        mc.rename_noreplace_between = race
         try:
-            with self.assertRaisesRegex(mc.BoundaryError, "identity raced before unlink"):
-                mc.exact_unlink_endpoint_at(descriptor, target.name, expected)
+            with self.assertRaisesRegex(mc.BoundaryError, "identity raced before quarantine"):
+                mc.exact_unlink_endpoint_at(descriptor, target.name, expected, quarantine_fd)
         finally:
-            mc.rename_noreplace_at = original
+            mc.rename_noreplace_between = original
+            os.close(quarantine_fd)
             os.close(descriptor)
         self.assertEqual(target.read_bytes(), b"attacker")
         self.assertEqual((directory / "preserved-owned").read_bytes(), b"owned")
