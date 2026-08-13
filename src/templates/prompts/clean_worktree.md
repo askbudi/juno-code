@@ -19,8 +19,13 @@ Independent agents and reviewers use fresh `yy pi` contexts. Bare `pi` and indir
 5. Use `yy merge status` and `yy merge next` to serialize only target mutation.
    A moved target is composed deterministically. A conflict is preserved and
    resumed with `yy merge resolve TASK_ID` after editing only reported paths.
-6. Low risk needs no semantic review. Normal risk uses at most one independent
-   review. High risk uses Reviewer A then Reviewer B on one frozen candidate.
+6. Implementation workers never launch lifecycle-semantic reviewers. The
+   managed merge queue is the sole lifecycle-semantic review owner: low risk gets
+   zero, normal risk
+   gets at most one, and high risk gets Reviewer A then Reviewer B on one frozen
+   candidate. It permits at most one repair candidate; a second material finding
+   terminalizes as `REVIEW_FINDINGS_EXHAUSTED`, with no third autonomous review
+   or silently created repair task.
 7. After expected-SHA CAS, verify identity/readback only; do not redispatch a
    semantic reviewer for byte-identical delivery.
 8. Cleanup is reachability-safe. Push, release, publish, deploy, production

@@ -17,7 +17,11 @@ their dedicated product worktree; controller data is not copied there. Multiple
 features may be implemented concurrently, while one per-target merge queue owns
 the short expected-SHA mutation window.
 
-Risk decides semantic review: low zero, normal at most one, and high exactly two
-sequential reviewers on one frozen candidate. Post-merge work is deterministic
-identity/readback, not a second review. Release and external publication remain
-separately authorized.
+Implementation workers never launch lifecycle-semantic reviewers. The managed
+merge queue is the sole lifecycle-semantic review owner: low risk gets zero,
+normal risk gets at
+most one, and high risk gets Reviewer A then Reviewer B on one frozen candidate.
+It permits at most one repair candidate; a second material finding terminalizes
+as `REVIEW_FINDINGS_EXHAUSTED`, with no third autonomous review or silently
+created repair task. Post-merge work is deterministic identity/readback, not a
+second review. Release and external publication remain separately authorized.

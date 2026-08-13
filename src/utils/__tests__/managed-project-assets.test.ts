@@ -16,7 +16,9 @@ import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
 describe('ManagedProjectAssets', () => {
-  useSharedHeavyWorkloadLock('Vitest ManagedProjectAssets installation and installed-runtime suite');
+  useSharedHeavyWorkloadLock(
+    'Vitest ManagedProjectAssets installation and installed-runtime suite',
+  );
   let projectDir: string;
 
   beforeEach(async () => {
@@ -58,12 +60,23 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.life_cycle).toContain('juno.life_cycle.v1');
     expect(dictionary.life_cycle).toContain('private task-ID `mktemp -d` run directory');
     expect(dictionary.life_cycle).toContain('controller_root=$(yy where controller)');
-    expect(dictionary.life_cycle).toContain('$controller_root/.juno_task/scripts/watch_progress.py');
-    expect(dictionary.life_cycle).toContain('fresh read-only independent `yy pi` review');
+    expect(dictionary.life_cycle).toContain(
+      '$controller_root/.juno_task/scripts/watch_progress.py',
+    );
+    expect(dictionary.life_cycle).toContain('Implementation workers never');
+    expect(dictionary.life_cycle).toContain(
+      'managed merge queue is the sole lifecycle-semantic review owner',
+    );
+    expect(dictionary.life_cycle).toContain('Reviewer A then Reviewer B');
+    expect(dictionary.life_cycle).toContain('at most one repair candidate');
+    expect(dictionary.life_cycle).toContain('REVIEW_FINDINGS_EXHAUSTED');
+    expect(dictionary.life_cycle).not.toContain('launch a fresh read-only independent');
     expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
-    expect(dictionary.clean_worktree).toContain('Low risk needs no semantic review');
+    expect(dictionary.clean_worktree).toContain('Implementation workers never');
+    expect(dictionary.clean_worktree).toContain('sole lifecycle-semantic review owner');
+    expect(dictionary.clean_worktree).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.clean_worktree).toContain('expected-SHA CAS');
     expect(dictionary.reflect).toContain('# End-of-session reflection');
     expect(dictionary.reflect).toContain('REFLECTION_TABLE');
@@ -74,9 +87,12 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.new_task_workflow).toContain('exact frozen base');
     expect(dictionary.new_task_workflow).toContain('yy task start TASK_ID');
     expect(dictionary.new_task_workflow).toContain('yy task finish TASK_ID');
+    expect(dictionary.new_task_workflow).toContain('sole lifecycle-semantic review owner');
+    expect(dictionary.new_task_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.run_workflow).toContain('# Run a workflow or Bolt task');
     expect(dictionary.run_workflow).toContain('read-only doctor support');
-    expect(dictionary.run_workflow).toContain('low zero, normal at most one');
+    expect(dictionary.run_workflow).toContain('sole lifecycle-semantic review owner');
+    expect(dictionary.run_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
@@ -190,7 +206,13 @@ describe('ManagedProjectAssets', () => {
       expect(implementationReference).toContain('# Bolt implementation worker contract');
       expect(implementationReference).toContain('yy task start TASK_ID');
       expect(implementationReference).toContain('yy task finish TASK_ID');
-      expect(implementationReference).toContain('low zero');
+      expect(implementationReference).toContain('Never launch lifecycle-semantic reviewers');
+      expect(implementationReference).toContain(
+        'managed merge queue is the sole lifecycle-semantic review owner',
+      );
+      expect(implementationReference).toContain('Reviewer A then');
+      expect(implementationReference).toContain('at most one repair candidate');
+      expect(implementationReference).toContain('REVIEW_FINDINGS_EXHAUSTED');
       expect(implementationReference).toContain('expected-SHA CAS');
       expect(implementationReference).toContain('controller checkpoint');
     }

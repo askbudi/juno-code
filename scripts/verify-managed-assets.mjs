@@ -1,10 +1,13 @@
 #!/usr/bin/env node
+import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const manifest = JSON.parse(readFileSync(path.join('src', 'templates', 'managed-assets.json'), 'utf8'));
+const manifest = JSON.parse(
+  readFileSync(path.join('src', 'templates', 'managed-assets.json'), 'utf8'),
+);
 if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.assets)) {
   throw new Error('Unsupported managed asset manifest');
 }
@@ -15,6 +18,33 @@ const uniqueDestinations = new Set(assets.map((asset) => asset.destination));
 if (uniqueSources.size !== assets.length || uniqueDestinations.size !== assets.length) {
   throw new Error('Managed asset manifest contains duplicate source or destination entries');
 }
+
+const boundedReviewMarkers = [
+  'managed merge queue is the sole lifecycle-semantic review owner',
+  'Reviewer A then Reviewer B',
+  'at most one repair candidate',
+  'REVIEW_FINDINGS_EXHAUSTED',
+];
+const assertBoundedReviewContract = (content, label) => {
+  const text = content.toString();
+  for (const marker of boundedReviewMarkers) {
+    assert.ok(text.includes(marker), `${label} omits bounded-review marker: ${marker}`);
+  }
+  assert.ok(
+    !text.includes('launch a fresh read-only independent `yy pi` review'),
+    `${label} tells an implementation worker to launch lifecycle review`,
+  );
+};
+
+const lifecycleSource = readFileSync(path.join('src', 'templates', 'prompts', 'life_cycle.md'));
+assertBoundedReviewContract(lifecycleSource, 'source @@life_cycle prompt');
+const canonicalImplementation = readFileSync(
+  path.join('src', 'templates', 'skills', 'canonical', 'ralph-loop', 'references', 'implement.md'),
+);
+assertBoundedReviewContract(canonicalImplementation, 'canonical implementation instruction');
+const implementationPaths = ['claude', 'codex', 'pi'].map(
+  (agent) => `skills/${agent}/ralph-loop/references/implement.md`,
+);
 
 for (const asset of assets) {
   const source = readFileSync(path.join('src', 'templates', asset.source));
@@ -66,6 +96,33 @@ try {
         `Managed asset differs between source and packed npm artifact: ${packedPath}`,
       );
     }
+  }
+
+  assertBoundedReviewContract(
+    readFileSync(path.join(packDirectory, 'package', 'dist/templates/prompts/life_cycle.md')),
+    'packed @@life_cycle prompt',
+  );
+  for (const relativePath of implementationPaths) {
+    const source = readFileSync(path.join('src', 'templates', relativePath));
+    const builtPath = path.join('dist', 'templates', relativePath);
+    const packedPath = `dist/templates/${relativePath}`;
+    assert.ok(
+      inventory.has(packedPath),
+      `npm package omits implementation instruction: ${packedPath}`,
+    );
+    assert.deepEqual(
+      source,
+      canonicalImplementation,
+      `source implementation instruction drift: ${relativePath}`,
+    );
+    assert.deepEqual(
+      readFileSync(builtPath),
+      source,
+      `built implementation instruction drift: ${relativePath}`,
+    );
+    const packed = readFileSync(path.join(packDirectory, 'package', packedPath));
+    assert.deepEqual(packed, source, `packed implementation instruction drift: ${relativePath}`);
+    assertBoundedReviewContract(packed, `packed implementation instruction ${relativePath}`);
   }
 } finally {
   rmSync(packDirectory, { recursive: true, force: true });

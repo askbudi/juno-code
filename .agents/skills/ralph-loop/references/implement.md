@@ -26,10 +26,11 @@ task's workspace.
 1. Edit only requested product paths and preserve project sources of truth.
 2. Use focused affected tests in the edit loop. Other feature worktrees may run
    concurrently; do not wait for or modify them.
-3. Do not launch semantic reviewers. The managed merge queue is the sole owner
-   of lifecycle-semantic review evidence. Candidate review is risk-based: low zero,
-   normal at most one, and high exactly two predecessor-bound v1 reviewers on
-   one frozen tip.
+3. Never launch lifecycle-semantic reviewers.
+   The managed merge queue is the sole lifecycle-semantic review owner. Candidate
+   review is risk-based: low gets zero,
+   normal gets at most one, and high gets exactly Reviewer A then Reviewer B on
+   one frozen candidate.
 4. If blocked, record bounded truthful state and stop without claiming success.
 
 ## 3. Queue and hand off
@@ -47,8 +48,11 @@ task's workspace.
    failure remains a warning and must not change the task or merge outcome.
 
 Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
- moved targets/conflicts, applies one bounded risk-based review sequence, permits
- at most one repair candidate, advances by expected-SHA CAS, and performs
-deterministic readback. Never push, publish, deploy, mutate
+moved targets/conflicts, applies the bounded risk-based review sequence, and
+permits at most one repair candidate. A second material finding terminalizes as
+`REVIEW_FINDINGS_EXHAUSTED`; no implementation worker or queue owner launches a
+third autonomous semantic review or silently creates another repair task. The
+queue advances by expected-SHA CAS and performs deterministic readback. Never
+push, publish, deploy, mutate
 production, restart services, run post-deploy E2E, or clean worktrees without
 separate authority.

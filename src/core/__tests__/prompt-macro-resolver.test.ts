@@ -1,14 +1,28 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolvePromptMacros } from '../prompt-macro-resolver.js';
 
 describe('prompt-macro-resolver', () => {
   it('preserves a lifecycle caller payload byte-for-byte exactly once', () => {
     const payload = '## T1\n@@no_code\n"quotes" `ticks` $ARGUMENTS $1 $2 $@ $(echo no)';
-    const lifecycle = '# lifecycle contract\n';
+    const lifecycle = readFileSync(
+      resolve(process.cwd(), 'src/templates/prompts/life_cycle.md'),
+      'utf8',
+    );
     const result = resolvePromptMacros(`@@life_cycle ${payload}`, {
-      dictionary: { life_cycle: lifecycle, no_code: 'MUST NOT EXPAND' }, maxDepth: 8,
+      dictionary: { life_cycle: lifecycle, no_code: 'MUST NOT EXPAND' },
+      maxDepth: 8,
     });
     expect(result.resolvedPrompt).toBe(`${lifecycle} ${payload}`);
+    expect(result.resolvedPrompt).toContain('Implementation workers never');
+    expect(result.resolvedPrompt).toContain(
+      'managed merge queue is the sole lifecycle-semantic review owner',
+    );
+    expect(result.resolvedPrompt).toContain('Reviewer A then Reviewer B');
+    expect(result.resolvedPrompt).toContain('at most one repair candidate');
+    expect(result.resolvedPrompt).toContain('REVIEW_FINDINGS_EXHAUSTED');
+    expect(result.resolvedPrompt).not.toContain('launch a fresh read-only independent');
     expect(result.resolvedPrompt.indexOf(payload)).toBe(result.resolvedPrompt.lastIndexOf(payload));
     expect(result.warnings).toEqual([]);
   });

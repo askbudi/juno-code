@@ -18,6 +18,8 @@ When implementation is committed, run:
 yy task finish TASK_ID
 ```
 
-Finish checks the exact task identity, clean committed tip, allowed paths, and configured focused validation, then records the task as `QUEUED`. It does not review, merge, release, push, deploy, clean up, or synchronize controller and product branches. Use `yy task status TASK_ID` for bounded read-only observation.
+Finish checks the exact task identity, clean committed tip, allowed paths, and configured focused validation, then records the task as `QUEUED`. It does not review, merge, release, push, deploy, clean up, or synchronize controller and product branches. Use `yy task status TASK_ID` for bounded read-only observation. Implementation workers never launch lifecycle-semantic reviewers.
+
+The managed merge queue is the sole lifecycle-semantic review owner: low risk gets zero reviewers, normal risk gets at most one, and high risk gets Reviewer A then Reviewer B on one frozen candidate. It permits at most one repair candidate; a second material finding terminalizes as `REVIEW_FINDINGS_EXHAUSTED`, with no third autonomous review or silently created repair task.
 
 The target owner first stops shared integration servers, verifies the integration checkout is clean, and detaches it so the full target ref is unowned. Advance queued work with `yy merge next`. If it reports `CONFLICT`, edit and stage only the listed paths in the preserved candidate checkout, then run `yy merge resolve TASK_ID`. A failed resolved-candidate test is retried with the same command and same preserved commit. Use `yy merge status` to observe queued, conflicted, and merged tasks. After the queue is drained or paused, attach the integration owner to the exact target for shared tests, servers, release, or deploy; detach it again before the next queue mutation. The merge queue serializes only the short target mutation window; feature implementation remains concurrent.
