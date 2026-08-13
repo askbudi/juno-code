@@ -1973,6 +1973,42 @@ raise SystemExit(2)
                          ("QUEUED", repaired_tip))
         self.assertEqual(recovered["prior_queue_failure"]["outcome"], "FAILED_TEST")
 
+    def test_target_refresh_recovers_reopening_after_target_moves_during_validation(self) -> None:
+        checkout, marker, _ = self.prepare_failed_resolved_candidate()
+        self.commit_resolved_repair()
+        self.write_policy()
+
+        def validate_then_move(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            self.advance_target("src/reopen-target.txt")
+            return []
+
+        with mock.patch.object(merge_runtime, "validation_rows", side_effect=validate_then_move):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "target moved during resolved candidate reopen"):
+                merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        self.assertEqual(self.task("status", "B")["state"], "REOPENING")
+        worktree = self.workspaces / "B"
+        authored = (worktree / "src/shared.txt").read_bytes()
+        merged = run(["git", "-C", str(worktree), "merge", "--no-edit",
+                      "refs/heads/product"], worktree, check=False)
+        self.assertNotEqual(merged.returncode, 0)
+        (worktree / "src/shared.txt").write_bytes(authored)
+        git(worktree, "add", "src/shared.txt")
+        git(worktree, "commit", "--no-edit")
+        refreshed_tip = git(worktree, "rev-parse", "HEAD")
+
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "B")
+        self.assertEqual(planned["source_state"], "REOPENING")
+        with mock.patch.object(merge_runtime, "validation_rows", return_value=[]):
+            recovered = merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "B", planned["receipt"]["path"],
+                planned["receipt"]["sha256"])
+
+        self.assertEqual((recovered["state"], recovered["tip_sha"]),
+                         ("QUEUED", refreshed_tip))
+        self.assertNotIn("reopen_attempt", recovered)
+        self.assertFalse(checkout.exists()); self.assertFalse(marker.exists())
+
     def test_reopen_first_state_write_failure_keeps_findings_and_owned_candidate(self) -> None:
         checkout, marker = self.prepare_moved_finding_reopen()
         with mock.patch.object(merge_runtime.task_runtime, "write_state", side_effect=OSError("first write")):

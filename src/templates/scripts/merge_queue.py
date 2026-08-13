@@ -2889,7 +2889,8 @@ def target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
         record = state.get("tasks", {}).get(task_id)
         queue_entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
     if not isinstance(record, dict) or record.get("state") not in {
-            "QUEUED", "AWAITING_RISK", "REVIEW_FINDINGS", "CONFLICT_RESOLVED"}:
+            "QUEUED", "AWAITING_RISK", "REVIEW_FINDINGS", "CONFLICT_RESOLVED",
+            "REOPENING"}:
         raise MergeQueueError("target refresh is not eligible in the current queue state")
     required = {"base_sha", "tip_sha", "branch_ref", "worktree", "repository",
                 "target_ref", "changed_paths", "creation_receipt", "workspace_identity"}
