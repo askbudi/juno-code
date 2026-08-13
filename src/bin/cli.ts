@@ -121,10 +121,10 @@ const wrapperContinuation = Number.isInteger(wrapperLifecycleFd) && wrapperLifec
     if (!(typeof value?.stateFile === 'string' && typeof value.workingDirectory === 'string' &&
       typeof value.startedAt === 'string' && Number.isFinite(value.startedMonotonicMs) &&
       identity?.schema_version === 1 && identity.juno_code_version === VERSION &&
-      ['juno-code', 'yy', 'ypl'].includes(identity.launch_surface) &&
-      [identity.request_id, identity.trace_id, identity.span_id].every((item) => typeof item === 'string') &&
-      identity.parent_span_id === null && identity.task_id === null && identity.workflow_run_id === null &&
-      identity.workflow_step_id === null)) return null;
+      [identity.request_id, identity.trace_id, identity.span_id, identity.launch_surface]
+        .every((item) => typeof item === 'string') &&
+      [identity.parent_span_id, identity.task_id, identity.workflow_run_id, identity.workflow_step_id]
+        .every((item) => item === null || typeof item === 'string'))) return null;
     const pathStat = statSync(value.stateFile);
     if (descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) return null;
     unlinkSync(value.stateFile);

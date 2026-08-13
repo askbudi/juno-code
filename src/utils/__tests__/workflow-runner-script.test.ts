@@ -305,6 +305,7 @@ describe('workflow_runner.sh template script', () => {
     const controller = await fs.realpath(workflowFixtureController!);
     const scripts = path.join(controller, '.juno_task', 'scripts');
     await fs.copyFile(path.resolve(process.cwd(), 'src/templates/scripts/managed_agent_runner.py'), path.join(scripts, 'managed_agent_runner.py'));
+    await fs.copyFile(path.resolve(process.cwd(), 'src/templates/scripts/invocation_correlation.py'), path.join(scripts, 'invocation_correlation.py'));
     await fs.writeFile(path.join(controller, '.juno_task', 'config.json'), canonicalJson({
       controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
     }));
@@ -1186,6 +1187,10 @@ print('PASS')
       path.resolve(process.cwd(), 'src/templates/scripts/workflow_run_evidence.py'),
       path.join(testDir, 'workflow_run_evidence.py'),
     );
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/invocation_correlation.py'),
+      path.join(testDir, 'invocation_correlation.py'),
+    );
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runWorkflowScript(staleScript, ['--help'], undefined, {
@@ -1446,6 +1451,10 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     await fs.copyFile(
       path.resolve(process.cwd(), 'src/templates/scripts/workflow_run_evidence.py'),
       path.join(testDir, 'workflow_run_evidence.py'),
+    );
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/invocation_correlation.py'),
+      path.join(testDir, 'invocation_correlation.py'),
     );
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 

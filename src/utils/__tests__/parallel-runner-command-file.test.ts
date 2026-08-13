@@ -21,6 +21,7 @@ function runParallelScript(scriptPath: string, args: string[], input?: string, e
       JUNO_WORKSPACE_ROLE: 'controller',
       JUNO_WORKSPACE_ENFORCEMENT: 'strict',
       JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(parallelFixtureController, '.test-metadata'),
+      PYTHONPATH: path.resolve(process.cwd(), 'src/templates/scripts'),
       ...env,
     },
   });

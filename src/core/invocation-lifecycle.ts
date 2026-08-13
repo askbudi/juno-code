@@ -39,6 +39,56 @@ export interface InvocationExecutionContext {
   requestedModel?: string | null;
 }
 
+export const INVOCATION_CHILD_ENV = 'JUNO_CODE_INVOCATION_CHILD';
+export const INVOCATION_CORRELATION_ENV = {
+  traceId: 'JUNO_CODE_TRACE_ID',
+  parentSpanId: 'JUNO_CODE_PARENT_SPAN_ID',
+  taskId: 'JUNO_CODE_TASK_ID',
+  workflowRunId: 'JUNO_CODE_WORKFLOW_RUN_ID',
+  workflowStepId: 'JUNO_CODE_WORKFLOW_STEP_ID',
+  launchSurface: 'JUNO_CODE_LAUNCH_SURFACE',
+} as const;
+export const ACTIVE_INVOCATION_ENV = {
+  traceId: 'JUNO_CODE_ACTIVE_TRACE_ID',
+  spanId: 'JUNO_CODE_ACTIVE_SPAN_ID',
+  taskId: 'JUNO_CODE_ACTIVE_TASK_ID',
+  workflowRunId: 'JUNO_CODE_ACTIVE_WORKFLOW_RUN_ID',
+  workflowStepId: 'JUNO_CODE_ACTIVE_WORKFLOW_STEP_ID',
+} as const;
+
+const CORRELATION_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+function correlationValue(value: string | undefined): string | null {
+  const candidate = value?.trim() ?? '';
+  return CORRELATION_VALUE.test(candidate) ? candidate : null;
+}
+
+function consumeChildCorrelation(env: NodeJS.ProcessEnv): {
+  traceId: string | null; parentSpanId: string | null; taskId: string | null;
+  workflowRunId: string | null; workflowStepId: string | null; launchSurface: string | null;
+} | null {
+  const explicitChild = env[INVOCATION_CHILD_ENV] === '1';
+  const values = {
+    traceId: correlationValue(env[INVOCATION_CORRELATION_ENV.traceId]),
+    parentSpanId: correlationValue(env[INVOCATION_CORRELATION_ENV.parentSpanId]),
+    taskId: correlationValue(env[INVOCATION_CORRELATION_ENV.taskId]),
+    workflowRunId: correlationValue(env[INVOCATION_CORRELATION_ENV.workflowRunId]),
+    workflowStepId: correlationValue(env[INVOCATION_CORRELATION_ENV.workflowStepId]),
+    launchSurface: correlationValue(env[INVOCATION_CORRELATION_ENV.launchSurface]),
+  };
+  delete env[INVOCATION_CHILD_ENV];
+  for (const key of Object.values(INVOCATION_CORRELATION_ENV)) delete env[key];
+  return explicitChild ? values : null;
+}
+
+function publishActiveCorrelation(identity: InvocationContinuation['identity'], env: NodeJS.ProcessEnv): void {
+  for (const key of Object.values(ACTIVE_INVOCATION_ENV)) delete env[key];
+  env[ACTIVE_INVOCATION_ENV.traceId] = identity.trace_id;
+  env[ACTIVE_INVOCATION_ENV.spanId] = identity.span_id;
+  if (identity.task_id) env[ACTIVE_INVOCATION_ENV.taskId] = identity.task_id;
+  if (identity.workflow_run_id) env[ACTIVE_INVOCATION_ENV.workflowRunId] = identity.workflow_run_id;
+  if (identity.workflow_step_id) env[ACTIVE_INVOCATION_ENV.workflowStepId] = identity.workflow_step_id;
+}
+
 /** Private state owned by the canonical shell boundary process. */
 export interface InvocationContinuation {
   /** Private wrapper state path, added by the boundary process. */
@@ -49,10 +99,10 @@ export interface InvocationContinuation {
     request_id: string;
     trace_id: string;
     span_id: string;
-    parent_span_id: null;
-    task_id: null;
-    workflow_run_id: null;
-    workflow_step_id: null;
+    parent_span_id: string | null;
+    task_id: string | null;
+    workflow_run_id: string | null;
+    workflow_step_id: string | null;
     launch_surface: string;
     juno_code_version: string;
   };
@@ -107,22 +157,28 @@ export class InvocationLifecycle {
     this.monotonicNow = options.monotonicNow ?? (() => Number(hrtime.bigint()) / 1_000_000);
     this.warn = options.warn ?? ((message) => console.error(message));
     const continuation = options.continuation;
+    // The wrapper boundary already consumed this contract into continuation;
+    // consume again here only to remove it before provider descendants launch.
+    const consumedChild = consumeChildCorrelation(this.env);
+    const child = continuation ? null : consumedChild;
     this.workingDirectory = continuation?.workingDirectory ?? options.workingDirectory;
+    const inheritedTree = child?.traceId && child.parentSpanId;
 
     this.identity = continuation?.identity ?? {
       schema_version: INVOCATION_TELEMETRY_SCHEMA_VERSION,
       request_id: randomUUID(),
-      trace_id: randomUUID(),
+      trace_id: inheritedTree ? child.traceId! : randomUUID(),
       span_id: randomUUID(),
-      parent_span_id: null,
-      task_id: null,
-      workflow_run_id: null,
-      workflow_step_id: null,
-      // Launch identity is supplied by the executable boundary, never trusted
-      // from ambient/inherited environment.
-      launch_surface: normalizeLaunchSurface(options.launchSurface),
+      parent_span_id: inheritedTree ? child.parentSpanId! : null,
+      task_id: child?.taskId ?? null,
+      workflow_run_id: child?.workflowRunId ?? null,
+      workflow_step_id: child?.workflowStepId ?? null,
+      // Root identity comes from the executable. Only an explicit canonical
+      // child contract may attribute a runner launch surface.
+      launch_surface: child?.launchSurface ?? normalizeLaunchSurface(options.launchSurface),
       juno_code_version: options.junoCodeVersion,
     } as const;
+    publishActiveCorrelation(this.identity, this.env);
     this.startedAt = continuation?.startedAt ?? this.now().toISOString();
     this.startedMonotonicMs = continuation?.startedMonotonicMs ?? this.monotonicNow();
     if (continuation) this.startPromise = Promise.resolve();

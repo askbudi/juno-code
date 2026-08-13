@@ -144,6 +144,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from invocation_correlation import child_invocation_environment
+
 
 _SCOPED_CONTINUITY_KEY_PREFIXES = (
     "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
@@ -959,15 +961,17 @@ def _sanitize_current_process_environment():
     os.environ.update(environment)
 
 
-def _build_process_env(extra_capture_env=None):
-    """Build the environment dict for a child process."""
+def _build_process_env(extra_capture_env=None, task_id=None):
+    """Build the environment dict for one canonical child invocation."""
     env = _child_process_environment(dict(os.environ))
     env.update(_env_overrides)
     # Reduce buffering for python-backed subcommands so task/combined logs stream promptly.
     env.setdefault("PYTHONUNBUFFERED", "1")
     if extra_capture_env:
         env.update(extra_capture_env)
-    return env
+    return child_invocation_environment(
+        env, launch_surface="parallel_runner", task_id=task_id, source=os.environ,
+    )
 
 
 def _is_command_mode(args):
@@ -987,20 +991,18 @@ def _format_command_for_log(command):
     return command
 
 
-def _command_popen_kwargs(spec, default_cwd):
+def _command_popen_kwargs(spec, default_cwd, task_id=None):
     command = spec["command"]
     cwd = spec.get("cwd") or default_cwd
-    env = _build_process_env(spec.get("env") or {})
+    env = _build_process_env(spec.get("env") or {}, task_id=task_id)
     if isinstance(command, list):
         return command, False, cwd, env
     return command, True, cwd, env
 
 
-def _generate_env_exports():
-    """Generate shell export lines for the filtered process environment."""
-    merged = _child_process_environment(dict(os.environ))
-    merged.update(_env_overrides)
-    merged.setdefault("PYTHONUNBUFFERED", "1")
+def _generate_env_exports(task_id=None):
+    """Generate shell export lines for one canonical child invocation."""
+    merged = _build_process_env(task_id=task_id)
     lines = []
     for key, value in sorted(merged.items()):
         if key in ("TERM_SESSION_ID", "TMUX", "TMUX_PANE", "STY", "WINDOW",
@@ -2487,7 +2489,7 @@ def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
             log_combined("Prompt file missing at runtime; task cannot start", task_id)
             return task_id, 1
 
-        env = _build_process_env({"ASSIGNED_TASK_ID": task_id})
+        env = _build_process_env({"ASSIGNED_TASK_ID": task_id}, task_id=task_id)
 
         cmd = [
             "juno-code",
@@ -2566,7 +2568,7 @@ def run_raw_command_task(task_id, semaphore, pwd, output_dir=None):
     semaphore.acquire()
     try:
         spec = _command_spec_for(task_id)
-        command, shell, cwd, env = _command_popen_kwargs(spec, pwd)
+        command, shell, cwd, env = _command_popen_kwargs(spec, pwd, task_id)
         timeout_seconds = spec.get("timeout_seconds")
         task_log_path = LOG_DIR / f"task_{task_id}.log"
 
@@ -2925,7 +2927,7 @@ def write_runner_script(task_id, pwd, prompt_path, session_name_short,
     tmp = _tmp_dir(session_name_short)
     tmp.mkdir(parents=True, exist_ok=True)
 
-    env_exports = _generate_env_exports()
+    env_exports = _generate_env_exports(task_id)
     env_exports += "\nexport ASSIGNED_TASK_ID=%s" % shlex.quote(task_id)
 
     env_path = tmp / f"env_{task_id}.sh"
@@ -2962,7 +2964,7 @@ def write_raw_command_runner_script(task_id, pwd, session_name_short):
     """
     sentinel_id = uuid.uuid4().hex[:12]
     spec = _command_spec_for(task_id)
-    command, shell, cwd, env = _command_popen_kwargs(spec, pwd)
+    command, shell, cwd, env = _command_popen_kwargs(spec, pwd, task_id)
     timeout_seconds = spec.get("timeout_seconds")
 
     tmp = _tmp_dir(session_name_short)

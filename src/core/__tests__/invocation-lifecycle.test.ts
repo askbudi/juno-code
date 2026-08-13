@@ -562,6 +562,45 @@ sys.exit(1)
     );
   });
 
+  it('reconstructs canonical parent-child spans while an unrelated subprocess remains a fresh root', async () => {
+    const root = await temp('correlation-tree');
+    const child = spawn('tree-parent', root);
+    expect(await close(child)).toEqual({ code: 0, signal: null });
+
+    const starts = (await events(root)).filter((event) => event.event_type === 'invocation_started');
+    expect(starts).toHaveLength(5);
+    const parent = starts.find((event) => event.launch_surface === 'yy')!;
+    const workflow = starts.find((event) => event.launch_surface === 'workflow_runner')!;
+    const managed = starts.find((event) => event.launch_surface === 'managed_agent_runner')!;
+    const parallel = starts.find((event) => event.launch_surface === 'parallel_runner')!;
+    const roots = starts.filter((event) => event.parent_span_id === null);
+    const unrelated = roots.find((event) => event.span_id !== parent.span_id)!;
+
+    expect(workflow).toMatchObject({
+      trace_id: parent.trace_id,
+      parent_span_id: parent.span_id,
+      task_id: 'TASK-42',
+      workflow_run_id: 'run-7',
+      workflow_step_id: 'step-a',
+    });
+    expect(managed).toMatchObject({
+      trace_id: parent.trace_id,
+      parent_span_id: workflow.span_id,
+      task_id: 'TASK-43',
+      workflow_run_id: 'run-7',
+      workflow_step_id: 'step-a',
+    });
+    expect(parallel).toMatchObject({
+      trace_id: parent.trace_id,
+      parent_span_id: parent.span_id,
+      task_id: 'BATCH-1',
+    });
+    expect(unrelated.trace_id).not.toBe(parent.trace_id);
+    expect(unrelated).toMatchObject({
+      parent_span_id: null, task_id: null, workflow_run_id: null, workflow_step_id: null,
+    });
+  });
+
   it.each(['SIGINT', 'SIGTERM'] as const)(
     'preserves graceful %s exit 0 and emits exactly one interrupted finish',
     async (signal) => {
@@ -673,6 +712,30 @@ while true; do sleep 0.05; done
       expect.stringContaining('invocation_started write failed: write exceeded 20ms'),
       expect.stringContaining('invocation_finished write failed: write exceeded 20ms'),
     ]);
+  });
+
+  it('consumes child transport before runtime/provider descendants can inherit it', () => {
+    const root = new InvocationLifecycle({ workingDirectory: '/tmp', junoCodeVersion: 'test', env: {} });
+    const env: NodeJS.ProcessEnv = {
+      JUNO_CODE_INVOCATION_CHILD: '1',
+      JUNO_CODE_TRACE_ID: 'stale-trace',
+      JUNO_CODE_PARENT_SPAN_ID: 'stale-span',
+      JUNO_CODE_TASK_ID: 'stale-task',
+      JUNO_CODE_LAUNCH_SURFACE: 'workflow_runner',
+    };
+    new InvocationLifecycle({
+      workingDirectory: '/tmp', junoCodeVersion: 'test', env,
+      continuation: root.continuation(),
+    });
+    expect(env).not.toHaveProperty('JUNO_CODE_INVOCATION_CHILD');
+    expect(env).not.toHaveProperty('JUNO_CODE_TRACE_ID');
+    expect(env).not.toHaveProperty('JUNO_CODE_PARENT_SPAN_ID');
+    expect(env).not.toHaveProperty('JUNO_CODE_TASK_ID');
+    expect(env).not.toHaveProperty('JUNO_CODE_LAUNCH_SURFACE');
+    expect(env).toMatchObject({
+      JUNO_CODE_ACTIVE_TRACE_ID: root.continuation().identity.trace_id,
+      JUNO_CODE_ACTIVE_SPAN_ID: root.continuation().identity.span_id,
+    });
   });
 
   it('records configured project routing, resolved service, and requested model on both events', async () => {

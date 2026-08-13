@@ -29,6 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 from workflow_run_evidence import WorkflowRunEvidenceError, resolve_workflow_manifest
+from invocation_correlation import child_invocation_environment
 
 
 JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
@@ -2993,6 +2994,10 @@ def run_workflow(args: argparse.Namespace) -> int:
             )
         if dispatch_root != project_root:
             env["TASK_ROOT"] = str(dispatch_root)
+        env = child_invocation_environment(
+            env, launch_surface="workflow_runner", workflow_run_id=run_id,
+            workflow_step_id=step_id, source=os.environ,
+        )
         env["JUNO_WORKFLOW_ID"] = workflow_id
         env["JUNO_WORKFLOW_RUN_ID"] = run_id
         env["JUNO_WORKFLOW_STEP_ID"] = step_id

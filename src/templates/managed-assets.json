@@ -306,6 +306,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/invocation_correlation.py",
+      "destination": ".juno_task/scripts/invocation_correlation.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/watch_progress.py",
       "destination": ".juno_task/scripts/watch_progress.py",
       "installClass": "script",

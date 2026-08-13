@@ -226,6 +226,7 @@ describe('ScriptInstaller', () => {
       expect(newlyManaged.sort()).toEqual([
         'controller_registration.py',
         'integration_workspace.py',
+        'invocation_correlation.py',
         'managed_agent_runner.py',
         'merge_queue.py',
         'metadata_evacuation.py',
@@ -361,6 +362,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
+        { name: 'invocation_correlation.py', installed: false },
         { name: 'watch_progress.py', installed: false },
         { name: 'task_workspace.py', installed: false },
         { name: 'target_runtime_provenance.py', installed: false },
@@ -544,6 +546,7 @@ describe('ScriptInstaller', () => {
         path.join(scriptsDir, 'managed_agent_runner.py'),
         '#!/usr/bin/env python3\n',
       );
+      await fs.writeFile(path.join(scriptsDir, 'invocation_correlation.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'target_runtime_provenance.py'), '#!/usr/bin/env python3\n');
@@ -609,6 +612,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
+        { name: 'invocation_correlation.py', installed: true },
         { name: 'watch_progress.py', installed: true },
         { name: 'task_workspace.py', installed: true },
         { name: 'target_runtime_provenance.py', installed: true },
@@ -1132,7 +1136,7 @@ describe('ScriptInstaller', () => {
         mainBody.indexOf('validate-kanban-write'),
       );
       expect(mainBody.match(/if ! ensure_python_environment/g) || []).toHaveLength(1);
-      expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id})');
+      expect(runner).toContain('_build_process_env({"ASSIGNED_TASK_ID": task_id}, task_id=task_id)');
       expect(runner).toContain('export ASSIGNED_TASK_ID=%s');
     });
 

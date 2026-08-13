@@ -14,6 +14,11 @@ import shutil
 import signal
 import subprocess
 import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from invocation_correlation import child_invocation_environment
 import tempfile
 import time
 from typing import Any
@@ -696,6 +701,10 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
         explicit["JUNO_MANAGED_CONTROLLER_BINDING_JSON"] = canonical(
             controller_binding).decode().strip()
     env.update(explicit)
+    env = child_invocation_environment(
+        env, launch_surface="managed_agent_runner", task_id=args.task_id or None,
+        source=os.environ,
+    )
     contract = {"schema_version": "juno_managed_environment.v1", "removed_key_names": removed,
                 "explicit_key_names": sorted(explicit), "configured_defaults": True,
                 "node_runtime": node_contract}
