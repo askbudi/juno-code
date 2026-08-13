@@ -1694,7 +1694,10 @@ def _holder_dirt_matches_interrupted_runtime_sync(holder: Path,
         ["git", "-C", str(holder), "show", f":{RUNTIME_PATH}"], cwd=holder,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     indexed = index_result.stdout if index_result.returncode == 0 else None
-    return working in {prior_bytes, proposed, None} and indexed in {prior_bytes, proposed, None}
+    # Recovery admits only a mixed/exact transition containing proposed bytes.
+    # Ambiguous staged deletion (both absent) is user dirt, never bootstrap state.
+    admitted = {prior_bytes, proposed}
+    return working in admitted and indexed in admitted and proposed in {working, indexed}
 
 
 def _holder_is_prepared_for_cas(holder: Path, previous_sha: str,
@@ -1852,8 +1855,27 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
     guard_holder: Path | None = None
     try:
         with _target_mutation_lock(repository, config["target_ref"]):
-            holder = _validate_intent_holder(
-                repository, intent["target_holder"], config["target_ref"])
+            if intent["target_holder"] is None:
+                workspace_root = Path(config["workspace_root"])
+                expected_guard = (workspace_root /
+                                  f".yy-task-runtime-bootstrap-guard-{digest}").resolve()
+                holders = _target_ref_holders(repository, config["target_ref"])
+                if holders:
+                    if (len(holders) != 1 or holders[0].get("locked")
+                            or Path(str(holders[0].get("worktree", ""))).resolve()
+                            != expected_guard):
+                        raise TaskWorkspaceError(
+                            "a non-guard target-ref holder appeared after durable apply intent")
+                    holder = exact_root(expected_guard, "durable package-owned target guard")
+                    if (git(holder, "symbolic-ref", "-q", "HEAD", check=False)
+                            != config["target_ref"]):
+                        raise TaskWorkspaceError("durable package-owned target guard identity changed")
+                    guard_holder = holder
+                else:
+                    holder = None
+            else:
+                holder = _validate_intent_holder(
+                    repository, intent["target_holder"], config["target_ref"])
             current_sha = ref_sha(repository, config["target_ref"])
             if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
                 raise TaskWorkspaceError(
@@ -1865,10 +1887,11 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                 _validate_intent_holder(repository, None, config["target_ref"])
                 workspace_root = Path(config["workspace_root"])
                 workspace_root.mkdir(parents=True, exist_ok=True)
-                guard_holder = Path(tempfile.mkdtemp(
-                    prefix=f".yy-task-runtime-bootstrap-guard-{digest[:12]}-",
-                    dir=workspace_root))
-                guard_holder.rmdir()
+                guard_holder = (workspace_root /
+                                f".yy-task-runtime-bootstrap-guard-{digest}").resolve()
+                if guard_holder.exists():
+                    raise TaskWorkspaceError(
+                        "durable package-owned target guard path exists outside Git registration")
                 branch = config["target_ref"].removeprefix("refs/heads/")
                 added = run(["git", "-C", str(repository), "worktree", "add",
                              str(guard_holder), branch], repository, check=False)

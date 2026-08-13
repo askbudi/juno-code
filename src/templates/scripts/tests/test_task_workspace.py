@@ -2,6 +2,7 @@
 """Real-Git contract tests for the small Bolt task-worktree interface."""
 from __future__ import annotations
 
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -1182,6 +1183,45 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.controller, "2.1.3", package_hash, receipt)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_does_not_classify_staged_deletion_as_interruption(self) -> None:
+        prior = (self.repository / task_runtime.RUNTIME_PATH).read_bytes()
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        state = {"bytes_base64": base64.b64encode(prior).decode()}
+        self.assertFalse(task_runtime._holder_dirt_matches_interrupted_runtime_sync(
+            self.repository, state, SCRIPT.read_bytes()))
+
+    def test_runtime_bootstrap_recovers_its_deterministic_guard_after_interruption(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        git(self.repository, "checkout", "--detach")
+        original_run = task_runtime.run
+
+        def strand_guard(argv: list[str], cwd: Path, *, check: bool = True):
+            if len(argv) >= 7 and argv[-4] == "update-ref":
+                return subprocess.CompletedProcess(argv, 75, "", "injected CAS interruption")
+            if len(argv) >= 6 and argv[-3:-1] == ["remove", "--force"]:
+                return subprocess.CompletedProcess(argv, 75, "", "injected process-death residue")
+            return original_run(argv, cwd, check=check)
+
+        with mock.patch.object(task_runtime, "run", side_effect=strand_guard):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "CAS advancement failed"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        digest = plan["receipt"]["sha256"]
+        guard = (Path(task_runtime.load_config(self.controller)["workspace_root"]) /
+                 f".yy-task-runtime-bootstrap-guard-{digest}").resolve()
+        self.assertTrue(guard.is_dir())
+
+        recovered = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"),
+                         recovered["commit_sha"])
+        self.assertFalse(guard.exists())
 
     def test_runtime_bootstrap_guard_refuses_holder_appearance_through_completion(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
