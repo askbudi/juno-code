@@ -1849,64 +1849,80 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                       "target_holder": target_holder}
             _write_runtime_bootstrap_record(intent_path, intent)
 
-    with _target_mutation_lock(repository, config["target_ref"]):
-        holder = _validate_intent_holder(
-            repository, intent["target_holder"], config["target_ref"])
-        current_sha = ref_sha(repository, config["target_ref"])
-        if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
-            raise TaskWorkspaceError(
-                "task-runtime bootstrap target ref moved outside the durable apply intent")
-        if holder is not None and current_sha == intent["previous_sha"]:
-            index_lock = Path(git(holder, "rev-parse", "--path-format=absolute",
-                                  "--git-path", "index.lock"))
-            if index_lock.exists():
+    guard_holder: Path | None = None
+    try:
+        with _target_mutation_lock(repository, config["target_ref"]):
+            holder = _validate_intent_holder(
+                repository, intent["target_holder"], config["target_ref"])
+            current_sha = ref_sha(repository, config["target_ref"])
+            if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
                 raise TaskWorkspaceError(
-                    "target-holder index is locked; refusing before target CAS advancement")
-            _prepare_target_holder_for_cas(holder, config["target_ref"],
-                                           intent["previous_sha"], intent["commit_sha"],
-                                           plan["prior"], proposed)
-            # Revalidate topology and exact prepared identity after touching the
-            # holder and immediately before expected-old-SHA CAS.
-            if (_validate_intent_holder(repository, intent["target_holder"],
-                                        config["target_ref"]) != holder
-                    or ref_sha(repository, config["target_ref"]) != intent["previous_sha"]
-                    or not _holder_is_prepared_for_cas(
-                        holder, intent["previous_sha"], proposed)):
-                raise TaskWorkspaceError("target-ref holder raced before target CAS advancement")
-        elif holder is None and current_sha == intent["previous_sha"]:
-            _validate_intent_holder(repository, None, config["target_ref"])
-        if current_sha == intent["previous_sha"]:
-            cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
-                       intent["commit_sha"], intent["previous_sha"]], repository, check=False)
-            if cas.returncode:
-                raise TaskWorkspaceError("task-runtime bootstrap target ref CAS advancement failed")
-        if holder is not None:
+                    "task-runtime bootstrap target ref moved outside the durable apply intent")
+            if holder is None:
+                # Hold the branch in a package-owned clean worktree through CAS
+                # and durable completion. Ordinary Git worktree creation then
+                # fails instead of racing the no-holder observation.
+                _validate_intent_holder(repository, None, config["target_ref"])
+                workspace_root = Path(config["workspace_root"])
+                workspace_root.mkdir(parents=True, exist_ok=True)
+                guard_holder = Path(tempfile.mkdtemp(
+                    prefix=f".yy-task-runtime-bootstrap-guard-{digest[:12]}-",
+                    dir=workspace_root))
+                guard_holder.rmdir()
+                branch = config["target_ref"].removeprefix("refs/heads/")
+                added = run(["git", "-C", str(repository), "worktree", "add",
+                             str(guard_holder), branch], repository, check=False)
+                if added.returncode:
+                    raise TaskWorkspaceError(
+                        "target-ref holder appeared before guarded CAS; refusing target mutation")
+                holder = guard_holder
+            if current_sha == intent["previous_sha"]:
+                index_lock = Path(git(holder, "rev-parse", "--path-format=absolute",
+                                      "--git-path", "index.lock"))
+                if index_lock.exists():
+                    raise TaskWorkspaceError(
+                        "target-holder index is locked; refusing before target CAS advancement")
+                _prepare_target_holder_for_cas(holder, config["target_ref"],
+                                               intent["previous_sha"], intent["commit_sha"],
+                                               plan["prior"], proposed)
+                holders = _target_ref_holders(repository, config["target_ref"])
+                if (len(holders) != 1
+                        or Path(str(holders[0].get("worktree", ""))).resolve() != holder
+                        or ref_sha(repository, config["target_ref"]) != intent["previous_sha"]
+                        or not _holder_is_prepared_for_cas(
+                            holder, intent["previous_sha"], proposed)):
+                    raise TaskWorkspaceError("target-ref holder raced before target CAS advancement")
+                cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
+                           intent["commit_sha"], intent["previous_sha"]], repository, check=False)
+                if cas.returncode:
+                    raise TaskWorkspaceError("task-runtime bootstrap target ref CAS advancement failed")
             if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != config["target_ref"]
                     or git(holder, "rev-parse", "HEAD^{commit}", check=False) != intent["commit_sha"]
                     or git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)):
                 raise TaskWorkspaceError(
                     "target-holder changed during CAS; concurrent dirt was preserved; "
                     "rerun the same --apply receipt after review")
-        elif _target_ref_holders(repository, config["target_ref"]):
-            raise TaskWorkspaceError(
-                "a target-ref holder appeared during CAS; target advanced but completion is withheld; "
-                "review and synchronize or detach that holder, then rerun the same --apply receipt")
-    result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
-              "outcome": "completed", "plan_sha256": digest,
-              "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],
-              "commit_sha": intent["commit_sha"], "tree": intent["tree"],
-              "path": RUNTIME_PATH, "package": plan["package"],
-              "target_holder": intent["target_holder"]}
-    try:
-        raw = _write_runtime_bootstrap_record(applied_path, result)
-        completion = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
-                      "operation": "completion-durable", "plan_sha256": digest,
-                      "applied_sha256": hashlib.sha256(raw).hexdigest(),
-                      "commit_sha": intent["commit_sha"]}
-        _write_runtime_bootstrap_record(durable_path, completion)
-    except (OSError, TaskWorkspaceError) as exc:
-        raise TaskWorkspaceError(
-            "target CAS completed but durable completion recording failed; rerun the same --apply receipt") from exc
+            result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
+                      "outcome": "completed", "plan_sha256": digest,
+                      "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],
+                      "commit_sha": intent["commit_sha"], "tree": intent["tree"],
+                      "path": RUNTIME_PATH, "package": plan["package"],
+                      "target_holder": intent["target_holder"]}
+            try:
+                raw = _write_runtime_bootstrap_record(applied_path, result)
+                completion = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
+                              "operation": "completion-durable", "plan_sha256": digest,
+                              "applied_sha256": hashlib.sha256(raw).hexdigest(),
+                              "commit_sha": intent["commit_sha"]}
+                _write_runtime_bootstrap_record(durable_path, completion)
+            except (OSError, TaskWorkspaceError) as exc:
+                raise TaskWorkspaceError(
+                    "target CAS completed but durable completion recording failed; "
+                    "rerun the same --apply receipt") from exc
+    finally:
+        if guard_holder is not None:
+            run(["git", "-C", str(repository), "worktree", "remove", "--force",
+                 str(guard_holder)], repository, check=False)
     return {**result, "receipt": {"path": str(applied_path),
                                    "sha256": hashlib.sha256(raw).hexdigest()},
             "completion_durable": {"path": str(durable_path)}}

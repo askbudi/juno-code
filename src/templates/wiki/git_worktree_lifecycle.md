@@ -62,8 +62,9 @@ all exact target-ref holders under the merge queue's repository/target-ref lock.
 Every advancement uses expected-SHA CAS. With one exact clean unlocked holder,
 the one-path index/worktree state is prepared with Git's non-destructive merge
 mode and revalidated before CAS; concurrent dirt refuses rather than being reset,
-and no post-CAS operation can overwrite it. Dirty, locked, moved, or multiple holders refuse
-before mutation with a supported clean,
+and no post-CAS operation can overwrite it. With no holder, a package-owned clean
+guard checkout holds the branch through durable completion. Dirty, locked, moved,
+or multiple holders refuse before mutation with a supported clean,
 unlock, or reviewed extra-worktree removal action. Interrupted holder synchronization
 or completion recording is recovered by rerunning the same receipt; the durable
 intent prevents another commit or unrelated ref mutation. Modified or completed

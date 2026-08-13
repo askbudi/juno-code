@@ -171,8 +171,9 @@ and durably records its apply intent. Before mutation it discovers exact target-
 holders under the merge queue's repository/target-ref lock. Every advancement uses
 expected-SHA CAS; with one exact clean unlocked holder, its one-path index and
 files are prepared by a non-destructive Git merge and revalidated before CAS.
-Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. Dirty,
-locked, moved, or multiple holders refuse with explicit
+Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. With
+no holder, a package-owned clean guard checkout holds the branch through durable
+completion. Dirty, locked, moved, or multiple holders refuse with explicit
 recovery guidance before mutation. If holder synchronization or completion
 recording is interrupted, rerun the same receipt to recover the existing durable
 intent without creating another commit or advancing an unrelated ref. `yy info` and `yy doctor workspace` report the invoker and
