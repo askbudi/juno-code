@@ -21,6 +21,13 @@ QUEUE = SCRIPTS / "merge_queue.py"
 sys.path.insert(0, str(SCRIPTS))
 import merge_queue as merge_runtime  # noqa: E402
 import risk_policy as risk_runtime  # noqa: E402
+import task_workspace as task_runtime  # noqa: E402
+try:
+    _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
+except task_runtime.TaskWorkspaceError as exc:
+    print(f"merge queue test setup: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+install_juno_admission_fixture = _fixture.install_juno_admission_fixture
 
 
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -48,7 +55,9 @@ class MergeQueueTests(unittest.TestCase):
         )
         self.kanban_finalization = self.kanban_finalization_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        # Keep fixture records on the physical macOS temp identity; production
+        # exact-root guards must continue rejecting lexical symlink aliases.
+        self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repo"
         self.controller = self.root / "controller"
         self.workspaces = self.root / "features"

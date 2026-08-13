@@ -9,9 +9,11 @@ deliberately outside this interface.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import posixpath
@@ -34,7 +36,16 @@ STATE_SCHEMA = "juno_task_workspace_state.v1"
 RECORD_SCHEMA = "juno_task_workspace_record.v1"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 TASK_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+SEMVER_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
+)
 RUNTIME_PATH = ".juno_task/scripts/task_workspace.py"
+RUNTIME_BOOTSTRAP_SCHEMA = "juno_target_task_runtime_bootstrap.v1"
+RUNTIME_BOOTSTRAP_ROOT = ".juno_task/runtime/task-runtime-bootstrap"
+MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"
 GENERATED_OUTPUT_DECLARATION = "juno-code/scripts/implementation-contract.json"
 MANAGED_OUTPUT_DECLARATION = "juno-code/src/templates/managed-assets.json"
 GENERATED_OUTPUT_SCHEMA = "juno_generated_output_contract.v1"
@@ -42,6 +53,11 @@ GENERATED_OUTPUT_SCHEMA = "juno_generated_output_contract.v1"
 
 class TaskWorkspaceError(RuntimeError):
     pass
+
+
+def is_valid_semver(value: Any) -> bool:
+    """Return whether value is an exact ASCII SemVer 2.0.0 version string."""
+    return isinstance(value, str) and SEMVER_RE.fullmatch(value) is not None
 
 
 def run(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -83,6 +99,96 @@ def git_pathnames(root: Path, *args: str) -> list[str]:
             raise TaskWorkspaceError("Git produced an unsafe changed path")
         paths.append(value)
     return sorted(set(paths))
+def load_package_bound_test_fixture(test_file: str, fixture_name: str) -> Any:
+    """Load a fixture only from a verified installed package or canonical source tree."""
+    if not re.fullmatch(r"[A-Za-z0-9_]+\.py", fixture_name):
+        raise TaskWorkspaceError("unsafe package test fixture name")
+    test_path = Path(test_file).resolve()
+
+    def load(candidate: Path) -> Any:
+        candidate = candidate.resolve()
+        if not candidate.is_file():
+            raise TaskWorkspaceError("verified package is missing its canonical test fixture")
+        spec = importlib.util.spec_from_file_location(
+            f"juno_package_fixture_{candidate.stem}_{hashlib.sha256(str(candidate).encode()).hexdigest()[:12]}",
+            candidate)
+        if spec is None or spec.loader is None:
+            raise TaskWorkspaceError("canonical package test fixture is not loadable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    # Installed execution has exactly one authority: the controller's bound,
+    # hash-identified package. Never inspect an adjacent tests directory.
+    explicit = os.environ.get("JUNO_TASK_ROOT", "").strip()
+    explicit_root = Path(explicit).expanduser().resolve() if explicit else None
+    installed_test_root = (test_path.parents[3] if len(test_path.parents) > 3 and
+                           test_path.parents[2].name == ".juno_task" else None)
+    package_test_root = (explicit_root / "dist/templates/scripts/tests"
+                         if explicit_root is not None else None)
+    explicit_applies = (explicit_root is not None and
+                        (installed_test_root == explicit_root or test_path.parent == package_test_root))
+    runtime_root = explicit_root if explicit_applies else installed_test_root
+    if runtime_root is not None:
+        identity_path = runtime_root / ".juno_task/runtime/identity.json"
+        inventory_path = runtime_root / ".juno_task/managed-assets.json"
+        if identity_path.exists() or explicit_applies:
+            try:
+                identity = json.loads(identity_path.read_bytes())
+                inventory = json.loads(inventory_path.read_bytes())
+                executable = Path(identity["executable"]).expanduser().resolve()
+                version = identity["version"]
+                executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+                package_root = executable.parent.parent.parent
+                package = json.loads((package_root / "package.json").read_text())
+            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+                identity = inventory = package = None
+                executable_hash = version = ""
+                package_root = Path("/")
+            valid = (
+                isinstance(identity, dict) and set(identity) == {
+                    "package", "version", "executable", "executable_sha256", "source", "tracked"}
+                and identity.get("package") == "juno-code"
+                and identity.get("source") == "installed-release" and identity.get("tracked") is False
+                and is_valid_semver(version)
+                and executable_hash == identity.get("executable_sha256")
+                and isinstance(inventory, dict) and inventory.get("schemaVersion") == 1
+                and inventory.get("packageName") == "juno-code"
+                and inventory.get("packageVersion") == version
+                and isinstance(inventory.get("assets"), dict)
+                and isinstance(package, dict) and package.get("name") == "juno-code"
+                and package.get("version") == version)
+            if not valid:
+                raise TaskWorkspaceError(
+                    f"package-bound test fixture unavailable: {fixture_name}; run `yy scripts update --force` "
+                    "from the controller's bound juno-code installation, then retry")
+            return load(package_root / "dist/templates/scripts/tests" / fixture_name)
+
+    # Development execution is the only fallback. Its identity is an actual
+    # Git worktree plus exact tracked juno-code paths, never a guessed sibling.
+    discovered = run(["git", "-C", str(test_path.parent), "rev-parse", "--show-toplevel"],
+                     test_path.parent, check=False)
+    if discovered.returncode == 0:
+        source_root = Path(discovered.stdout.strip()).resolve()
+        canonical = source_root / "juno-code/src/templates/scripts/tests" / fixture_name
+        allowed_tests = {
+            source_root / ".juno_task/scripts/tests" / test_path.name,
+            source_root / "juno-code/src/templates/scripts/tests" / test_path.name}
+        package_path = source_root / "juno-code/package.json"
+        tracked = run(["git", "-C", str(source_root), "ls-files", "--error-unmatch",
+                       str(canonical.relative_to(source_root)),
+                       str(test_path.relative_to(source_root))], source_root, check=False)
+        try:
+            source_package = json.loads(package_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            source_package = None
+        if (test_path in allowed_tests and tracked.returncode == 0 and
+                isinstance(source_package, dict) and source_package.get("name") == "juno-code"):
+            return load(canonical)
+
+    raise TaskWorkspaceError(
+        f"package-bound test fixture unavailable: {fixture_name}; run `yy scripts update --force` "
+        "from the controller's bound juno-code installation, then retry")
 
 
 def normalized_relative(value: Any, label: str) -> str:
@@ -646,8 +752,9 @@ def require_current_runtime(repository: Path, target_sha: str) -> dict[str, Any]
     generation = runtime_generation(repository, target_sha)
     if not generation["current"]:
         raise TaskWorkspaceError(
-            "managed task runtime is stale or absent from the target; run `yy scripts update --force` "
-            "from a juno-code package matching the target, then retry"
+            "managed task runtime is stale or absent from the target; recover with "
+            "`yy task runtime-bootstrap --dry-run`, review its receipt, then run "
+            "`yy task runtime-bootstrap --apply <receipt>` and retry"
         )
     return generation
 
@@ -943,9 +1050,9 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
     target_sha = ref_sha(repository, config["target_ref"])
     requested_paths = requested_paths or []
     allowed_paths, selected_entries = selected_task_paths(config, repository, target_sha, requested_paths)
+    generation = require_current_runtime(repository, target_sha)
     allowed_paths, generated_output_admission = derived_output_admission(
         repository, target_sha, allowed_paths)
-    generation = require_current_runtime(repository, target_sha)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
     worktree = worktree_path(config, task_id)
@@ -1221,12 +1328,546 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
     return result
 
 
+def _load_boundary_runtime(filename: str, module_name: str) -> Any:
+    sibling = Path(__file__).resolve().with_name(filename)
+    if not sibling.is_file():
+        raise TaskWorkspaceError(f"packaged boundary validator is missing: {filename}")
+    spec = importlib.util.spec_from_file_location(module_name, sibling)
+    if spec is None or spec.loader is None:
+        raise TaskWorkspaceError(f"cannot load boundary validator: {filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_migrated_sparse_controller(controller: Path,
+                                       task_config: dict[str, Any]) -> dict[str, Any]:
+    metadata_path = controller / ".juno_task/config/metadata-controller.json"
+    try:
+        boundary = _load_boundary_runtime(
+            "metadata_controller.py", "juno_task_runtime_metadata_boundary")
+        policy = boundary.load_policy(metadata_path)
+    except Exception as exc:
+        raise TaskWorkspaceError(f"runtime bootstrap requires a valid metadata-controller policy: {exc}") from exc
+    resolver_path = Path(__file__).resolve().with_name("controller_resolver.py")
+    if not resolver_path.is_file():
+        raise TaskWorkspaceError("packaged controller registration validator is missing")
+    resolver_env = {key: value for key, value in os.environ.items()
+                    if key not in {"JUNO_TASK_ROOT", "JUNO_CONTROLLER_BRANCH",
+                                  "JUNO_WORKSPACE_ROLE"}}
+    resolved = subprocess.run(
+        [sys.executable, str(resolver_path), "--cwd", str(controller),
+         "--operation", "orchestration", "--format", "json"],
+        cwd=controller, env=resolver_env, text=True, capture_output=True,
+        stdin=subprocess.DEVNULL)
+    if resolved.returncode:
+        raise TaskWorkspaceError(resolved.stderr.strip() or "controller registration refused")
+    try:
+        route = json.loads(resolved.stdout)
+    except json.JSONDecodeError as exc:
+        raise TaskWorkspaceError("controller registration validator returned invalid evidence") from exc
+    branch = git(controller, "symbolic-ref", "-q", "HEAD", check=False)
+    role = git(controller, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+    sparse = git(controller, "config", "--worktree", "--bool", "--get",
+                 "core.sparseCheckout", check=False).lower()
+    registered_path = git(controller, "config", "--local", "--get", "juno.controller.path", check=False)
+    registered_branch = git(controller, "config", "--local", "--get", "juno.controller.branch", check=False)
+    try:
+        config_json = json.loads((controller / ".juno_task/config.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(f"runtime bootstrap controller config is invalid: {exc}") from exc
+    expected_shape = {"mode": "metadata-only",
+                      "policy": ".juno_task/config/metadata-controller.json"}
+    if (branch != policy["controller_branch"] or role != "controller" or sparse != "true"
+            or not registered_path
+            or Path(registered_path).expanduser().resolve() != controller.resolve()
+            or registered_branch not in {policy["controller_branch"],
+                                         policy["controller_branch"].removeprefix("refs/heads/")}
+            or route.get("valid") is not True or Path(str(route.get("path", ""))).resolve() != controller.resolve()
+            or route.get("role") != "controller"
+            or route.get("role_source") != "controller-registration"
+            or not isinstance(config_json, dict) or "lifecycle" in config_json
+            or config_json.get("controllerWorkspace") != expected_shape
+            or task_config.get("target_ref") != policy["product_ref"]):
+        raise TaskWorkspaceError(
+            "runtime bootstrap is restricted to the exact registered migrated sparse metadata controller")
+    inspection = boundary.inspect(controller, policy,
+                                  expected_branch=policy["controller_branch"], require_active=True)
+    required_checks = {"branch_exact", "tracked_boundary", "product_absent", "role"}
+    failed = sorted(name for name in required_checks if inspection.get("checks", {}).get(name) is not True)
+    if failed:
+        raise TaskWorkspaceError(
+            "runtime bootstrap metadata-controller boundary failed: " + ", ".join(failed))
+    return {"policy_sha256": _file_sha256(metadata_path),
+            "controller_branch": policy["controller_branch"],
+            "product_ref": policy["product_ref"], "checks": sorted(required_checks)}
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _controller_bootstrap_identity(controller: Path) -> dict[str, Any]:
+    metadata = controller / ".juno_task/config/metadata-controller.json"
+    return {
+        "root": str(controller.resolve()),
+        "git_common_dir": str(Path(git(controller, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()),
+        "head_sha": git(controller, "rev-parse", "HEAD^{commit}"),
+        "head_tree": git(controller, "rev-parse", "HEAD^{tree}"),
+        "metadata_controller_sha256": _file_sha256(metadata) if metadata.is_file() else None,
+    }
+
+
+def _bootstrap_receipt_path(controller: Path, digest: str) -> Path:
+    root = (controller / RUNTIME_BOOTSTRAP_ROOT).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = (root / f"{digest}-plan.json").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise TaskWorkspaceError("unsafe task-runtime bootstrap receipt path") from exc
+    return path
+
+
+def _bootstrap_target_status(repository: Path) -> str:
+    return git(repository, "status", "--porcelain=v1", "--untracked-files=all", "--", ".",
+               f":(exclude){RUNTIME_BOOTSTRAP_ROOT}")
+
+
+def _runtime_prior_state(repository: Path, target_sha: str) -> dict[str, Any]:
+    prior = target_blob(repository, target_sha, RUNTIME_PATH)
+    if prior is None:
+        return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
+                "classification": "missing"}
+    tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
+    try:
+        prior_mode = tree_row.split(None, 1)[0]
+    except (AttributeError, IndexError) as exc:
+        raise TaskWorkspaceError("target task runtime tree identity is invalid") from exc
+    if prior_mode not in {"100644", "100755"}:
+        raise TaskWorkspaceError("target task runtime has an unsafe Git mode")
+    prior_sha = hashlib.sha256(prior).hexdigest()
+    source_path = "juno-code/src/templates/scripts/task_workspace.py"
+    source = target_blob(repository, target_sha, source_path)
+    inventory_bytes = target_blob(repository, target_sha, MANAGED_INVENTORY_PATH)
+    try:
+        inventory = json.loads(inventory_bytes) if inventory_bytes is not None else None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("target managed inventory is invalid; refusing bootstrap") from exc
+    package_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
+    inventory_valid = (
+        isinstance(inventory, dict) and set(inventory) == {
+            "schemaVersion", "packageName", "packageVersion", "assets"}
+        and inventory.get("schemaVersion") == 1
+        and inventory.get("packageName") == "juno-code"
+        and isinstance(package_version, str)
+        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", package_version)
+        and isinstance(entry, dict)
+        and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
+        and entry.get("type") == "script"
+        and entry.get("templateVersion") == package_version
+        and entry.get("sourceSha256") == prior_sha
+        and entry.get("installedSha256") == prior_sha
+    )
+    if not inventory_valid or source != prior:
+        raise TaskWorkspaceError(
+            "target task runtime is customized or lacks immutable package/source provenance; "
+            "refusing bootstrap")
+    classification = "exact_managed_source_inventory_generation"
+    return {"state": "present", "mode": prior_mode, "sha256": prior_sha,
+            "bytes_base64": base64.b64encode(prior).decode(),
+            "classification": classification}
+
+
+def _runtime_bootstrap_plan(controller: Path, package_version: str,
+                            package_runtime_sha256: str) -> dict[str, Any]:
+    config = load_config(controller)
+    controller_class = require_migrated_sparse_controller(controller, config)
+    if not is_valid_semver(package_version):
+        raise TaskWorkspaceError("invalid package version identity")
+    running = Path(__file__).resolve().read_bytes()
+    running_sha = hashlib.sha256(running).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", package_runtime_sha256) or running_sha != package_runtime_sha256:
+        raise TaskWorkspaceError("package task-runtime hash does not match the executing recovery engine")
+    repository = product_repository(controller, config)
+    if _bootstrap_target_status(repository):
+        raise TaskWorkspaceError("configured target worktree is dirty; refusing runtime bootstrap")
+    target_ref = config["target_ref"]
+    target_sha = ref_sha(repository, target_ref)
+    target_tree = git(repository, "rev-parse", f"{target_sha}^{{tree}}")
+    prior = _runtime_prior_state(repository, target_sha)
+    if prior["sha256"] == running_sha:
+        raise TaskWorkspaceError("target task runtime already matches the package")
+    plan = {
+        "schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
+        "operation": "plan",
+        "controller_identity": {**_controller_bootstrap_identity(controller),
+                                "controller_class": controller_class},
+        "package": {"name": "juno-code", "version": package_version,
+                    "task_runtime_sha256": running_sha},
+        "target": {"repository": str(repository), "ref": target_ref,
+                   "sha": target_sha, "tree": target_tree},
+        "path": RUNTIME_PATH,
+        "prior": prior,
+        "proposed": {"mode": "100755", "sha256": running_sha,
+                     "bytes_base64": base64.b64encode(running).decode()},
+    }
+    raw = (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    path = _bootstrap_receipt_path(controller, digest)
+    if path.exists() and path.read_bytes() != raw:
+        raise TaskWorkspaceError("immutable task-runtime bootstrap receipt collision")
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw); handle.flush(); os.fsync(handle.fileno())
+    return {**plan, "receipt": {"path": str(path), "sha256": digest}}
+
+
+def _load_runtime_bootstrap_plan(controller: Path, receipt_path: Path,
+                                 package_version: str,
+                                 package_runtime_sha256: str) -> tuple[dict[str, Any], str]:
+    path = receipt_path.expanduser().resolve()
+    root = (controller / RUNTIME_BOOTSTRAP_ROOT).resolve()
+    try:
+        path.relative_to(root)
+        raw = path.read_bytes()
+        plan = json.loads(raw)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(f"invalid task-runtime bootstrap receipt: {exc}") from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    if path.name != f"{digest}-plan.json":
+        raise TaskWorkspaceError("task-runtime bootstrap receipt immutable identity mismatch")
+    required = {"schema_version", "operation", "controller_identity", "package",
+                "target", "path", "prior", "proposed"}
+    if (not isinstance(plan, dict) or set(plan) != required
+            or plan.get("schema_version") != RUNTIME_BOOTSTRAP_SCHEMA
+            or plan.get("operation") != "plan" or plan.get("path") != RUNTIME_PATH
+            or plan.get("package") != {"name": "juno-code", "version": package_version,
+                                       "task_runtime_sha256": package_runtime_sha256}):
+        raise TaskWorkspaceError("task-runtime bootstrap receipt/controller/package identity mismatch")
+    try:
+        proposed = base64.b64decode(plan["proposed"]["bytes_base64"], validate=True)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskWorkspaceError("task-runtime bootstrap proposed bytes are invalid") from exc
+    if (hashlib.sha256(proposed).hexdigest() != package_runtime_sha256
+            or plan["proposed"].get("sha256") != package_runtime_sha256
+            or plan["proposed"].get("mode") != "100755"
+            or hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest() != package_runtime_sha256):
+        raise TaskWorkspaceError("task-runtime bootstrap package bytes/hash mismatch")
+    consumed = root / f"{digest}-applied.json"
+    durable = root / f"{digest}-completion-durable.json"
+    if consumed.exists() and durable.exists():
+        raise TaskWorkspaceError("task-runtime bootstrap receipt has already been applied")
+    return plan, digest
+
+
+def _write_runtime_bootstrap_record(path: Path, payload: dict[str, Any]) -> bytes:
+    raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if path.exists():
+        if path.read_bytes() != raw:
+            raise TaskWorkspaceError(f"immutable task-runtime bootstrap record collision: {path.name}")
+        return raw
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(6)}")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return raw
+
+
+def _target_ref_holders(repository: Path, target_ref: str) -> list[dict[str, Any]]:
+    output = run(["git", "-C", str(repository), "worktree", "list", "--porcelain"], repository)
+    records: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    for line in [*output.stdout.splitlines(), ""]:
+        if not line:
+            if current.get("branch") == target_ref:
+                records.append(current)
+            current = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key in {"worktree", "HEAD", "branch", "locked"}:
+            current[key.lower()] = value if value else True
+    return records
+
+
+@contextmanager
+def _target_mutation_lock(repository: Path) -> Iterator[None]:
+    common = Path(git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    path = common / "juno-task-runtime-bootstrap.lock"
+    with path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def _admit_target_holder(repository: Path, target_ref: str,
+                         expected_sha: str) -> dict[str, Any] | None:
+    holders = _target_ref_holders(repository, target_ref)
+    if len(holders) > 1:
+        raise TaskWorkspaceError(
+            "target ref has multiple checked-out holders; remove the extra holder with "
+            "`git worktree remove <path>` after review, then rerun the same --apply receipt")
+    if not holders:
+        return None
+    row = holders[0]
+    if row.get("locked"):
+        raise TaskWorkspaceError(
+            "target-ref holder is locked; unlock it with `git worktree unlock <path>` after review, "
+            "then rerun the same --apply receipt")
+    holder = exact_root(Path(str(row.get("worktree", ""))), "target-ref holder")
+    if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != target_ref
+            or git(holder, "rev-parse", "HEAD^{commit}", check=False) != expected_sha):
+        raise TaskWorkspaceError("target-ref holder HEAD/ref moved; refusing before target mutation")
+    if git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False):
+        raise TaskWorkspaceError(
+            "target-ref holder is dirty; clean it without stash/reset automation, then rerun "
+            "the same --apply receipt")
+    return {"path": str(holder), "branch": target_ref, "previous_sha": expected_sha,
+            "git_common_dir": str(Path(git(holder, "rev-parse", "--path-format=absolute",
+                                           "--git-common-dir")).resolve())}
+
+
+def _validate_intent_holder(repository: Path, intent_holder: Any,
+                            target_ref: str) -> Path | None:
+    holders = _target_ref_holders(repository, target_ref)
+    if intent_holder is None:
+        if holders:
+            raise TaskWorkspaceError(
+                "a target-ref holder appeared after planning apply; refusing durable intent recovery")
+        return None
+    if (not isinstance(intent_holder, dict) or set(intent_holder) != {
+            "path", "branch", "previous_sha", "git_common_dir"}
+            or intent_holder.get("branch") != target_ref):
+        raise TaskWorkspaceError("task-runtime bootstrap target-holder intent is invalid")
+    if len(holders) != 1 or Path(str(holders[0].get("worktree", ""))).resolve() != Path(
+            intent_holder["path"]).resolve() or holders[0].get("locked"):
+        raise TaskWorkspaceError("target-ref holder topology changed after durable apply intent")
+    holder = exact_root(Path(intent_holder["path"]), "durable target-ref holder")
+    if (Path(git(holder, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+            != Path(intent_holder["git_common_dir"]).resolve()):
+        raise TaskWorkspaceError("target-ref holder Git identity changed")
+    return holder
+
+
+def _holder_dirt_matches_interrupted_runtime_sync(holder: Path,
+                                                   prior: dict[str, Any],
+                                                   proposed: bytes) -> bool:
+    status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
+    rows = [line for line in status.splitlines() if line]
+    if not rows or any(line[3:] != RUNTIME_PATH for line in rows):
+        return False
+    try:
+        prior_bytes = (base64.b64decode(prior["bytes_base64"], validate=True)
+                       if prior.get("bytes_base64") is not None else None)
+    except (KeyError, TypeError, ValueError):
+        return False
+    working = (holder / RUNTIME_PATH).read_bytes() if (holder / RUNTIME_PATH).is_file() else None
+    index_result = subprocess.run(
+        ["git", "-C", str(holder), "show", f":{RUNTIME_PATH}"], cwd=holder,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    indexed = index_result.stdout if index_result.returncode == 0 else None
+    return working in {prior_bytes, proposed, None} and indexed in {prior_bytes, proposed, None}
+
+
+def _synchronize_target_holder(holder: Path, target_ref: str,
+                               previous_sha: str, commit_sha: str,
+                               prior: dict[str, Any], proposed: bytes) -> None:
+    current = git(holder, "rev-parse", "HEAD^{commit}", check=False)
+    status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
+    if current == commit_sha and not status:
+        return
+    branch = git(holder, "symbolic-ref", "-q", "HEAD", check=False)
+    recovering_interruption = (current == commit_sha and branch == target_ref
+                               and _holder_dirt_matches_interrupted_runtime_sync(
+                                   holder, prior, proposed))
+    if not recovering_interruption and (current != previous_sha or branch != target_ref):
+        raise TaskWorkspaceError("target-ref holder moved outside the durable apply intent")
+    if not recovering_interruption and status:
+        raise TaskWorkspaceError("target-ref holder became dirty before synchronization")
+    result = run(["git", "-C", str(holder), "reset", "--hard", commit_sha], holder, check=False)
+    if result.returncode:
+        raise TaskWorkspaceError(
+            "target-holder synchronization was interrupted; rerun the same --apply receipt")
+    if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != target_ref
+            or git(holder, "rev-parse", "HEAD^{commit}", check=False) != commit_sha
+            or git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)):
+        raise TaskWorkspaceError(
+            "target-holder synchronization is incomplete; rerun the same --apply receipt")
+
+
+def _validate_runtime_bootstrap_commit(repository: Path, plan: dict[str, Any],
+                                       commit_sha: str, proposed: bytes) -> str:
+    previous_sha = plan["target"]["sha"]
+    if git(repository, "rev-parse", f"{commit_sha}^", check=False) != previous_sha:
+        raise TaskWorkspaceError("runtime bootstrap commit parent mismatch")
+    committed_row = git(repository, "ls-tree", commit_sha, "--", RUNTIME_PATH, check=False)
+    changed = git(repository, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                  commit_sha, check=False).splitlines()
+    if (target_blob(repository, commit_sha, RUNTIME_PATH) != proposed
+            or not committed_row.startswith(plan["proposed"]["mode"] + " blob ")
+            or changed != [RUNTIME_PATH]):
+        raise TaskWorkspaceError("runtime bootstrap reviewed commit identity mismatch")
+    return git(repository, "rev-parse", f"{commit_sha}^{{tree}}")
+
+
+def _apply_runtime_bootstrap(controller: Path, package_version: str,
+                             package_runtime_sha256: str, receipt_path: Path) -> dict[str, Any]:
+    config = load_config(controller)
+    controller_class = require_migrated_sparse_controller(controller, config)
+    plan, digest = _load_runtime_bootstrap_plan(
+        controller, receipt_path, package_version, package_runtime_sha256)
+    expected_controller_identity = {**_controller_bootstrap_identity(controller),
+                                    "controller_class": controller_class}
+    if plan.get("controller_identity") != expected_controller_identity:
+        raise TaskWorkspaceError("task-runtime bootstrap controller identity mismatch")
+    repository = product_repository(controller, config)
+    target = plan["target"]
+    if str(repository) != target.get("repository") or config["target_ref"] != target.get("ref"):
+        raise TaskWorkspaceError("task-runtime bootstrap target identity changed")
+    if _bootstrap_target_status(repository):
+        raise TaskWorkspaceError("configured target worktree is dirty; refusing runtime bootstrap")
+    proposed = base64.b64decode(plan["proposed"]["bytes_base64"], validate=True)
+    record_root = (controller / RUNTIME_BOOTSTRAP_ROOT).resolve()
+    intent_path = record_root / f"{digest}-apply-intent.json"
+    applied_path = record_root / f"{digest}-applied.json"
+    durable_path = record_root / f"{digest}-completion-durable.json"
+    intent: dict[str, Any] | None = None
+    if intent_path.exists():
+        try:
+            intent = json.loads(intent_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError("task-runtime bootstrap apply intent is invalid") from exc
+        if (not isinstance(intent, dict) or set(intent) != {
+                "schema_version", "operation", "plan_sha256", "target_ref",
+                "previous_sha", "commit_sha", "tree", "path", "package", "target_holder"}
+                or intent.get("schema_version") != RUNTIME_BOOTSTRAP_SCHEMA
+                or intent.get("operation") != "apply-intent" or intent.get("plan_sha256") != digest
+                or intent.get("target_ref") != config["target_ref"]
+                or intent.get("previous_sha") != target.get("sha")
+                or intent.get("path") != RUNTIME_PATH
+                or not SHA_RE.fullmatch(str(intent.get("commit_sha", "")))
+                or not SHA_RE.fullmatch(str(intent.get("tree", "")))
+                or intent.get("package") != plan["package"]):
+            raise TaskWorkspaceError("task-runtime bootstrap apply intent identity mismatch")
+        commit_sha = intent.get("commit_sha", "")
+        tree = _validate_runtime_bootstrap_commit(repository, plan, commit_sha, proposed)
+        if tree != intent.get("tree"):
+            raise TaskWorkspaceError("task-runtime bootstrap apply intent tree mismatch")
+    else:
+        current_sha = ref_sha(repository, config["target_ref"])
+        if (current_sha != target.get("sha")
+                or git(repository, "rev-parse", f"{current_sha}^{{tree}}") != target.get("tree")):
+            raise TaskWorkspaceError("task-runtime bootstrap target ref moved after planning")
+        if _runtime_prior_state(repository, current_sha) != plan.get("prior"):
+            raise TaskWorkspaceError("task-runtime bootstrap prior path state changed")
+        workspace_root = Path(config["workspace_root"])
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=".yy-task-runtime-bootstrap-", dir=workspace_root))
+        added = False
+        try:
+            temporary.rmdir()
+            run(["git", "-C", str(repository), "worktree", "add", "--detach",
+                 str(temporary), current_sha], repository)
+            added = True
+            if git(temporary, "status", "--porcelain=v1", "--untracked-files=all"):
+                raise TaskWorkspaceError("isolated target worktree is not clean")
+            destination = temporary / RUNTIME_PATH
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(proposed); destination.chmod(0o755)
+            run(["git", "-C", str(temporary), "add", "--", RUNTIME_PATH], temporary)
+            if git(temporary, "diff", "--cached", "--name-only").splitlines() != [RUNTIME_PATH]:
+                raise TaskWorkspaceError("runtime bootstrap staged an unexpected path")
+            run(["git", "-C", str(temporary), "-c", "core.hooksPath=/dev/null", "commit", "-m",
+                 f"chore(juno): bootstrap package task runtime\n\nReviewed-Plan: {digest}\nJuno-Package: {package_version}"], temporary)
+            commit_sha = git(temporary, "rev-parse", "HEAD^{commit}")
+            tree = _validate_runtime_bootstrap_commit(repository, plan, commit_sha, proposed)
+        finally:
+            if added:
+                run(["git", "-C", str(repository), "worktree", "remove", "--force",
+                     str(temporary)], repository, check=False)
+            elif temporary.exists():
+                temporary.rmdir()
+        with _target_mutation_lock(repository):
+            if ref_sha(repository, config["target_ref"]) != current_sha:
+                raise TaskWorkspaceError("task-runtime bootstrap target ref raced before durable intent")
+            target_holder = _admit_target_holder(repository, config["target_ref"], current_sha)
+            intent = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply-intent",
+                      "plan_sha256": digest, "target_ref": config["target_ref"],
+                      "previous_sha": current_sha, "commit_sha": commit_sha, "tree": tree,
+                      "path": RUNTIME_PATH, "package": plan["package"],
+                      "target_holder": target_holder}
+            _write_runtime_bootstrap_record(intent_path, intent)
+
+    with _target_mutation_lock(repository):
+        holder = _validate_intent_holder(
+            repository, intent["target_holder"], config["target_ref"])
+        current_sha = ref_sha(repository, config["target_ref"])
+        if holder is not None:
+            if current_sha not in {intent["previous_sha"], intent["commit_sha"]}:
+                raise TaskWorkspaceError(
+                    "task-runtime bootstrap target ref moved outside the durable apply intent")
+            _synchronize_target_holder(holder, config["target_ref"],
+                                       intent["previous_sha"], intent["commit_sha"],
+                                       plan["prior"], proposed)
+        elif current_sha == intent["previous_sha"]:
+            cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
+                       intent["commit_sha"], intent["previous_sha"]], repository, check=False)
+            if cas.returncode:
+                raise TaskWorkspaceError("task-runtime bootstrap target ref CAS advancement failed")
+        elif current_sha != intent["commit_sha"]:
+            raise TaskWorkspaceError(
+                "task-runtime bootstrap target ref moved outside the durable apply intent")
+    result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
+              "outcome": "completed", "plan_sha256": digest,
+              "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],
+              "commit_sha": intent["commit_sha"], "tree": intent["tree"],
+              "path": RUNTIME_PATH, "package": plan["package"],
+              "target_holder": intent["target_holder"]}
+    try:
+        raw = _write_runtime_bootstrap_record(applied_path, result)
+        completion = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
+                      "operation": "completion-durable", "plan_sha256": digest,
+                      "applied_sha256": hashlib.sha256(raw).hexdigest(),
+                      "commit_sha": intent["commit_sha"]}
+        _write_runtime_bootstrap_record(durable_path, completion)
+    except (OSError, TaskWorkspaceError) as exc:
+        raise TaskWorkspaceError(
+            "target CAS completed but durable completion recording failed; rerun the same --apply receipt") from exc
+    return {**result, "receipt": {"path": str(applied_path),
+                                   "sha256": hashlib.sha256(raw).hexdigest()},
+            "completion_durable": {"path": str(durable_path)}}
+
+
+def runtime_bootstrap(controller: Path, package_version: str,
+                      package_runtime_sha256: str,
+                      receipt_path: Optional[Path]) -> dict[str, Any]:
+    return (_runtime_bootstrap_plan(controller, package_version, package_runtime_sha256)
+            if receipt_path is None else
+            _apply_runtime_bootstrap(controller, package_version,
+                                     package_runtime_sha256, receipt_path))
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
-    value.add_argument("operation", choices=("start", "status", "finish"))
-    value.add_argument("--task", required=True)
+    value.add_argument("operation", choices=("start", "status", "finish", "runtime-bootstrap"))
+    value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
+    value.add_argument("--dry-run", action="store_true")
+    value.add_argument("--apply", type=Path)
+    value.add_argument("--package-version")
+    value.add_argument("--package-runtime-sha256")
     return value
 
 
@@ -1234,12 +1875,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         controller = exact_root(args.controller, "controller", physical_identity=False)
-        if args.operation != "start" and args.path:
-            raise TaskWorkspaceError("--path is supported only for task start")
-        audit = record_control_audit(controller, "task", args.operation, args.task)
-        result = (start(controller, args.task, args.path) if args.operation == "start"
-                  else {"status": status, "finish": finish}[args.operation](controller, args.task))
-        result = {**result, "control_audit": audit}
+        if args.operation == "runtime-bootstrap":
+            if args.task or args.path or not args.package_version or not args.package_runtime_sha256:
+                raise TaskWorkspaceError("runtime-bootstrap package identity is incomplete")
+            if args.dry_run == bool(args.apply):
+                raise TaskWorkspaceError("runtime-bootstrap requires exactly one of --dry-run or --apply <receipt>")
+            result = runtime_bootstrap(controller, args.package_version,
+                                       args.package_runtime_sha256, args.apply)
+        else:
+            if not args.task:
+                raise TaskWorkspaceError(f"task {args.operation} requires --task")
+            if args.operation != "start" and args.path:
+                raise TaskWorkspaceError("--path is supported only for task start")
+            if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
+                raise TaskWorkspaceError("runtime-bootstrap options are not supported for task lifecycle operations")
+            audit = record_control_audit(controller, "task", args.operation, args.task)
+            result = (start(controller, args.task, args.path) if args.operation == "start"
+                      else {"status": status, "finish": finish}[args.operation](controller, args.task))
+            result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:

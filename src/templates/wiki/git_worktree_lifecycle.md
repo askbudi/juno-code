@@ -30,6 +30,10 @@ yy task start TASK_ID --path juno_kanban  # repeat --path for policy-admitted ro
 yy task status TASK_ID
 yy task finish TASK_ID
 
+yy task runtime-bootstrap --dry-run
+# review the printed immutable receipt
+yy task runtime-bootstrap --apply RECEIPT
+
 yy merge status
 yy merge next
 yy merge resolve TASK_ID
@@ -41,7 +45,28 @@ editing or testing there, the worker follows [task dependency hydration](task_de
 for each configured validation cwd and stops on provisioning or clean-tree
 failure. Task finish requires a clean committed tip, allowed changed paths, and
 focused validation before queueing. Independent features can remain active
-concurrently.
+concurrently. Runtime identity is validated before any Juno-specific generated-output
+admission. Project classification is explicit: a source repository whose
+`juno-code/package.json` names `juno-code` must provide both authoritative,
+strict declarations; an ordinary consumer without that package identity has no
+Juno-source declaration requirement.
+
+If start reports a stale or absent target task runtime, `scripts update` refreshes
+only controller-local bytes and is not the recovery. Run `yy task
+runtime-bootstrap --dry-run`, review the immutable package/controller/target/path
+receipt, then apply that exact receipt. This command is restricted to the exact
+registered, sparse metadata-controller class and refuses synthetic/product/task
+worktrees. Apply uses a clean isolated target worktree, creates a one-path
+reviewed commit and durably records its apply intent. Before mutation it discovers
+all exact target-ref holders under the repository writer lock. No holder uses an
+expected-SHA CAS; one exact clean unlocked holder is synchronized with Git's
+checked-out-branch reset so its ref, index, and files finish together. Dirty,
+locked, moved, or multiple holders refuse before mutation with a supported clean,
+unlock, or reviewed extra-worktree removal action. Interrupted holder synchronization
+or completion recording is recovered by rerunning the same receipt; the durable
+intent prevents another commit or unrelated ref mutation. Modified or completed
+receipts, package mismatch, and target customization without exact source plus
+validated managed-inventory provenance also refuse.
 
 The merge queue serializes only target mutation. It uses a per-target lock and
 expected-old-SHA update. If the target moved, it builds a candidate from the

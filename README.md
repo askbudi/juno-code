@@ -150,7 +150,30 @@ yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 
 A receipt-bound controller generation is Git-target-owned. `yy scripts update`
 from a mismatched (especially older) package refuses instead of replacing those
-ignored scripts. `yy info` and `yy doctor workspace` report the invoker and
+ignored scripts. It also refreshes only controller-local managed bytes; it does
+not repair a missing or stale target-tracked task runtime. Use the explicit
+package-bound recovery instead:
+
+```bash
+yy task runtime-bootstrap --dry-run
+# review the printed immutable receipt
+yy task runtime-bootstrap --apply RECEIPT
+```
+
+The command is restricted to the exact registered migrated sparse metadata
+controller. The plan binds controller class/identity, package version/runtime
+hash, full target ref and commit/tree, and the exact path's prior/proposed bytes.
+Existing target bytes are replaceable only when validated managed-inventory
+identity and immutable target source agree. Apply refuses moved refs, dirty
+worktrees, receipt tampering/completed replay, package mismatch, and customization;
+otherwise it creates a one-path reviewed commit in an isolated clean worktree
+and durably records its apply intent. Before mutation it discovers exact target-ref
+holders under a repository lock. With no holder it advances by expected-SHA CAS;
+with one exact clean unlocked holder it synchronizes that checked-out branch, index,
+and files together. Dirty, locked, moved, or multiple holders refuse with explicit
+recovery guidance before mutation. If holder synchronization or completion
+recording is interrupted, rerun the same receipt to recover the existing durable
+intent without creating another commit or advancing an unrelated ref. `yy info` and `yy doctor workspace` report the invoker and
 registered controller executable versions separately from the receipt-bound
 script package/target; `yy scripts doctor` validates the receipt hashes rather
 than comparing them to the invoking package.
@@ -245,6 +268,10 @@ full suites.
 yy task start TASK_ID
 # implement, run focused tests, and commit in the returned worktree
 yy task finish TASK_ID
+
+# only when start reports a stale/absent target runtime:
+yy task runtime-bootstrap --dry-run
+yy task runtime-bootstrap --apply RECEIPT
 
 yy merge status
 yy merge next

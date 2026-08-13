@@ -22,6 +22,15 @@ from typing import Optional
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
+try:
+    _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
+except task_runtime.TaskWorkspaceError as exc:
+    print(f"task workspace test setup: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+assert_juno_admission_fixture = _fixture.assert_juno_admission_fixture
+install_juno_admission_fixture = _fixture.install_juno_admission_fixture
+PACKAGE_ROOT = Path(_fixture.__file__).resolve().parents[4]
+PUBLIC_YY = PACKAGE_ROOT / "dist/bin/juno-code.sh"
 
 
 DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "juno-code-real-git-managed-install.lock"
@@ -363,6 +372,38 @@ def git(root: Path, *args: str) -> str:
     return run(["git", "-C", str(root), *args], root).stdout.strip()
 
 
+class SemVerValidationTests(unittest.TestCase):
+    def test_accepts_stable_prerelease_build_and_combined_versions(self) -> None:
+        accepted = {
+            "stable": ("0.0.0", "2.1.3", "10.20.30"),
+            "prerelease": ("2.1.3-rc", "2.1.3-rc.0.6", "1.0.0-01a"),
+            "build": ("2.1.3+build", "2.1.3+001", "1.0.0+linux.x86-64"),
+            "prerelease_and_build": ("2.1.3-rc.0.6+build.001",),
+        }
+        for version_class, versions in accepted.items():
+            for version in versions:
+                with self.subTest(version_class=version_class, version=version):
+                    self.assertTrue(task_runtime.is_valid_semver(version))
+
+    def test_rejects_malformed_versions(self) -> None:
+        rejected = {
+            "leading_zero": ("01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3-alpha.01"),
+            "empty_identifier": ("1.2.3-", "1.2.3+", "1.2.3-alpha..1", "1.2.3+build..1"),
+            "invalid_character": ("v1.2.3", "1.2.3_rc", "1.2.3+build_1", "١.٢.٣"),
+            "malformed_core": ("", "1", "1.2", "1.2.3.4", "1.2.3+one+two"),
+        }
+        for failure_class, versions in rejected.items():
+            for version in versions:
+                with self.subTest(failure_class=failure_class, version=version):
+                    self.assertFalse(task_runtime.is_valid_semver(version))
+
+    def test_validation_is_exact_string_only_without_trimming_or_coercion(self) -> None:
+        self.assertTrue(task_runtime.is_valid_semver("1.2.3-RC+Build.001"))
+        for value in (" 1.2.3", "1.2.3 ", None, 10203, {}, [], b"1.2.3"):
+            with self.subTest(value=value):
+                self.assertFalse(task_runtime.is_valid_semver(value))
+
+
 class TaskWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -383,6 +424,9 @@ class TaskWorkspaceTests(unittest.TestCase):
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.parent.mkdir(parents=True)
         runtime.write_bytes(SCRIPT.read_bytes())
+        managed_source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        managed_source.parent.mkdir(parents=True)
+        managed_source.write_bytes(SCRIPT.read_bytes())
         generated_declaration = self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION
         generated_declaration.parent.mkdir(parents=True)
         generated_declaration.write_text(json.dumps({
@@ -391,19 +435,19 @@ class TaskWorkspaceTests(unittest.TestCase):
             "destinations": [".agents/unadmitted-output.txt"],
         }) + "\n")
         managed_declaration = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
-        managed_declaration.parent.mkdir(parents=True)
+        managed_declaration.parent.mkdir(parents=True, exist_ok=True)
         managed_declaration.write_text(json.dumps({
             "schemaVersion": 1, "admissionOutputs": [], "assets": [],
         }) + "\n")
+        package = self.repository / "juno-code/package.json"
+        package.write_text(json.dumps({"name": "juno-code", "version": "9.0.0"}) + "\n")
         unadmitted_source = self.repository / "juno-code/unadmitted-canonical.txt"
         unadmitted_output = self.repository / ".agents/unadmitted-output.txt"
         unadmitted_source.parent.mkdir(parents=True, exist_ok=True)
         unadmitted_output.parent.mkdir(parents=True, exist_ok=True)
         unadmitted_source.write_text("unadmitted base\n")
         unadmitted_output.write_text("unadmitted base\n")
-        git(self.repository, "add", "src/base.txt", "optional/base.txt", task_runtime.RUNTIME_PATH,
-            task_runtime.GENERATED_OUTPUT_DECLARATION, task_runtime.MANAGED_OUTPUT_DECLARATION,
-            "juno-code/unadmitted-canonical.txt", ".agents/unadmitted-output.txt")
+        git(self.repository, "add", ".")
         git(self.repository, "commit", "-m", "product base")
         self.base = git(self.repository, "rev-parse", "HEAD")
         git(self.repository, "branch", "controller")
@@ -415,8 +459,40 @@ class TaskWorkspaceTests(unittest.TestCase):
             task = self.controller / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
             task.parent.mkdir(parents=True, exist_ok=True)
             task.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
+        # Convert the linked branch into the registered migrated sparse
+        # metadata-controller class required by target-runtime recovery.
+        git(self.controller, "rm", "-r", "--ignore-unmatch", "juno-code", ".agents",
+            ".juno_task/scripts")
+        metadata_template = SCRIPT.parents[1] / "config/metadata-controller.json"
+        metadata = json.loads(metadata_template.read_text())
+        metadata["controller_branch"] = "refs/heads/controller"
+        metadata["product_ref"] = "refs/heads/product"
+        (self.controller / ".juno_task/config/metadata-controller.json").write_text(
+            json.dumps(metadata, indent=2) + "\n")
+        (self.controller / ".juno_task/config.json").write_text(json.dumps({
+            "controllerWorkspace": {"mode": "metadata-only",
+                                    "policy": ".juno_task/config/metadata-controller.json"},
+        }) + "\n")
+        config_templates = SCRIPT.parents[1] / "config"
+        for name in ("integration-workspace.json", "risk-policy.json"):
+            (self.controller / ".juno_task/config" / name).write_bytes(
+                (config_templates / name).read_bytes())
+        (self.controller / ".gitignore").write_text(
+            "/.juno_task/runtime/\n/.juno_task/scripts/\n/AGENTS.md\n/CLAUDE.md\n"
+            "/.agents/\n/.claude/\n/.pi/\n")
         git(self.controller, "add", ".")
-        git(self.controller, "commit", "-m", "metadata controller")
+        git(self.controller, "commit", "-m", "registered migrated sparse metadata controller")
+        git(self.repository, "config", "extensions.worktreeConfig", "true")
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "controller")
+        git(self.controller, "config", "--local", "juno.controller.path", str(self.controller))
+        git(self.controller, "config", "--local", "juno.controller.branch", "controller")
+        git(self.controller, "config", "--worktree", "core.sparseCheckout", "true")
+        git(self.controller, "config", "--worktree", "core.sparseCheckoutCone", "false")
+        sparse_file = Path(git(self.controller, "rev-parse", "--path-format=absolute",
+                               "--git-path", "info/sparse-checkout"))
+        sparse_file.parent.mkdir(parents=True, exist_ok=True)
+        sparse_file.write_text("/.gitignore\n/.juno_task/\n")
+        git(self.controller, "read-tree", "-mu", "HEAD")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -559,6 +635,14 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertIn("generated-output declaration surface is partial", failed.stderr)
         self.assertIn(task_runtime.MANAGED_OUTPUT_DECLARATION, failed.stderr)
         self.assertFalse((self.workspaces / "X").exists())
+    def test_authoritative_juno_fixture_missing_asset_has_one_setup_diagnostic(self) -> None:
+        declaration = self.repository / task_runtime.GENERATED_OUTPUT_DECLARATION
+        declaration.unlink()
+        with self.assertRaisesRegex(
+                AssertionError,
+                "real-Git Juno fixture missing authoritative admission assets: "
+                "juno-code/scripts/implementation-contract.json"):
+            assert_juno_admission_fixture(self.repository)
 
     def test_declared_generator_and_managed_outputs_are_hash_bound_and_queue_at_byte_parity(self) -> None:
         fixtures = self.install_declared_output_fixtures()
@@ -915,6 +999,336 @@ class TaskWorkspaceTests(unittest.TestCase):
                                  "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
         self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
+    def test_package_bound_runtime_bootstrap_plan_apply_and_full_task_start(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        before = git(self.repository, "rev-parse", "refs/heads/product")
+
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual(plan["target"]["ref"], "refs/heads/product")
+        self.assertEqual(plan["target"]["sha"], before)
+        self.assertEqual(plan["prior"]["state"], "absent")
+        self.assertEqual(plan["proposed"]["sha256"], package_hash)
+        # A controller-local scripts refresh does not mutate the package-bound plan.
+        controller_runtime = self.controller / task_runtime.RUNTIME_PATH
+        controller_runtime.parent.mkdir(parents=True, exist_ok=True)
+        controller_runtime.write_bytes(SCRIPT.read_bytes())
+
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "package"):
+            task_runtime.runtime_bootstrap(self.controller, "9.9.9", package_hash,
+                                           Path(plan["receipt"]["path"]))
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "identity mismatch|bytes/hash"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", "f" * 64,
+                                           Path(plan["receipt"]["path"]))
+        applied = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, Path(plan["receipt"]["path"]))
+        self.assertEqual(applied["previous_sha"], before)
+        self.assertEqual(applied["target_holder"]["path"], str(self.repository.resolve()))
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), applied["commit_sha"])
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        self.assertTrue((self.repository / task_runtime.RUNTIME_PATH).is_file())
+        self.assertEqual(git(self.repository, "show", f"refs/heads/product:{task_runtime.RUNTIME_PATH}"),
+                         SCRIPT.read_text().rstrip())
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "already been applied"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash,
+                                           Path(plan["receipt"]["path"]))
+
+        started = self.payload("start", "X")
+        self.assertEqual(started["outcome"], "started")
+        self.assertEqual(started["creation_receipt"]["runtime_generation"]["target_sha256"],
+                         package_hash)
+        self.assertEqual(git(self.workspaces / "X", "status", "--porcelain=v1"), "")
+        self.assertNotEqual(git(self.workspaces / "X", "config", "--worktree", "--bool",
+                                "--get", "core.sparseCheckout"), "true")
+
+    def test_runtime_bootstrap_admits_exact_stale_consumer_inventory_generation(self) -> None:
+        stale = b"#!/usr/bin/env python3\n# exact older package runtime\n"
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.write_bytes(stale)
+        source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        source.write_bytes(stale)
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        stale_hash = hashlib.sha256(stale).hexdigest()
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "assets": {task_runtime.RUNTIME_PATH: {
+                "type": "script", "templateVersion": "2.1.2",
+                "sourceSha256": stale_hash, "installedSha256": stale_hash,
+            }},
+        }) + "\n")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH,
+            "juno-code/src/templates/scripts/task_workspace.py",
+            task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "exact stale consumer runtime generation")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        self.assertEqual(plan["prior"]["classification"],
+                         "exact_managed_source_inventory_generation")
+        self.assertEqual(plan["prior"]["sha256"], stale_hash)
+
+    def test_runtime_bootstrap_rejects_self_asserted_inventory_customization(self) -> None:
+        customized = b"#!/usr/bin/env python3\n# operator customization\n"
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.write_bytes(customized)
+        claimed = hashlib.sha256(customized).hexdigest()
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "assets": {task_runtime.RUNTIME_PATH: {
+                "type": "script", "templateVersion": "2.1.2",
+                "sourceSha256": claimed, "installedSha256": claimed,
+            }},
+        }) + "\n")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH, task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "self-assert customized runtime inventory")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "immutable package/source provenance"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+    def test_runtime_bootstrap_recovers_post_cas_completion_record_failure(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        original_write = task_runtime._write_runtime_bootstrap_record
+        injected = {"failed": False}
+
+        def fail_completion(path: Path, payload: dict):
+            if path.name.endswith("-completion-durable.json") and not injected["failed"]:
+                injected["failed"] = True
+                raise OSError("injected completion fsync failure")
+            return original_write(path, payload)
+
+        with mock.patch.object(task_runtime, "_write_runtime_bootstrap_record",
+                               side_effect=fail_completion):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "target CAS completed.*rerun"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        advanced = git(self.repository, "rev-parse", "refs/heads/product")
+        self.assertNotEqual(advanced, plan["target"]["sha"])
+        record_root = self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT
+        self.assertTrue((record_root / f'{plan["receipt"]["sha256"]}-apply-intent.json').is_file())
+        self.assertTrue((record_root / f'{plan["receipt"]["sha256"]}-applied.json').is_file())
+        self.assertFalse((record_root / f'{plan["receipt"]["sha256"]}-completion-durable.json').exists())
+
+        recovered = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(recovered["commit_sha"], advanced)
+        self.assertEqual(recovered["outcome"], "completed")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "already been applied"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+
+    def test_runtime_bootstrap_recovers_interrupted_target_holder_synchronization(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        original_run = task_runtime.run
+        injected = {"failed": False}
+
+        def interrupt_after_reset(argv: list[str], cwd: Path, *, check: bool = True):
+            if (len(argv) >= 5 and argv[-3:-1] == ["reset", "--hard"]
+                    and not injected["failed"]):
+                # Reproduce interruption after the branch ref advanced but
+                # before its holder index/files synchronized.
+                old = git(self.repository, "rev-parse", "HEAD")
+                original_run(["git", "-C", str(self.repository), "update-ref",
+                              "refs/heads/product", argv[-1], old], self.repository)
+                injected["failed"] = True
+                return subprocess.CompletedProcess(argv, 75, "",
+                                                   "injected post-CAS holder interruption")
+            return original_run(argv, cwd, check=check)
+
+        with mock.patch.object(task_runtime, "run", side_effect=interrupt_after_reset):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "synchronization was interrupted"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        advanced = git(self.repository, "rev-parse", "refs/heads/product")
+        self.assertNotEqual(advanced, plan["target"]["sha"])
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), advanced)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"),
+                         f"D  {task_runtime.RUNTIME_PATH}")
+
+        recovered = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(recovered["commit_sha"], advanced)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_recovers_target_holder_index_lock_without_hidden_mutation(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        before = git(self.repository, "rev-parse", "HEAD")
+        index_lock = Path(git(self.repository, "rev-parse", "--path-format=absolute",
+                              "--git-path", "index.lock"))
+        index_lock.write_text("held\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "synchronization was interrupted"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        index_lock.unlink()
+        recovered = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_refuses_dirty_or_multiple_target_holders_without_mutation(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        before = git(self.repository, "rev-parse", "HEAD")
+
+        dirty = self.repository / "holder-dirty.tmp"
+        dirty.write_text("dirty\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "dirty"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        dirty.unlink()
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+        duplicate = self.root / "duplicate-target-holder"
+        run(["git", "-C", str(self.repository), "worktree", "add", "--force", "--force",
+             str(duplicate), "product"], self.repository)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "multiple checked-out holders"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(duplicate, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        self.assertEqual(git(duplicate, "status", "--porcelain=v1"), "")
+
+        git(self.repository, "switch", "--detach")
+        git(self.repository, "worktree", "lock", str(duplicate))
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "holder is locked"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual(git(duplicate, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(duplicate, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_refuses_invalid_policy_registration_role_or_sparse_class(self) -> None:
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        policy_path = self.controller / ".juno_task/config/metadata-controller.json"
+        original_policy = policy_path.read_bytes()
+        policy = json.loads(original_policy)
+        policy["unexpected"] = True
+        policy_path.write_text(json.dumps(policy) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "valid metadata-controller policy"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        policy_path.write_bytes(original_policy)
+
+        git(self.controller, "config", "--local", "--unset-all", "juno.controller.path")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "controller registration"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        git(self.controller, "config", "--local", "juno.controller.path", str(self.controller))
+
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "task")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "registration|workspace role|registered migrated"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "controller")
+
+        git(self.controller, "config", "--worktree", "core.sparseCheckout", "false")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "registered migrated sparse metadata controller"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+    def test_runtime_bootstrap_refuses_moved_tampered_dirty_and_customized_targets(self) -> None:
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "customized"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "remove task runtime")
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        original = receipt.read_bytes()
+        receipt.write_bytes(original + b" ")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "immutable identity"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        receipt.write_bytes(original)
+
+        (self.controller / "dirty.tmp").write_text("dirty\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "dirty"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        (self.controller / "dirty.tmp").unlink()
+        moved = self.advance_target()
+        moved_tree = git(self.repository, "rev-parse", "HEAD^{tree}")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "moved"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), moved)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD^{tree}"), moved_tree)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    # This acceptance flow requires the built package binary and is selected
+    # explicitly by binary-execution.test.ts. Keeping it out of unittest's
+    # default discovery lets ordinary source/runtime validation run in a fresh
+    # merge candidate whose ignored dist/ tree is intentionally absent.
+    def build_required_public_cli_recovers_missing_target_runtime_then_starts_task(self) -> None:
+        package = json.loads((PACKAGE_ROOT / "package.json").read_text())
+        self.assertEqual(package.get("name"), "juno-code")
+        self.assertTrue(PUBLIC_YY.is_file(), f"public yy binary is missing: {PUBLIC_YY}")
+
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "migrated target missing task runtime")
+
+        updated = run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
+        self.assertEqual(updated.returncode, 0)
+        controller_runtime = self.controller / task_runtime.RUNTIME_PATH
+        self.assertEqual(
+            controller_runtime.read_bytes(),
+            (PACKAGE_ROOT / "dist/templates/scripts/task_workspace.py").read_bytes(),
+        )
+        self.assertFalse((self.repository / task_runtime.RUNTIME_PATH).exists())
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "",
+                         "scripts update dirtied the target holder")
+
+        refused = run([str(PUBLIC_YY), "task", "start", "X"], self.controller, False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
+        self.assertFalse((self.workspaces / "X").exists())
+        self.assertEqual(task_runtime._bootstrap_target_status(self.controller), "",
+                         "public task-start refusal dirtied the configured repository")
+
+        planned = run(
+            [str(PUBLIC_YY), "task", "runtime-bootstrap", "--dry-run"], self.controller)
+        plan = json.loads(planned.stdout)
+        receipt = Path(plan["receipt"]["path"])
+        self.assertTrue(receipt.is_file())
+        self.assertFalse((self.repository / task_runtime.RUNTIME_PATH).exists())
+
+        applied = run(
+            [str(PUBLIC_YY), "task", "runtime-bootstrap", "--apply", str(receipt)],
+            self.controller)
+        self.assertEqual(json.loads(applied.stdout)["outcome"], "completed")
+        self.assertEqual(
+            (self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
+            controller_runtime.read_bytes(),
+        )
+
+        started = run([str(PUBLIC_YY), "task", "start", "X"], self.controller)
+        self.assertEqual(json.loads(started.stdout)["outcome"], "started")
+        workspace = self.workspaces / "X"
+        self.assertTrue(workspace.is_dir())
+        self.assertEqual(git(workspace, "config", "--bool", "core.sparseCheckout"), "false")
+        self.assertEqual(git(workspace, "ls-files", "-v", "src"), "H src/base.txt")
+        self.assertEqual(git(workspace, "status", "--porcelain=v1"), "")
+        print("PUBLIC_CLI_RUNTIME_BOOTSTRAP_ACCEPTANCE_COMPLETED")
+
     def test_stale_runtime_refuses_before_creating_branch_worktree_or_state(self) -> None:
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.write_text(runtime.read_text() + "\n# newer target generation\n")
@@ -924,6 +1338,8 @@ class TaskWorkspaceTests(unittest.TestCase):
         refused = self.command("start", "X", check=False)
         self.assertEqual(refused.returncode, 2)
         self.assertIn("managed task runtime is stale", refused.stderr)
+        self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
+        self.assertIn("yy task runtime-bootstrap --apply <receipt>", refused.stderr)
         self.assertFalse((self.workspaces / "X").exists())
         self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
                                  "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
