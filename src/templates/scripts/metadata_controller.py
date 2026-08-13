@@ -9,6 +9,7 @@ registrar.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import fcntl
 import hashlib
 import importlib.util
@@ -257,12 +258,18 @@ def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = canonical(value)
-    if path.exists() and path.read_bytes() != data:
-        raise BoundaryError(f"immutable receipt collision: {path}")
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{hashlib.sha256(data).hexdigest()[:16]}")
     with temporary.open("xb") as stream:
         stream.write(data); stream.flush(); os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    try:
+        # link() is an atomic no-clobber publication. A concurrent creator is
+        # never overwritten; identical immutable evidence is idempotent.
+        try: os.link(temporary, path)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
+                raise BoundaryError(f"immutable receipt collision: {path}")
+    finally:
+        temporary.unlink(missing_ok=True)
     directory_fd = os.open(path.parent, os.O_RDONLY)
     try: os.fsync(directory_fd)
     finally: os.close(directory_fd)
@@ -1208,8 +1215,11 @@ def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
             raise BoundaryError("legacy migration requires an absent integration-workspace endpoint")
     common = Path(common_dir(root))
     index_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
-    return {"root": str(root), "git_common_dir": str(common), "index_path": str(index_path),
+    root_stat = root.stat(); index_stat = index_path.stat()
+    return {"root": str(root), "root_identity": [root_stat.st_dev, root_stat.st_ino, root_stat.st_mode],
+            "git_common_dir": str(common), "index_path": str(index_path),
             "git_common_identity": list(common.stat()[:3]),
+            "index_identity": [index_stat.st_dev, index_stat.st_ino, index_stat.st_mode],
             "branch": branch, "registration": registration,
             "head": head, "tree": tree, "config_sha256": bytes_digest(config_bytes),
             "product_ref": product_ref, "product_head": product_head,
@@ -1293,8 +1303,8 @@ def acquire_policy_migration_locks(common: Path, branch: str) -> Any:
 def assert_policy_plan_snapshot(plan: dict[str, Any], *, owned_index_lock: bool = False) -> tuple[Path, dict[str, Any]]:
     root = exact_physical_controller(Path(plan["root"]))
     current = policy_migration_snapshot(root, plan["branch"], owned_index_lock=owned_index_lock)
-    keys = ("root", "git_common_dir", "index_path", "git_common_identity",
-            "branch", "registration", "head", "tree", "config_sha256", "product_ref",
+    keys = ("root", "root_identity", "git_common_dir", "index_path", "git_common_identity",
+            "index_identity", "branch", "registration", "head", "tree", "config_sha256", "product_ref",
             "product_head", "policy_before_sha256", "policy_before_utf8", "policy_result_sha256",
             "policy_result_utf8", "task_policy_sha256", "risk_policy_sha256", "immutable_identity",
             "source", "state", "integration_result_sha256")
@@ -1341,6 +1351,36 @@ def endpoint_snapshot_at(directory_fd: int, name: str) -> tuple[bytes, tuple[int
     if identity(before) != identity(after) or len(data) != after.st_size:
         raise BoundaryError(f"metadata-policy endpoint raced during no-follow snapshot: {name}")
     return data, identity(after)
+
+
+def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
+                            expected: tuple[bytes, tuple[int, int, int, int, int]] | None) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    encoded_temporary = os.fsencode(temporary_name); encoded_name = os.fsencode(name)
+    if hasattr(libc, "renameatx_np"):
+        operation = libc.renameatx_np
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x00000004 if expected is None else 0x00000002  # RENAME_EXCL / RENAME_SWAP
+    elif hasattr(libc, "renameat2"):
+        operation = libc.renameat2
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x1 if expected is None else 0x2  # RENAME_NOREPLACE / RENAME_EXCHANGE
+    else:
+        raise BoundaryError("metadata-policy migration requires atomic no-clobber/exchange rename support")
+    if operation(directory_fd, encoded_temporary, directory_fd, encoded_name, flag) != 0:
+        error = ctypes.get_errno()
+        raise BoundaryError(f"metadata-policy endpoint atomic publication refused: {name}: {os.strerror(error)}")
+    if expected is not None:
+        displaced = endpoint_snapshot_at(directory_fd, temporary_name)
+        if displaced != expected:
+            # The concurrent entry remains preserved at temporary_name. Restore
+            # the reviewed entry atomically; never discard either byte stream.
+            if operation(directory_fd, encoded_temporary, directory_fd, encoded_name, flag) != 0:
+                error = ctypes.get_errno()
+                raise BoundaryError(
+                    f"metadata-policy endpoint raced and atomic restoration failed: {name}: {os.strerror(error)}")
+            raise BoundaryError(f"metadata-policy endpoint raced at atomic publication: {name}")
+        os.unlink(temporary_name, dir_fd=directory_fd)
 
 
 def index_lock_ownership_path(common: Path, plan_hash: str) -> Path:
@@ -1432,8 +1472,11 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
     reject_alternate_index()
     plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_policy_migration_plan(plan_path)
     root = exact_physical_controller(Path(plan["root"])); common = Path(common_dir(root))
+    index_identity_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    root_stat = root.stat()
     if (str(common) != plan.get("git_common_dir")
-            or str(Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))) != plan.get("index_path")
+            or str(index_identity_path) != plan.get("index_path")
+            or [root_stat.st_dev, root_stat.st_ino, root_stat.st_mode] != plan.get("root_identity")
             or list(common.stat()[:3]) != plan.get("git_common_identity")):
         raise BoundaryError("metadata-policy migration repository identity differs from the reviewed plan")
     output = external_config_repair_receipt(args.output, root, common)
@@ -1590,7 +1633,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         if final_snapshot != before_snapshot:
                             os.unlink(temporary_name, dir_fd=config_fd)
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
-                        os.replace(temporary_name, name, src_dir_fd=config_fd, dst_dir_fd=config_fd)
+                        atomic_endpoint_publish(config_fd, temporary_name, name, before_snapshot)
                     os.fsync(config_fd)
                     current_config_fd, current_config_identity = open_config_directory(root)
                     os.close(current_config_fd)
