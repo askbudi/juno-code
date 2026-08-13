@@ -543,6 +543,11 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "commit", "-m", "advance target")
         return git(self.repository, "rev-parse", "HEAD")
 
+    def remove_runtime_for_consumer(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH,
+            "juno-code/src/templates/scripts/task_workspace.py", "juno-code/package.json")
+        git(self.repository, "commit", "-m", "consumer target lacks Juno source and task runtime")
+
     def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
         generated_source = "juno-code/canonical/implement.md"
         generated_destinations = [
@@ -1002,8 +1007,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
     def test_package_bound_runtime_bootstrap_plan_apply_and_full_task_start(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         before = git(self.repository, "rev-parse", "refs/heads/product")
 
@@ -1044,6 +1048,24 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.workspaces / "X", "status", "--porcelain=v1"), "")
         self.assertNotEqual(git(self.workspaces / "X", "config", "--worktree", "--bool",
                                 "--get", "core.sparseCheckout"), "true")
+
+    def test_runtime_bootstrap_refuses_missing_runtime_in_source_repository(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "source target lacks task runtime")
+        before = git(self.repository, "rev-parse", "HEAD^{tree}")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "update package template/runtime/inventory atomically"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD^{tree}"), before)
+        self.assertFalse((self.repository / task_runtime.RUNTIME_PATH).exists())
+        self.assertEqual(
+            (self.repository / "juno-code/src/templates/scripts/task_workspace.py").read_bytes(),
+            SCRIPT.read_bytes())
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
     def test_runtime_bootstrap_refuses_exact_stale_source_generation_without_mutation(self) -> None:
         stale = b"#!/usr/bin/env python3\n# exact older package runtime\n"
@@ -1105,8 +1127,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
     def test_runtime_bootstrap_recovers_post_cas_completion_record_failure(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1140,8 +1161,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
 
     def test_runtime_bootstrap_recovers_prepared_holder_after_cas_interruption(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1176,8 +1196,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
     def test_runtime_bootstrap_recovers_target_holder_index_lock_without_hidden_mutation(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1215,8 +1234,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.repository, state, SCRIPT.read_bytes()))
 
     def test_runtime_bootstrap_recovers_its_deterministic_guard_after_interruption(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1247,8 +1265,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertFalse(guard.exists())
 
     def test_runtime_bootstrap_guard_refuses_holder_appearance_through_completion(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1279,8 +1296,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.repository, "refs/heads/product"), [])
 
     def test_runtime_bootstrap_preserves_destination_dirt_racing_holder_preparation(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1309,8 +1325,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(), dirt)
 
     def test_runtime_bootstrap_refuses_holder_dirt_racing_final_pre_cas_revalidation(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1335,8 +1350,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual((self.repository / "raced-unrelated.txt").read_text(), "preserve me\n")
 
     def test_runtime_bootstrap_contends_on_merge_queue_target_lock(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1356,8 +1370,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
     def test_runtime_bootstrap_refuses_dirty_or_multiple_target_holders_without_mutation(self) -> None:
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
@@ -1423,8 +1436,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "customized"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "remove task runtime")
+        self.remove_runtime_for_consumer()
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
         original = receipt.read_bytes()
@@ -1454,8 +1466,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(package.get("name"), "juno-code")
         self.assertTrue(PUBLIC_YY.is_file(), f"public yy binary is missing: {PUBLIC_YY}")
 
-        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
-        git(self.repository, "commit", "-m", "migrated target missing task runtime")
+        self.remove_runtime_for_consumer()
 
         updated = run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
         self.assertEqual(updated.returncode, 0)

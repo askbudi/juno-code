@@ -1451,9 +1451,13 @@ def _runtime_prior_state(repository: Path, target_sha: str,
                               or not is_valid_semver(package.get("version"))):
         raise TaskWorkspaceError("Juno source target package identity is invalid")
     if prior is None:
-        if source_repository and source != proposed:
+        if source_repository:
+            if source != proposed:
+                raise TaskWorkspaceError(
+                    "Juno source target package/template identity does not match exact package bytes")
             raise TaskWorkspaceError(
-                "Juno source target package/template identity does not match exact package bytes")
+                "Juno source target runtime is absent; update package template/runtime/inventory "
+                "atomically instead of runtime bootstrap")
         return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
                 "classification": "missing"}
     tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
