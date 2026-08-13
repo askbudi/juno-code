@@ -3264,8 +3264,10 @@ def merge_reopen(controller: Path, task_id: str,
             ).splitlines()))
             forbidden = [path for path in changed
                          if task_runtime.path_within(path, config["controller_private_paths"])]
+            frozen_allowed = (record.get("creation_receipt") or {}).get(
+                "allowed_paths", config["allowed_paths"])
             outside = [path for path in changed
-                       if not task_runtime.path_within(path, config["allowed_paths"])]
+                       if not task_runtime.path_within(path, frozen_allowed)]
             if not changed or forbidden or outside:
                 raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
             validations = validation_rows(config, worktree)

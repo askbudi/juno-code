@@ -1696,7 +1696,13 @@ raise SystemExit(2)
         state["tasks"]["B"]["prior_findings_candidate_sha"] = "f" * 40
         state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
 
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        original_policy = policy_path.read_bytes()
+        narrowed = json.loads(original_policy)
+        narrowed["allowed_paths"] = ["current-policy-no-longer-admits-src"]
+        policy_path.write_text(json.dumps(narrowed, indent=2) + "\n")
         reopened = merge_runtime.merge_reopen(self.controller.resolve(), "B")
+        policy_path.write_bytes(original_policy)
 
         self.assertEqual(reopened["outcome"],
                          "REQUEUED_AFTER_RESOLVED_VALIDATION_FAILURE")
