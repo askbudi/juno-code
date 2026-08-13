@@ -402,6 +402,25 @@ exit 1
   });
 
   describe('Build-required package acceptance', () => {
+    it('runs the public target-runtime provenance migration canary without skipping', () => {
+      const tests = path.join(
+        PROJECT_ROOT,
+        'src/templates/scripts/tests/test_task_workspace.py',
+      );
+      const selection =
+        'TaskWorkspaceTests.build_required_public_cli_migrates_legacy_provenance_then_starts_task';
+      const output = execFileSync('python3', [tests, selection], {
+        cwd: path.resolve(PROJECT_ROOT, '..'),
+        env: {
+          ...process.env,
+          PYTHONPYCACHEPREFIX: path.join(tempDir, 'pycache-provenance'),
+        },
+        encoding: 'utf8',
+      });
+
+      expect(output).toContain('PUBLIC_CLI_RUNTIME_PROVENANCE_ACCEPTANCE_COMPLETED');
+    }, 30_000);
+
     it('runs the public task-runtime recovery flow without skipping', () => {
       const tests = path.join(
         PROJECT_ROOT,

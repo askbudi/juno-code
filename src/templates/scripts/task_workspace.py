@@ -21,6 +21,7 @@ import posixpath
 import re
 import secrets
 import selectors
+import shlex
 import signal
 import stat
 import subprocess
@@ -774,20 +775,80 @@ def runtime_generation(repository: Path, target_sha: str) -> dict[str, Any]:
             "current": bool(target.returncode == 0 and running_sha == target_sha256)}
 
 
-def require_current_runtime(repository: Path, target_sha: str) -> dict[str, Any]:
+def _consumer_runtime_provenance(repository: Path, target_sha: str,
+                                 runtime_sha256: str) -> tuple[bool, bool]:
+    inventory_bytes = target_blob(repository, target_sha, MANAGED_INVENTORY_PATH)
+    if inventory_bytes is None:
+        return False, True
+    try:
+        inventory = json.loads(inventory_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False, False
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
+    legacy = isinstance(assets, dict) and entry is None
+    valid = (
+        isinstance(inventory, dict)
+        and set(inventory) == {"schemaVersion", "packageName", "packageVersion", "assets"}
+        and inventory.get("schemaVersion") == 1
+        and inventory.get("packageName") == "juno-code"
+        and is_valid_semver(inventory.get("packageVersion"))
+        and isinstance(entry, dict)
+        and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
+        and entry.get("type") == "script"
+        and is_valid_semver(entry.get("templateVersion"))
+        and entry.get("sourceSha256") == runtime_sha256
+        and entry.get("installedSha256") == runtime_sha256
+    )
+    return valid, legacy
+
+
+def _provenance_repair_error(controller: Path, target_sha: str) -> TaskWorkspaceError:
+    receipt = f"/tmp/juno-target-runtime-provenance-{target_sha}.json"
+    controller_arg = shlex.quote(str(controller.resolve()))
+    receipt_arg = shlex.quote(receipt)
+    return TaskWorkspaceError(
+        "consumer target runtime lacks exact managed-inventory provenance. Exact repair: "
+        f"`yy migrate target-runtime-provenance plan --controller {controller_arg} "
+        f"--output {receipt_arg}`; review it, then run "
+        f"`yy migrate target-runtime-provenance apply --plan {receipt_arg} "
+        f"--output {shlex.quote(receipt + '.applied')} "
+        "--authorize-target-runtime-provenance`; then use `yy task runtime-bootstrap "
+        "--dry-run` if the admitted package generation is still stale"
+    )
+
+
+def require_current_runtime(repository: Path, target_sha: str,
+                            controller: Path | None = None) -> dict[str, Any]:
     generation = runtime_generation(repository, target_sha)
-    if not generation["current"]:
-        source_repository = (
-            target_blob(repository, target_sha, "juno-code/package.json") is not None
-            or target_blob(repository, target_sha,
-                           "juno-code/src/templates/scripts/task_workspace.py") is not None
+    source_repository = (
+        target_blob(repository, target_sha, "juno-code/package.json") is not None
+        or target_blob(repository, target_sha,
+                       "juno-code/src/templates/scripts/task_workspace.py") is not None
+    )
+    if generation["current"] and not source_repository:
+        provenance, legacy = _consumer_runtime_provenance(
+            repository, target_sha, generation["target_sha256"])
+        if provenance:
+            generation["managed_inventory_provenance"] = True
+            return generation
+        if legacy and controller is not None:
+            raise _provenance_repair_error(controller, target_sha)
+        raise TaskWorkspaceError(
+            "consumer target runtime managed-inventory provenance is malformed or mismatched"
         )
+    if not generation["current"]:
         if source_repository:
             raise TaskWorkspaceError(
                 "managed task runtime differs from a Juno source target; use a controller "
                 "package/runtime matching that target, or atomically update the source package "
                 "template, tracked runtime, and managed inventory if an upgrade is intended"
             )
+        target_runtime = target_blob(repository, target_sha, RUNTIME_PATH)
+        _, legacy_provenance = _consumer_runtime_provenance(
+            repository, target_sha, generation.get("target_sha256") or "")
+        if target_runtime is not None and legacy_provenance and controller is not None:
+            raise _provenance_repair_error(controller, target_sha)
         raise TaskWorkspaceError(
             "managed task runtime is stale or absent from the consumer target; recover with "
             "`yy task runtime-bootstrap --dry-run`, review its receipt, then run "
@@ -1087,7 +1148,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
     target_sha = ref_sha(repository, config["target_ref"])
     requested_paths = requested_paths or []
     allowed_paths, selected_entries = selected_task_paths(config, repository, target_sha, requested_paths)
-    generation = require_current_runtime(repository, target_sha)
+    generation = require_current_runtime(repository, target_sha, controller)
     allowed_paths, generated_output_admission = derived_output_admission(
         repository, target_sha, allowed_paths)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
@@ -1308,7 +1369,8 @@ def preflight(controller: Path, task_id: str) -> dict[str, Any]:
     require_task(controller, task_id)
     configured_repository = product_repository(controller, config)
     runtime = require_current_runtime(configured_repository,
-                                      ref_sha(configured_repository, config["target_ref"]))
+                                      ref_sha(configured_repository, config["target_ref"]),
+                                      controller)
     with state_lock(controller):
         record = read_state(controller)["tasks"].get(task_id)
         if not isinstance(record, dict):
@@ -1331,7 +1393,8 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     require_task(controller, task_id)
     configured_repository = product_repository(controller, config)
     runtime = require_current_runtime(configured_repository,
-                                      ref_sha(configured_repository, config["target_ref"]))
+                                      ref_sha(configured_repository, config["target_ref"]),
+                                      controller)
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)

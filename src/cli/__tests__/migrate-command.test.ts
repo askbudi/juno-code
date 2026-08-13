@@ -11,6 +11,25 @@ describe('migration CLI', () => {
     expect(invoke).toHaveBeenCalledWith(['inventory', '--project', '/project', '--heavy-threshold-bytes', '42', '--output', '/receipts/inventory.json', '--controller', '/controller', '--product-ref', 'refs/heads/product', '--runtime', '/bin/yy', '--kanban-runtime', '/bin/juno-kanban']);
   });
 
+  it('routes target-runtime provenance plan and explicitly authorized apply', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const planProgram = new Command().exitOverride();
+    configureMigrationCommand(planProgram, invoke);
+    await planProgram.parseAsync(['node', 'yy', 'migrate', 'target-runtime-provenance', 'plan',
+      '--controller', '/controller', '--output', '/external/plan.json']);
+    expect(invoke).toHaveBeenCalledWith(['target-runtime-provenance-plan',
+      '--controller', '/controller', '--output', '/external/plan.json']);
+
+    const applyProgram = new Command().exitOverride();
+    configureMigrationCommand(applyProgram, invoke);
+    await applyProgram.parseAsync(['node', 'yy', 'migrate', 'target-runtime-provenance', 'apply',
+      '--plan', '/external/plan.json', '--output', '/external/apply.json',
+      '--authorize-target-runtime-provenance']);
+    expect(invoke).toHaveBeenCalledWith(['target-runtime-provenance-apply',
+      '--plan', '/external/plan.json', '--output', '/external/apply.json',
+      '--authorize-target-runtime-provenance']);
+  });
+
   it('exposes explicit controller executable rebind without installing a package', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride();

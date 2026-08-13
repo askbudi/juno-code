@@ -156,12 +156,27 @@ consumer target (one containing neither the `juno-code` package nor template sou
 the explicit package-bound recovery instead:
 
 ```bash
+# Only when admission reports legacy bytes without managed-inventory provenance:
+yy migrate target-runtime-provenance plan --controller /exact/controller --output /external/provenance-plan.json
+# review the immutable plan, then detach any clean target-ref owner
+yy migrate target-runtime-provenance apply --plan /external/provenance-plan.json \
+  --output /external/provenance-apply.json --authorize-target-runtime-provenance
+
+# Upgrade an admitted older generation when still required:
 yy task runtime-bootstrap --dry-run
 # review the printed immutable receipt
 yy task runtime-bootstrap --apply RECEIPT
 ```
 
-The command is restricted to the exact registered migrated sparse metadata
+The provenance migration proves existing consumer runtime bytes against the
+controller identity's exact installed package before adding only the missing or
+legacy inventory entry through a commit/ref lease. Planning does not mutate any
+controller, target, ref, worktree, or Git administration byte. Apply revalidates
+the controller/repository common-dir, refs and trees, package executable and
+manifest, managed identity/inventory/generation, required runtime, and task policy
+under the controller and target locks; customized or ambiguous bytes refuse.
+
+The bootstrap command is restricted to the exact registered migrated sparse metadata
 controller. The plan binds controller class/identity, package version/runtime
 hash, full target ref and commit/tree, and the exact path's prior/proposed bytes.
 An absent consumer runtime is recoverable. Existing consumer bytes are

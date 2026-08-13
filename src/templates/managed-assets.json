@@ -318,6 +318,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/target_runtime_provenance.py",
+      "destination": ".juno_task/scripts/target_runtime_provenance.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/integration_workspace.py",
       "destination": ".juno_task/scripts/integration_workspace.py",
       "installClass": "script",

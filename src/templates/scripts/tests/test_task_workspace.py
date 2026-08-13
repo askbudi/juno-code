@@ -24,6 +24,7 @@ from typing import Optional
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
+import target_runtime_provenance as provenance_runtime  # noqa: E402
 try:
     _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
 except task_runtime.TaskWorkspaceError as exc:
@@ -2069,6 +2070,153 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(plan["controller_identity"]["controller_class"]["checks"],
                          ["branch_exact", "product_absent", "role", "tracked_boundary"])
 
+    def test_consumer_runtime_provenance_plan_apply_unblocks_start_and_preserves_controller_dirt(self) -> None:
+        package_root = self.root / "installed/node_modules/juno-code"
+        executable = package_root / "dist/bin/cli.mjs"
+        package_runtime = package_root / "dist/templates/scripts/task_workspace.py"
+        manifest = package_root / "dist/templates/managed-assets.json"
+        for path in (executable, package_runtime, manifest):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_bytes(b"exact installed yy executable\n")
+        package_runtime.write_bytes(SCRIPT.read_bytes())
+        manifest.write_text(json.dumps({"schemaVersion": 1, "assets": [{
+            "source": "scripts/task_workspace.py",
+            "destination": task_runtime.RUNTIME_PATH,
+            "installClass": "script", "type": "script",
+        }]}) + "\n")
+        (package_root / "package.json").write_text(json.dumps({
+            "name": "juno-code", "version": "2.1.2",
+        }) + "\n")
+        identity = self.controller / task_runtime.IDENTITY_PATH if hasattr(
+            task_runtime, "IDENTITY_PATH") else self.controller / ".juno_task/runtime/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text(json.dumps({
+            "package": "juno-code", "version": "2.1.2",
+            "executable": str(executable),
+            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            "source": "installed-release", "tracked": False,
+        }) + "\n")
+        git(self.repository, "rm", "juno-code/src/templates/scripts/task_workspace.py",
+            "juno-code/package.json")
+        git(self.repository, "commit", "-m", "legacy consumer runtime without provenance")
+        before = git(self.repository, "rev-parse", "refs/heads/product")
+
+        exclude = Path(git(self.controller, "rev-parse", "--path-format=absolute",
+                           "--git-path", "info/exclude"))
+        with exclude.open("a") as handle:
+            handle.write("\n.juno_task/.version_check_cache\n.juno_task/managed-assets.json\n"
+                         ".juno_task/runtime/managed-controller/generation.json\n")
+        unrelated = self.controller / ".juno_task/.version_check_cache"
+        unrelated.write_bytes(b"preserve unrelated controller dirt exactly\n")
+        unrelated_hash = hashlib.sha256(unrelated.read_bytes()).hexdigest()
+
+        refused = self.command("start", "X", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("yy migrate target-runtime-provenance plan --controller", refused.stderr)
+        self.assertFalse((self.workspaces / "X").exists())
+
+        plan_path = self.root / "provenance-plan.json"
+        plan = provenance_runtime.plan_command(self.controller, plan_path)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual(plan["repository"]["common_dir"], str(Path(git(
+            self.repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()))
+        self.assertEqual(plan["target"]["tree"], git(self.repository, "rev-parse", f"{before}^{{tree}}"))
+        self.assertEqual(plan["package"]["version"], "2.1.2")
+        self.assertEqual(plan["prior"]["inventory"]["classification"], "missing")
+        self.assertFalse(plan["managed_runtime"]["inventory"]["present"])
+        self.assertFalse(plan["managed_runtime"]["generation"]["present"])
+        self.assertRegex(plan["task_policy"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+
+        tampered = self.root / "tampered-plan.json"
+        tampered.write_bytes(plan_path.read_bytes() + b" ")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError, "stale or tampered"):
+            provenance_runtime.apply_command(tampered, self.root / "tampered-apply.json")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+
+        dirty = self.repository / "unrelated-target-owner-dirt.tmp"
+        dirty.write_text("preserve me\n")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError, "dirty or ambiguous"):
+            provenance_runtime.apply_command(plan_path, self.root / "dirty-apply.json")
+        self.assertEqual(dirty.read_text(), "preserve me\n")
+        dirty.unlink()
+
+        identity_bytes = identity.read_bytes()
+        identity_value = json.loads(identity_bytes)
+        identity_value["executable_sha256"] = "f" * 64
+        identity.write_text(json.dumps(identity_value) + "\n")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError,
+                                    "installed juno-code executable"):
+            provenance_runtime.apply_command(plan_path, self.root / "identity-apply.json")
+        identity.write_bytes(identity_bytes)
+
+        controller_inventory = self.controller / task_runtime.MANAGED_INVENTORY_PATH
+        controller_inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "9.9.9",
+            "assets": {},
+        }) + "\n")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError,
+                                    "managed inventory mismatches"):
+            provenance_runtime.apply_command(plan_path, self.root / "inventory-apply.json")
+        controller_inventory.unlink()
+
+        generation = self.controller / provenance_runtime.GENERATION_PATH
+        generation.parent.mkdir(parents=True, exist_ok=True)
+        generation.write_text(json.dumps({
+            "schema_version": "juno_managed_controller_runtime.v1",
+            "package_version": "9.9.9", "scripts": {}, "target_sha": "a" * 40,
+        }) + "\n")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError,
+                                    "generation mismatches"):
+            provenance_runtime.apply_command(plan_path, self.root / "generation-apply.json")
+        generation.unlink()
+
+        manifest_bytes = manifest.read_bytes()
+        manifest_value = json.loads(manifest_bytes)
+        manifest_value["assets"].append(dict(manifest_value["assets"][0]))
+        manifest.write_text(json.dumps(manifest_value) + "\n")
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError, "ambiguous"):
+            provenance_runtime.apply_command(plan_path, self.root / "ambiguous-apply.json")
+        manifest.write_bytes(manifest_bytes)
+
+        lock_path = self.controller / ".juno_task/runtime/task-workspace.lock"
+        with lock_path.open("a+b") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(provenance_runtime.ProvenanceError, "concurrent"):
+                provenance_runtime.apply_command(plan_path, self.root / "concurrent-apply.json")
+
+        moved = git(self.repository, "rev-parse", f"{before}^")
+        run(["git", "-C", str(self.repository), "update-ref", "refs/heads/product", moved, before],
+            self.repository)
+        with self.assertRaisesRegex(provenance_runtime.ProvenanceError, "moved"):
+            provenance_runtime.apply_command(plan_path, self.root / "moved-apply.json")
+        run(["git", "-C", str(self.repository), "update-ref", "refs/heads/product", before, moved],
+            self.repository)
+
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "task")
+        with self.assertRaisesRegex(Exception, "role|registration|metadata-only"):
+            provenance_runtime.plan_command(self.controller, self.root / "wrong-role-plan.json")
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "controller")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+
+        git(self.repository, "switch", "--detach")
+        applied = provenance_runtime.apply_command(plan_path, self.root / "provenance-apply.json")
+        self.assertEqual(applied["changed_paths"], [task_runtime.MANAGED_INVENTORY_PATH])
+        self.assertEqual(git(self.repository, "diff-tree", "--no-commit-id", "--name-only",
+                             "-r", applied["commit_sha"]), task_runtime.MANAGED_INVENTORY_PATH)
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+        started = self.payload("start", "X")
+        self.assertEqual(started["outcome"], "started")
+        self.assertTrue(started["creation_receipt"]["runtime_generation"]
+                        ["managed_inventory_provenance"])
+
+        idempotent = provenance_runtime.apply_command(
+            plan_path, self.root / "provenance-apply-idempotent.json")
+        self.assertEqual(idempotent["outcome"], "already_applied")
+        self.assertEqual(idempotent["commit_sha"], applied["commit_sha"])
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+
     def test_runtime_bootstrap_refuses_product_bearing_metadata_controller(self) -> None:
         git(self.controller, "sparse-checkout", "disable")
         (self.controller / "README.md").write_text("product marker\n")
@@ -2159,6 +2307,64 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(workspace, "ls-files", "-v", "src"), "H src/base.txt")
         self.assertEqual(git(workspace, "status", "--porcelain=v1"), "")
         print("PUBLIC_CLI_RUNTIME_BOOTSTRAP_ACCEPTANCE_COMPLETED")
+
+    def build_required_public_cli_migrates_legacy_provenance_then_starts_task(self) -> None:
+        package = json.loads((PACKAGE_ROOT / "package.json").read_text())
+        self.assertEqual(package.get("name"), "juno-code")
+        self.assertTrue(PUBLIC_YY.is_file())
+        run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
+        packaged_executable = PACKAGE_ROOT / "dist/bin/cli.mjs"
+        identity = self.controller / ".juno_task/runtime/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text(json.dumps({
+            "package": "juno-code", "version": package["version"],
+            "executable": str(packaged_executable),
+            "executable_sha256": hashlib.sha256(packaged_executable.read_bytes()).hexdigest(),
+            "source": "installed-release", "tracked": False,
+        }) + "\n")
+        packaged_runtime = PACKAGE_ROOT / "dist/templates/scripts/task_workspace.py"
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.write_bytes(packaged_runtime.read_bytes())
+        git(self.repository, "rm", "juno-code/src/templates/scripts/task_workspace.py",
+            "juno-code/package.json")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "legacy package runtime without inventory provenance")
+        before = git(self.repository, "rev-parse", "refs/heads/product")
+
+        exclude = Path(git(self.controller, "rev-parse", "--path-format=absolute",
+                           "--git-path", "info/exclude"))
+        with exclude.open("a") as handle:
+            handle.write("\n.juno_task/.version_check_cache\n.juno_task/managed-assets.json\n"
+                         ".juno_task/runtime/managed-controller/generation.json\n")
+        unrelated = self.controller / ".juno_task/.version_check_cache"
+        unrelated.write_bytes(b"package canary unrelated dirt\n")
+        unrelated_hash = hashlib.sha256(unrelated.read_bytes()).hexdigest()
+
+        refused = run([str(PUBLIC_YY), "task", "start", "X"], self.controller, False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("target-runtime-provenance plan", refused.stderr)
+        plan_path = self.root / "package-provenance-plan.json"
+        planned = run([str(PUBLIC_YY), "migrate", "target-runtime-provenance", "plan",
+                       "--controller", str(self.controller), "--output", str(plan_path)],
+                      self.controller)
+        plan = json.loads(planned.stdout)
+        self.assertEqual(plan["target"]["sha"], before)
+        self.assertEqual(plan["package"]["version"], package["version"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+
+        git(self.repository, "switch", "--detach")
+        apply_path = self.root / "package-provenance-apply.json"
+        applied = run([str(PUBLIC_YY), "migrate", "target-runtime-provenance", "apply",
+                       "--plan", str(plan_path), "--output", str(apply_path),
+                       "--authorize-target-runtime-provenance"], self.controller)
+        migrated = json.loads(applied.stdout)
+        self.assertEqual(migrated["changed_paths"], [task_runtime.MANAGED_INVENTORY_PATH])
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+        started = run([str(PUBLIC_YY), "task", "start", "X"], self.controller)
+        self.assertEqual(json.loads(started.stdout)["outcome"], "started")
+        self.assertEqual(hashlib.sha256(unrelated.read_bytes()).hexdigest(), unrelated_hash)
+        print("PUBLIC_CLI_RUNTIME_PROVENANCE_ACCEPTANCE_COMPLETED")
 
     def test_stale_runtime_refuses_before_creating_branch_worktree_or_state(self) -> None:
         runtime = self.repository / task_runtime.RUNTIME_PATH

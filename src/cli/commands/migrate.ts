@@ -25,17 +25,15 @@ export async function invokeMigration(args: string[]): Promise<void> {
   const evacuation = args[0]?.startsWith('evacuation-');
   const registration = args[0] === 'registration';
   const runtimeRebind = args[0] === 'runtime-rebind' || args[0] === 'runtime-install-rebind';
+  const targetRuntimeProvenance = args[0]?.startsWith('target-runtime-provenance-');
   const metadataController = runtimeRebind || args[0]?.startsWith('agent-surface-repair-')
     || args[0]?.startsWith('metadata-policy-');
-  const engine = packagedEngine(
-    registration
-      ? 'controller_registration.py'
-      : metadataController
-        ? 'metadata_controller.py'
-        : evacuation
-          ? 'metadata_evacuation.py'
-          : 'migration_inventory.py',
-  );
+  let engineName = 'migration_inventory.py';
+  if (evacuation) engineName = 'metadata_evacuation.py';
+  if (metadataController) engineName = 'metadata_controller.py';
+  if (targetRuntimeProvenance) engineName = 'target_runtime_provenance.py';
+  if (registration) engineName = 'controller_registration.py';
+  const engine = packagedEngine(engineName);
   const engineArgs = registration ? args.slice(1) : args;
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', [engine, ...engineArgs], {
@@ -77,6 +75,28 @@ export function configureMigrationCommand(
       if (options.kanbanRuntime) args.push('--kanban-runtime', options.kanbanRuntime);
       return invoke(args);
     });
+  const targetRuntimeProvenance = migrate
+    .command('target-runtime-provenance')
+    .description('Plan or apply exact installed-package provenance for a legacy consumer target runtime');
+  targetRuntimeProvenance
+    .command('plan')
+    .description('Create a non-mutating receipt binding the consumer, controller, target, package, and runtime bytes')
+    .requiredOption('--controller <path>', 'Exact registered metadata-controller worktree')
+    .requiredOption('--output <path>', 'New plan receipt outside every worktree and Git administration directory')
+    .action((options) => invoke([
+      'target-runtime-provenance-plan', '--controller', options.controller,
+      '--output', options.output,
+    ]));
+  targetRuntimeProvenance
+    .command('apply')
+    .description('Commit only reviewed missing/legacy target runtime provenance under locks and a ref lease')
+    .requiredOption('--plan <path>', 'Reviewed immutable provenance plan')
+    .requiredOption('--output <path>', 'New immutable apply receipt outside every worktree')
+    .requiredOption('--authorize-target-runtime-provenance', 'Authorize only the receipt-bound target provenance commit')
+    .action((options) => invoke([
+      'target-runtime-provenance-apply', '--plan', options.plan, '--output', options.output,
+      '--authorize-target-runtime-provenance',
+    ]));
   migrate
     .command('runtime-rebind')
     .description('Explicitly rebind a clean metadata controller to one installed runtime executable')
