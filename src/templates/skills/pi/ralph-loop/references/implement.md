@@ -28,8 +28,8 @@ task's workspace.
    concurrently; do not wait for or modify them.
 3. Do not launch semantic reviewers. The managed merge queue is the sole owner
    of lifecycle-semantic review evidence. Candidate review is risk-based: low zero,
-   normal at most one, high exactly two independent reviewers on one
-   frozen tip and one review-group identity.
+   normal at most one, and high exactly two predecessor-bound v1 reviewers on
+   one frozen tip.
 4. If blocked, record bounded truthful state and stop without claiming success.
 
 ## 3. Queue and hand off
@@ -47,8 +47,8 @@ task's workspace.
    failure remains a warning and must not change the task or merge outcome.
 
 Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
-moved targets/conflicts, applies one bounded risk-based review group, consolidates
-all findings before one repair, advances by expected-SHA CAS, and performs
+ moved targets/conflicts, applies one bounded risk-based review sequence, permits
+ at most one repair candidate, advances by expected-SHA CAS, and performs
 deterministic readback. Never push, publish, deploy, mutate
 production, restart services, run post-deploy E2E, or clean worktrees without
 separate authority.

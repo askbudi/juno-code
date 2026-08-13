@@ -31,6 +31,10 @@ yy task status TASK_ID
 yy task preflight TASK_ID
 yy task finish TASK_ID
 
+yy task runtime-bootstrap --dry-run
+# review the printed immutable receipt
+yy task runtime-bootstrap --apply RECEIPT
+
 yy merge status
 yy merge next
 yy merge resolve TASK_ID
@@ -40,11 +44,44 @@ Task start freezes the exact configured product target SHA and any explicitly
 selected policy-admitted product roots, then creates one branch/worktree. Before
 editing or testing there, the worker follows [task dependency hydration](task_dependency_hydration.md)
 for each configured validation cwd and stops on provisioning or clean-tree
-failure. Task preflight is read-only and checks the clean committed tip,
+failure. Runtime identity is validated before any Juno-specific generated-output
+admission. Task preflight is read-only and checks the clean committed tip,
 admitted changed paths, generated-output closure, risk policy, and runtime
 identity before expensive final gates. Task finish repeats that closure,
-persists it, and runs focused validation before queueing. Independent features can remain active
-concurrently.
+persists it, and runs focused validation before queueing. Independent features
+can remain active concurrently. Project classification is explicit: a source repository whose
+`juno-code/package.json` names `juno-code` must provide both authoritative,
+strict declarations; an ordinary consumer without that package identity has no
+Juno-source declaration requirement.
+
+If start reports a stale or absent ordinary consumer target task runtime,
+`scripts update` refreshes only controller-local bytes and is not the recovery.
+Run `yy task runtime-bootstrap --dry-run`, review the immutable
+package/controller/target/path receipt, then apply that exact receipt. An absent
+consumer runtime is recoverable; a present one additionally requires an exact
+managed-inventory hash/version binding to an older package generation. Recovery
+updates the runtime and its inventory entry's version/hashes together while
+preserving the inventory-wide package version and validated unrelated entries. A Juno source
+target is deliberately refused: use a controller package/runtime matching a
+coherent newer target, or update an older source package, template, tracked
+runtime, and managed inventory atomically. This command is restricted to
+the exact registered, sparse metadata-controller class and refuses
+synthetic/product/task worktrees. Apply uses a clean isolated target worktree,
+creates a reviewed recovery commit and durably records its apply intent. Before mutation it discovers
+all exact target-ref holders under the merge queue's repository/target-ref lock.
+Every advancement uses expected-SHA CAS. With one exact clean unlocked holder,
+the planned-path index/worktree state is prepared with Git's non-destructive merge
+mode and revalidated before CAS; concurrent dirt refuses rather than being reset,
+and no post-CAS operation can overwrite it. With no holder, a package-owned clean
+guard checkout holds the branch until immediately before durable completion. Dirty, locked, moved,
+or multiple holders refuse before mutation with a supported clean,
+unlock, or reviewed extra-worktree removal action. An exact package-created
+partial synchronization refuses with a bounded restore command for only the
+planned paths; review and run it before rerunning the same receipt. Fully prepared
+holder or completion interruptions recover directly; the durable intent prevents
+another commit or unrelated ref mutation. Modified or completed
+receipts, package mismatch, non-older inventory generations, and consumer target
+customization without exact managed-inventory provenance also refuse.
 
 The merge queue serializes only target mutation. It uses a per-target lock and
 expected-old-SHA update. If the target moved, it builds a candidate from the
@@ -52,10 +89,10 @@ latest target plus the feature tip. Conflicts are explicit durable state and the
 candidate is preserved for `merge resolve`; failed validation never advances
 the target.
 
-Review is queue-owned and risk-based: low zero, normal at most one, high Reviewer
-A and Reviewer B independently against the same frozen candidate/review group.
-All required reviewer results terminalize before findings are consolidated. The
-queue permits one repair candidate and one delta review group; another material
+Review is queue-owned and risk-based: low zero, normal at most one, and high
+Reviewer A followed by Reviewer B against the same frozen candidate under the
+compatible v1 predecessor-bound receipt contract. The queue permits one repair
+candidate and one delta review group; another material
 finding stops as `REVIEW_FINDINGS_EXHAUSTED` instead of spawning an autonomous
 loop. A changed product candidate invalidates prior semantic evidence, while a
 byte-identical metadata/harness retry may reuse evidence only when all bound
