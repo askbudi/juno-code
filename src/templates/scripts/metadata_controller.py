@@ -1283,19 +1283,31 @@ def acquire_policy_migration_locks(common: Path, branch: str) -> Any:
              common / "juno-metadata-policy-migration.lock"]
     @contextmanager
     def locks() -> Any:
-        streams = []
+        streams: list[tuple[Path, Any, tuple[int, int]]] = []
+        def verify() -> None:
+            for path, stream, identity in streams:
+                descriptor_stat = os.fstat(stream.fileno())
+                try: path_stat = os.lstat(path)
+                except OSError as exc:
+                    raise BoundaryError(f"metadata-policy migration serialization lease was replaced: {path}") from exc
+                if (stat.S_ISLNK(path_stat.st_mode)
+                        or (descriptor_stat.st_dev, descriptor_stat.st_ino) != identity
+                        or (path_stat.st_dev, path_stat.st_ino) != identity):
+                    raise BoundaryError(f"metadata-policy migration serialization lease identity drifted: {path}")
         try:
             for path in paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                stream = path.open("a+")
+                descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                stream = os.fdopen(descriptor, "a+")
                 try: fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as exc:
                     stream.close()
                     raise BoundaryError(f"metadata-policy migration serialization lease busy: {path}") from exc
-                streams.append(stream)
-            yield
+                value = os.fstat(stream.fileno())
+                streams.append((path, stream, (value.st_dev, value.st_ino)))
+            verify(); yield verify
         finally:
-            for stream in reversed(streams):
+            for _, stream, _ in reversed(streams):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN); stream.close()
     return locks()
 
@@ -1381,6 +1393,40 @@ def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
                     f"metadata-policy endpoint raced and atomic restoration failed: {name}: {os.strerror(error)}")
             raise BoundaryError(f"metadata-policy endpoint raced at atomic publication: {name}")
         os.unlink(temporary_name, dir_fd=directory_fd)
+
+
+def atomic_index_publish(index_lock: Path, index_path: Path,
+                         expected_identity: list[int]) -> None:
+    if index_lock.parent != index_path.parent:
+        raise BoundaryError("metadata-policy prepared and real index are not co-located")
+    directory_fd = os.open(index_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    temporary_name = index_lock.name; name = index_path.name
+    libc = ctypes.CDLL(None, use_errno=True)
+    if hasattr(libc, "renameatx_np"):
+        operation = libc.renameatx_np
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x00000002
+    elif hasattr(libc, "renameat2"):
+        operation = libc.renameat2
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x2
+    else:
+        os.close(directory_fd)
+        raise BoundaryError("metadata-policy migration requires atomic index exchange support")
+    temporary = os.fsencode(temporary_name); target = os.fsencode(name)
+    try:
+        if operation(directory_fd, temporary, directory_fd, target, flag) != 0:
+            error = ctypes.get_errno()
+            raise BoundaryError(f"metadata-policy index atomic exchange failed: {os.strerror(error)}")
+        displaced = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+        if [displaced.st_dev, displaced.st_ino, displaced.st_mode] != expected_identity:
+            if operation(directory_fd, temporary, directory_fd, target, flag) != 0:
+                error = ctypes.get_errno()
+                raise BoundaryError(f"metadata-policy index raced and restoration failed: {os.strerror(error)}")
+            raise BoundaryError("metadata-policy real index identity raced before atomic publication")
+        os.unlink(temporary_name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally: os.close(directory_fd)
 
 
 def index_lock_ownership_path(common: Path, plan_hash: str) -> Path:
@@ -1482,8 +1528,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
     output = external_config_repair_receipt(args.output, root, common)
     plan_file_hash = file_digest(plan_path)
     if not plan["changed_paths"]:
-        with acquire_policy_migration_locks(common, plan["branch"]):
-            assert_policy_plan_snapshot(plan)
+        with acquire_policy_migration_locks(common, plan["branch"]) as verify_locks:
+            verify_locks(); assert_policy_plan_snapshot(plan)
             payload = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-apply",
                        "outcome": "already_migrated_noop", "plan_sha256": plan_hash,
                        "plan_file_sha256": plan_file_hash, "controller": str(root), "head": plan["head"],
@@ -1497,7 +1543,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                       "changed_paths": plan["changed_paths"], "commit_intent": plan["result_tree_commit_intent"]}
     preflight_receipt(intent_path, intent_payload); atomic_receipt(intent_path, intent_payload)
     committed: str | None = None; result_tree: str | None = None
-    with acquire_policy_migration_locks(common, plan["branch"]):
+    with acquire_policy_migration_locks(common, plan["branch"]) as verify_locks:
+        verify_locks()
         expected_index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
         recovery_lock = Path(str(expected_index) + ".lock")
         ownership_path = index_lock_ownership_path(common, plan_hash)
@@ -1548,6 +1595,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             if changed != plan["changed_paths"]:
                 raise BoundaryError("metadata-policy migration result tree escaped declared paths")
             index_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+            real_index_stat = index_path.stat()
+            expected_real_index_identity = [real_index_stat.st_dev, real_index_stat.st_ino, real_index_stat.st_mode]
             index_lock = Path(str(index_path) + ".lock")
             try:
                 with index_lock.open("xb") as stream:
@@ -1603,6 +1652,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                                   "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
                     committed = run(["git", "-C", str(root), "commit-tree", result_tree, "-p", plan["head"], "-m", message],
                                     root, env=commit_env).stdout.strip()
+                    verify_locks()
                     update = run(["git", "-C", str(root), "update-ref", "-m", "juno metadata-policy migration",
                                   plan["branch"], committed, plan["head"]], root, False)
                     if update.returncode:
@@ -1639,7 +1689,9 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     os.close(current_config_fd)
                     if current_config_identity != config_identity:
                         raise BoundaryError("metadata-policy config directory changed during publication")
-                    os.replace(index_lock, index_path); index_published = True
+                    verify_locks()
+                    atomic_index_publish(index_lock, index_path, expected_real_index_identity)
+                    index_published = True
                     durable_unlink(ownership_path)
                     if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
                         raise BoundaryError("HEAD/tree readback failed")
