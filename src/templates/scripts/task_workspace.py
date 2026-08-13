@@ -1927,7 +1927,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                     "task-runtime bootstrap target ref moved outside the durable apply intent")
             if holder is None:
                 # Hold the branch in a package-owned clean worktree through CAS
-                # and durable completion. Ordinary Git worktree creation then
+                # until immediately before durable completion. Ordinary Git worktree creation then
                 # fails instead of racing the no-holder observation.
                 _validate_intent_holder(repository, None, config["target_ref"])
                 workspace_root = Path(config["workspace_root"])
