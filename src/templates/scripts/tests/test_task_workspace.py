@@ -1183,6 +1183,40 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
+    def test_runtime_bootstrap_withholds_completion_when_holder_appears_during_cas(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        git(self.repository, "checkout", "--detach")
+        appeared = self.root / "appeared-target-holder"
+        original_run = task_runtime.run
+        injected = {"done": False}
+
+        def add_holder_before_cas(argv: list[str], cwd: Path, *, check: bool = True):
+            if (len(argv) >= 7 and argv[-4] == "update-ref"
+                    and argv[-3] == "refs/heads/product" and not injected["done"]):
+                original_run(["git", "-C", str(self.repository), "worktree", "add",
+                              str(appeared), "product"], self.repository)
+                injected["done"] = True
+            return original_run(argv, cwd, check=check)
+
+        with mock.patch.object(task_runtime, "run", side_effect=add_holder_before_cas):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "holder appeared during CAS.*completion is withheld"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        advanced = git(self.repository, "rev-parse", "refs/heads/product")
+        self.assertNotEqual(advanced, plan["target"]["sha"])
+        record_root = self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT
+        self.assertFalse((record_root / f'{plan["receipt"]["sha256"]}-applied.json').exists())
+
+        git(self.repository, "worktree", "remove", "--force", str(appeared))
+        recovered = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(recovered["commit_sha"], advanced)
+
     def test_runtime_bootstrap_preserves_destination_dirt_racing_holder_preparation(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "consumer target lacks task runtime")

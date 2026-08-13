@@ -1887,6 +1887,10 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                 raise TaskWorkspaceError(
                     "target-holder changed during CAS; concurrent dirt was preserved; "
                     "rerun the same --apply receipt after review")
+        elif _target_ref_holders(repository, config["target_ref"]):
+            raise TaskWorkspaceError(
+                "a target-ref holder appeared during CAS; target advanced but completion is withheld; "
+                "review and synchronize or detach that holder, then rerun the same --apply receipt")
     result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
               "outcome": "completed", "plan_sha256": digest,
               "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],
