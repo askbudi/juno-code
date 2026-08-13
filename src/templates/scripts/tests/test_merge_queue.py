@@ -795,6 +795,32 @@ raise SystemExit(2)
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
 
+    def test_one_repair_round_exhausts_instead_of_starting_an_unbounded_review_loop(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "broken\n")
+        self.queue_payload("next")
+        finding = lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            first = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(first["outcome"], "REVIEW_FINDINGS")
+        self.assertEqual(self.task("status", "X")["review_round"], 1)
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("repair\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "consolidated repair")
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(reopened["review_round"], 2)
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            second = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(second["outcome"], "REVIEW_FINDINGS_EXHAUSTED")
+        self.assertEqual(self.task("status", "X")["state"],
+                         "REVIEW_FINDINGS_EXHAUSTED")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "review budget exhausted"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
     def test_review_findings_clear_stale_failure_from_an_earlier_attempt(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")
         self.queue_payload("next")
