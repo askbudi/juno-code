@@ -405,6 +405,15 @@ class SemVerValidationTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(task_runtime.is_valid_semver(value))
 
+    def test_precedence_follows_semver_without_build_metadata_authority(self) -> None:
+        ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta",
+                   "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11",
+                   "1.0.0-rc.1", "1.0.0", "2.0.0"]
+        for older, newer in zip(ordered, ordered[1:]):
+            self.assertTrue(task_runtime.semver_precedes(older, newer))
+            self.assertFalse(task_runtime.semver_precedes(newer, older))
+        self.assertFalse(task_runtime.semver_precedes("1.0.0+one", "1.0.0+two"))
+
 
 class TaskWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -547,6 +556,26 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "rm", task_runtime.RUNTIME_PATH,
             "juno-code/src/templates/scripts/task_workspace.py", "juno-code/package.json")
         git(self.repository, "commit", "-m", "consumer target lacks Juno source and task runtime")
+
+    def install_stale_consumer_runtime(self, version: str = "2.1.2") -> bytes:
+        stale = b"#!/usr/bin/env python3\n# exact older consumer runtime\n"
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        runtime.write_bytes(stale)
+        git(self.repository, "rm", "juno-code/src/templates/scripts/task_workspace.py",
+            "juno-code/package.json")
+        stale_hash = hashlib.sha256(stale).hexdigest()
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": version,
+            "assets": {task_runtime.RUNTIME_PATH: {
+                "type": "script", "templateVersion": version,
+                "sourceSha256": stale_hash, "installedSha256": stale_hash,
+            }},
+        }) + "\n")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH,
+            task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "exact older consumer runtime generation")
+        return stale
 
     def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
         generated_source = "juno-code/canonical/implement.md"
@@ -1037,6 +1066,14 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertTrue((self.repository / task_runtime.RUNTIME_PATH).is_file())
         self.assertEqual(git(self.repository, "show", f"refs/heads/product:{task_runtime.RUNTIME_PATH}"),
                          SCRIPT.read_text().rstrip())
+        inventory = json.loads(
+            (self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
+        self.assertEqual(inventory["packageVersion"], "2.1.3")
+        self.assertEqual(
+            inventory["assets"][task_runtime.RUNTIME_PATH]["installedSha256"], package_hash)
+        next_prior = task_runtime._runtime_prior_state(
+            self.repository, applied["commit_sha"], b"next package runtime\n", "2.1.4")
+        self.assertEqual(next_prior["package_version"], "2.1.3")
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "already been applied"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash,
                                            Path(plan["receipt"]["path"]))
@@ -1048,6 +1085,68 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.workspaces / "X", "status", "--porcelain=v1"), "")
         self.assertNotEqual(git(self.workspaces / "X", "config", "--worktree", "--bool",
                                 "--get", "core.sparseCheckout"), "true")
+
+    def test_runtime_bootstrap_replaces_provenance_valid_stale_consumer_runtime(self) -> None:
+        stale = self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        before = git(self.repository, "rev-parse", "HEAD")
+
+        refused = self.command("start", "X", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("stale or absent from the consumer target", refused.stderr)
+        self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        self.assertEqual(base64.b64decode(plan["prior"]["bytes_base64"]), stale)
+        self.assertEqual(plan["prior"]["package_version"], "2.1.2")
+        self.assertEqual(plan["prior"]["classification"],
+                         "exact_managed_inventory_consumer_generation")
+        self.assertRegex(plan["prior"]["inventory_sha256"], r"^[0-9a-f]{64}$")
+
+        applied = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3", package_hash, Path(plan["receipt"]["path"]))
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), applied["commit_sha"])
+        self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
+                         SCRIPT.read_bytes())
+        inventory = json.loads(
+            (self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
+        runtime_entry = inventory["assets"][task_runtime.RUNTIME_PATH]
+        self.assertEqual(inventory["packageVersion"], "2.1.2")
+        self.assertEqual(runtime_entry, {
+            "type": "script", "templateVersion": "2.1.3",
+            "sourceSha256": package_hash, "installedSha256": package_hash,
+        })
+        self.assertEqual(sorted(git(
+            self.repository, "diff-tree", "--no-commit-id", "--name-only", "-r",
+            applied["commit_sha"]).splitlines()),
+            sorted([task_runtime.RUNTIME_PATH, task_runtime.MANAGED_INVENTORY_PATH]))
+        next_prior = task_runtime._runtime_prior_state(
+            self.repository, applied["commit_sha"], b"next package runtime\n", "2.1.4")
+        self.assertEqual(next_prior["package_version"], "2.1.3")
+        self.assertEqual(next_prior["sha256"], package_hash)
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        self.assertEqual(self.payload("start", "X")["outcome"], "started")
+
+    def test_runtime_bootstrap_refuses_malformed_unrelated_inventory_entry(self) -> None:
+        self.install_stale_consumer_runtime()
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        payload = json.loads(inventory.read_text())
+        payload["assets"]["unrelated"] = {"type": "script"}
+        inventory.write_text(json.dumps(payload) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "malformed unrelated managed entry")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "lacks exact managed-inventory provenance"):
+            task_runtime.runtime_bootstrap(
+                self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
+
+    def test_runtime_bootstrap_refuses_non_older_consumer_inventory_generation(self) -> None:
+        self.install_stale_consumer_runtime("2.1.3")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "generation is not older"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
 
     def test_runtime_bootstrap_refuses_missing_runtime_in_source_repository(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
@@ -1067,6 +1166,21 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
+    def test_missing_newer_source_runtime_directs_matching_controller_generation(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        package = self.repository / "juno-code/package.json"
+        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.4"}) + "\n")
+        source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        source.write_bytes(b"#!/usr/bin/env python3\n# newer source template\n")
+        git(self.repository, "add", "juno-code/package.json",
+            "juno-code/src/templates/scripts/task_workspace.py")
+        git(self.repository, "commit", "-m", "newer source generation missing runtime")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "upgrade or rebind the controller package/runtime"):
+            task_runtime.runtime_bootstrap(
+                self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
+
     def test_runtime_bootstrap_refuses_exact_stale_source_generation_without_mutation(self) -> None:
         stale = b"#!/usr/bin/env python3\n# exact older package runtime\n"
         runtime = self.repository / task_runtime.RUNTIME_PATH
@@ -1075,6 +1189,8 @@ class TaskWorkspaceTests(unittest.TestCase):
         source.write_bytes(stale)
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.parent.mkdir(parents=True, exist_ok=True)
+        package = self.repository / "juno-code/package.json"
+        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.2"}) + "\n")
         stale_hash = hashlib.sha256(stale).hexdigest()
         inventory.write_text(json.dumps({
             "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
@@ -1084,7 +1200,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             }},
         }) + "\n")
         git(self.repository, "add", task_runtime.RUNTIME_PATH,
-            "juno-code/src/templates/scripts/task_workspace.py",
+            "juno-code/src/templates/scripts/task_workspace.py", "juno-code/package.json",
             task_runtime.MANAGED_INVENTORY_PATH)
         git(self.repository, "commit", "-m", "exact stale source runtime generation")
         before = git(self.repository, "rev-parse", "HEAD^{tree}")
@@ -1103,6 +1219,37 @@ class TaskWorkspaceTests(unittest.TestCase):
             "sourceSha256": stale_hash, "installedSha256": stale_hash,
         })
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
+
+    def test_newer_coherent_source_generation_directs_controller_runtime_upgrade(self) -> None:
+        newer = b"#!/usr/bin/env python3\n# coherent newer source runtime\n"
+        runtime = self.repository / task_runtime.RUNTIME_PATH
+        source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        package = self.repository / "juno-code/package.json"
+        inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
+        runtime.write_bytes(newer)
+        source.write_bytes(newer)
+        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.4"}) + "\n")
+        newer_hash = hashlib.sha256(newer).hexdigest()
+        inventory.parent.mkdir(parents=True, exist_ok=True)
+        inventory.write_text(json.dumps({
+            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.4",
+            "assets": {task_runtime.RUNTIME_PATH: {
+                "type": "script", "templateVersion": "2.1.4",
+                "sourceSha256": newer_hash, "installedSha256": newer_hash,
+            }},
+        }) + "\n")
+        git(self.repository, "add", task_runtime.RUNTIME_PATH,
+            "juno-code/src/templates/scripts/task_workspace.py", "juno-code/package.json",
+            task_runtime.MANAGED_INVENTORY_PATH)
+        git(self.repository, "commit", "-m", "coherent newer source generation")
+
+        refused = self.command("start", "X", check=False)
+        self.assertIn("controller package/runtime matching that target", refused.stderr)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "upgrade or rebind the controller package/runtime"):
+            task_runtime.runtime_bootstrap(
+                self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
         self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
 
     def test_runtime_bootstrap_rejects_self_asserted_inventory_customization(self) -> None:
@@ -1125,6 +1272,51 @@ class TaskWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
                                     "template/runtime identity is inconsistent"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+    def test_runtime_bootstrap_rejects_redigested_noncanonical_inventory_receipt(self) -> None:
+        self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        payload = json.loads(receipt.read_text())
+        payload["proposed"]["inventory"] = None
+        raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        forged = receipt.with_name(f"{digest}-plan.json")
+        forged.write_bytes(raw)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "not derived from bound prior/package bytes"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, forged)
+
+    def test_runtime_bootstrap_rejects_malformed_nested_prior_receipt(self) -> None:
+        self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        payload = json.loads(receipt.read_text())
+        payload["prior"] = None
+        raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        forged = receipt.with_name(f"{digest}-plan.json")
+        forged.write_bytes(raw)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "receipt/controller/package identity mismatch"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, forged)
+
+    def test_runtime_bootstrap_rejects_malformed_nested_target_receipt(self) -> None:
+        self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        payload = json.loads(receipt.read_text())
+        payload["target"] = None
+        raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        forged = receipt.with_name(f"{digest}-plan.json")
+        forged.write_bytes(raw)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "receipt/controller/package identity mismatch"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, forged)
 
     def test_runtime_bootstrap_recovers_post_cas_completion_record_failure(self) -> None:
         self.remove_runtime_for_consumer()
@@ -1186,14 +1378,45 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"),
                          plan["target"]["sha"])
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), plan["target"]["sha"])
-        self.assertEqual(git(self.repository, "status", "--porcelain=v1"),
-                         f"A  {task_runtime.RUNTIME_PATH}")
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1").splitlines(),
+                         [f"A  {task_runtime.MANAGED_INVENTORY_PATH}",
+                          f"A  {task_runtime.RUNTIME_PATH}"])
 
         recovered = task_runtime.runtime_bootstrap(
             self.controller, "2.1.3", package_hash, receipt)
         self.assertNotEqual(recovered["commit_sha"], plan["target"]["sha"])
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_gives_exact_recovery_for_partial_two_path_preparation(self) -> None:
+        self.install_stale_consumer_runtime()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        proposed_inventory = base64.b64decode(
+            plan["proposed"]["inventory"]["bytes_base64"], validate=True)
+        (self.repository / task_runtime.MANAGED_INVENTORY_PATH).write_bytes(proposed_inventory)
+        self.assertEqual(
+            run(["git", "-C", str(self.repository), "status", "--porcelain=v1"],
+                self.repository).stdout.rstrip("\n"),
+            f" M {task_runtime.MANAGED_INVENTORY_PATH}")
+        self.assertEqual(
+            base64.b64decode(plan["prior"]["inventory_bytes_base64"], validate=True),
+            subprocess.run(
+                ["git", "-C", str(self.repository), "show",
+                 f":{task_runtime.MANAGED_INVENTORY_PATH}"],
+                stdout=subprocess.PIPE, check=True).stdout)
+
+        self.assertTrue(task_runtime._holder_dirt_matches_interrupted_runtime_sync(
+            self.repository, plan["prior"], SCRIPT.read_bytes(), proposed_inventory))
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "exact package-created partial state.*git restore"):
+            task_runtime._prepare_target_holder_for_cas(
+                self.repository, "refs/heads/product", plan["target"]["sha"],
+                "f" * 40, plan["prior"], SCRIPT.read_bytes(), proposed_inventory)
+        self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
+                         base64.b64decode(plan["prior"]["bytes_base64"], validate=True))
+        self.assertEqual((self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_bytes(),
+                         proposed_inventory)
 
     def test_runtime_bootstrap_recovers_target_holder_index_lock_without_hidden_mutation(self) -> None:
         self.remove_runtime_for_consumer()
@@ -1223,7 +1446,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "commit", "-m", "missing runtime with divergent source")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "package/template identity does not match exact package bytes"):
+                                    "upgrade or rebind the controller package/runtime"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
     def test_runtime_bootstrap_does_not_classify_staged_deletion_as_interruption(self) -> None:
@@ -1519,9 +1742,11 @@ class TaskWorkspaceTests(unittest.TestCase):
 
         refused = self.command("start", "X", check=False)
         self.assertEqual(refused.returncode, 2)
-        self.assertIn("managed task runtime is stale", refused.stderr)
-        self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
-        self.assertIn("yy task runtime-bootstrap --apply <receipt>", refused.stderr)
+        self.assertIn("managed task runtime differs", refused.stderr)
+        self.assertIn("Juno source target", refused.stderr)
+        self.assertIn("controller package/runtime matching that target", refused.stderr)
+        self.assertIn("atomically update the source package", refused.stderr)
+        self.assertNotIn("runtime-bootstrap", refused.stderr)
         self.assertFalse((self.workspaces / "X").exists())
         self.assertNotEqual(run(["git", "-C", str(self.repository), "show-ref", "--verify",
                                  "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)

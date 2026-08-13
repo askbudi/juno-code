@@ -61,6 +61,31 @@ def is_valid_semver(value: Any) -> bool:
     return isinstance(value, str) and SEMVER_RE.fullmatch(value) is not None
 
 
+def semver_precedes(older: str, newer: str) -> bool:
+    """Compare validated SemVer values without trusting an optional dependency."""
+    def parts(value: str) -> tuple[tuple[int, int, int], list[str] | None]:
+        public = value.split("+", 1)[0]
+        core, separator, prerelease = public.partition("-")
+        return tuple(int(item) for item in core.split(".")), prerelease.split(".") if separator else None
+
+    older_core, older_pre = parts(older)
+    newer_core, newer_pre = parts(newer)
+    if older_core != newer_core:
+        return older_core < newer_core
+    if older_pre is None or newer_pre is None:
+        return older_pre is not None and newer_pre is None
+    for left, right in zip(older_pre, newer_pre):
+        if left == right:
+            continue
+        left_numeric, right_numeric = left.isdigit(), right.isdigit()
+        if left_numeric and right_numeric:
+            return int(left) < int(right)
+        if left_numeric != right_numeric:
+            return left_numeric
+        return left < right
+    return len(older_pre) < len(newer_pre)
+
+
 def run(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, stdin=subprocess.DEVNULL)
     if check and result.returncode:
@@ -752,8 +777,19 @@ def runtime_generation(repository: Path, target_sha: str) -> dict[str, Any]:
 def require_current_runtime(repository: Path, target_sha: str) -> dict[str, Any]:
     generation = runtime_generation(repository, target_sha)
     if not generation["current"]:
+        source_repository = (
+            target_blob(repository, target_sha, "juno-code/package.json") is not None
+            or target_blob(repository, target_sha,
+                           "juno-code/src/templates/scripts/task_workspace.py") is not None
+        )
+        if source_repository:
+            raise TaskWorkspaceError(
+                "managed task runtime differs from a Juno source target; use a controller "
+                "package/runtime matching that target, or atomically update the source package "
+                "template, tracked runtime, and managed inventory if an upgrade is intended"
+            )
         raise TaskWorkspaceError(
-            "managed task runtime is stale or absent from the target; recover with "
+            "managed task runtime is stale or absent from the consumer target; recover with "
             "`yy task runtime-bootstrap --dry-run`, review its receipt, then run "
             "`yy task runtime-bootstrap --apply <receipt>` and retry"
         )
@@ -1436,7 +1472,7 @@ def _bootstrap_target_status(repository: Path) -> str:
 
 
 def _runtime_prior_state(repository: Path, target_sha: str,
-                         proposed: bytes) -> dict[str, Any]:
+                         proposed: bytes, recovery_package_version: str) -> dict[str, Any]:
     prior = target_blob(repository, target_sha, RUNTIME_PATH)
     package_bytes = target_blob(repository, target_sha, "juno-code/package.json")
     source = target_blob(repository, target_sha,
@@ -1452,14 +1488,60 @@ def _runtime_prior_state(repository: Path, target_sha: str,
         raise TaskWorkspaceError("Juno source target package identity is invalid")
     if prior is None:
         if source_repository:
+            target_package_version = package["version"]
             if source != proposed:
+                if not semver_precedes(target_package_version, recovery_package_version):
+                    raise TaskWorkspaceError(
+                        "Juno source target runtime is absent at a non-older package/template "
+                        "generation; upgrade or rebind the controller package/runtime to match "
+                        "the target, then repair source identities atomically if still required")
                 raise TaskWorkspaceError(
-                    "Juno source target package/template identity does not match exact package bytes")
+                    "Juno source target runtime is absent at an older package/template "
+                    "generation; update package template/runtime/inventory atomically")
             raise TaskWorkspaceError(
                 "Juno source target runtime is absent; update package template/runtime/inventory "
                 "atomically instead of runtime bootstrap")
-        return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
-                "classification": "missing"}
+        inventory_bytes = target_blob(repository, target_sha, MANAGED_INVENTORY_PATH)
+        if inventory_bytes is None:
+            return {"state": "absent", "mode": None, "sha256": None,
+                    "bytes_base64": None, "classification": "missing",
+                    "inventory_mode": None, "inventory_sha256": None,
+                    "inventory_bytes_base64": None}
+        try:
+            inventory = json.loads(inventory_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError(
+                "consumer target managed inventory is invalid; refusing bootstrap") from exc
+        prior_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
+        assets = inventory.get("assets") if isinstance(inventory, dict) else None
+        entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
+        entry_valid = entry is None or (
+            isinstance(entry, dict)
+            and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
+            and entry.get("type") == "script"
+            and entry.get("templateVersion") == prior_version
+            and re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sourceSha256", "")))
+            and entry.get("installedSha256") == entry.get("sourceSha256"))
+        if (not isinstance(inventory, dict) or set(inventory) != {
+                "schemaVersion", "packageName", "packageVersion", "assets"}
+                or inventory.get("schemaVersion") != 1
+                or inventory.get("packageName") != "juno-code"
+                or not is_valid_semver(prior_version) or not isinstance(assets, dict)
+                or not entry_valid
+                or (prior_version != recovery_package_version
+                    and not semver_precedes(prior_version, recovery_package_version))):
+            raise TaskWorkspaceError(
+                "consumer target missing runtime lacks an exact non-newer managed-inventory "
+                "generation; refusing bootstrap")
+        inventory_row = git(repository, "ls-tree", target_sha, "--", MANAGED_INVENTORY_PATH)
+        inventory_mode = inventory_row.split(None, 1)[0] if inventory_row else ""
+        if inventory_mode not in {"100644", "100755"}:
+            raise TaskWorkspaceError("target managed inventory has an unsafe Git mode")
+        return {"state": "absent", "mode": None, "sha256": None,
+                "bytes_base64": None, "classification": "missing",
+                "inventory_mode": inventory_mode,
+                "inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+                "inventory_bytes_base64": base64.b64encode(inventory_bytes).decode()}
     tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
     try:
         prior_mode = tree_row.split(None, 1)[0]
@@ -1475,32 +1557,103 @@ def _runtime_prior_state(repository: Path, target_sha: str,
         inventory = json.loads(inventory_bytes) if inventory_bytes is not None else None
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TaskWorkspaceError("target managed inventory is invalid; refusing bootstrap") from exc
-    package_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
-    if source_repository and source != prior:
-        raise TaskWorkspaceError("Juno source target template/runtime identity is inconsistent")
+    inventory_package_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
     assets = inventory.get("assets") if isinstance(inventory, dict) else None
     entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
+    runtime_package_version = entry.get("templateVersion") if isinstance(entry, dict) else None
+    try:
+        all_entries_valid = isinstance(assets, dict) and all(
+            isinstance(path, str) and normalized_relative(path, "managed inventory path") == path
+            and isinstance(record, dict)
+            and set(record) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
+            and isinstance(record.get("type"), str) and bool(record["type"])
+            and is_valid_semver(record.get("templateVersion"))
+            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("sourceSha256", ""))) is not None
+            and re.fullmatch(r"[0-9a-f]{64}", str(record.get("installedSha256", ""))) is not None
+            for path, record in assets.items())
+    except TaskWorkspaceError:
+        all_entries_valid = False
     inventory_valid = (
         isinstance(inventory, dict) and set(inventory) == {
             "schemaVersion", "packageName", "packageVersion", "assets"}
         and inventory.get("schemaVersion") == 1
         and inventory.get("packageName") == "juno-code"
-        and isinstance(package_version, str)
-        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", package_version)
+        and is_valid_semver(inventory_package_version)
+        and all_entries_valid
         and isinstance(entry, dict)
-        and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
         and entry.get("type") == "script"
-        and entry.get("templateVersion") == package_version
+        and is_valid_semver(runtime_package_version)
         and entry.get("sourceSha256") == prior_sha
         and entry.get("installedSha256") == prior_sha
     )
-    if not inventory_valid or source != prior:
+    if source_repository:
+        if source != prior:
+            raise TaskWorkspaceError("Juno source target template/runtime identity is inconsistent")
+        if not inventory_valid or package.get("version") != runtime_package_version:
+            raise TaskWorkspaceError(
+                "Juno source target runtime is customized or lacks exact "
+                "package/source/inventory provenance; refusing bootstrap")
+        if not semver_precedes(runtime_package_version, recovery_package_version):
+            raise TaskWorkspaceError(
+                "Juno source target generation is not older than the recovery package; upgrade "
+                "or rebind the controller package/runtime to match the target")
         raise TaskWorkspaceError(
-            "target task runtime is customized or lacks immutable package/source provenance; "
-            "refusing bootstrap")
-    raise TaskWorkspaceError(
-        "Juno source target runtime is stale; update package template/runtime/inventory "
-        "atomically instead of runtime bootstrap")
+            "Juno source target runtime is stale; update package template/runtime/inventory "
+            "atomically instead of runtime bootstrap")
+    if not inventory_valid:
+        raise TaskWorkspaceError(
+            "consumer target task runtime is customized or lacks exact managed-inventory "
+            "provenance; refusing bootstrap")
+    if not semver_precedes(runtime_package_version, recovery_package_version):
+        raise TaskWorkspaceError(
+            "consumer target managed runtime package generation is not older than the recovery "
+            "package; refusing bootstrap")
+    inventory_row = git(repository, "ls-tree", target_sha, "--", MANAGED_INVENTORY_PATH)
+    inventory_mode = inventory_row.split(None, 1)[0] if inventory_row else ""
+    if inventory_mode not in {"100644", "100755"}:
+        raise TaskWorkspaceError("target managed inventory has an unsafe Git mode")
+    return {"state": "present", "mode": prior_mode, "sha256": prior_sha,
+            "bytes_base64": base64.b64encode(prior).decode(),
+            "classification": "exact_managed_inventory_consumer_generation",
+            "package_version": runtime_package_version,
+            "inventory_package_version": inventory_package_version,
+            "inventory_mode": inventory_mode,
+            "inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+            "inventory_bytes_base64": base64.b64encode(inventory_bytes).decode()}
+
+
+def _proposed_inventory(prior: dict[str, Any], package_version: str,
+                        runtime_sha256: str) -> dict[str, Any]:
+    if not isinstance(prior, dict):
+        raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
+    encoded = prior.get("inventory_bytes_base64")
+    if encoded is None:
+        inventory = {"schemaVersion": 1, "packageName": "juno-code",
+                     "packageVersion": package_version, "assets": {}}
+        inventory_mode = "100644"
+    else:
+        try:
+            inventory = json.loads(base64.b64decode(encoded, validate=True))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError("task-runtime bootstrap prior inventory is invalid") from exc
+        inventory_mode = prior.get("inventory_mode")
+        if (not isinstance(inventory, dict)
+                or set(inventory) != {"schemaVersion", "packageName", "packageVersion", "assets"}
+                or inventory.get("schemaVersion") != 1
+                or inventory.get("packageName") != "juno-code"
+                or not isinstance(inventory.get("assets"), dict)
+                or inventory_mode not in {"100644", "100755"}):
+            raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
+    if encoded is None:
+        inventory["packageVersion"] = package_version
+    inventory["assets"][RUNTIME_PATH] = {
+        "type": "script", "templateVersion": package_version,
+        "sourceSha256": runtime_sha256, "installedSha256": runtime_sha256,
+    }
+    inventory_bytes = (json.dumps(inventory, indent=2) + "\n").encode()
+    return {"path": MANAGED_INVENTORY_PATH, "mode": inventory_mode,
+            "sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+            "bytes_base64": base64.b64encode(inventory_bytes).decode()}
 
 
 def _runtime_bootstrap_plan(controller: Path, package_version: str,
@@ -1519,9 +1672,10 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
     target_ref = config["target_ref"]
     target_sha = ref_sha(repository, target_ref)
     target_tree = git(repository, "rev-parse", f"{target_sha}^{{tree}}")
-    prior = _runtime_prior_state(repository, target_sha, running)
+    prior = _runtime_prior_state(repository, target_sha, running, package_version)
     if prior["sha256"] == running_sha:
         raise TaskWorkspaceError("target task runtime already matches the package")
+    proposed_inventory = _proposed_inventory(prior, package_version, running_sha)
     plan = {
         "schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
         "operation": "plan",
@@ -1534,7 +1688,8 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
         "path": RUNTIME_PATH,
         "prior": prior,
         "proposed": {"mode": "100755", "sha256": running_sha,
-                     "bytes_base64": base64.b64encode(running).decode()},
+                     "bytes_base64": base64.b64encode(running).decode(),
+                     "inventory": proposed_inventory},
     }
     raw = (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode()
     digest = hashlib.sha256(raw).hexdigest()
@@ -1573,17 +1728,33 @@ def _load_runtime_bootstrap_plan(controller: Path, receipt_path: Path,
             or plan.get("schema_version") != RUNTIME_BOOTSTRAP_SCHEMA
             or plan.get("operation") != "plan" or plan.get("path") != RUNTIME_PATH
             or plan.get("package") != {"name": "juno-code", "version": package_version,
-                                       "task_runtime_sha256": package_runtime_sha256}):
+                                       "task_runtime_sha256": package_runtime_sha256}
+            or not isinstance(plan.get("controller_identity"), dict)
+            or not isinstance(plan.get("target"), dict)
+            or set(plan["target"]) != {"repository", "ref", "sha", "tree"}
+            or not isinstance(plan["target"].get("repository"), str)
+            or not isinstance(plan["target"].get("ref"), str)
+            or not SHA_RE.fullmatch(str(plan["target"].get("sha", "")))
+            or not SHA_RE.fullmatch(str(plan["target"].get("tree", "")))
+            or not isinstance(plan.get("prior"), dict)
+            or not isinstance(plan.get("proposed"), dict)):
         raise TaskWorkspaceError("task-runtime bootstrap receipt/controller/package identity mismatch")
     try:
         proposed = base64.b64decode(plan["proposed"]["bytes_base64"], validate=True)
     except (KeyError, TypeError, ValueError) as exc:
         raise TaskWorkspaceError("task-runtime bootstrap proposed bytes are invalid") from exc
-    if (hashlib.sha256(proposed).hexdigest() != package_runtime_sha256
+    if (set(plan["proposed"]) != {"mode", "sha256", "bytes_base64", "inventory"}
+            or hashlib.sha256(proposed).hexdigest() != package_runtime_sha256
             or plan["proposed"].get("sha256") != package_runtime_sha256
             or plan["proposed"].get("mode") != "100755"
             or hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest() != package_runtime_sha256):
         raise TaskWorkspaceError("task-runtime bootstrap package bytes/hash mismatch")
+    proposed_inventory = plan["proposed"].get("inventory")
+    expected_inventory = _proposed_inventory(
+        plan.get("prior", {}), package_version, package_runtime_sha256)
+    if proposed_inventory != expected_inventory:
+        raise TaskWorkspaceError(
+            "task-runtime bootstrap inventory is not derived from bound prior/package bytes")
     consumed = root / f"{digest}-applied.json"
     durable = root / f"{digest}-completion-durable.json"
     if consumed.exists() and durable.exists():
@@ -1698,63 +1869,100 @@ def _validate_intent_holder(repository: Path, intent_holder: Any,
     return holder
 
 
-def _holder_dirt_matches_interrupted_runtime_sync(holder: Path,
-                                                   prior: dict[str, Any],
-                                                   proposed: bytes) -> bool:
-    status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
+def _bootstrap_path_bytes(prior: dict[str, Any], proposed: bytes,
+                          proposed_inventory: bytes | None) -> dict[str, tuple[bytes | None, bytes]]:
+    paths = {RUNTIME_PATH: (
+        base64.b64decode(prior["bytes_base64"], validate=True)
+        if prior.get("bytes_base64") is not None else None, proposed)}
+    if proposed_inventory is not None:
+        paths[MANAGED_INVENTORY_PATH] = (
+            base64.b64decode(prior["inventory_bytes_base64"], validate=True)
+            if prior.get("inventory_bytes_base64") is not None else None,
+            proposed_inventory)
+    return paths
+
+
+def _holder_dirt_matches_interrupted_runtime_sync(
+        holder: Path, prior: dict[str, Any], proposed: bytes,
+        proposed_inventory: bytes | None = None) -> bool:
+    status = run(["git", "-C", str(holder), "status", "--porcelain=v1",
+                  "--untracked-files=all"], holder, check=False).stdout.rstrip("\n")
     rows = [line for line in status.splitlines() if line]
-    if not rows or any(line[3:] != RUNTIME_PATH for line in rows):
-        return False
     try:
-        prior_bytes = (base64.b64decode(prior["bytes_base64"], validate=True)
-                       if prior.get("bytes_base64") is not None else None)
+        paths = _bootstrap_path_bytes(prior, proposed, proposed_inventory)
     except (KeyError, TypeError, ValueError):
         return False
-    working = (holder / RUNTIME_PATH).read_bytes() if (holder / RUNTIME_PATH).is_file() else None
-    index_result = subprocess.run(
-        ["git", "-C", str(holder), "show", f":{RUNTIME_PATH}"], cwd=holder,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    indexed = index_result.stdout if index_result.returncode == 0 else None
-    # Recovery admits only a mixed/exact transition containing proposed bytes.
-    # Ambiguous staged deletion (both absent) is user dirt, never bootstrap state.
-    admitted = {prior_bytes, proposed}
-    return working in admitted and indexed in admitted and proposed in {working, indexed}
+    if not rows or any(line[3:] not in paths for line in rows):
+        return False
+    saw_proposed = False
+    for path, (prior_bytes, proposed_bytes) in paths.items():
+        destination = holder / path
+        working = destination.read_bytes() if destination.is_file() else None
+        index_result = subprocess.run(
+            ["git", "-C", str(holder), "show", f":{path}"], cwd=holder,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        indexed = index_result.stdout if index_result.returncode == 0 else None
+        # Every path must remain at an exact prior/proposed boundary. At least
+        # one proposed side proves this is a package-created partial transition.
+        admitted = {prior_bytes, proposed_bytes}
+        if working not in admitted or indexed not in admitted:
+            return False
+        saw_proposed = saw_proposed or proposed_bytes in {working, indexed}
+    return saw_proposed
 
 
 def _holder_is_prepared_for_cas(holder: Path, previous_sha: str,
-                                proposed: bytes) -> bool:
+                                proposed: bytes,
+                                proposed_inventory: bytes | None = None) -> bool:
     if git(holder, "rev-parse", "HEAD^{commit}", check=False) != previous_sha:
         return False
+    paths = {RUNTIME_PATH: proposed}
+    if proposed_inventory is not None:
+        paths[MANAGED_INVENTORY_PATH] = proposed_inventory
+    expected_status = []
+    for path in sorted(paths):
+        prior = run(["git", "-C", str(holder), "cat-file", "-e",
+                     f"{previous_sha}:{path}"], holder, check=False)
+        expected_status.append(f'{"M" if prior.returncode == 0 else "A"}  {path}')
     status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
-    prior = run(["git", "-C", str(holder), "cat-file", "-e",
-                 f"{previous_sha}:{RUNTIME_PATH}"], holder, check=False)
-    expected_code = "M" if prior.returncode == 0 else "A"
-    if status.splitlines() != [f"{expected_code}  {RUNTIME_PATH}"]:
+    if status.splitlines() != expected_status:
         return False
-    destination = holder / RUNTIME_PATH
-    if not destination.is_file() or destination.read_bytes() != proposed:
-        return False
-    indexed = subprocess.run(
-        ["git", "-C", str(holder), "show", f":{RUNTIME_PATH}"], cwd=holder,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return indexed.returncode == 0 and indexed.stdout == proposed
+    for path, expected in paths.items():
+        destination = holder / path
+        if not destination.is_file() or destination.read_bytes() != expected:
+            return False
+        indexed = subprocess.run(
+            ["git", "-C", str(holder), "show", f":{path}"], cwd=holder,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if indexed.returncode != 0 or indexed.stdout != expected:
+            return False
+    return True
 
 
 def _prepare_target_holder_for_cas(holder: Path, target_ref: str,
                                    previous_sha: str, commit_sha: str,
-                                   prior: dict[str, Any], proposed: bytes) -> None:
+                                   prior: dict[str, Any], proposed: bytes,
+                                   proposed_inventory: bytes | None = None) -> None:
     current = git(holder, "rev-parse", "HEAD^{commit}", check=False)
     status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
     branch = git(holder, "symbolic-ref", "-q", "HEAD", check=False)
     if current != previous_sha or branch != target_ref:
         raise TaskWorkspaceError("target-ref holder moved outside the durable apply intent")
-    if _holder_is_prepared_for_cas(holder, previous_sha, proposed):
+    if _holder_is_prepared_for_cas(
+            holder, previous_sha, proposed, proposed_inventory):
         return
     recovering_interruption = bool(status) and _holder_dirt_matches_interrupted_runtime_sync(
-        holder, prior, proposed)
-    if status and not recovering_interruption:
+        holder, prior, proposed, proposed_inventory)
+    if recovering_interruption:
+        paths = " ".join(sorted(_bootstrap_path_bytes(
+            prior, proposed, proposed_inventory)))
+        raise TaskWorkspaceError(
+            "target-holder synchronization stopped in an exact package-created partial state; "
+            f"after review run `git restore --source={previous_sha} --staged --worktree -- "
+            f"{paths}` in {holder}, then rerun the same --apply receipt")
+    if status:
         raise TaskWorkspaceError("target-ref holder became dirty before synchronization")
-    # Prepare the one-path index/worktree transition while the ref still names
+    # Prepare the exact planned-path index/worktree transition while the ref still names
     # previous_sha. Only after exact prepared-state verification may CAS advance
     # the branch. Thus no post-CAS operation can overwrite concurrent holder dirt.
     # A one-tree merge is deliberately non-destructive: unlike --reset, Git
@@ -1765,22 +1973,33 @@ def _prepare_target_holder_for_cas(holder: Path, target_ref: str,
         raise TaskWorkspaceError(
             "target-holder synchronization was interrupted before CAS; rerun the same --apply receipt")
     if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != target_ref
-            or not _holder_is_prepared_for_cas(holder, previous_sha, proposed)):
+            or not _holder_is_prepared_for_cas(
+                holder, previous_sha, proposed, proposed_inventory)):
         raise TaskWorkspaceError(
             "target-holder synchronization is incomplete before CAS; rerun the same --apply receipt")
 
 
 def _validate_runtime_bootstrap_commit(repository: Path, plan: dict[str, Any],
-                                       commit_sha: str, proposed: bytes) -> str:
+                                       commit_sha: str, proposed: bytes,
+                                       proposed_inventory: bytes | None = None) -> str:
     previous_sha = plan["target"]["sha"]
     if git(repository, "rev-parse", f"{commit_sha}^", check=False) != previous_sha:
         raise TaskWorkspaceError("runtime bootstrap commit parent mismatch")
     committed_row = git(repository, "ls-tree", commit_sha, "--", RUNTIME_PATH, check=False)
     changed = git(repository, "diff-tree", "--no-commit-id", "--name-only", "-r",
                   commit_sha, check=False).splitlines()
+    expected_paths = [RUNTIME_PATH]
+    inventory_valid = True
+    if proposed_inventory is not None:
+        expected_paths.append(MANAGED_INVENTORY_PATH)
+        inventory_row = git(repository, "ls-tree", commit_sha, "--", MANAGED_INVENTORY_PATH,
+                            check=False)
+        inventory_valid = (
+            target_blob(repository, commit_sha, MANAGED_INVENTORY_PATH) == proposed_inventory
+            and inventory_row.startswith(plan["proposed"]["inventory"]["mode"] + " blob "))
     if (target_blob(repository, commit_sha, RUNTIME_PATH) != proposed
             or not committed_row.startswith(plan["proposed"]["mode"] + " blob ")
-            or changed != [RUNTIME_PATH]):
+            or sorted(changed) != sorted(expected_paths) or not inventory_valid):
         raise TaskWorkspaceError("runtime bootstrap reviewed commit identity mismatch")
     return git(repository, "rev-parse", f"{commit_sha}^{{tree}}")
 
@@ -1799,14 +2018,21 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
     target = plan["target"]
     if str(repository) != target.get("repository") or config["target_ref"] != target.get("ref"):
         raise TaskWorkspaceError("task-runtime bootstrap target identity changed")
-    if _bootstrap_target_status(repository):
-        raise TaskWorkspaceError("configured target worktree is dirty; refusing runtime bootstrap")
     proposed = base64.b64decode(plan["proposed"]["bytes_base64"], validate=True)
+    if (_runtime_prior_state(repository, target["sha"], proposed, package_version)
+            != plan.get("prior")):
+        raise TaskWorkspaceError(
+            "task-runtime bootstrap bound target prior state does not match the receipt")
+    inventory_plan = plan["proposed"].get("inventory")
+    proposed_inventory = (base64.b64decode(inventory_plan["bytes_base64"], validate=True)
+                          if inventory_plan is not None else None)
     record_root = (controller / RUNTIME_BOOTSTRAP_ROOT).resolve()
     intent_path = record_root / f"{digest}-apply-intent.json"
     applied_path = record_root / f"{digest}-applied.json"
     durable_path = record_root / f"{digest}-completion-durable.json"
     intent: dict[str, Any] | None = None
+    if not intent_path.exists() and _bootstrap_target_status(repository):
+        raise TaskWorkspaceError("configured target worktree is dirty; refusing runtime bootstrap")
     if intent_path.exists():
         try:
             intent = json.loads(intent_path.read_text())
@@ -1825,7 +2051,8 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                 or intent.get("package") != plan["package"]):
             raise TaskWorkspaceError("task-runtime bootstrap apply intent identity mismatch")
         commit_sha = intent.get("commit_sha", "")
-        tree = _validate_runtime_bootstrap_commit(repository, plan, commit_sha, proposed)
+        tree = _validate_runtime_bootstrap_commit(
+            repository, plan, commit_sha, proposed, proposed_inventory)
         if tree != intent.get("tree"):
             raise TaskWorkspaceError("task-runtime bootstrap apply intent tree mismatch")
     else:
@@ -1833,7 +2060,8 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
         if (current_sha != target.get("sha")
                 or git(repository, "rev-parse", f"{current_sha}^{{tree}}") != target.get("tree")):
             raise TaskWorkspaceError("task-runtime bootstrap target ref moved after planning")
-        if _runtime_prior_state(repository, current_sha, proposed) != plan.get("prior"):
+        if _runtime_prior_state(repository, current_sha, proposed,
+                                package_version) != plan.get("prior"):
             raise TaskWorkspaceError("task-runtime bootstrap prior path state changed")
         workspace_root = Path(config["workspace_root"])
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -1849,13 +2077,21 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
             destination = temporary / RUNTIME_PATH
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(proposed); destination.chmod(0o755)
-            run(["git", "-C", str(temporary), "add", "--", RUNTIME_PATH], temporary)
-            if git(temporary, "diff", "--cached", "--name-only").splitlines() != [RUNTIME_PATH]:
+            changed_paths = [RUNTIME_PATH]
+            if proposed_inventory is not None:
+                inventory_destination = temporary / MANAGED_INVENTORY_PATH
+                inventory_destination.write_bytes(proposed_inventory)
+                inventory_destination.chmod(int(inventory_plan["mode"], 8) & 0o777)
+                changed_paths.append(MANAGED_INVENTORY_PATH)
+            run(["git", "-C", str(temporary), "add", "--", *changed_paths], temporary)
+            if (git(temporary, "diff", "--cached", "--name-only").splitlines()
+                    != sorted(changed_paths)):
                 raise TaskWorkspaceError("runtime bootstrap staged an unexpected path")
             run(["git", "-C", str(temporary), "-c", "core.hooksPath=/dev/null", "commit", "-m",
                  f"chore(juno): bootstrap package task runtime\n\nReviewed-Plan: {digest}\nJuno-Package: {package_version}"], temporary)
             commit_sha = git(temporary, "rev-parse", "HEAD^{commit}")
-            tree = _validate_runtime_bootstrap_commit(repository, plan, commit_sha, proposed)
+            tree = _validate_runtime_bootstrap_commit(
+                repository, plan, commit_sha, proposed, proposed_inventory)
         finally:
             if added:
                 run(["git", "-C", str(repository), "worktree", "remove", "--force",
@@ -1958,13 +2194,14 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                         "target-holder index is locked; refusing before target CAS advancement")
                 _prepare_target_holder_for_cas(holder, config["target_ref"],
                                                intent["previous_sha"], intent["commit_sha"],
-                                               plan["prior"], proposed)
+                                               plan["prior"], proposed, proposed_inventory)
                 holders = _target_ref_holders(repository, config["target_ref"])
                 if (len(holders) != 1
                         or Path(str(holders[0].get("worktree", ""))).resolve() != holder
                         or ref_sha(repository, config["target_ref"]) != intent["previous_sha"]
                         or not _holder_is_prepared_for_cas(
-                            holder, intent["previous_sha"], proposed)):
+                            holder, intent["previous_sha"], proposed,
+                            proposed_inventory)):
                     raise TaskWorkspaceError("target-ref holder raced before target CAS advancement")
                 cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
                            intent["commit_sha"], intent["previous_sha"]], repository, check=False)
