@@ -1206,7 +1206,11 @@ def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
         endpoint = root / INTEGRATION_POLICY_PATH
         if endpoint.exists() or endpoint.is_symlink():
             raise BoundaryError("legacy migration requires an absent integration-workspace endpoint")
-    return {"root": str(root), "branch": branch, "registration": registration,
+    common = Path(common_dir(root))
+    index_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    return {"root": str(root), "git_common_dir": str(common), "index_path": str(index_path),
+            "git_common_identity": list(common.stat()[:3]),
+            "branch": branch, "registration": registration,
             "head": head, "tree": tree, "config_sha256": bytes_digest(config_bytes),
             "product_ref": product_ref, "product_head": product_head,
             "policy_before_sha256": bytes_digest(policy_bytes),
@@ -1289,7 +1293,8 @@ def acquire_policy_migration_locks(common: Path, branch: str) -> Any:
 def assert_policy_plan_snapshot(plan: dict[str, Any], *, owned_index_lock: bool = False) -> tuple[Path, dict[str, Any]]:
     root = exact_physical_controller(Path(plan["root"]))
     current = policy_migration_snapshot(root, plan["branch"], owned_index_lock=owned_index_lock)
-    keys = ("root", "branch", "registration", "head", "tree", "config_sha256", "product_ref",
+    keys = ("root", "git_common_dir", "index_path", "git_common_identity",
+            "branch", "registration", "head", "tree", "config_sha256", "product_ref",
             "product_head", "policy_before_sha256", "policy_before_utf8", "policy_result_sha256",
             "policy_result_utf8", "task_policy_sha256", "risk_policy_sha256", "immutable_identity",
             "source", "state", "integration_result_sha256")
@@ -1305,23 +1310,36 @@ def migration_temporary_endpoints(root: Path, plan_hash: str) -> list[Path]:
         f".juno_task/config/.integration-workspace.json.migration-{suffix}")]
 
 
-def endpoint_snapshot(path: Path) -> tuple[bytes, tuple[int, int, int, int, int]] | None:
+def open_config_directory(root: Path) -> tuple[int, tuple[int, int, int]]:
+    directory = root / ".juno_task/config"
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try: descriptor = os.open(directory, flags)
+    except OSError as exc:
+        raise BoundaryError("metadata-policy migration config directory is missing or unsafe") from exc
+    value = os.fstat(descriptor)
+    if not stat.S_ISDIR(value.st_mode):
+        os.close(descriptor)
+        raise BoundaryError("metadata-policy migration config endpoint is not a directory")
+    return descriptor, (value.st_dev, value.st_ino, value.st_mode)
+
+
+def endpoint_snapshot_at(directory_fd: int, name: str) -> tuple[bytes, tuple[int, int, int, int, int]] | None:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try: descriptor = os.open(path, flags)
+    try: descriptor = os.open(name, flags, dir_fd=directory_fd)
     except FileNotFoundError: return None
     except OSError as exc:
-        raise BoundaryError(f"metadata-policy migration refuses an unsafe endpoint: {path}") from exc
+        raise BoundaryError(f"metadata-policy migration refuses an unsafe endpoint: {name}") from exc
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise BoundaryError(f"metadata-policy migration endpoint is not a regular file: {path}")
+            raise BoundaryError(f"metadata-policy migration endpoint is not a regular file: {name}")
         with os.fdopen(descriptor, "rb", closefd=False) as stream: data = stream.read()
         after = os.fstat(descriptor)
     finally: os.close(descriptor)
     identity = lambda value: (value.st_dev, value.st_ino, value.st_mode,
                               value.st_size, value.st_mtime_ns)
     if identity(before) != identity(after) or len(data) != after.st_size:
-        raise BoundaryError(f"metadata-policy endpoint raced during no-follow snapshot: {path}")
+        raise BoundaryError(f"metadata-policy endpoint raced during no-follow snapshot: {name}")
     return data, identity(after)
 
 
@@ -1378,7 +1396,11 @@ def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
         return None
     registration = require_controller_registration(root, plan["branch"])
     source = package_policy_source(root, registration["runtime_executable"])
-    if (registration != plan["registration"] or source != plan["source"]
+    common = Path(common_dir(root))
+    if (str(common) != plan.get("git_common_dir")
+            or list(common.stat()[:3]) != plan.get("git_common_identity")
+            or str(Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))) != plan.get("index_path")
+            or registration != plan["registration"] or source != plan["source"]
             or git(root, "symbolic-ref", "-q", "HEAD", check=False) != plan["branch"]
             or git(root, "rev-parse", f"{plan['product_ref']}^{{commit}}", check=False) != plan["product_head"]):
         raise BoundaryError("completed metadata-policy commit has stale authority bindings")
@@ -1410,6 +1432,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
     reject_alternate_index()
     plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_policy_migration_plan(plan_path)
     root = exact_physical_controller(Path(plan["root"])); common = Path(common_dir(root))
+    if (str(common) != plan.get("git_common_dir")
+            or str(Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))) != plan.get("index_path")
+            or list(common.stat()[:3]) != plan.get("git_common_identity")):
+        raise BoundaryError("metadata-policy migration repository identity differs from the reviewed plan")
     output = external_config_repair_receipt(args.output, root, common)
     plan_file_hash = file_digest(plan_path)
     if not plan["changed_paths"]:
@@ -1492,7 +1518,30 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                 durable_unlink(index_lock)
                 raise
             index_published = False
+            config_fd, config_identity = open_config_directory(root)
+            endpoint_payloads = tuple(
+                (relative, Path(relative).name, data,
+                 migration_temporary_endpoints(root, plan_hash)[index].name)
+                for index, (relative, data) in enumerate((
+                    (POLICY_PATH, plan["policy_result_utf8"].encode("utf-8")),
+                    (INTEGRATION_POLICY_PATH, plan["source"]["integration_source_utf8"].encode("utf-8")),
+                )))
             try:
+                # Refuse or reclaim only exact plan-owned endpoint temporaries
+                # before publishing the commit. The open directory descriptor
+                # fixes the reviewed ancestor across all later operations.
+                for relative, name, data, temporary_name in endpoint_payloads:
+                    current = endpoint_snapshot_at(config_fd, name)
+                    current_bytes = current[0] if current is not None else None
+                    before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
+                    if current_bytes not in {None, before, data}:
+                        raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
+                    temporary = endpoint_snapshot_at(config_fd, temporary_name)
+                    if temporary is not None:
+                        if temporary[0] != data:
+                            raise BoundaryError(f"metadata-policy migration temporary collision: {temporary_name}")
+                        os.unlink(temporary_name, dir_fd=config_fd)
+                os.fsync(config_fd)
                 if completed is None:
                     assert_policy_plan_snapshot(plan, owned_index_lock=True)
                     index_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_INDEX_PAUSE_FILE")
@@ -1517,36 +1566,17 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         committed = None
                         raise BoundaryError("metadata-policy migration HEAD CAS failed before commit publication")
                 try:
-                    endpoint_payloads = (
-                        (POLICY_PATH, plan["policy_result_utf8"].encode("utf-8")),
-                        (INTEGRATION_POLICY_PATH, plan["source"]["integration_source_utf8"].encode("utf-8")),
-                    )
-                    for relative, data in endpoint_payloads:
-                        endpoint = root / relative
-                        snapshot = endpoint_snapshot(endpoint)
-                        current = snapshot[0] if snapshot is not None else None
-                        before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
-                        if current not in {None, before, data}:
-                            raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
-                    owned_temporaries = dict(zip(
-                        (POLICY_PATH, INTEGRATION_POLICY_PATH),
-                        migration_temporary_endpoints(root, plan_hash), strict=True))
-                    for relative, data in endpoint_payloads:
-                        stale = owned_temporaries[relative]
-                        if stale.exists() or stale.is_symlink():
-                            if stale.is_symlink() or not stale.is_file() or stale.read_bytes() != data:
-                                raise BoundaryError(f"metadata-policy migration temporary collision: {stale}")
-                            stale.unlink()
-                    for relative, data in endpoint_payloads:
-                        endpoint = root / relative
-                        temporary_endpoint = owned_temporaries[relative]
-                        with temporary_endpoint.open("xb") as stream:
-                            stream.write(data); stream.flush(); os.fsync(stream.fileno())
-                        before_snapshot = endpoint_snapshot(endpoint)
+                    for relative, name, data, temporary_name in endpoint_payloads:
+                        descriptor = os.open(temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                             0o600, dir_fd=config_fd)
+                        try:
+                            os.write(descriptor, data); os.fsync(descriptor)
+                        finally: os.close(descriptor)
+                        before_snapshot = endpoint_snapshot_at(config_fd, name)
                         current = before_snapshot[0] if before_snapshot is not None else None
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
                         if current not in {None, before, data}:
-                            temporary_endpoint.unlink(missing_ok=True)
+                            os.unlink(temporary_name, dir_fd=config_fd)
                             raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
                         race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
                         if race_pause:
@@ -1556,11 +1586,16 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                                 if release.exists(): break
                                 import time; time.sleep(0.01)
                             else: raise BoundaryError("metadata-policy endpoint race test pause timed out")
-                        final_snapshot = endpoint_snapshot(endpoint)
+                        final_snapshot = endpoint_snapshot_at(config_fd, name)
                         if final_snapshot != before_snapshot:
-                            temporary_endpoint.unlink(missing_ok=True)
+                            os.unlink(temporary_name, dir_fd=config_fd)
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
-                        os.replace(temporary_endpoint, endpoint)
+                        os.replace(temporary_name, name, src_dir_fd=config_fd, dst_dir_fd=config_fd)
+                    os.fsync(config_fd)
+                    current_config_fd, current_config_identity = open_config_directory(root)
+                    os.close(current_config_fd)
+                    if current_config_identity != config_identity:
+                        raise BoundaryError("metadata-policy config directory changed during publication")
                     os.replace(index_lock, index_path); index_published = True
                     durable_unlink(ownership_path)
                     if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
@@ -1592,6 +1627,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         f"metadata-policy migration commit {committed} is durable but post-commit readback failed: {exc}{detail}"
                     ) from exc
             finally:
+                os.close(config_fd)
                 if committed is None and not index_published:
                     durable_unlink(index_lock)
                     if ownership_path.exists() and not ownership_path.is_symlink():
