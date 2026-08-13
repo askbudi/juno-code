@@ -1443,8 +1443,8 @@ def _load_boundary_runtime(filename: str, module_name: str) -> Any:
     return module
 
 
-def require_migrated_sparse_controller(controller: Path,
-                                       task_config: dict[str, Any]) -> dict[str, Any]:
+def require_metadata_only_controller(controller: Path,
+                                     task_config: dict[str, Any]) -> dict[str, Any]:
     metadata_path = controller / ".juno_task/config/metadata-controller.json"
     try:
         boundary = _load_boundary_runtime(
@@ -1471,8 +1471,6 @@ def require_migrated_sparse_controller(controller: Path,
         raise TaskWorkspaceError("controller registration validator returned invalid evidence") from exc
     branch = git(controller, "symbolic-ref", "-q", "HEAD", check=False)
     role = git(controller, "config", "--worktree", "--get", "juno.workspace.role", check=False)
-    sparse = git(controller, "config", "--worktree", "--bool", "--get",
-                 "core.sparseCheckout", check=False).lower()
     registered_path = git(controller, "config", "--local", "--get", "juno.controller.path", check=False)
     registered_branch = git(controller, "config", "--local", "--get", "juno.controller.branch", check=False)
     try:
@@ -1481,7 +1479,7 @@ def require_migrated_sparse_controller(controller: Path,
         raise TaskWorkspaceError(f"runtime bootstrap controller config is invalid: {exc}") from exc
     expected_shape = {"mode": "metadata-only",
                       "policy": ".juno_task/config/metadata-controller.json"}
-    if (branch != policy["controller_branch"] or role != "controller" or sparse != "true"
+    if (branch != policy["controller_branch"] or role != "controller"
             or not registered_path
             or Path(registered_path).expanduser().resolve() != controller.resolve()
             or registered_branch not in {policy["controller_branch"],
@@ -1493,7 +1491,7 @@ def require_migrated_sparse_controller(controller: Path,
             or config_json.get("controllerWorkspace") != expected_shape
             or task_config.get("target_ref") != policy["product_ref"]):
         raise TaskWorkspaceError(
-            "runtime bootstrap is restricted to the exact registered migrated sparse metadata controller")
+            "runtime bootstrap is restricted to the exact registered metadata-only controller")
     inspection = boundary.inspect(controller, policy,
                                   expected_branch=policy["controller_branch"], require_active=True)
     required_checks = {"branch_exact", "tracked_boundary", "product_absent", "role"}
@@ -1731,7 +1729,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
 def _runtime_bootstrap_plan(controller: Path, package_version: str,
                             package_runtime_sha256: str) -> dict[str, Any]:
     config = load_config(controller)
-    controller_class = require_migrated_sparse_controller(controller, config)
+    controller_class = require_metadata_only_controller(controller, config)
     if not is_valid_semver(package_version):
         raise TaskWorkspaceError("invalid package version identity")
     running = Path(__file__).resolve().read_bytes()
@@ -2079,7 +2077,7 @@ def _validate_runtime_bootstrap_commit(repository: Path, plan: dict[str, Any],
 def _apply_runtime_bootstrap(controller: Path, package_version: str,
                              package_runtime_sha256: str, receipt_path: Path) -> dict[str, Any]:
     config = load_config(controller)
-    controller_class = require_migrated_sparse_controller(controller, config)
+    controller_class = require_metadata_only_controller(controller, config)
     plan, digest = _load_runtime_bootstrap_plan(
         controller, receipt_path, package_version, package_runtime_sha256)
     expected_controller_identity = {**_controller_bootstrap_identity(controller),

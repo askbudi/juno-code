@@ -1358,7 +1358,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                                  "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
         self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
-    def test_package_bound_runtime_bootstrap_plan_apply_and_full_task_start(self) -> None:
+    def test_sparse_metadata_controller_runtime_bootstrap_plan_apply_and_full_task_start(self) -> None:
+        self.assertEqual(git(self.controller, "config", "--bool", "core.sparseCheckout"), "true")
         self.remove_runtime_for_consumer()
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         before = git(self.repository, "rev-parse", "refs/heads/product")
@@ -2022,7 +2023,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(duplicate, "rev-parse", "HEAD"), before)
         self.assertEqual(git(duplicate, "status", "--porcelain=v1"), "")
 
-    def test_runtime_bootstrap_refuses_invalid_policy_registration_role_or_sparse_class(self) -> None:
+    def test_runtime_bootstrap_refuses_invalid_policy_registration_or_role(self) -> None:
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         policy_path = self.controller / ".juno_task/config/metadata-controller.json"
         original_policy = policy_path.read_bytes()
@@ -2042,13 +2043,41 @@ class TaskWorkspaceTests(unittest.TestCase):
 
         git(self.controller, "config", "--worktree", "juno.workspace.role", "task")
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "registration|workspace role|registered migrated"):
+                                    "registration|workspace role|registered metadata-only"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         git(self.controller, "config", "--worktree", "juno.workspace.role", "controller")
 
-        git(self.controller, "config", "--worktree", "core.sparseCheckout", "false")
-        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "registered migrated sparse metadata controller"):
+    def test_orphan_metadata_only_controller_runtime_bootstrap_without_sparse_checkout(self) -> None:
+        git(self.controller, "sparse-checkout", "disable")
+        tree = git(self.controller, "rev-parse", "HEAD^{tree}")
+        previous = git(self.controller, "rev-parse", "HEAD")
+        orphan = run(["git", "-C", str(self.controller), "commit-tree", tree,
+                      "-m", "orphan metadata-only controller"], self.controller).stdout.strip()
+        run(["git", "-C", str(self.controller), "update-ref", "refs/heads/controller",
+             orphan, previous], self.controller)
+        git(self.controller, "reset", "--hard", orphan)
+        self.assertNotEqual(
+            run(["git", "-C", str(self.controller), "config", "--bool",
+                 "core.sparseCheckout"], self.controller, False).stdout.strip(), "true")
+        self.assertEqual(git(self.controller, "rev-list", "--parents", "-n", "1", "HEAD"), orphan)
+
+        self.remove_runtime_for_consumer()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        self.assertEqual(plan["controller_identity"]["controller_class"]["controller_branch"],
+                         "refs/heads/controller")
+        self.assertEqual(plan["controller_identity"]["controller_class"]["checks"],
+                         ["branch_exact", "product_absent", "role", "tracked_boundary"])
+
+    def test_runtime_bootstrap_refuses_product_bearing_metadata_controller(self) -> None:
+        git(self.controller, "sparse-checkout", "disable")
+        (self.controller / "README.md").write_text("product marker\n")
+        git(self.controller, "add", "README.md")
+        git(self.controller, "commit", "-m", "inject product path")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(
+                task_runtime.TaskWorkspaceError,
+                "metadata-controller boundary failed: product_absent, tracked_boundary"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
     def test_runtime_bootstrap_refuses_moved_tampered_dirty_and_customized_targets(self) -> None:
