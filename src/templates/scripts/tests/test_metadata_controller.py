@@ -962,6 +962,26 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(index.read_bytes(), b"raced!!!")
         self.assertEqual(index_lock.read_bytes(), b"prepared-index")
 
+    def test_metadata_policy_recovery_refuses_same_tree_index_identity_drift(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        receipt = self.temp / "index-identity-apply.json"
+        mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
+        receipt.unlink()
+        index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
+        common = Path(command("git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root))
+        ownership = mc.persist_index_lock_ownership(
+            common, plan["plan_sha256"], index, command("git", "rev-parse", "HEAD^{tree}", cwd=root), index)
+        before = index.read_bytes()
+        with index.open("r+b") as stream:
+            stream.write(before)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.assertEqual(command("git", "write-tree", cwd=root), command("git", "rev-parse", "HEAD^{tree}", cwd=root))
+        with self.assertRaisesRegex(mc.BoundaryError, "ownership is stranded or unowned"):
+            mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
+        self.assertTrue(ownership.exists())
+
     def test_metadata_policy_recovery_refuses_substituted_commit_identity(self) -> None:
         root, _ = self.legacy_policy_controller()
         plan_path, plan = self.policy_plan(root)

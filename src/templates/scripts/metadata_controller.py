@@ -1628,8 +1628,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                 else policy_result_tree(root, plan)
             prepared_still_locked = (exact_prepared_index(
                     root, recovery_lock, ownership_path, plan_hash, expected_result_tree)
-                    and (completed_probe is not None
-                         or exact_displaced_index(expected_index, ownership_path)))
+                    and exact_displaced_index(expected_index, ownership_path))
             published_with_displaced_lock = (completed_probe is not None
                     and exact_prepared_index(root, expected_index, ownership_path,
                                              plan_hash, expected_result_tree)
@@ -1642,7 +1641,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             # A crash after publishing the prepared index may leave only its
             # marker. Reclaim it solely after exact completed-state/index proof.
             if (completed is None or ownership_path.is_symlink()
-                    or git(root, "write-tree", check=False) != completed[1]):
+                    or not exact_prepared_index(root, expected_index, ownership_path,
+                                                plan_hash, completed[1])):
                 raise BoundaryError(f"metadata-policy migration index ownership is stranded or unowned: {ownership_path}")
             durable_unlink(ownership_path)
         if completed is None:
