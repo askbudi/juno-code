@@ -1963,7 +1963,8 @@ echo "RUN_UNTIL_ARGS:$*"
       const paneAFullHash = String(paneAFirst.fullHash);
       const paneBFullHash = String(paneB.fullHash);
       const metadataDirectory = path.join(tempDir, '.juno_task');
-      const timestamp = '2026-07-30T00:00:00.000Z';
+      const timestamp = new Date().toISOString();
+      await fs.ensureDir(metadataDirectory);
       await fs.writeJson(path.join(metadataDirectory, 'session_continuity.v2.json'), {
         version: 2,
         scopes: Object.fromEntries([
