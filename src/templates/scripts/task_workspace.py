@@ -1438,19 +1438,22 @@ def _bootstrap_target_status(repository: Path) -> str:
 def _runtime_prior_state(repository: Path, target_sha: str,
                          proposed: bytes) -> dict[str, Any]:
     prior = target_blob(repository, target_sha, RUNTIME_PATH)
+    package_bytes = target_blob(repository, target_sha, "juno-code/package.json")
+    source = target_blob(repository, target_sha,
+                         "juno-code/src/templates/scripts/task_workspace.py")
+    try:
+        package = json.loads(package_bytes) if package_bytes is not None else None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("target package identity is invalid; refusing bootstrap") from exc
+    source_repository = package_bytes is not None or source is not None
+    if source_repository and (not isinstance(package, dict)
+                              or package.get("name") != "juno-code"
+                              or not is_valid_semver(package.get("version"))):
+        raise TaskWorkspaceError("Juno source target package identity is invalid")
     if prior is None:
-        package_bytes = target_blob(repository, target_sha, "juno-code/package.json")
-        source = target_blob(repository, target_sha,
-                             "juno-code/src/templates/scripts/task_workspace.py")
-        try:
-            package = json.loads(package_bytes) if package_bytes is not None else None
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise TaskWorkspaceError("target package identity is invalid; refusing bootstrap") from exc
-        if package_bytes is not None or source is not None:
-            if (not isinstance(package, dict) or package.get("name") != "juno-code"
-                    or source != proposed):
-                raise TaskWorkspaceError(
-                    "Juno source target package/template identity does not match exact package bytes")
+        if source_repository and source != proposed:
+            raise TaskWorkspaceError(
+                "Juno source target package/template identity does not match exact package bytes")
         return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
                 "classification": "missing"}
     tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
@@ -1469,6 +1472,8 @@ def _runtime_prior_state(repository: Path, target_sha: str,
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TaskWorkspaceError("target managed inventory is invalid; refusing bootstrap") from exc
     package_version = inventory.get("packageVersion") if isinstance(inventory, dict) else None
+    if source_repository and source != prior:
+        raise TaskWorkspaceError("Juno source target template/runtime identity is inconsistent")
     assets = inventory.get("assets") if isinstance(inventory, dict) else None
     entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
     inventory_valid = (
@@ -1877,7 +1882,8 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                              "operation": "guard-ownership", "plan_sha256": digest,
                              "repository": str(repository), "target_ref": config["target_ref"],
                              "path": str(expected_guard)}
-                if guard_ownership_path.exists():
+                ownership_exists = guard_ownership_path.exists()
+                if ownership_exists:
                     try:
                         if json.loads(guard_ownership_path.read_text()) != ownership:
                             raise TaskWorkspaceError("package-owned target guard record mismatch")
@@ -1885,16 +1891,29 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                         raise TaskWorkspaceError("package-owned target guard record is invalid") from exc
                 holders = _target_ref_holders(repository, config["target_ref"])
                 if holders:
+                    if not ownership_exists:
+                        raise TaskWorkspaceError(
+                            "target-ref holder lacks durable package guard ownership")
                     if (len(holders) != 1 or holders[0].get("locked")
                             or Path(str(holders[0].get("worktree", ""))).resolve()
                             != expected_guard):
                         raise TaskWorkspaceError(
                             "a non-guard target-ref holder appeared after durable apply intent")
                     holder = exact_root(expected_guard, "durable package-owned target guard")
-                    if (git(holder, "symbolic-ref", "-q", "HEAD", check=False)
-                            != config["target_ref"]
-                            or git(holder, "config", "--worktree", "--get",
-                                   "juno.bootstrap.guardDigest", check=False) != digest):
+                    guard_digest = git(holder, "config", "--worktree", "--get",
+                                       "juno.bootstrap.guardDigest", check=False)
+                    if git(holder, "symbolic-ref", "-q", "HEAD", check=False) != config["target_ref"]:
+                        raise TaskWorkspaceError("durable package-owned target guard identity changed")
+                    if not guard_digest:
+                        if (git(holder, "rev-parse", "HEAD^{commit}", check=False)
+                                != intent["previous_sha"]
+                                or git(holder, "status", "--porcelain=v1",
+                                       "--untracked-files=all", check=False)):
+                            raise TaskWorkspaceError(
+                                "incomplete package-owned target guard is not clean at expected SHA")
+                        run(["git", "-C", str(holder), "config", "--worktree",
+                             "juno.bootstrap.guardDigest", digest], holder)
+                    elif guard_digest != digest:
                         raise TaskWorkspaceError("durable package-owned target guard identity changed")
                     guard_holder = holder
                 else:
