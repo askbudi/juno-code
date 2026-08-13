@@ -1027,10 +1027,17 @@ def repair_plan(controller: Path) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
     blockers: list[str] = []
     target_sha = status["target"]["sha"]
+    owner_path = owner["path"] if owner else None
+    attached_owner_repairable = bool(
+        owner and not owner["detached"] and owner["clean"] and owner["full_checkout"]
+        and owner["head"] == target_sha and owner["role_base"] == target_sha
+        and status["target"]["holders"] == [owner_path]
+    )
     if not owner:
         blockers.append("canonical_integration_owner_unavailable")
     else:
-        if not owner["clean"] or not owner["full_checkout"] or not owner["detached"]:
+        if (not owner["clean"] or not owner["full_checkout"]
+                or (not owner["detached"] and not attached_owner_repairable)):
             blockers.append("canonical_integration_owner_not_safe")
         if owner["head"] != target_sha:
             actions.append({"kind": "refresh_owner", "path": owner["path"],
@@ -1055,8 +1062,11 @@ def repair_plan(controller: Path) -> dict[str, Any]:
         root = Path(holder)
         identity = worktree_identity(root)
         row = rows.get(holder, {})
-        if (not identity["clean"] or identity["head"] != target_sha
-                or identity["role"] in {"controller", "task"}):
+        if holder != owner_path or len(status["target"]["holders"]) != 1:
+            blockers.append(f"extra_target_holder:{holder}")
+        elif (not identity["clean"] or identity["head"] != target_sha
+                or identity["role"] != "integration-owner"
+                or identity["authority"] != policy["owner_role_authority"]):
             blockers.append(f"unsafe_target_holder:{holder}")
         else:
             actions.append({"kind": "detach_target_holder", "path": holder,
@@ -1064,6 +1074,8 @@ def repair_plan(controller: Path) -> dict[str, Any]:
                             "role": identity["role"], "authority": identity["authority"]})
     ignored = {"target_checked_out", "integration_owner_stale",
                "integration_owner_role_base_stale"}
+    if attached_owner_repairable:
+        ignored.add("integration_owner_attached")
     blockers.extend(row["code"] for row in status["findings"]
                     if row["severity"] == "error" and row["code"] not in ignored)
     common = Path(git(repository, "rev-parse", "--path-format=absolute",
@@ -1094,7 +1106,10 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
     except (OSError, json.JSONDecodeError) as exc:
         raise IntegrationError(f"invalid repair plan receipt: {exc}") from exc
     current = repair_plan(controller)
-    if approved.get("operation") != "repair" or approved.get("blockers"):
+    approved_core = {key: value for key, value in approved.items()
+                     if key not in {"plan_sha256", "outcome"}}
+    if (approved.get("operation") != "repair" or approved.get("blockers")
+            or approved.get("plan_sha256") != json_digest(approved_core)):
         error = "repair plan was not eligible"
         failed = {"schema_version": SCHEMA, "operation": "repair",
                   "outcome": "failed", "error": error}
@@ -1115,7 +1130,10 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
     reference = write_receipt(result_path, result)
     try:
         with merge_runtime.target_lock(controller, repository, task_policy["target_ref"]):
-            for action in current["actions"]:
+            locked = repair_plan(controller)
+            if locked["plan_sha256"] != current["plan_sha256"]:
+                raise IntegrationError("repair plan identity drifted while acquiring target lock")
+            for action in locked["actions"]:
                 if action["kind"] == "detach_target_holder":
                     root = Path(action["path"])
                     git(root, "switch", "--detach", action["head"])

@@ -264,6 +264,9 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         refused, refused_code = runtime.sync(self.controller)
         self.assertEqual(refused_code, 2)
         self.assertIn("integration_owner_dirty", refused["error"])
+        repair, repair_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((repair_code, repair["outcome"]), (2, "refused"), repair)
+        self.assertIn("canonical_integration_owner_not_safe", repair["blockers"])
 
     def test_sync_preflights_unpublished_gitlink_before_owner_mutation_and_retries(self) -> None:
         child_remote = self.root / "closure-child.git"
@@ -362,28 +365,61 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(foreign_code, 2)
         self.assertEqual(foreign["outcome"], "failed")
 
-    def test_repair_plan_detaches_safe_target_holder_and_refreshes_stale_owner(self) -> None:
-        advanced = self.local_advance()
-        registered, code = runtime.register(self.controller, self.owner)
-        self.assertEqual((code, registered["outcome"]), (0, "completed"))
-        holder = self.root / "target-holder"
-        git(self.repo, "worktree", "add", str(holder), "product")
+    def test_repair_detaches_exact_attached_canonical_owner(self) -> None:
+        runtime.register(self.controller, self.owner)
+        git(self.owner, "switch", "product")
+        before_refs = git(self.repo, "show-ref")
 
         planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
         self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
         self.assertEqual([row["kind"] for row in planned["actions"]],
-                         ["refresh_owner", "advance_role_base", "detach_target_holder"])
-        before = git(holder, "symbolic-ref", "HEAD")
-        self.assertEqual(before, "refs/heads/product")
+                         ["detach_target_holder"])
+        self.assertEqual(git(self.owner, "symbolic-ref", "HEAD"), "refs/heads/product")
+        self.assertEqual(git(self.repo, "show-ref"), before_refs)
 
         applied, apply_code = runtime.repair(
             self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
         self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
-        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), advanced)
-        self.assertEqual(git(self.owner, "config", "--worktree", "--get",
-                             "juno.workspace.roleBase"), advanced)
-        self.assertNotEqual(run(["git", "-C", str(holder), "symbolic-ref", "-q", "HEAD"],
-                                holder, False).returncode, 0)
+        self.assertNotEqual(run(["git", "-C", str(self.owner), "symbolic-ref", "-q", "HEAD"],
+                                self.owner, False).returncode, 0)
+        self.assertTrue(applied["status"]["healthy"])
+        self.assertTrue(applied["status"]["ready"])
+
+    def test_repair_refuses_dirty_or_wrong_base_attached_owner(self) -> None:
+        runtime.register(self.controller, self.owner)
+        git(self.owner, "switch", "product")
+        (self.owner / "src/base.txt").write_text("dirty\n")
+        dirty, dirty_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((dirty_code, dirty["outcome"]), (2, "refused"), dirty)
+        self.assertIn("canonical_integration_owner_not_safe", dirty["blockers"])
+        git(self.owner, "restore", "src/base.txt")
+        git(self.owner, "config", "--worktree", "juno.workspace.roleBase", "HEAD^")
+        wrong, wrong_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((wrong_code, wrong["outcome"]), (2, "refused"), wrong)
+        self.assertIn("canonical_integration_owner_not_safe", wrong["blockers"])
+
+    def test_repair_refuses_extra_target_holder(self) -> None:
+        advanced = self.local_advance()
+        runtime.register(self.controller, self.owner)
+        holder = self.root / "target-holder"
+        git(self.repo, "worktree", "add", str(holder), "product")
+        planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (2, "refused"), planned)
+        self.assertIn(f"extra_target_holder:{holder.resolve()}", planned["blockers"])
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), self.base)
+        self.assertEqual(git(holder, "rev-parse", "HEAD"), advanced)
+
+    def test_repair_refuses_tampered_receipt(self) -> None:
+        runtime.register(self.controller, self.owner)
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual(code, 0)
+        receipt = Path(planned["receipt"]["path"])
+        value = json.loads(receipt.read_text())
+        value["registered_owner"] = str(self.root / "attacker")
+        receipt.write_text(json.dumps(value))
+        applied, apply_code = runtime.repair(self.controller, dry_run=False, apply=receipt)
+        self.assertEqual(apply_code, 2)
+        self.assertIn("not eligible", applied["error"])
 
     def test_repair_refuses_plan_identity_drift(self) -> None:
         runtime.register(self.controller, self.owner)

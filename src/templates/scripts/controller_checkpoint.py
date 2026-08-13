@@ -127,11 +127,12 @@ def acquire_lease(root: Path):
     return handle
 
 
-def acquire_target_channel(root: Path, timeout_seconds: float = 30.0):
+def acquire_target_channel(root: Path, timeout_seconds: float = 30.0,
+                           explicit_target_ref: str | None = None):
     """Serialize branch commits with integration CAS/restoration on the same channel."""
-    target_ref = git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip()
+    target_ref = explicit_target_ref or git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip()
     if not target_ref:
-        raise CheckpointError("checkpoint requires a named branch; detached HEAD is not allowed")
+        raise CheckpointError("checkpoint requires a named branch or explicit target ref")
     if not target_ref.startswith("refs/heads/"):
         raise CheckpointError(f"checkpoint branch is not a full local head ref: {target_ref}")
     identity = f"{common_dir(root)}\0{target_ref}".encode()
@@ -148,7 +149,8 @@ def acquire_target_channel(root: Path, timeout_seconds: float = 30.0):
                 handle.close()
                 raise CheckpointError(f"target channel lock timeout: {channel_path}") from exc
             time.sleep(0.05)
-    if git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip() != target_ref:
+    if (explicit_target_ref is None
+            and git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip() != target_ref):
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN); handle.close()
         raise CheckpointError("checkpoint branch changed while acquiring target channel")
     return handle, target_ref, channel_path
@@ -858,7 +860,9 @@ def release_admission(root: Path, requested_paths: list[str], *, require_changes
             "paths": list(RELEASE_PATHS), "dirty_paths": dirty_paths}
 
 
-def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict[str, Any]:
+def release_commit(root: Path, message: str, requested_paths: list[str],
+                   *, target_ref: str | None = None,
+                   expected_target: str | None = None) -> dict[str, Any]:
     """Create the one explicit package-release commit without weakening the hook."""
     admission = release_admission(root, requested_paths, require_changes=True)
     dirty_paths = admission["dirty_paths"]
@@ -875,10 +879,34 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
             raise CheckpointError("release-commit content changed after staging")
         staged_tree = git(root, "write-tree").strip()
         exact_message = validate_message(message)
-        # The ordinary integration-owner classifier remains a hard deny. This
-        # exact helper owns the commit and intentionally bypasses hook dispatch,
-        # as controller checkpoint commits do, after verifying any managed hook.
-        git(root, "commit", "--no-verify", "-m", exact_message, "--", *RELEASE_PATHS)
+        # A detached canonical owner creates the commit object first and then
+        # advances the explicit target with an expected-SHA CAS. It never owns
+        # the target branch by checkout mode.
+        detached_release = target_ref is not None or expected_target is not None
+        if detached_release:
+            if not target_ref or not expected_target:
+                raise CheckpointError("detached release requires target ref and expected target SHA")
+            if git(root, "symbolic-ref", "--quiet", "HEAD", check=False).strip():
+                raise CheckpointError("explicit-target release requires detached HEAD")
+            if before != expected_target or git(root, "rev-parse", target_ref).strip() != expected_target:
+                raise CheckpointError("release target/ref lease identity changed")
+            created = git(root, "commit-tree", staged_tree, "-p", before,
+                          "-m", exact_message).strip()
+            update = subprocess.run(["git", "-C", str(root), "update-ref", target_ref,
+                                     created, expected_target], capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL,
+                                    env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+            if update.returncode != 0:
+                raise CheckpointError("release target CAS failed")
+            try:
+                git(root, "reset", "--hard", created)
+            except BaseException:
+                git(root, "update-ref", target_ref, expected_target, created, check=False)
+                git(root, "reset", "--hard", expected_target, check=False)
+                raise
+        else:
+            # The ordinary integration-owner classifier remains a hard deny.
+            git(root, "commit", "--no-verify", "-m", exact_message, "--", *RELEASE_PATHS)
 
         # HEAD is mutable even while this process owns the Juno authority lock:
         # unrelated Git can advance the ref immediately after `git commit`.
@@ -886,7 +914,8 @@ def release_commit(root: Path, message: str, requested_paths: list[str]) -> dict
         # it to the frozen parent, staged tree, exact message, and changed paths.
         reflog = git(root, "reflog", "--all", "--format=%H", check=False).splitlines()
         candidates: list[str] = []
-        for candidate in dict.fromkeys(row.strip() for row in reflog if row.strip()):
+        for candidate in dict.fromkeys(([created] if detached_release else []) +
+                                       [row.strip() for row in reflog if row.strip()]):
             parent_row = git(root, "rev-list", "--parents", "-n", "1", candidate, check=False).split()
             if parent_row != [candidate, before]:
                 continue
@@ -948,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
     preflight.add_argument("--path", action="append", required=True); preflight.add_argument("--json", action="store_true")
     release = sub.add_parser("release-commit", help="Create an exact guarded package release commit")
     release.add_argument("--message", required=True); release.add_argument("--path", action="append", required=True); release.add_argument("--json", action="store_true")
+    release.add_argument("--target-ref"); release.add_argument("--expected-target")
     hook = sub.add_parser("hook", help="Explicit managed pre-commit adoption")
     hook.add_argument("action", choices=["install", "status", "remove"]); hook.add_argument("--approve-existing"); hook.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -975,8 +1005,12 @@ def main(argv: list[str] | None = None) -> int:
             raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for release admission")
         lease = acquire_lease(root); channel = None
         try:
-            channel = acquire_target_channel(root)
-            payload = release_commit(root, args.message, args.path)
+            if bool(args.target_ref) != bool(args.expected_target):
+                raise CheckpointError("--target-ref and --expected-target must be provided together")
+            channel = acquire_target_channel(root, explicit_target_ref=args.target_ref)
+            payload = release_commit(root, args.message, args.path,
+                                     target_ref=args.target_ref,
+                                     expected_target=args.expected_target)
         finally:
             if channel: fcntl.flock(channel[0].fileno(), fcntl.LOCK_UN); channel[0].close()
             fcntl.flock(lease.fileno(), fcntl.LOCK_UN); lease.close()
