@@ -564,6 +564,53 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(mc.ref_exists(self.repo, "refs/heads/juno/controller-metadata-v1"))
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
 
+    def set_runtime_version_output(self, stdout: str, stderr: str) -> None:
+        write(
+            self.runtime,
+            "#!/usr/bin/env python3\nimport sys\n"
+            f"sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n",
+        )
+        self.runtime.chmod(self.runtime.stat().st_mode | stat.S_IXUSR)
+
+    def canonical_runtime_banner(self, version: str) -> str:
+        return (
+            f"\n🎯 Juno Code v{version} - TypeScript CLI\n"
+            "   Node.js v22.22.3 on darwin\n"
+            f"   Working directory: {self.runtime.parent.resolve()}\n\n"
+        )
+
+    def test_runtime_identity_accepts_canonical_human_and_prefixed_machine_output(self) -> None:
+        version = "2.1.3-rc.0.11"
+        accepted = {
+            "canonical human": (f"{version}\n", self.canonical_runtime_banner(version)),
+            "prefixed machine": (f"juno-code {version}\n", ""),
+        }
+        for label, (stdout, stderr) in accepted.items():
+            with self.subTest(label=label):
+                self.set_runtime_version_output(stdout, stderr)
+                identity = mc.runtime_identity(self.runtime, version, self.repo)
+                self.assertEqual(identity["version"], version)
+                self.assertEqual(identity["executable"], str(self.runtime.resolve()))
+
+    def test_runtime_identity_rejects_noncanonical_version_output(self) -> None:
+        version = "2.1.3-rc.0.11"
+        banner = self.canonical_runtime_banner(version)
+        cases = {
+            "wrong version": (
+                "2.1.3-rc.0.10\n",
+                self.canonical_runtime_banner("2.1.3-rc.0.10"),
+            ),
+            "malformed banner": (f"{version}\n", banner.replace("Node.js", "Node")),
+            "ambiguous stdout": (f"{version}\njuno-code {version}\n", banner),
+            "missing banner": (f"{version}\n", ""),
+            "unexpected stderr": (f"{version}\n", banner + "unexpected\n"),
+        }
+        for label, (stdout, stderr) in cases.items():
+            with self.subTest(label=label):
+                self.set_runtime_version_output(stdout, stderr)
+                with self.assertRaisesRegex(mc.BoundaryError, "runtime identity mismatch"):
+                    mc.runtime_identity(self.runtime, version, self.repo)
+
     def test_runtime_inside_any_linked_worktree_is_rejected(self) -> None:
         linked = self.temp / "linked-product"
         command("git", "worktree", "add", "--detach", str(linked), self.product_head, cwd=self.repo)
@@ -581,15 +628,15 @@ class MetadataControllerTest(unittest.TestCase):
         nvm.mkdir(parents=True)
         command("git", "init", cwd=nvm)
         nvm_runtime = nvm / "versions/node/v22/lib/node_modules/juno-code/dist/bin/cli.mjs"
-        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
         nvm_runtime.chmod(nvm_runtime.stat().st_mode | stat.S_IXUSR)
         execution_marker = self.temp / "nvm-runtime-executed"
-        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33\\n'\n")
+        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
         with self.assertRaisesRegex(mc.BoundaryError, "runtime-install-rebind --help"):
-            mc.runtime_identity(nvm_runtime, "2.0.33", self.new_controller)
+            mc.runtime_identity(nvm_runtime, "2.0.33-rc.0.10", self.new_controller)
         self.assertFalse(execution_marker.exists())
 
-        prefix = self.temp / "durable-runtimes/2.0.33"
+        prefix = self.temp / "durable-runtimes/2.0.33-rc.0.10"
         receipt_path = self.temp / "nvm-install-rebind.json"
         fake_npm = self.temp / "nvm/versions/node/v22/bin/npm"
         write(fake_npm, "#!/bin/sh\nexit 99\n")
@@ -600,9 +647,9 @@ class MetadataControllerTest(unittest.TestCase):
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm):
                 installed = prefix / "node_modules/juno-code"
-                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33"}) + "\n")
+                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33-rc.0.10"}) + "\n")
                 executable = installed / "dist/bin/cli.mjs"
-                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
                 return subprocess.CompletedProcess(argv, 0, "installed\n", "")
             return original_run(argv, cwd, check, **kwargs)
@@ -613,7 +660,7 @@ class MetadataControllerTest(unittest.TestCase):
             receipt = mc.runtime_install_rebind(argparse.Namespace(
                 root=self.new_controller,
                 branch="refs/heads/juno/controller-metadata-v1",
-                runtime_version="2.0.33",
+                runtime_version="2.0.33-rc.0.10",
                 install_prefix=prefix,
                 output=receipt_path,
             ), self.policy)
@@ -1159,6 +1206,23 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(rollback["outcome"], "planned_no_mutation")
         self.assertFalse(rollback["product_ref_mutation"])
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
+
+    def test_runtime_rebind_accepts_exact_semver_prerelease(self) -> None:
+        self.prepare()
+        newer = self.temp / "installed-prerelease/bin/yy"
+        write(newer, "#!/bin/sh\nprintf 'juno-code 2.1.3-rc.0.10\\n'\n")
+        newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
+        receipt = mc.runtime_rebind(argparse.Namespace(
+            root=self.new_controller,
+            branch="refs/heads/juno/controller-metadata-v1",
+            runtime=newer,
+            runtime_version="2.1.3-rc.0.10",
+            output=self.temp / "runtime-prerelease-rebind.json",
+        ), self.policy)
+        self.assertEqual(receipt["runtime"]["version"], "2.1.3-rc.0.10")
+        self.assertEqual(command(
+            "git", "config", "--worktree", "--get", "juno.controller.runtimeVersion",
+            cwd=self.new_controller), "2.1.3-rc.0.10")
 
     def test_runtime_rebind_preflight_and_failure_restore_identity(self) -> None:
         self.prepare()

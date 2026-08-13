@@ -156,7 +156,7 @@ describe('ypl wrapper', () => {
     }
   });
 
-  it('routes a registered integration control command to the pinned controller runtime', async () => {
+  it('routes yy task preflight from a registered product workspace to the pinned controller runtime', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-routed-wrapper-'));
     try {
       const controller = path.join(tempDir, 'controller');
@@ -200,13 +200,13 @@ describe('ypl wrapper', () => {
       );
       const before = await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration });
 
-      const result = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
+      const result = await execa(path.join(launcherBin, 'yy'), ['task', 'preflight', 'T1'], {
         cwd: path.join(integration, 'nested', 'directory'),
         reject: false,
       });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
-        args: ['merge', 'status'], cwd: await fs.realpath(controller),
+        args: ['task', 'preflight', 'T1'], cwd: await fs.realpath(controller),
         env: { invocation: await fs.realpath(integration), role: 'integration-owner',
           effective: await fs.realpath(controller), asserted: 'controller', enforcement: 'strict' },
       });
@@ -295,7 +295,7 @@ describe('ypl wrapper', () => {
     }
   }, 30_000);
 
-  it.each(['start', 'status', 'finish'] as const)(
+  it.each(['start', 'status', 'preflight', 'finish'] as const)(
     'fails task %s closed in an exact task worktree before a stale registered runtime executes',
     async (operation) => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `juno-stale-task-${operation}-`));
@@ -370,6 +370,7 @@ describe('ypl wrapper', () => {
   it.each([
     { args: ['kanban', 'list'], operation: 'kanban' },
     { args: ['task', 'status', 'T1'], operation: 'kanban' },
+    { args: ['task', 'preflight', 'T1'], operation: 'kanban' },
     { args: ['merge', 'status'], operation: 'kanban' },
     { args: ['merge', 'plan', 'T1'], operation: 'kanban' },
     { args: ['task', 'start', 'T1'], operation: 'orchestration' },
@@ -387,6 +388,7 @@ describe('ypl wrapper', () => {
     { args: ['integration', 'register', '/owner'], operation: 'orchestration' },
     { args: ['integration', 'repair', '--dry-run'], operation: 'orchestration' },
     { args: ['integration', 'push', '--dry-run'], operation: 'orchestration' },
+    { args: ['task', 'mystery'], operation: null },
     { args: ['integration', 'mystery'], operation: null },
     { args: ['merge', 'mystery'], operation: null },
   ])('authorizes $operation before dispatching controller runtime bytes', async ({ args, operation }) => {
