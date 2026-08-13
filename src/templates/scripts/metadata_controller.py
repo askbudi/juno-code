@@ -948,9 +948,16 @@ def config_repair_apply(args: argparse.Namespace, policy: dict[str, Any]) -> dic
     return payload
 
 
-def reject_alternate_index() -> None:
-    if os.environ.get("GIT_INDEX_FILE"):
-        raise BoundaryError("alternate GIT_INDEX_FILE is not allowed for metadata-policy migration")
+def reject_git_environment() -> None:
+    # The harness may disable Git's optional opportunistic locks. This cannot
+    # redirect repository/object/config identity; every migration lock is
+    # explicit. All other Git process controls are refused rather than curated.
+    inherited = sorted(key for key in os.environ
+                       if key.startswith("GIT_") and key != "GIT_OPTIONAL_LOCKS")
+    if inherited:
+        raise BoundaryError(
+            "Git environment overrides are not allowed for metadata-policy migration: "
+            + ", ".join(inherited))
 
 
 def exact_physical_controller(value: Path) -> Path:
@@ -1159,7 +1166,7 @@ def derive_policy_migration(before: bytes) -> tuple[str, bytes, dict[str, Any]]:
 
 def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
                               *, owned_index_lock: bool = False) -> dict[str, Any]:
-    reject_alternate_index()
+    reject_git_environment()
     branch = git(root, "symbolic-ref", "-q", "HEAD", check=False)
     if not branch or (expected_branch is not None and branch != expected_branch):
         raise BoundaryError("metadata-policy migration requires the exact attached controller branch")
@@ -1532,6 +1539,9 @@ def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
     message = plan["result_tree_commit_intent"]["message"].format(plan_sha256=plan_hash)
     if (git(root, "rev-parse", "HEAD^") != plan["head"]
             or git(root, "show", "-s", "--format=%B", head) != message
+            or git(root, "show", "-s", "--format=%an%n%ae%n%cn%n%ce", head).splitlines()
+                != ["Juno Metadata Policy Migration", "juno-controller@local.invalid",
+                    "Juno Metadata Policy Migration", "juno-controller@local.invalid"]
             or git(root, "diff", "--name-only", plan["head"], head).splitlines() != plan["changed_paths"]
             or bytes_digest(committed_bytes(root, head, POLICY_PATH)) != plan["policy_result_sha256"]
             or bytes_digest(committed_bytes(root, head, INTEGRATION_POLICY_PATH)) != plan["integration_result_sha256"]
@@ -1553,7 +1563,7 @@ def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
 def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
     if not args.authorize:
         raise BoundaryError("metadata-policy migration apply requires --authorize-metadata-policy-migration")
-    reject_alternate_index()
+    reject_git_environment()
     plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_policy_migration_plan(plan_path)
     root = exact_physical_controller(Path(plan["root"])); common = Path(common_dir(root))
     index_identity_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))

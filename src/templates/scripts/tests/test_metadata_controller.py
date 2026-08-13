@@ -756,15 +756,18 @@ class MetadataControllerTest(unittest.TestCase):
                 plan=plan_path, output=self.temp / "dirty.json", authorize=True))
         (root / ".juno_task/tasks/unrelated.md").unlink()
 
-        previous = os.environ.get("GIT_INDEX_FILE")
-        os.environ["GIT_INDEX_FILE"] = str(self.temp / "alternate-index")
-        try:
-            with self.assertRaisesRegex(mc.BoundaryError, "alternate GIT_INDEX_FILE"):
-                mc.policy_migration_apply(argparse.Namespace(
-                    plan=plan_path, output=self.temp / "alternate.json", authorize=True))
-        finally:
-            if previous is None: os.environ.pop("GIT_INDEX_FILE", None)
-            else: os.environ["GIT_INDEX_FILE"] = previous
+        for variable, value in (("GIT_INDEX_FILE", str(self.temp / "alternate-index")),
+                                ("GIT_DIR", str(self.temp / "redirected-git-dir")),
+                                ("GIT_OBJECT_DIRECTORY", str(self.temp / "redirected-objects"))):
+            previous = os.environ.get(variable)
+            os.environ[variable] = value
+            try:
+                with self.assertRaisesRegex(mc.BoundaryError, f"Git environment overrides.*{variable}"):
+                    mc.policy_migration_apply(argparse.Namespace(
+                        plan=plan_path, output=self.temp / f"{variable}.json", authorize=True))
+            finally:
+                if previous is None: os.environ.pop(variable, None)
+                else: os.environ[variable] = previous
 
         write(root / ".juno_task/tasks/stale.md", "stale\n")
         command("git", "add", ".juno_task/tasks/stale.md", cwd=root)
@@ -933,6 +936,26 @@ class MetadataControllerTest(unittest.TestCase):
             mc.atomic_index_publish(index_lock, index, reviewed)
         self.assertEqual(index.read_bytes(), b"raced!!!")
         self.assertEqual(index_lock.read_bytes(), b"prepared-index")
+
+    def test_metadata_policy_recovery_refuses_substituted_commit_identity(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        receipt = self.temp / "identity-apply.json"
+        mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
+        tip = command("git", "rev-parse", "HEAD", cwd=root)
+        tree = command("git", "rev-parse", "HEAD^{tree}", cwd=root)
+        message = command("git", "show", "-s", "--format=%B", cwd=root)
+        environment = {**os.environ, "GIT_AUTHOR_NAME": "Substituted Author",
+                       "GIT_AUTHOR_EMAIL": "substitute@example.invalid",
+                       "GIT_COMMITTER_NAME": "Substituted Committer",
+                       "GIT_COMMITTER_EMAIL": "substitute@example.invalid"}
+        replacement = subprocess.run(
+            ["git", "commit-tree", tree, "-p", plan["head"], "-m", message], cwd=root,
+            env=environment, text=True, capture_output=True, check=True).stdout.strip()
+        command("git", "update-ref", plan["branch"], replacement, tip, cwd=root)
+        receipt.unlink()
+        with self.assertRaisesRegex(mc.BoundaryError, "not the exact completed"):
+            mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
 
     def test_metadata_policy_recovery_refuses_unowned_index_lock(self) -> None:
         root, _ = self.legacy_policy_controller()
