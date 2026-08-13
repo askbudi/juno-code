@@ -1494,10 +1494,9 @@ def _runtime_prior_state(repository: Path, target_sha: str,
         raise TaskWorkspaceError(
             "target task runtime is customized or lacks immutable package/source provenance; "
             "refusing bootstrap")
-    classification = "exact_managed_source_inventory_generation"
-    return {"state": "present", "mode": prior_mode, "sha256": prior_sha,
-            "bytes_base64": base64.b64encode(prior).decode(),
-            "classification": classification}
+    raise TaskWorkspaceError(
+        "Juno source target runtime is stale; update package template/runtime/inventory "
+        "atomically instead of runtime bootstrap")
 
 
 def _runtime_bootstrap_plan(controller: Path, package_version: str,

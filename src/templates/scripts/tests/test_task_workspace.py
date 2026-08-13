@@ -1045,7 +1045,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(git(self.workspaces / "X", "config", "--worktree", "--bool",
                                 "--get", "core.sparseCheckout"), "true")
 
-    def test_runtime_bootstrap_admits_exact_stale_consumer_inventory_generation(self) -> None:
+    def test_runtime_bootstrap_refuses_exact_stale_source_generation_without_mutation(self) -> None:
         stale = b"#!/usr/bin/env python3\n# exact older package runtime\n"
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.write_bytes(stale)
@@ -1064,12 +1064,24 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "add", task_runtime.RUNTIME_PATH,
             "juno-code/src/templates/scripts/task_workspace.py",
             task_runtime.MANAGED_INVENTORY_PATH)
-        git(self.repository, "commit", "-m", "exact stale consumer runtime generation")
+        git(self.repository, "commit", "-m", "exact stale source runtime generation")
+        before = git(self.repository, "rev-parse", "HEAD^{tree}")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
-        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
-        self.assertEqual(plan["prior"]["classification"],
-                         "exact_managed_source_inventory_generation")
-        self.assertEqual(plan["prior"]["sha256"], stale_hash)
+
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "update package template/runtime/inventory atomically"):
+            task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD^{tree}"), before)
+        self.assertEqual(runtime.read_bytes(), stale)
+        self.assertEqual(source.read_bytes(), stale)
+        self.assertEqual(hashlib.sha256(runtime.read_bytes()).hexdigest(), stale_hash)
+        self.assertEqual(json.loads(inventory.read_text())["assets"][task_runtime.RUNTIME_PATH], {
+            "type": "script", "templateVersion": "2.1.2",
+            "sourceSha256": stale_hash, "installedSha256": stale_hash,
+        })
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+        self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
 
     def test_runtime_bootstrap_rejects_self_asserted_inventory_customization(self) -> None:
         customized = b"#!/usr/bin/env python3\n# operator customization\n"
