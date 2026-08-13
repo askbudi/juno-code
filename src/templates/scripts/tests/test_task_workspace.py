@@ -1192,7 +1192,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "commit", "-m", "missing runtime with divergent source")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "template does not match exact package bytes"):
+                                    "package/template identity does not match exact package bytes"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
     def test_runtime_bootstrap_does_not_classify_staged_deletion_as_interruption(self) -> None:

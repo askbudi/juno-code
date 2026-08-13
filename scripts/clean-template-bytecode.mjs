@@ -17,7 +17,7 @@ export async function cleanTemplateBytecode(root) {
       await rm(absolute, { recursive: true, force: true });
     } else if (entry.isDirectory()) {
       await cleanTemplateBytecode(absolute);
-    } else if (entry.isFile() && entry.name.endsWith('.pyc')) {
+    } else if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.pyc')) {
       await rm(absolute, { force: true });
     }
   }

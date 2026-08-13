@@ -1446,9 +1446,11 @@ def _runtime_prior_state(repository: Path, target_sha: str,
             package = json.loads(package_bytes) if package_bytes is not None else None
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TaskWorkspaceError("target package identity is invalid; refusing bootstrap") from exc
-        if isinstance(package, dict) and package.get("name") == "juno-code" and source != proposed:
-            raise TaskWorkspaceError(
-                "Juno source target runtime template does not match exact package bytes")
+        if package_bytes is not None or source is not None:
+            if (not isinstance(package, dict) or package.get("name") != "juno-code"
+                    or source != proposed):
+                raise TaskWorkspaceError(
+                    "Juno source target package/template identity does not match exact package bytes")
         return {"state": "absent", "mode": None, "sha256": None, "bytes_base64": None,
                 "classification": "missing"}
     tree_row = git(repository, "ls-tree", target_sha, "--", RUNTIME_PATH)
@@ -1864,12 +1866,23 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
             _write_runtime_bootstrap_record(intent_path, intent)
 
     guard_holder: Path | None = None
+    guard_ownership_path = record_root / f"{digest}-guard-ownership.json"
     try:
         with _target_mutation_lock(repository, config["target_ref"]):
             if intent["target_holder"] is None:
                 workspace_root = Path(config["workspace_root"])
                 expected_guard = (workspace_root /
                                   f".yy-task-runtime-bootstrap-guard-{digest}").resolve()
+                ownership = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
+                             "operation": "guard-ownership", "plan_sha256": digest,
+                             "repository": str(repository), "target_ref": config["target_ref"],
+                             "path": str(expected_guard)}
+                if guard_ownership_path.exists():
+                    try:
+                        if json.loads(guard_ownership_path.read_text()) != ownership:
+                            raise TaskWorkspaceError("package-owned target guard record mismatch")
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise TaskWorkspaceError("package-owned target guard record is invalid") from exc
                 holders = _target_ref_holders(repository, config["target_ref"])
                 if holders:
                     if (len(holders) != 1 or holders[0].get("locked")
@@ -1905,6 +1918,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                 if guard_holder.exists():
                     raise TaskWorkspaceError(
                         "durable package-owned target guard path exists outside Git registration")
+                _write_runtime_bootstrap_record(guard_ownership_path, ownership)
                 branch = config["target_ref"].removeprefix("refs/heads/")
                 added = run(["git", "-C", str(repository), "worktree", "add",
                              str(guard_holder), branch], repository, check=False)
@@ -1959,6 +1973,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
                     raise TaskWorkspaceError(
                         "package-owned target guard cleanup failed; rerun the same --apply receipt")
                 guard_holder = None
+                guard_ownership_path.unlink(missing_ok=True)
             try:
                 raw = _write_runtime_bootstrap_record(applied_path, result)
                 completion = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA,
