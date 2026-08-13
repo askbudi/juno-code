@@ -575,6 +575,21 @@ raise SystemExit(2)
         self.assertEqual(git(self.controller, "status", "--porcelain=v1", "--untracked-files=all"),
                          before["status"])
 
+    def test_feasibility_semver_literal_is_scoped_advisory_not_global_blocker(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "src/version.test.ts", 'expect(version).toBe("2.1.2")\n')
+
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        finding = next(row for row in report["findings"]
+                       if row["code"] == "validation.hardcoded_semver_fixture")
+
+        self.assertTrue(report["ready"])
+        self.assertEqual(finding["severity"], "warning")
+        self.assertTrue(finding["tests_safe_before_repair"])
+        self.assertEqual(finding["evidence"]["matches"], [
+            {"path": "src/version.test.ts", "literal": "2.1.2"},
+        ])
+
     def test_feasibility_plan_aggregates_conflict_topology_lock_and_semver(self) -> None:
         self.install_merge_planner_runtime()
         self.add_validation_dependency_base()

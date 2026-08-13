@@ -672,7 +672,10 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
                 if row["path"].endswith("package.json") and isinstance(row.get("version"), str)}
     fixture_hits: list[dict[str, str]] = []
     stable_re = re.compile(r"(?<![0-9A-Za-z-])(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?![0-9A-Za-z.+-])")
-    for path in sorted(set(feature_tree) | set(target_tree)):
+    # Literal SemVer matches are heuristic evidence, not proof of a stale
+    # expectation. Limit the scan to task-authored validation sources so
+    # unchanged repository fixtures cannot make every merge infeasible.
+    for path in authored:
         if not ("test" in path.lower() or "fixture" in path.lower()):
             continue
         raw = _blob_bytes(repository, feature_sha, path)
@@ -683,9 +686,10 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
         if hits:
             fixture_hits.extend({"path": path, "literal": value} for value in hits)
     if fixture_hits:
-        findings.append(_finding("validation.hardcoded_semver_fixture", "error",
+        findings.append(_finding("validation.hardcoded_semver_fixture", "warning",
                                  "validation_plan", {"matches": fixture_hits},
-                                 "replace hardcoded fixture versions with package-bound SemVer"))
+                                 "replace hardcoded fixture versions with package-bound SemVer",
+                                 tests_safe=True))
 
     validation_commands = [{**full_suite_command(config), "phase": "full_suite"}]
     validation_commands[0]["command"] = " ".join(validation_commands[0]["argv"])
