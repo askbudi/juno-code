@@ -42,7 +42,7 @@
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",
-    "build": "npm run generate:implementation-contract -- --check && tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-skills && npm run build:copy-extensions && npm run build:copy-wrapper && node scripts/clean-template-bytecode.mjs dist/templates",
+    "build": "npm run test:skill-contracts && npm run generate:implementation-contract -- --check && tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-skills && npm run build:copy-extensions && npm run build:copy-wrapper && node scripts/clean-template-bytecode.mjs dist/templates",
     "generate:implementation-contract": "node scripts/generate-implementation-contract.mjs",
     "test:implementation-contract": "node scripts/generate-implementation-contract.mjs --check",
     "build:copy-templates": "node -e \"const fs = require('fs-extra'); const path = require('path'); for (const dir of ['scripts','prompts','wiki','config','controller-agent']) { const src = path.join('src/templates', dir); const dest = path.join('dist/templates', dir); if (!fs.existsSync(src)) throw new Error('Missing managed template directory: ' + src); fs.copySync(src, dest, { recursive: true }); } fs.copyFileSync('src/templates/managed-assets.json', 'dist/templates/managed-assets.json'); fs.removeSync('dist/templates/scripts/logs'); fs.readdirSync('dist/templates/scripts').filter(f => f.endsWith('.sh')).forEach(f => fs.chmodSync(path.join('dist/templates/scripts', f), 0o755));\"",
@@ -54,6 +54,7 @@
     "test": "vitest run -c ./vitest.fast.config.ts",
     "test:full": "vitest run",
     "test:managed-assets": "node scripts/verify-managed-assets.mjs",
+    "test:skill-contracts": "node scripts/verify-skill-argument-contracts.mjs",
     "test:template-bytecode-package": "node scripts/verify-template-bytecode-cleanup.mjs",
     "test:installed-test-fixture-package": "node scripts/verify-installed-test-fixture.mjs",
     "test:config-migration-package": "node scripts/verify-config-migration.mjs",

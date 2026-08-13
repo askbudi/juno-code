@@ -35,35 +35,12 @@ const COHERENCE_BLOCKING_MANAGED_ASSETS = new Set(
 const MANAGED_CONTROLLER_GENERATION = path.join(
   '.juno_task', 'runtime', 'managed-controller', 'generation.json',
 );
-const CONTROLLER_POLICY_ASSETS = [
-  'metadata-controller.json',
-  'task-workspace.json',
-  'integration-workspace.json',
-  'risk-policy.json',
-] as const;
 const CONTROLLER_POLICY_PATHS = [
   '.juno_task/config/metadata-controller.json',
   '.juno_task/config/task-workspace.json',
   '.juno_task/config/integration-workspace.json',
   '.juno_task/config/risk-policy.json',
 ] as const;
-
-async function writeControllerAssetAtomic(
-  projectDir: string,
-  destination: string,
-  content: Buffer | string,
-): Promise<void> {
-  await assertSafeManagedWritePath(projectDir, destination);
-  await fs.ensureDir(path.dirname(destination));
-  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    await fs.writeFile(temporary, content, { flag: 'wx' });
-    await fs.rename(temporary, destination);
-  } catch (error) {
-    await fs.remove(temporary).catch(() => undefined);
-    throw error;
-  }
-}
 
 type ManagedControllerGeneration = {
   schema_version: 'juno_managed_controller_runtime.v1';
@@ -235,55 +212,33 @@ export class ScriptInstaller {
     const missingClassifications = CONTROLLER_POLICY_PATHS.filter((relative) =>
       !generatedMetadata.includes(relative) || !trackedExact.includes(relative),
     );
-    const updated: string[] = [];
-    const backups: string[] = [];
+    void force;
     if (missingClassifications.length > 0) {
-      if (!force) {
+      const exactLegacy = missingClassifications.length === 1
+        && missingClassifications[0] === '.juno_task/config/integration-workspace.json';
+      if (exactLegacy) {
         throw new Error(
-          `Metadata-controller policy does not classify required managed assets: ${missingClassifications.join(', ')}. ` +
-          'Run `yy scripts update --force` to archive the reviewed bytes and add only the required classifications.',
+          'Metadata-controller policy requires the receipt-bound legacy migration; scripts update is mutation-free for tracked policy. ' +
+          'Run `yy migrate metadata-policy plan --root "$PWD" --output /external/metadata-policy-plan.json`, ' +
+          'review it, then run `yy migrate metadata-policy apply --plan /external/metadata-policy-plan.json ' +
+          '--output /external/metadata-policy-apply.json --authorize-metadata-policy-migration`.',
         );
       }
-      const hash = createHash('sha256').update(originalMetadata).digest('hex');
-      const backupRelative = path.join(
-        '.juno_task', 'runtime', 'managed-controller', 'policy-backups',
-        `metadata-controller.${hash}.json`,
+      throw new Error(
+        `Metadata-controller policy has unsupported managed classification gaps: ${missingClassifications.join(', ')}. ` +
+        'Preserved tracked policy bytes for owner review.',
       );
-      const backupPath = path.join(projectDir, backupRelative);
-      await assertSafeManagedWritePath(projectDir, backupPath);
-      await fs.ensureDir(path.dirname(backupPath));
-      if (!(await fs.pathExists(backupPath))) await fs.writeFile(backupPath, originalMetadata, { flag: 'wx' });
-      else if (!(await fs.readFile(backupPath)).equals(originalMetadata)) {
-        throw new Error(`Metadata-controller policy backup collision: ${backupRelative}`);
-      }
-      backups.push(backupRelative);
-      metadataPolicy.generated_metadata = [
-        ...new Set([...generatedMetadata, ...CONTROLLER_POLICY_PATHS]),
-      ].sort();
-      metadataPolicy.tracked_exact = [
-        ...new Set([...trackedExact, ...CONTROLLER_POLICY_PATHS]),
-      ].sort();
-      await writeControllerAssetAtomic(
-        projectDir,
-        metadataPath,
-        `${JSON.stringify(metadataPolicy, null, 2)}\n`,
+    }
+    const missingEndpoints = CONTROLLER_POLICY_PATHS.filter((relative) =>
+      !fs.existsSync(path.join(projectDir, relative)),
+    );
+    if (missingEndpoints.length > 0) {
+      throw new Error(
+        `Metadata-controller tracked policy endpoints are missing: ${missingEndpoints.join(', ')}. ` +
+        'Generic scripts update will not recreate tracked controller policy.',
       );
-      updated.push(metadataRelative);
     }
-
-    const installed: string[] = [];
-    for (const name of CONTROLLER_POLICY_ASSETS.slice(1)) {
-      const relative = `.juno_task/config/${name}`;
-      const destination = path.join(projectDir, relative);
-      if (await fs.pathExists(destination)) continue;
-      const source = path.join(packageConfigDir, name);
-      await assertPackageSource(source, packageConfigDir, 'file');
-      await assertSafeManagedWritePath(projectDir, destination);
-      await fs.ensureDir(path.dirname(destination));
-      await fs.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
-      installed.push(relative);
-    }
-    return { installed, updated, backups };
+    return { installed: [], updated: [], backups: [] };
   }
 
   /** Refuse a success message until sparse policy and routed runtime parity are proven. */
@@ -793,6 +748,9 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     const junoTaskDir = path.join(projectDir, '.juno_task');
     if (!(await lstatIfPresent(junoTaskDir))) return;
     await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    if (await this.isMetadataOnlyController(projectDir)) {
+      await this.updateMetadataControllerPolicies(projectDir, force);
+    }
 
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     await ManagedProjectAssets.preflight(projectDir, { force });

@@ -60,6 +60,27 @@ Required: `--id` and `--response`. Optional: `--commit` (recommended for done).
 ./.juno_task/scripts/kanban.sh archive TASK_ID
 ```
 
+### Immutable cold archive packs
+
+Normal `list`, `search`, `ready`, and `order` are deliberately hot-only. Exact `get TASK_ID` transparently resolves a hot task or a read-only archived task; use `history TASK_ID` explicitly for its ledger. Discover cold tasks only with bounded, projected `archive-search` output:
+
+```bash
+./.juno_task/scripts/kanban.sh archive-search --tag backend --before 2026-01-01 --limit 20 --projection metadata
+```
+
+Before archive maintenance, preflight the installed version/help and obtain explicit owner authorization. The repository and index must be clean, and reports must be durable new paths outside the repository:
+
+```bash
+./.juno_task/scripts/kanban.sh --version
+./.juno_task/scripts/kanban.sh archive-pack plan --status done,archive --older-than 90d --max-tasks 1000 --target-bytes 26214400 --hard-max-bytes 47185920 --report /external/receipts/archive-plan.json
+# Independently inspect selected IDs, revisions, source HEAD, policy, and plan hash.
+./.juno_task/scripts/kanban.sh archive-pack create --plan /external/receipts/archive-plan.json --report /external/receipts/archive-create.json
+./.juno_task/scripts/kanban.sh archive-pack doctor
+./.juno_task/scripts/kanban.sh doctor
+```
+
+A stale plan or selected-task/worktree conflict must fail closed: discard the plan, resolve the conflict, and plan again. Never automate archival, edit/append packs or manifests, restore/reopen an archived ID, use force/lossy controls, or enumerate archive files directly. Create follow-up work as a new hot task related to the archived ID. Production archival, push/deploy, and post-deploy E2E each require separate authorization; agents must not infer it from implementation approval.
+
 ### Dependency Management
 
 **DEPS** — View, add, or remove task dependencies
@@ -130,11 +151,20 @@ Add `--raw` for compact output. Add `-p` for pretty print.
 7. **Use `[blocked_by]` markup** in task body when creating tasks that depend on others
 8. **Use `[task_id]` markup** in task body to cross-reference related tasks
 9. **Use `get TASK_ID`** to see full task details including resolved dependency and related task info
-10. **One task in_progress at a time** — finish or re-queue before starting the next
+10. **Concurrent features are supported** — start each selected task with `yy task start TASK_ID`; each gets a dedicated product worktree, while `yy merge` serializes only target updates
+
+### Canonical Controller Routing
+
+Kanban mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—Kanban never switches Git branches or falls back silently.
+
+Run Kanban and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
 
 ### Environment Variables
 
-- `JUNO_TASK_ROOT` — Pin kanban operations to a specific project root directory
+- `JUNO_TASK_ROOT` — Explicit canonical controller/task-storage root (not the product `TASK_ROOT`)
+- `JUNO_CONTROLLER_BRANCH` — Expected controller branch for environment-based routing
+- `JUNO_WORKSPACE_ROLE` — `controller`, `task`, or `integration-owner`
+- `JUNO_WORKSPACE_ENFORCEMENT` — `off`, `warn`, or `strict`
 - `JUNO_DEBUG=true` — Show diagnostic messages
 - `JUNO_VERBOSE=true` — Show informational messages
 - `JUNO_KANBAN_LIST_BODY_TRUNCATE_CHARS=N` — Override list body truncation (default: 1200)

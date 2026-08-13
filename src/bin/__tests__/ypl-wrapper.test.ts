@@ -9,7 +9,6 @@ const PACKAGE_JSON = path.join(PROJECT_ROOT, 'package.json');
 const PACKAGE_LOCK_JSON = path.join(PROJECT_ROOT, 'package-lock.json');
 const YPL_SOURCE = path.join(PROJECT_ROOT, 'src/bin/ypl.sh');
 const JUNO_CODE_SOURCE = path.join(PROJECT_ROOT, 'src/bin/juno-code.sh');
-
 describe('ypl wrapper', () => {
   it('is exposed as an npm binary beside yy', async () => {
     const pkg = await fs.readJson(PACKAGE_JSON);

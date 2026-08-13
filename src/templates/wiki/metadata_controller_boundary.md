@@ -92,6 +92,19 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
 
 `migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, rollback identity, and canonical reviewed metadata/task/risk policies. A single reviewed policy bundle is preferred; alternatively pass both `--task-workspace-policy` and `--risk-policy` with the global `--policy` metadata policy. `prepare` re-reads those exact sources and refuses source or content drift before mutation. It requires a fresh output receipt path, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, blob identity, and generated policy digest. The old sparse/full controller remains intact.
 
+A registered legacy controller whose metadata policy omits only the `integration-workspace.json` classifications must use the dedicated transaction; `scripts update`, including `--force`, intentionally refuses to mutate tracked policy:
+
+```bash
+yy migrate metadata-policy plan --root "$PWD" \
+  --output /durable/metadata-policy-plan.json
+# Review the exact preimage/result bytes, identities, additions, sources, and commit intent.
+yy migrate metadata-policy apply --plan /durable/metadata-policy-plan.json \
+  --output /durable/metadata-policy-apply.json \
+  --authorize-metadata-policy-migration
+```
+
+Plan is read-only and binds the physical registered controller/role, branch and HEAD, product ref/head, policy preimage/result, task/risk bytes, package engine and integration-policy source, ignored runtime generation, exact endpoints, semantic additions, and bounded tree/commit intent. Apply rejects alternate indexes, dirt, unsafe topology, stale or tampered evidence, and identity/source races; serializes on repository, target-channel, dedicated policy, and real Git index locks; publishes one exact two-path commit by HEAD CAS; atomically installs the prepared index and endpoint bytes; and emits an immutable external receipt. Already-migrated exact package bytes are a clean no-op. Ordinary checkpoint authority remains unchanged and continues to reject arbitrary `.juno_task/config` edits.
+
 A controller that already has the reviewed metadata policies but still contains the exact retired generated `controllerWorkspace.enabled` / `controller-workspace.json` config must not be registered or refreshed as if it were canonical. Repair only that known migration seam with a reviewed, external plan and a separate apply receipt:
 
 ```bash

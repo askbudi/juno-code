@@ -353,6 +353,324 @@ def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
     )
 
 
+DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "juno-code-real-git-managed-install.lock"
+_RESOURCE_LOCK_TOKEN: Optional[str] = None
+_RESOURCE_LOCK_WORKLOAD = f"Python real-Git task workspace suite: {Path(__file__).resolve()}"
+
+
+def _configured_lock_path(value: Optional[str] = None) -> Path:
+    candidate = (value if value is not None else os.environ.get("JUNO_TEST_RESOURCE_LOCK_PATH", "")).strip()
+    if not candidate:
+        return DEFAULT_RESOURCE_LOCK_PATH
+    # Shared lexical contract: one absolute spelling, no trailing/doubled
+    # separators and no dot segments. Do not let a path library normalize first.
+    drive, tail = os.path.splitdrive(candidate)
+    root = os.sep if tail.startswith(os.sep) else ""
+    components = tail[len(root):].split(os.sep)
+    if (not os.path.isabs(candidate) or candidate != drive + root + os.sep.join(components)
+            or any(part in ("", ".", "..") for part in components)):
+        raise RuntimeError(
+            f"[test-resource-lock] lock path must be one normalized absolute path: {candidate!r}"
+        )
+    return Path(candidate)
+
+
+RESOURCE_LOCK_PATH = _configured_lock_path()
+
+
+def _assert_safe_path(pathname: Path, *, final_may_be_missing: bool = True) -> None:
+    parts = pathname.parts
+    cursor = Path(parts[0])
+    for index, part in enumerate(parts[1:], 1):
+        cursor /= part
+        try:
+            stat = cursor.lstat()
+        except FileNotFoundError:
+            if index != len(parts) - 1 or not final_may_be_missing:
+                raise RuntimeError(f"[test-resource-lock] path parent must already exist: {cursor}")
+            continue
+        if cursor.is_symlink():
+            raise RuntimeError(f"[test-resource-lock] symlinked lock path component is forbidden: {cursor}")
+        if index < len(parts) - 1 and not cursor.is_dir():
+            raise RuntimeError(f"[test-resource-lock] lock path parent is not a directory: {cursor}")
+        if index == len(parts) - 1 and not cursor.is_file():
+            raise RuntimeError(f"[test-resource-lock] lock protocol path must be a file: {cursor}")
+
+
+def _process_birth_identity(pid: object) -> Optional[str]:
+    """Return a sub-second kernel process identity, or None (never a rounded timestamp)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            # /proc stat field 22 is the kernel start tick. Parse after the final
+            # ')' because comm may contain spaces and parentheses.
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return f"linux-start-ticks:{fields[19]}"
+        except (OSError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            class ProcBSDInfo(ctypes.Structure):
+                _fields_ = [
+                    ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
+                    ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
+                    ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
+                    ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
+                    ("svgid", ctypes.c_uint32), ("rfu_1", ctypes.c_uint32),
+                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                    ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+                    ("pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
+                    ("e_tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+                    ("start_tvsec", ctypes.c_uint64), ("start_tvusec", ctypes.c_uint64),
+                ]
+            library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            info = ProcBSDInfo()
+            size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            if size != ctypes.sizeof(info):
+                return None
+            return f"darwin-start-time:{info.start_tvsec}:{info.start_tvusec}"
+        except (OSError, AttributeError, ValueError):
+            return None
+    return None
+
+
+def _pid_provably_absent(pid: object) -> bool:
+    try:
+        os.kill(pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError, TypeError):
+        return False
+
+
+def _read_lock_owner(lock_path: Path = RESOURCE_LOCK_PATH) -> Optional[dict]:
+    try:
+        stat = lock_path.lstat()
+        if lock_path.is_symlink() or not lock_path.is_file():
+            return None
+        value = json.loads(lock_path.read_text())
+        if not isinstance(value, dict) or not isinstance(value.get("token"), str):
+            return None
+        value["_inode"] = [stat.st_dev, stat.st_ino]
+        return value
+    except (OSError, ValueError):
+        return None
+
+
+def _owner_is_live(owner: dict) -> bool:
+    observed = _process_birth_identity(owner.get("pid"))
+    if observed is not None:
+        return observed == owner.get("processBirthId")
+    # Precise identity unavailable: only a provably absent PID is stale.
+    return not _pid_provably_absent(owner.get("pid"))
+
+
+def _owner_diagnostics(owner: Optional[dict]) -> str:
+    if not owner:
+        return "owner=<invalid-or-unavailable>"
+    return (
+        f"owner_pid={owner.get('pid')} owner_birth={owner.get('processBirthId')!r} "
+        f"owner_inode={owner.get('_inode')!r} owner_workload={owner.get('workload')!r} "
+        f"owner_process={owner.get('process')!r} owner_cwd={owner.get('cwd')!r} "
+        f"owner_started_at={owner.get('startedAt')}"
+    )
+
+
+def _load_diagnostics() -> str:
+    try:
+        load = ",".join(f"{value:.2f}" for value in os.getloadavg())
+    except (AttributeError, OSError):
+        load = "unavailable"
+    return f"waiter_pid={os.getpid()} loadavg={load} cpus={os.cpu_count()}"
+
+
+def _protocol_guard_path(lock_path: Path) -> Path:
+    return lock_path.with_name(f".{lock_path.name}.protocol")
+
+
+@contextlib.contextmanager
+def _protocol_guard(lock_path: Path, opened_hook=None):
+    import fcntl
+    _assert_safe_path(lock_path)
+    guard = _protocol_guard_path(lock_path)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    descriptor: Optional[int] = None
+    while descriptor is None:
+        _assert_safe_path(guard)
+        candidate = os.open(guard, flags, 0o600)
+        try:
+            opened = os.fstat(candidate)
+            named = guard.lstat()
+            if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(named.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+                raise RuntimeError("[test-resource-lock] protocol guard identity changed before lock")
+            if opened_hook is not None:
+                opened_hook()
+            fcntl.flock(candidate, fcntl.LOCK_EX)
+            # A waiter may have opened the old inode before another process
+            # atomically replaced the pathname. Revalidate immediately after
+            # LOCK_EX and enter the CAS domain only when the locked descriptor
+            # is still the exact regular, non-symlink pathname target.
+            try:
+                locked = os.fstat(candidate)
+                current = guard.lstat()
+            except FileNotFoundError:
+                current = None
+            if (current is None or not stat.S_ISREG(locked.st_mode)
+                    or not stat.S_ISREG(current.st_mode)
+                    or (locked.st_dev, locked.st_ino) != (current.st_dev, current.st_ino)):
+                fcntl.flock(candidate, fcntl.LOCK_UN)
+                os.close(candidate)
+                continue
+            descriptor = candidate
+        except Exception:
+            if descriptor is None:
+                try: os.close(candidate)
+                except OSError: pass
+            raise
+    try:
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _protocol_guard_probe(lock_path: Path, opened: Path, entered: Path, release: Path) -> None:
+    def announce_opened() -> None:
+        opened.write_text("opened\n")
+    with _protocol_guard(lock_path, announce_opened):
+        entered.write_text("entered\n")
+        deadline = time.monotonic() + 10
+        while not release.exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("[test-resource-lock] guard probe release timed out")
+            time.sleep(0.01)
+
+
+def _publish_owner_under_guard(lock_path: Path, owner: dict) -> None:
+    temporary = lock_path.parent / f".{lock_path.name}.owner-{os.getpid()}-{owner['token']}"
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        payload = (json.dumps(owner, indent=2) + "\n").encode()
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            descriptor = None
+            handle.write(payload); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary, lock_path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try: temporary.unlink()
+        except FileNotFoundError: pass
+
+
+def _protocol_operation(lock_path: Path, action: str, payload: dict) -> dict:
+    """One CAS domain shared by Python and Node via an advisory kernel lock."""
+    target = _configured_lock_path(str(lock_path))
+    with _protocol_guard(target):
+        current = _read_lock_owner(target)
+        if action == "acquire":
+            if not payload.get("processBirthId"):
+                payload["processBirthId"] = _process_birth_identity(payload.get("pid"))
+            if not payload.get("processBirthId"):
+                raise RuntimeError("[test-resource-lock] precise process birth identity unavailable; refusing unsafe acquisition")
+            if current is None and target.exists():
+                return {"outcome": "blocked", "owner": None}
+            recovered = None
+            if current and not _owner_is_live(current):
+                # Exact token+inode proof is made while the protocol mutex blocks
+                # every compliant publisher/recoverer. Re-read immediately before
+                # unlink; no successor can publish inside this CAS section.
+                confirmed = _read_lock_owner(target)
+                if (confirmed and confirmed.get("token") == current.get("token")
+                        and confirmed.get("_inode") == current.get("_inode")):
+                    target.unlink()
+                    recovered = current
+                    current = None
+            if current is None:
+                _publish_owner_under_guard(target, payload)
+                return {"outcome": "acquired", "owner": payload, "recovered": recovered}
+            return {"outcome": "blocked", "owner": current}
+        if action == "release":
+            if not current:
+                return {"outcome": "absent"}
+            expected_inode = payload.get("inode")
+            if (current.get("token") == payload.get("token")
+                    and (expected_inode is None or current.get("_inode") == expected_inode)):
+                target.unlink()
+                return {"outcome": "released"}
+            return {"outcome": "not-owner", "owner": current}
+        if action == "inspect":
+            return {"outcome": "present" if current else "absent", "owner": current}
+        raise RuntimeError(f"unknown resource-lock operation: {action}")
+
+
+def _acquire_resource_lock(
+    workload: str, lock_path: Optional[Path] = None, timeout_seconds: float = 300,
+    poll_seconds: float = 0.05,
+) -> tuple[str, int]:
+    target = _configured_lock_path(str(lock_path) if lock_path is not None else None)
+    token = uuid.uuid4().hex
+    birth = _process_birth_identity(os.getpid())
+    if not birth:
+        raise RuntimeError("[test-resource-lock] precise process birth identity unavailable; refusing unsafe acquisition")
+    owner = {
+        "pid": os.getpid(), "processBirthId": birth, "token": token, "workload": workload,
+        "process": " ".join(sys.argv), "cwd": os.getcwd(),
+        "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    started = time.monotonic(); next_diagnostic = 1.0
+    while True:
+        result = _protocol_operation(target, "acquire", owner)
+        if result["outcome"] == "acquired":
+            waited_ms = int((time.monotonic() - started) * 1000)
+            recovered = result.get("recovered")
+            if recovered:
+                print(f"[test-resource-lock] recovered stale lock={target} {_owner_diagnostics(recovered)} {_load_diagnostics()}", file=sys.stderr)
+            if waited_ms > 0:
+                print(f"[test-resource-lock] acquired workload={workload!r} waited_ms={waited_ms} lock={target} {_load_diagnostics()}", file=sys.stderr)
+            return token, waited_ms
+        current = result.get("owner")
+        waited = time.monotonic() - started
+        if waited >= timeout_seconds:
+            raise RuntimeError(f"[test-resource-lock] acquisition timed out workload={workload!r} waited_ms={int(waited*1000)} lock={target} {_owner_diagnostics(current)} {_load_diagnostics()}")
+        if waited >= next_diagnostic:
+            print(f"[test-resource-lock] waiting workload={workload!r} waited_ms={int(waited*1000)} lock={target} {_owner_diagnostics(current)} {_load_diagnostics()}", file=sys.stderr)
+            next_diagnostic += 5
+        time.sleep(poll_seconds)
+
+
+def _release_resource_lock(lock_path: Path, token: str, inode: Optional[list[int]] = None) -> bool:
+    return _protocol_operation(lock_path, "release", {"token": token, "inode": inode})["outcome"] in ("released", "absent")
+
+
+def setUpModule() -> None:
+    global _RESOURCE_LOCK_TOKEN
+    _RESOURCE_LOCK_TOKEN, _ = _acquire_resource_lock(_RESOURCE_LOCK_WORKLOAD, RESOURCE_LOCK_PATH)
+
+
+def tearDownModule() -> None:
+    global _RESOURCE_LOCK_TOKEN
+    if _RESOURCE_LOCK_TOKEN:
+        _release_resource_lock(RESOURCE_LOCK_PATH, _RESOURCE_LOCK_TOKEN)
+        _RESOURCE_LOCK_TOKEN = None
+
+
+def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
+    return (
+        f"product concurrency timing failed elapsed_seconds={elapsed:.3f} "
+        f"contract_seconds={contract_seconds:.3f} lock={RESOURCE_LOCK_PATH} "
+        f"{_owner_diagnostics(_read_lock_owner())} {_load_diagnostics()}"
+    )
+
+
 RUNTIME_TEMPLATE_PARITY = (
     (".juno_task/scripts/workflow_runner.sh", "juno-code/src/templates/scripts/workflow_runner.sh"),
     (".juno_task/scripts/risk_policy.py", "juno-code/src/templates/scripts/risk_policy.py"),
@@ -530,6 +848,11 @@ class TaskWorkspaceTests(unittest.TestCase):
                                        "timeout_seconds": 10, "max_output_bytes": 4096,
                                        "argv": [sys.executable, "-c", "pass"]},
         }, indent=2) + "\n")
+        risk_policy = self.controller / ".juno_task/config/risk-policy.json"
+        if not risk_policy.exists():
+            risk_policy.write_bytes(
+                (SCRIPT.parent.parent / "config/risk-policy.json").read_bytes()
+            )
 
     def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return run(["python3", str(SCRIPT), operation, "--task", task_id, "--controller", str(self.controller)], self.controller, check)
@@ -2108,6 +2431,32 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertIn("disallowed paths: outside.txt", failed.stderr)
         self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
         self.assertTrue((self.workspaces / "X").is_dir())
+
+    def test_preflight_reports_disallowed_path_before_validation_or_queue_mutation(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X", "outside.txt")
+        failed = self.command("preflight", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("disallowed paths: outside.txt", failed.stderr)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "WORKING")
+        self.assertEqual(record["validation"], [])
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
+
+    def test_preflight_emits_immutable_closure_and_finish_persists_it(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X")
+        checked = self.payload("preflight", "X")
+        closure = checked["review_ready_closure"]
+        self.assertEqual(checked["outcome"], "preflight_passed")
+        self.assertEqual(closure["tip_sha"], tip)
+        self.assertEqual(closure["changed_paths"], ["src/feature.txt"])
+        body = {key: value for key, value in closure.items() if key != "closure_sha256"}
+        self.assertEqual(closure["closure_sha256"], task_runtime.stable_sha256(body))
+        self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
+                         "WORKING")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["review_ready_closure"], closure)
 
     def test_finish_refuses_failed_focused_validation_without_state_advance(self) -> None:
         self.payload("start", "X")

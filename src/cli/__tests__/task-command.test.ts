@@ -6,7 +6,7 @@ import {
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
-  it.each(['start', 'status', 'finish'] as const)(
+  it.each(['start', 'status', 'preflight', 'finish'] as const)(
     'forwards task %s and its positional ID to one managed-runtime invoker',
     async (operation) => {
       const invoke = vi.fn(async () => undefined);
@@ -18,15 +18,15 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it('exposes lifecycle plus the explicit guarded runtime bootstrap below task', () => {
+  it('exposes preflight lifecycle plus the explicit guarded runtime bootstrap below task', () => {
     const program = new Command();
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'start', 'status', 'finish', 'runtime-bootstrap',
+      'start', 'preflight', 'status', 'finish', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 3).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[3]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 4).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[4]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -62,11 +62,14 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it('does not checkpoint after read-only task status', async () => {
+  it.each(['status', 'preflight'] as const)(
+    'does not checkpoint after read-only task %s',
+    async (operation) => {
     const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
-    await checkpointTaskWorkspaceAfterFinalization('status', '/controller', 0, checkpoint);
+    await checkpointTaskWorkspaceAfterFinalization(operation, '/controller', 0, checkpoint);
     expect(checkpoint).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   it('preserves a failed task outcome while the best-effort checkpointer reports recovery', async () => {
     const checkpoint = vi.fn(async () => ({
