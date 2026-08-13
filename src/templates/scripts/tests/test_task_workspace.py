@@ -1089,7 +1089,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "commit", "-m", "self-assert customized runtime inventory")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                    "immutable package/source provenance"):
+                                    "template/runtime identity is inconsistent"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
 
     def test_runtime_bootstrap_recovers_post_cas_completion_record_failure(self) -> None:
@@ -1303,20 +1303,20 @@ class TaskWorkspaceTests(unittest.TestCase):
         plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
         receipt = Path(plan["receipt"]["path"])
         before = git(self.repository, "rev-parse", "HEAD")
-        original_validate = task_runtime._validate_intent_holder
+        original_holders = task_runtime._target_ref_holders
         calls = {"count": 0}
 
-        def race_dirt(repository: Path, intent_holder: object, target_ref: str):
+        def race_dirt(repository: Path, target_ref: str):
             calls["count"] += 1
-            holder = original_validate(repository, intent_holder, target_ref)
+            holders = original_holders(repository, target_ref)
             if calls["count"] == 2:
                 (self.repository / "raced-unrelated.txt").write_text("preserve me\n")
-            return holder
+            return holders
 
-        with mock.patch.object(task_runtime, "_validate_intent_holder",
+        with mock.patch.object(task_runtime, "_target_ref_holders",
                                side_effect=race_dirt):
             with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                        "holder raced before target CAS"):
+                                        "holder became dirty before synchronization|holder raced before target CAS"):
                 task_runtime.runtime_bootstrap(
                     self.controller, "2.1.3", package_hash, receipt)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
