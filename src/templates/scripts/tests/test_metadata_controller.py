@@ -891,13 +891,18 @@ class MetadataControllerTest(unittest.TestCase):
         mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt_path, authorize=True))
         receipt_path.unlink()
         index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
-        Path(str(index) + ".lock").write_bytes(index.read_bytes())
+        index_lock = Path(str(index) + ".lock")
+        index_lock.write_bytes(index.read_bytes())
+        common = Path(command("git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root))
+        ownership = mc.persist_index_lock_ownership(
+            common, plan["plan_sha256"], index_lock, command("git", "rev-parse", "HEAD^{tree}", cwd=root))
         stale = mc.migration_temporary_endpoints(root, plan["plan_sha256"])[0]
         stale.write_bytes(plan["policy_result_utf8"].encode())
         recovered = mc.policy_migration_apply(argparse.Namespace(
             plan=plan_path, output=receipt_path, authorize=True))
         self.assertEqual(recovered["new_head"], command("git", "rev-parse", "HEAD", cwd=root))
-        self.assertFalse(Path(str(index) + ".lock").exists())
+        self.assertFalse(index_lock.exists())
+        self.assertFalse(ownership.exists())
         self.assertFalse(stale.exists())
         self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
         self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
@@ -909,10 +914,13 @@ class MetadataControllerTest(unittest.TestCase):
         mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
         receipt.unlink()
         index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
-        Path(str(index) + ".lock").write_bytes(b"not this migration index")
+        index_lock = Path(str(index) + ".lock")
+        # Even an identical prepared tree is not ownership proof without the
+        # migration's durable inode/hash marker.
+        index_lock.write_bytes(index.read_bytes())
         with self.assertRaisesRegex(mc.BoundaryError, "busy or unowned"):
             mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt, authorize=True))
-        Path(str(index) + ".lock").unlink()
+        index_lock.unlink()
 
     def test_metadata_policy_direct_endpoint_race_is_detected_without_overwrite(self) -> None:
         root, _ = self.legacy_policy_controller()

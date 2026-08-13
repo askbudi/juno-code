@@ -1304,9 +1304,50 @@ def migration_temporary_endpoints(root: Path, plan_hash: str) -> list[Path]:
         f".juno_task/config/.integration-workspace.json.migration-{suffix}")]
 
 
-def exact_prepared_index(root: Path, index_path: Path, expected_tree: str) -> bool:
-    if index_path.is_symlink() or not index_path.is_file(): return False
-    return git(root, "write-tree", check=False, env={"GIT_INDEX_FILE": str(index_path)}) == expected_tree
+def index_lock_ownership_path(common: Path, plan_hash: str) -> Path:
+    return common / "juno-metadata-policy-index-ownership" / f"{plan_hash}.json"
+
+
+def index_lock_identity(path: Path) -> dict[str, Any] | None:
+    if path.is_symlink() or not path.is_file(): return None
+    stat = path.stat()
+    return {"path": str(path), "device": stat.st_dev, "inode": stat.st_ino,
+            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "sha256": file_digest(path)}
+
+
+def persist_index_lock_ownership(common: Path, plan_hash: str, index_path: Path,
+                                 expected_tree: str) -> Path:
+    marker = index_lock_ownership_path(common, plan_hash)
+    if marker.exists() or marker.is_symlink():
+        raise BoundaryError(f"metadata-policy migration index ownership collision: {marker}")
+    identity = index_lock_identity(index_path)
+    if identity is None:
+        raise BoundaryError("metadata-policy migration cannot bind an unsafe prepared index lock")
+    atomic_receipt(marker, {"schema_version": "juno_metadata_policy_index_ownership.v1",
+                            "plan_sha256": plan_hash, "expected_tree": expected_tree,
+                            "index_lock": identity})
+    return marker
+
+
+def durable_unlink(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+
+
+def exact_prepared_index(root: Path, index_path: Path, ownership_path: Path,
+                         plan_hash: str, expected_tree: str) -> bool:
+    identity = index_lock_identity(index_path)
+    if identity is None or ownership_path.is_symlink() or not ownership_path.is_file(): return False
+    try: ownership = read_json(ownership_path, "metadata-policy index ownership")
+    except BoundaryError: return False
+    return (ownership == {"schema_version": "juno_metadata_policy_index_ownership.v1",
+                          "plan_sha256": plan_hash, "expected_tree": expected_tree,
+                          "index_lock": identity}
+            and git(root, "write-tree", check=False,
+                    env={"GIT_INDEX_FILE": str(index_path)}) == expected_tree)
 
 
 def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
@@ -1369,14 +1410,25 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
     with acquire_policy_migration_locks(common, plan["branch"]):
         expected_index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
         recovery_lock = Path(str(expected_index) + ".lock")
+        ownership_path = index_lock_ownership_path(common, plan_hash)
         if recovery_lock.exists() or recovery_lock.is_symlink():
-            # Only an index whose exact tree equals the completed planned commit
-            # is recoverable. Never steal an ordinary Git process's lock.
+            # Recovery requires the exact durable marker and filesystem identity
+            # written with this plan's prepared index. Tree equality alone cannot
+            # distinguish an active ordinary Git process.
             completed_probe = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
-            if completed_probe is None or not exact_prepared_index(root, recovery_lock, completed_probe[1]):
+            if (completed_probe is None
+                    or not exact_prepared_index(root, recovery_lock, ownership_path,
+                                                plan_hash, completed_probe[1])):
                 raise BoundaryError(f"metadata-policy migration index serialization is busy or unowned: {recovery_lock}")
-            recovery_lock.unlink()
+            durable_unlink(recovery_lock); durable_unlink(ownership_path)
         completed = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
+        if ownership_path.exists() or ownership_path.is_symlink():
+            # A crash after publishing the prepared index may leave only its
+            # marker. Reclaim it solely after exact completed-state/index proof.
+            if (completed is None or ownership_path.is_symlink()
+                    or git(root, "write-tree", check=False) != completed[1]):
+                raise BoundaryError(f"metadata-policy migration index ownership is stranded or unowned: {ownership_path}")
+            durable_unlink(ownership_path)
         if completed is None:
             if output.exists() or output.is_symlink():
                 raise BoundaryError("metadata-policy apply receipt path must be fresh before mutation")
@@ -1412,6 +1464,12 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     stream.write(temporary_index.read_bytes()); stream.flush(); os.fsync(stream.fileno())
             except FileExistsError as exc:
                 raise BoundaryError(f"metadata-policy migration index serialization is busy: {index_lock}") from exc
+            try:
+                ownership_path = persist_index_lock_ownership(
+                    common, plan_hash, index_lock, result_tree)
+            except BaseException:
+                durable_unlink(index_lock)
+                raise
             index_published = False
             try:
                 if completed is None:
@@ -1484,6 +1542,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
                         os.replace(temporary_endpoint, endpoint)
                     os.replace(index_lock, index_path); index_published = True
+                    durable_unlink(ownership_path)
                     if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
                         raise BoundaryError("HEAD/tree readback failed")
                     if git(root, "diff", "--name-only", plan["head"], committed).splitlines() != plan["changed_paths"]:
@@ -1514,7 +1573,9 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     ) from exc
             finally:
                 if committed is None and not index_published:
-                    index_lock.unlink(missing_ok=True)
+                    durable_unlink(index_lock)
+                    if ownership_path.exists() and not ownership_path.is_symlink():
+                        durable_unlink(ownership_path)
     payload = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-apply",
                "outcome": "migrated", "plan_sha256": plan_hash, "plan_file_sha256": plan_file_hash,
                "intent_sha256": file_digest(intent_path), "controller": str(root), "branch": plan["branch"],
