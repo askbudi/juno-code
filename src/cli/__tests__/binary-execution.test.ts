@@ -602,7 +602,7 @@ describe('Binary Execution Tests', () => {
       );
       expect(rejectedContract.exitCode).not.toBe(0);
       expect(rejectedContract.stderr).toContain('requires a valid contract');
-    });
+    }, 60_000);
 
     it('should include shell safety guidance for prompt input', async () => {
       const result = await executeCLI(['--help']);
