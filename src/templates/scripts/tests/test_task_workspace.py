@@ -1505,7 +1505,7 @@ class TaskWorkspaceTests(unittest.TestCase):
 
         recovered = json.loads((self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), applied["commit_sha"])
-        self.assertEqual(recovered["packageVersion"], "2.1.2")
+        self.assertEqual(recovered["packageVersion"], "2.1.3")
         self.assertEqual(recovered["assets"][".juno_task/config/unrelated.json"], unrelated)
         self.assertEqual(
             recovered["assets"][task_runtime.RUNTIME_PATH]["templateVersion"], "2.1.3")
@@ -1527,8 +1527,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                 self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
         self.assertFalse((self.controller / task_runtime.RUNTIME_BOOTSTRAP_ROOT).exists())
 
-    def test_runtime_bootstrap_replaces_provenance_valid_stale_consumer_runtime(self) -> None:
-        stale = self.install_stale_consumer_runtime()
+    def test_runtime_bootstrap_advances_existing_inventory_to_coherent_rc_generation(self) -> None:
+        stale = self.install_stale_consumer_runtime("2.1.3-rc.0.11")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         before = git(self.repository, "rev-parse", "HEAD")
 
@@ -1536,25 +1536,27 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 2)
         self.assertIn("stale or absent from the consumer target", refused.stderr)
         self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
-        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        plan = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3-rc.0.12", package_hash, None)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
         self.assertEqual(base64.b64decode(plan["prior"]["bytes_base64"]), stale)
-        self.assertEqual(plan["prior"]["package_version"], "2.1.2")
+        self.assertEqual(plan["prior"]["package_version"], "2.1.3-rc.0.11")
         self.assertEqual(plan["prior"]["classification"],
                          "exact_managed_inventory_consumer_generation")
         self.assertRegex(plan["prior"]["inventory_sha256"], r"^[0-9a-f]{64}$")
 
         applied = task_runtime.runtime_bootstrap(
-            self.controller, "2.1.3", package_hash, Path(plan["receipt"]["path"]))
+            self.controller, "2.1.3-rc.0.12", package_hash,
+            Path(plan["receipt"]["path"]))
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), applied["commit_sha"])
         self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
                          SCRIPT.read_bytes())
         inventory = json.loads(
             (self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
         runtime_entry = inventory["assets"][task_runtime.RUNTIME_PATH]
-        self.assertEqual(inventory["packageVersion"], "2.1.2")
+        self.assertEqual(inventory["packageVersion"], "2.1.3-rc.0.12")
         self.assertEqual(runtime_entry, {
-            "type": "script", "templateVersion": "2.1.3",
+            "type": "script", "templateVersion": "2.1.3-rc.0.12",
             "sourceSha256": package_hash, "installedSha256": package_hash,
         })
         self.assertEqual(sorted(git(
@@ -1563,8 +1565,8 @@ class TaskWorkspaceTests(unittest.TestCase):
             sorted([task_runtime.RUNTIME_PATH, task_runtime.MANAGED_INVENTORY_PATH]))
         next_prior = task_runtime._runtime_prior_state(
             self.controller, self.repository, applied["commit_sha"],
-            b"next package runtime\n", "2.1.4")
-        self.assertEqual(next_prior["package_version"], "2.1.3")
+            b"next package runtime\n", "2.1.3")
+        self.assertEqual(next_prior["package_version"], "2.1.3-rc.0.12")
         self.assertEqual(next_prior["sha256"], package_hash)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
         self.assertEqual(self.payload("start", "X")["outcome"], "started")
@@ -1586,7 +1588,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = json.loads(
             (self.repository / task_runtime.MANAGED_INVENTORY_PATH).read_text())
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), second["commit_sha"])
-        self.assertEqual(inventory["packageVersion"], "2.1.2")
+        self.assertEqual(inventory["packageVersion"], "2.1.4")
         self.assertEqual(
             inventory["assets"][task_runtime.RUNTIME_PATH]["templateVersion"], "2.1.4")
         self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),

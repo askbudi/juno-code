@@ -1822,8 +1822,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
                 or not isinstance(inventory.get("assets"), dict)
                 or inventory_mode not in {"100644", "100755"}):
             raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
-    if encoded is None:
-        inventory["packageVersion"] = package_version
+    inventory["packageVersion"] = package_version
     inventory["assets"][RUNTIME_PATH] = {
         "type": "script", "templateVersion": package_version,
         "sourceSha256": runtime_sha256, "installedSha256": runtime_sha256,
