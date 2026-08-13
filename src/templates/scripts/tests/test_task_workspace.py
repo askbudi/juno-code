@@ -1126,7 +1126,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "already been applied"):
             task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, receipt)
 
-    def test_runtime_bootstrap_recovers_interrupted_target_holder_synchronization(self) -> None:
+    def test_runtime_bootstrap_recovers_prepared_holder_after_cas_interruption(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "consumer target lacks task runtime")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
@@ -1135,30 +1135,31 @@ class TaskWorkspaceTests(unittest.TestCase):
         original_run = task_runtime.run
         injected = {"failed": False}
 
-        def interrupt_after_cas(argv: list[str], cwd: Path, *, check: bool = True):
-            if (len(argv) >= 7 and argv[-4:-1] == ["read-tree", "--reset", "-u"]
-                    and not injected["failed"]):
-                # Reproduce interruption after expected-old-SHA CAS but before
-                # the holder index/files synchronize to the advanced ref.
+        def interrupt_cas_after_prepare(argv: list[str], cwd: Path, *, check: bool = True):
+            if (len(argv) >= 7 and argv[-4] == "update-ref"
+                    and argv[-3] == "refs/heads/product" and not injected["failed"]):
+                # Reproduce interruption after exact index/worktree preparation
+                # but before expected-old-SHA CAS advances the ref.
                 injected["failed"] = True
                 return subprocess.CompletedProcess(argv, 75, "",
-                                                   "injected post-CAS holder interruption")
+                                                   "injected pre-CAS interruption")
             return original_run(argv, cwd, check=check)
 
-        with mock.patch.object(task_runtime, "run", side_effect=interrupt_after_cas):
+        with mock.patch.object(task_runtime, "run", side_effect=interrupt_cas_after_prepare):
             with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
-                                        "synchronization was interrupted"):
+                                        "CAS advancement failed"):
                 task_runtime.runtime_bootstrap(
                     self.controller, "2.1.3", package_hash, receipt)
-        advanced = git(self.repository, "rev-parse", "refs/heads/product")
-        self.assertNotEqual(advanced, plan["target"]["sha"])
-        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), advanced)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"),
+                         plan["target"]["sha"])
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), plan["target"]["sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"),
-                         f"D  {task_runtime.RUNTIME_PATH}")
+                         f"A  {task_runtime.RUNTIME_PATH}")
 
         recovered = task_runtime.runtime_bootstrap(
             self.controller, "2.1.3", package_hash, receipt)
-        self.assertEqual(recovered["commit_sha"], advanced)
+        self.assertNotEqual(recovered["commit_sha"], plan["target"]["sha"])
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
     def test_runtime_bootstrap_recovers_target_holder_index_lock_without_hidden_mutation(self) -> None:
@@ -1181,6 +1182,32 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.controller, "2.1.3", package_hash, receipt)
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
+    def test_runtime_bootstrap_refuses_holder_dirt_racing_final_pre_cas_revalidation(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        before = git(self.repository, "rev-parse", "HEAD")
+        original_validate = task_runtime._validate_intent_holder
+        calls = {"count": 0}
+
+        def race_dirt(repository: Path, intent_holder: object, target_ref: str):
+            calls["count"] += 1
+            holder = original_validate(repository, intent_holder, target_ref)
+            if calls["count"] == 2:
+                (self.repository / "raced-unrelated.txt").write_text("preserve me\n")
+            return holder
+
+        with mock.patch.object(task_runtime, "_validate_intent_holder",
+                               side_effect=race_dirt):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "holder raced before target CAS"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        self.assertEqual((self.repository / "raced-unrelated.txt").read_text(), "preserve me\n")
 
     def test_runtime_bootstrap_contends_on_merge_queue_target_lock(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)

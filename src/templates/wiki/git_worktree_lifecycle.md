@@ -60,8 +60,8 @@ worktrees. Apply uses a clean isolated target worktree, creates a one-path
 reviewed commit and durably records its apply intent. Before mutation it discovers
 all exact target-ref holders under the merge queue's repository/target-ref lock.
 Every advancement uses expected-SHA CAS. With one exact clean unlocked holder,
-CAS is followed by a ref-preserving index/worktree synchronization; it never uses
-an unconditional branch reset. Dirty, locked, moved, or multiple holders refuse
+the one-path index/worktree state is prepared and revalidated before CAS; no
+post-CAS operation or unconditional branch reset can overwrite concurrent dirt. Dirty, locked, moved, or multiple holders refuse
 before mutation with a supported clean,
 unlock, or reviewed extra-worktree removal action. Interrupted holder synchronization
 or completion recording is recovered by rerunning the same receipt; the durable

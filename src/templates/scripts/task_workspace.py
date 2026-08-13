@@ -1524,6 +1524,11 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as handle:
             handle.write(raw); handle.flush(); os.fsync(handle.fileno())
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     return {**plan, "receipt": {"path": str(path), "sha256": digest}}
 
 
@@ -1692,34 +1697,51 @@ def _holder_dirt_matches_interrupted_runtime_sync(holder: Path,
     return working in {prior_bytes, proposed, None} and indexed in {prior_bytes, proposed, None}
 
 
-def _synchronize_target_holder(holder: Path, target_ref: str,
-                               previous_sha: str, commit_sha: str,
-                               prior: dict[str, Any], proposed: bytes) -> None:
+def _holder_is_prepared_for_cas(holder: Path, previous_sha: str,
+                                proposed: bytes) -> bool:
+    if git(holder, "rev-parse", "HEAD^{commit}", check=False) != previous_sha:
+        return False
+    status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
+    prior = run(["git", "-C", str(holder), "cat-file", "-e",
+                 f"{previous_sha}:{RUNTIME_PATH}"], holder, check=False)
+    expected_code = "M" if prior.returncode == 0 else "A"
+    if status.splitlines() != [f"{expected_code}  {RUNTIME_PATH}"]:
+        return False
+    destination = holder / RUNTIME_PATH
+    if not destination.is_file() or destination.read_bytes() != proposed:
+        return False
+    indexed = subprocess.run(
+        ["git", "-C", str(holder), "show", f":{RUNTIME_PATH}"], cwd=holder,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return indexed.returncode == 0 and indexed.stdout == proposed
+
+
+def _prepare_target_holder_for_cas(holder: Path, target_ref: str,
+                                   previous_sha: str, commit_sha: str,
+                                   prior: dict[str, Any], proposed: bytes) -> None:
     current = git(holder, "rev-parse", "HEAD^{commit}", check=False)
     status = git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)
-    if current == commit_sha and not status:
-        return
     branch = git(holder, "symbolic-ref", "-q", "HEAD", check=False)
-    recovering_interruption = (current == commit_sha and branch == target_ref
-                               and _holder_dirt_matches_interrupted_runtime_sync(
-                                   holder, prior, proposed))
-    if not recovering_interruption and (current != previous_sha or branch != target_ref):
+    if current != previous_sha or branch != target_ref:
         raise TaskWorkspaceError("target-ref holder moved outside the durable apply intent")
-    if not recovering_interruption and status:
+    if _holder_is_prepared_for_cas(holder, previous_sha, proposed):
+        return
+    recovering_interruption = bool(status) and _holder_dirt_matches_interrupted_runtime_sync(
+        holder, prior, proposed)
+    if status and not recovering_interruption:
         raise TaskWorkspaceError("target-ref holder became dirty before synchronization")
-    # The ref is advanced separately by expected-old-SHA CAS. Update only the
-    # holder's index/worktree here so this recovery path can never overwrite a
-    # concurrent ref move through an unconditional reset.
+    # Prepare the one-path index/worktree transition while the ref still names
+    # previous_sha. Only after exact prepared-state verification may CAS advance
+    # the branch. Thus no post-CAS operation can overwrite concurrent holder dirt.
     result = run(["git", "-C", str(holder), "read-tree", "--reset", "-u", commit_sha],
                  holder, check=False)
     if result.returncode:
         raise TaskWorkspaceError(
-            "target-holder synchronization was interrupted; rerun the same --apply receipt")
+            "target-holder synchronization was interrupted before CAS; rerun the same --apply receipt")
     if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != target_ref
-            or git(holder, "rev-parse", "HEAD^{commit}", check=False) != commit_sha
-            or git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)):
+            or not _holder_is_prepared_for_cas(holder, previous_sha, proposed)):
         raise TaskWorkspaceError(
-            "target-holder synchronization is incomplete; rerun the same --apply receipt")
+            "target-holder synchronization is incomplete before CAS; rerun the same --apply receipt")
 
 
 def _validate_runtime_bootstrap_commit(repository: Path, plan: dict[str, Any],
@@ -1838,15 +1860,31 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
             if index_lock.exists():
                 raise TaskWorkspaceError(
                     "target-holder index is locked; refusing before target CAS advancement")
+            _prepare_target_holder_for_cas(holder, config["target_ref"],
+                                           intent["previous_sha"], intent["commit_sha"],
+                                           plan["prior"], proposed)
+            # Revalidate topology and exact prepared identity after touching the
+            # holder and immediately before expected-old-SHA CAS.
+            if (_validate_intent_holder(repository, intent["target_holder"],
+                                        config["target_ref"]) != holder
+                    or ref_sha(repository, config["target_ref"]) != intent["previous_sha"]
+                    or not _holder_is_prepared_for_cas(
+                        holder, intent["previous_sha"], proposed)):
+                raise TaskWorkspaceError("target-ref holder raced before target CAS advancement")
+        elif holder is None and current_sha == intent["previous_sha"]:
+            _validate_intent_holder(repository, None, config["target_ref"])
         if current_sha == intent["previous_sha"]:
             cas = run(["git", "-C", str(repository), "update-ref", config["target_ref"],
                        intent["commit_sha"], intent["previous_sha"]], repository, check=False)
             if cas.returncode:
                 raise TaskWorkspaceError("task-runtime bootstrap target ref CAS advancement failed")
         if holder is not None:
-            _synchronize_target_holder(holder, config["target_ref"],
-                                       intent["previous_sha"], intent["commit_sha"],
-                                       plan["prior"], proposed)
+            if (git(holder, "symbolic-ref", "-q", "HEAD", check=False) != config["target_ref"]
+                    or git(holder, "rev-parse", "HEAD^{commit}", check=False) != intent["commit_sha"]
+                    or git(holder, "status", "--porcelain=v1", "--untracked-files=all", check=False)):
+                raise TaskWorkspaceError(
+                    "target-holder changed during CAS; concurrent dirt was preserved; "
+                    "rerun the same --apply receipt after review")
     result = {"schema_version": RUNTIME_BOOTSTRAP_SCHEMA, "operation": "apply",
               "outcome": "completed", "plan_sha256": digest,
               "target_ref": config["target_ref"], "previous_sha": intent["previous_sha"],
