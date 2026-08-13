@@ -946,6 +946,33 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(endpoint.read_text(), "owner raced bytes\n")
         self.assertNotEqual(command("git", "rev-parse", "HEAD", cwd=root), plan["head"])
 
+    def test_metadata_policy_endpoint_symlink_race_is_refused_without_unlinking(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, _ = self.policy_plan(root)
+        pause = str(self.temp / "endpoint-symlink-pause")
+        process = subprocess.Popen([
+            "python3", str(SCRIPT), "metadata-policy-apply", "--plan", str(plan_path),
+            "--output", str(self.temp / "endpoint-symlink-race.json"),
+            "--authorize-metadata-policy-migration",
+        ], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+           env={**os.environ, "JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE": pause})
+        for _ in range(500):
+            ready = Path(pause + ".ready")
+            if ready.exists(): break
+            import time; time.sleep(0.01)
+        else:
+            process.kill(); self.fail("migration did not reach endpoint symlink seam")
+        endpoint = root / ready.read_text().strip()
+        target = self.temp / "endpoint-symlink-target"
+        target.write_bytes(endpoint.read_bytes())
+        endpoint.unlink(); endpoint.symlink_to(target)
+        Path(pause + ".release").write_text("release\n")
+        _, stderr = process.communicate(timeout=15)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("unsafe endpoint", stderr)
+        self.assertTrue(endpoint.is_symlink())
+        self.assertEqual(endpoint.resolve(), target.resolve())
+
     def test_runtime_rebind_is_local_and_rollback_is_plan_only(self) -> None:
         self.prepare()
         before_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)

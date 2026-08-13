@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1304,6 +1305,26 @@ def migration_temporary_endpoints(root: Path, plan_hash: str) -> list[Path]:
         f".juno_task/config/.integration-workspace.json.migration-{suffix}")]
 
 
+def endpoint_snapshot(path: Path) -> tuple[bytes, tuple[int, int, int, int, int]] | None:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try: descriptor = os.open(path, flags)
+    except FileNotFoundError: return None
+    except OSError as exc:
+        raise BoundaryError(f"metadata-policy migration refuses an unsafe endpoint: {path}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise BoundaryError(f"metadata-policy migration endpoint is not a regular file: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream: data = stream.read()
+        after = os.fstat(descriptor)
+    finally: os.close(descriptor)
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_mode,
+                              value.st_size, value.st_mtime_ns)
+    if identity(before) != identity(after) or len(data) != after.st_size:
+        raise BoundaryError(f"metadata-policy endpoint raced during no-follow snapshot: {path}")
+    return data, identity(after)
+
+
 def index_lock_ownership_path(common: Path, plan_hash: str) -> Path:
     return common / "juno-metadata-policy-index-ownership" / f"{plan_hash}.json"
 
@@ -1502,7 +1523,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     for relative, data in endpoint_payloads:
                         endpoint = root / relative
-                        current = endpoint.read_bytes() if endpoint.exists() else None
+                        snapshot = endpoint_snapshot(endpoint)
+                        current = snapshot[0] if snapshot is not None else None
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
                         if current not in {None, before, data}:
                             raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
@@ -1520,11 +1542,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         temporary_endpoint = owned_temporaries[relative]
                         with temporary_endpoint.open("xb") as stream:
                             stream.write(data); stream.flush(); os.fsync(stream.fileno())
-                        before_stat = endpoint.stat() if endpoint.exists() else None
-                        current = endpoint.read_bytes() if endpoint.exists() else None
-                        after_stat = endpoint.stat() if endpoint.exists() else None
+                        before_snapshot = endpoint_snapshot(endpoint)
+                        current = before_snapshot[0] if before_snapshot is not None else None
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
-                        if (current not in {None, before, data} or before_stat != after_stat):
+                        if current not in {None, before, data}:
                             temporary_endpoint.unlink(missing_ok=True)
                             raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
                         race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
@@ -1535,9 +1556,8 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                                 if release.exists(): break
                                 import time; time.sleep(0.01)
                             else: raise BoundaryError("metadata-policy endpoint race test pause timed out")
-                        final_stat = endpoint.stat() if endpoint.exists() else None
-                        final_bytes = endpoint.read_bytes() if endpoint.exists() else None
-                        if final_stat != after_stat or final_bytes != current:
+                        final_snapshot = endpoint_snapshot(endpoint)
+                        if final_snapshot != before_snapshot:
                             temporary_endpoint.unlink(missing_ok=True)
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
                         os.replace(temporary_endpoint, endpoint)
