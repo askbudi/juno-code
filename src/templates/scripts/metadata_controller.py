@@ -1761,6 +1761,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             quarantine_dir.mkdir(mode=0o700, exist_ok=True)
             quarantine_fd = os.open(quarantine_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
                                     | getattr(os, "O_NOFOLLOW", 0))
+            if os.fstat(quarantine_fd).st_dev != os.fstat(config_fd).st_dev:
+                os.close(config_fd); os.close(quarantine_fd)
+                raise BoundaryError(
+                    "metadata-policy migration requires config and durable quarantine on one filesystem")
             endpoint_payloads = tuple(
                 (relative, Path(relative).name, data,
                  migration_temporary_endpoints(root, plan_hash)[index].name)
@@ -1780,7 +1784,12 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
                     temporary = endpoint_snapshot_at(config_fd, temporary_name)
                     if temporary is not None:
-                        if temporary[0] != data:
+                        recoverable_bytes = {data}
+                        if completed is not None and before is not None:
+                            # A crash immediately after endpoint exchange leaves
+                            # the exact retired preimage at the temporary name.
+                            recoverable_bytes.add(before)
+                        if temporary[0] not in recoverable_bytes:
                             raise BoundaryError(f"metadata-policy migration temporary collision: {temporary_name}")
                         exact_unlink_endpoint_at(config_fd, temporary_name, temporary, quarantine_fd)
                 os.fsync(config_fd)

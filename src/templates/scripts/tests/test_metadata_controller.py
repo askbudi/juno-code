@@ -933,7 +933,9 @@ class MetadataControllerTest(unittest.TestCase):
             "displaced_index": mc.index_lock_identity(index_lock),
         })
         stale = mc.migration_temporary_endpoints(root, plan["plan_sha256"])[0]
-        stale.write_bytes(plan["policy_result_utf8"].encode())
+        # Crash immediately after exchange leaves the retired policy preimage at
+        # the plan-owned temporary endpoint.
+        stale.write_bytes(plan["policy_before_utf8"].encode())
         recovered = mc.policy_migration_apply(argparse.Namespace(
             plan=plan_path, output=receipt_path, authorize=True))
         self.assertEqual(recovered["new_head"], command("git", "rev-parse", "HEAD", cwd=root))
