@@ -90,6 +90,14 @@ describe('merge queue CLI', () => {
     await program.parseAsync(['node', 'yy', 'merge', 'next', '--train-plan', '/train-plan.json']);
     expect(invoke).toHaveBeenCalledWith('next', undefined, ['--train-plan', '/train-plan.json']);
     invoke.mockClear();
+    await program.parseAsync(['node', 'yy', 'merge', 'reconcile', 'plan', 'T123']);
+    expect(invoke).toHaveBeenCalledWith('reconcile', undefined, ['plan', 'T123']);
+    invoke.mockClear();
+    await program.parseAsync(['node', 'yy', 'merge', 'reconcile', 'apply', 'T123',
+      '--receipt', '/reconcile.json', '--receipt-sha256', 'def']);
+    expect(invoke).toHaveBeenCalledWith('reconcile', undefined,
+      ['apply', 'T123', '--receipt', '/reconcile.json', '--receipt-sha256', 'def']);
+    invoke.mockClear();
     await program.parseAsync(['node', 'yy', 'merge', 'refresh', 'plan', 'T123']);
     expect(invoke).toHaveBeenCalledWith('refresh', undefined, ['plan', 'T123']);
     invoke.mockClear();
@@ -103,7 +111,7 @@ describe('merge queue CLI', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
     const merge = program.commands.find((command) => command.name() === 'merge');
-    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'refresh']);
+    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'reconcile', 'refresh']);
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[1]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(false);

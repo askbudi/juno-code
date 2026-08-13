@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'refresh';
+export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh';
 export type MergeQueueInvoker = (
   operation: MergeQueueOperation,
   taskId?: string,
@@ -174,6 +174,16 @@ export function configureMergeQueueCommand(
     .action((taskId: string, options: { planId?: string }) => options.planId
       ? invoke('reopen', taskId, ['--plan-id', options.planId])
       : invoke('reopen', taskId));
+  const reconcile = merge.command('reconcile')
+    .description('Reconcile terminal findings whose exact tip is already in the protected target');
+  reconcile.command('plan').argument('<task-id>', 'Terminal findings task to reconcile')
+    .action((taskId: string) => invoke('reconcile', undefined, ['plan', taskId]));
+  reconcile.command('apply').argument('<task-id>', 'Task bound by the reconciliation receipt')
+    .requiredOption('--receipt <path>', 'Canonical immutable reconciliation receipt')
+    .requiredOption('--receipt-sha256 <sha256>', 'Exact receipt byte identity')
+    .action((taskId: string, options: { receipt: string; receiptSha256: string }) =>
+      invoke('reconcile', undefined, ['apply', taskId, '--receipt', options.receipt,
+        '--receipt-sha256', options.receiptSha256]));
   const refresh = merge.command('refresh')
     .description('Safely admit exact protected-target bytes into a queued candidate');
   refresh.command('plan').argument('<task-id>', 'Queued or reopen candidate')
