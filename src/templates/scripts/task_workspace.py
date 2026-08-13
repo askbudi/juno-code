@@ -870,8 +870,8 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation == "status" else "orchestration")
-    if surface == "task" and operation not in {"start", "status", "finish"}:
+    expected_policy = ("kanban" if operation in {"status", "preflight"} else "orchestration")
+    if surface == "task" and operation not in {"start", "status", "preflight", "finish"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
@@ -1063,7 +1063,9 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
         worktree = exact_root(
             Path(record["worktree"]), "recorded task worktree", physical_identity=True)
     except (KeyError, TypeError, OSError, TaskWorkspaceError) as exc:
-        raise TaskWorkspaceError("recorded task repository/worktree is missing or reused") from exc
+        raise TaskWorkspaceError(
+            f"recorded task repository/worktree is missing or reused: {exc}"
+        ) from exc
     if recorded_repository != configured_repository or worktree != expected_worktree:
         raise TaskWorkspaceError("task repository/worktree identity drifted")
     if (Path(git(recorded_repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
@@ -1102,25 +1104,11 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
     return recorded_repository, worktree, head, changed
 
 
-def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
-    config = load_config(controller)
-    require_task(controller, task_id)
-    configured_repository = product_repository(controller, config)
-    require_current_runtime(configured_repository,
-                            ref_sha(configured_repository, config["target_ref"]))
-    with state_lock(controller):
-        state = read_state(controller)
-        record = state["tasks"].get(task_id)
-        if not record:
-            raise TaskWorkspaceError("task has not been started")
-        if record.get("state") == "QUEUED":
-            return {**record, "outcome": "already_queued"}
-        if record.get("state") != "WORKING":
-            raise TaskWorkspaceError(f"task cannot finish from {record.get('state')}")
-        frozen_record = json.loads(json.dumps(record))
-
-    # Validations run outside the controller state lock. Independent feature
-    # finishes therefore stay concurrent; the compare below prevents stale state.
+def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[str, Any],
+                         configured_repository: Path, task_id: str,
+                         runtime: dict[str, Any]) -> tuple[
+                             Path, Path, str, list[str], dict[str, Any]]:
+    """Validate the cheap finish boundary and bind it as one immutable closure."""
     repository, worktree, head, changed = observe_working_task(
         record, configured_repository, config, task_id
     )
@@ -1137,9 +1125,85 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         raise TaskWorkspaceError("task creation receipt has no frozen allowed paths")
     outside = [path for path in changed if not path_within(path, frozen_allowed)]
     if forbidden or outside:
-        raise TaskWorkspaceError(f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}")
+        raise TaskWorkspaceError(
+            f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}"
+        )
     verify_derived_output_parity(
         repository, head, creation_receipt.get("generated_output_admission"), changed)
+    policy_path = controller / ".juno_task/config/risk-policy.json"
+    try:
+        policy_sha256 = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TaskWorkspaceError("risk policy is missing during task preflight") from exc
+    closure_body = {
+        "schema_version": "juno_task_review_ready_closure.v1",
+        "task_id": task_id,
+        "base_sha": record["base_sha"],
+        "tip_sha": head,
+        "tree_sha": git(repository, "rev-parse", f"{head}^{{tree}}"),
+        "changed_paths": changed,
+        "changed_paths_sha256": stable_sha256(changed),
+        "allowed_paths_sha256": stable_sha256(frozen_allowed),
+        "creation_receipt_sha256": record["workspace_identity"]["create_receipt_sha256"],
+        "generated_output_admission_sha256": stable_sha256(
+            creation_receipt.get("generated_output_admission")
+        ),
+        "risk_policy_sha256": policy_sha256,
+        "runtime_sha256": runtime["running_sha256"],
+        "unresolved_findings_candidate_sha": record.get("prior_findings_candidate_sha"),
+    }
+    closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
+    return repository, worktree, head, changed, closure
+
+
+def preflight(controller: Path, task_id: str) -> dict[str, Any]:
+    """Run finish identity/admission checks without validation or queue mutation."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    config = load_config(controller)
+    require_task(controller, task_id)
+    configured_repository = product_repository(controller, config)
+    runtime = require_current_runtime(configured_repository,
+                                      ref_sha(configured_repository, config["target_ref"]))
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict):
+            raise TaskWorkspaceError("task has not been started")
+        if record.get("state") != "WORKING":
+            raise TaskWorkspaceError(f"task cannot preflight from {record.get('state')}")
+        frozen_record = json.loads(json.dumps(record))
+    _, worktree, head, changed, closure = review_ready_closure(
+        controller, config, frozen_record, configured_repository, task_id, runtime
+    )
+    if load_config(controller) != config:
+        raise TaskWorkspaceError("task workspace policy changed during preflight")
+    return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "WORKING",
+            "outcome": "preflight_passed", "worktree": str(worktree), "tip_sha": head,
+            "changed_paths": changed, "review_ready_closure": closure}
+
+
+def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
+    config = load_config(controller)
+    require_task(controller, task_id)
+    configured_repository = product_repository(controller, config)
+    runtime = require_current_runtime(configured_repository,
+                                      ref_sha(configured_repository, config["target_ref"]))
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+        if not record:
+            raise TaskWorkspaceError("task has not been started")
+        if record.get("state") == "QUEUED":
+            return {**record, "outcome": "already_queued"}
+        if record.get("state") != "WORKING":
+            raise TaskWorkspaceError(f"task cannot finish from {record.get('state')}")
+        frozen_record = json.loads(json.dumps(record))
+
+    # Validations run outside the controller state lock. Independent feature
+    # finishes therefore stay concurrent; the compare below prevents stale state.
+    repository, worktree, head, changed, closure = review_ready_closure(
+        controller, config, frozen_record, configured_repository, task_id, runtime
+    )
     validations = []
     for row in config["focused_validation"]:
         cwd = (worktree / row["cwd"]).resolve()
@@ -1167,6 +1231,8 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
             != (repository, worktree, head, changed)):
         raise TaskWorkspaceError("task tip or worktree changed during focused validation")
     queued = {**record, "state": "QUEUED", "tip_sha": head, "changed_paths": changed,
+              "review_ready_closure": closure,
+              "review_round": 1,
               "validation": validations, "last_validation_outcome": "PASSED"}
     with state_lock(controller):
         state = read_state(controller)
@@ -1223,7 +1289,7 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
-    value.add_argument("operation", choices=("start", "status", "finish"))
+    value.add_argument("operation", choices=("start", "status", "preflight", "finish"))
     value.add_argument("--task", required=True)
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
@@ -1238,7 +1304,8 @@ def main(argv: list[str] | None = None) -> int:
             raise TaskWorkspaceError("--path is supported only for task start")
         audit = record_control_audit(controller, "task", args.operation, args.task)
         result = (start(controller, args.task, args.path) if args.operation == "start"
-                  else {"status": status, "finish": finish}[args.operation](controller, args.task))
+                  else {"status": status, "preflight": preflight,
+                        "finish": finish}[args.operation](controller, args.task))
         result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0

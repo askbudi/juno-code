@@ -2415,7 +2415,13 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             failed = {**attempt, "outcome": "REVIEW_FAILED", "risk_failure": str(exc)[:512]}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise MergeQueueError(str(exc)) from exc
-        outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
+        review_round = record.get("review_round", 1)
+        if (not isinstance(review_round, int) or isinstance(review_round, bool)
+                or review_round not in {1, 2}):
+            raise MergeQueueError("task review round is malformed or exceeds the bounded policy")
+        outcome = ("RISK_EVIDENCE_READY" if verified["eligible"]
+                   else ("REVIEW_FINDINGS_EXHAUSTED" if review_round >= 2
+                         else "REVIEW_FINDINGS"))
         risk_state = {**stored, "status": outcome, "evidence": reference}
         updated = {key: value for key, value in attempt.items() if key != "risk_failure"}
         updated.update({"risk": risk_state, "review": risk_state, "outcome": outcome})
@@ -2429,7 +2435,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 return requeue_stale_candidate(
                     controller, config, repository, current_record, current_target)
             persist_attempt(controller, updated, state_name=(
-                "AWAITING_RISK" if verified["eligible"] else "REVIEW_FINDINGS"))
+                "AWAITING_RISK" if verified["eligible"] else outcome))
         return updated
 
 
@@ -2493,6 +2499,11 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
             and isinstance(record.get("tip_sha"), str)
             and not failed_queue_repair
         )
+        if source_state == "REVIEW_FINDINGS_EXHAUSTED":
+            raise MergeQueueError(
+                "bounded semantic review budget exhausted; inspect the consolidated evidence "
+                "and create a newly authorized follow-up task"
+            )
         if (source_state not in {"REVIEW_FINDINGS", "REOPENING"}
                 and not failed_queue_repair and not queued_tip_refresh):
             raise MergeQueueError("task has no review findings or failed queue repair to reopen")
@@ -2774,10 +2785,17 @@ def merge_reopen(controller: Path, task_id: str) -> dict[str, Any]:
                     marker.unlink()
         queued = {key: value for key, value in record.items()
                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
+        next_review_round = record.get("review_round", 1)
+        if reopen_attempt.get("source_state") == "REVIEW_FINDINGS":
+            if (not isinstance(next_review_round, int) or isinstance(next_review_round, bool)
+                    or next_review_round != 1):
+                raise MergeQueueError("review repair round is malformed or already consumed")
+            next_review_round = 2
         queued.update({"state": "QUEUED", "tip_sha": new_tip,
                        "changed_paths": reopen_attempt["changed_paths"],
                        "validation": reopen_attempt["validations"],
                        "last_validation_outcome": "PASSED",
+                       "review_round": next_review_round,
                        "reopened_from_candidate_sha": reopen_attempt["old_candidate_sha"]})
         prior_findings_sha = record.get("prior_findings_candidate_sha")
         if reopen_attempt.get("source_state") == "REVIEW_FINDINGS":
@@ -2834,6 +2852,11 @@ def status(controller: Path) -> dict[str, Any]:
                                                .get("review_progress") or {}).get("review_attempt_counter"))
                                             if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
                                                            .get("review_progress")), dict) else None),
+                 "review_round": row.get("review_round", 1),
+                 "completed_reviewer_count": len(((((row.get("queue_attempt") or {}).get("risk") or {})
+                                                     .get("review_progress") or {}).get("steps", []))
+                                                   if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
+                                                                  .get("review_progress")), dict) else []),
                  "completed_reviewers": ([step.get("reviewer") for step in
                                             ((((row.get("queue_attempt") or {}).get("risk") or {})
                                               .get("review_progress") or {}).get("steps", []))]
@@ -2843,6 +2866,7 @@ def status(controller: Path) -> dict[str, Any]:
                 and row.get("target_ref") == config["target_ref"]
                 and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
                                          "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
+                                         "REVIEW_FINDINGS_EXHAUSTED",
                                          "REOPENING", "REQUEUING_STALE", "MERGED"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),

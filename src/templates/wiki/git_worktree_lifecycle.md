@@ -28,6 +28,7 @@ metadata controller
 yy task start TASK_ID
 yy task start TASK_ID --path juno_kanban  # repeat --path for policy-admitted roots
 yy task status TASK_ID
+yy task preflight TASK_ID
 yy task finish TASK_ID
 
 yy merge status
@@ -39,8 +40,10 @@ Task start freezes the exact configured product target SHA and any explicitly
 selected policy-admitted product roots, then creates one branch/worktree. Before
 editing or testing there, the worker follows [task dependency hydration](task_dependency_hydration.md)
 for each configured validation cwd and stops on provisioning or clean-tree
-failure. Task finish requires a clean committed tip, allowed changed paths, and
-focused validation before queueing. Independent features can remain active
+failure. Task preflight is read-only and checks the clean committed tip,
+admitted changed paths, generated-output closure, risk policy, and runtime
+identity before expensive final gates. Task finish repeats that closure,
+persists it, and runs focused validation before queueing. Independent features can remain active
 concurrently.
 
 The merge queue serializes only target mutation. It uses a per-target lock and
@@ -49,9 +52,15 @@ latest target plus the feature tip. Conflicts are explicit durable state and the
 candidate is preserved for `merge resolve`; failed validation never advances
 the target.
 
-Review is risk-based: low zero, normal at most one, high Reviewer A then Reviewer
-B on the same frozen candidate. A changed candidate invalidates prior review.
-After CAS, only deterministic identity/readback and bounded smoke checks run.
+Review is queue-owned and risk-based: low zero, normal at most one, high Reviewer
+A and Reviewer B independently against the same frozen candidate/review group.
+All required reviewer results terminalize before findings are consolidated. The
+queue permits one repair candidate and one delta review group; another material
+finding stops as `REVIEW_FINDINGS_EXHAUSTED` instead of spawning an autonomous
+loop. A changed product candidate invalidates prior semantic evidence, while a
+byte-identical metadata/harness retry may reuse evidence only when all bound
+policy/runtime/closure identities remain exact. After CAS, only deterministic
+identity/readback and bounded smoke checks run.
 
 Cleanup refuses unless the delivered commit is reachable and the task worktree
 is safe to remove. Push, release, publication, deployment, production mutation,

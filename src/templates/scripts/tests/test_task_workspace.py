@@ -443,6 +443,11 @@ class TaskWorkspaceTests(unittest.TestCase):
                                        "timeout_seconds": 10, "max_output_bytes": 4096,
                                        "argv": [sys.executable, "-c", "pass"]},
         }, indent=2) + "\n")
+        risk_policy = self.controller / ".juno_task/config/risk-policy.json"
+        if not risk_policy.exists():
+            risk_policy.write_bytes(
+                (SCRIPT.parent.parent / "config/risk-policy.json").read_bytes()
+            )
 
     def command(self, operation: str, task_id: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return run(["python3", str(SCRIPT), operation, "--task", task_id, "--controller", str(self.controller)], self.controller, check)
@@ -1211,6 +1216,32 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertIn("disallowed paths: outside.txt", failed.stderr)
         self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
         self.assertTrue((self.workspaces / "X").is_dir())
+
+    def test_preflight_reports_disallowed_path_before_validation_or_queue_mutation(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X", "outside.txt")
+        failed = self.command("preflight", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("disallowed paths: outside.txt", failed.stderr)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "WORKING")
+        self.assertEqual(record["validation"], [])
+        self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
+
+    def test_preflight_emits_immutable_closure_and_finish_persists_it(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X")
+        checked = self.payload("preflight", "X")
+        closure = checked["review_ready_closure"]
+        self.assertEqual(checked["outcome"], "preflight_passed")
+        self.assertEqual(closure["tip_sha"], tip)
+        self.assertEqual(closure["changed_paths"], ["src/feature.txt"])
+        body = {key: value for key, value in closure.items() if key != "closure_sha256"}
+        self.assertEqual(closure["closure_sha256"], task_runtime.stable_sha256(body))
+        self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
+                         "WORKING")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["review_ready_closure"], closure)
 
     def test_finish_refuses_failed_focused_validation_without_state_advance(self) -> None:
         self.payload("start", "X")

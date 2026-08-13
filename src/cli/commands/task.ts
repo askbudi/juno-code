@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type TaskWorkspaceOperation = 'start' | 'status' | 'finish';
+export type TaskWorkspaceOperation = 'start' | 'status' | 'preflight' | 'finish';
 export type TaskWorkspaceInvoker = (
   operation: TaskWorkspaceOperation,
   taskId: string,
@@ -19,7 +19,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   exitCode: number,
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
 ): Promise<void> {
-  if (operation === 'status') return;
+  if (operation === 'status' || operation === 'preflight') return;
   await checkpoint(controllerRoot, exitCode);
 }
 
@@ -30,7 +30,7 @@ export async function invokeTaskWorkspace(
 ): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
-    operation === 'status' ? 'kanban' : 'orchestration',
+    operation === 'status' || operation === 'preflight' ? 'kanban' : 'orchestration',
   );
   const controllerRoot = route.controllerRoot;
   const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
@@ -67,6 +67,10 @@ export function configureTaskWorkspaceCommand(
     .argument('<task-id>', 'Canonical Kanban task ID')
     .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
     .action((taskId: string, options: { path: string[] }) => invoke('start', taskId, options.path));
+  task.command('preflight')
+    .description('Read-only finish/admission check before expensive validation')
+    .argument('<task-id>', 'Canonical Kanban task ID')
+    .action((taskId: string) => invoke('preflight', taskId, []));
   for (const operation of ['status', 'finish'] as const) {
     task.command(operation)
       .argument('<task-id>', 'Canonical Kanban task ID')
