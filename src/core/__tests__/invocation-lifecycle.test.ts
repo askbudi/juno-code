@@ -421,6 +421,11 @@ sys.exit(1)
     expect(written.find((event) => event.event_type === 'invocation_finished')).toMatchObject({
       status: 'failure',
       exit_code: 1,
+      provider_observations: {
+        status: 'unavailable',
+        execution_service: 'pi',
+        observations: [],
+      },
     });
   }, 25_000);
 
@@ -450,7 +455,12 @@ sys.exit(1)
     const written = await events(project, root);
     expect(written.filter((event) => event.event_type === 'invocation_started')).toHaveLength(1);
     expect(written.filter((event) => event.event_type === 'invocation_finished')).toEqual([
-      expect.objectContaining({ status: expectedStatus, exit_code: 1, service: 'pi' }),
+      expect.objectContaining({
+        status: expectedStatus,
+        exit_code: 1,
+        service: 'pi',
+        provider_observations: expect.objectContaining({ status: 'unavailable', observations: [] }),
+      }),
     ]);
   }, 25_000);
 
@@ -691,7 +701,7 @@ while true; do sleep 0.05; done
     }
   });
 
-  it('keeps immutable IDs and timing while accepting resolved terminal observations', async () => {
+  it('keeps immutable lifecycle fields while attaching resolved terminal observations', async () => {
     const written: Record<string, unknown>[] = [];
     const lifecycle = new InvocationLifecycle({
       workingDirectory: '/boundary-project',
@@ -699,15 +709,58 @@ while true; do sleep 0.05; done
       writeEvent: async (_cwd, event) => { written.push(event); },
     });
     await lifecycle.start({ service: 'pi', requestedModel: 'explicit/model' });
+    lifecycle.observeProviderResult({
+      request: { subagent: 'pi' },
+      iterations: [{
+        toolResult: {
+          content: JSON.stringify({
+            type: 'result',
+            session_id: 'provider-session',
+            usage: { input: 3 },
+            sub_agent_response: { provider: 'openai', model: 'gpt-5' },
+          }),
+          metadata: { structuredOutput: true },
+        },
+      }],
+    });
     await lifecycle.start({ service: 'claude', requestedModel: 'configured/default' });
     await lifecycle.finish(0);
     expect(written).toHaveLength(2);
     expect(written[0]).toMatchObject({ service: 'pi', requested_model: 'explicit/model' });
-    expect(written[1]).toMatchObject({ service: 'claude', requested_model: 'configured/default' });
     expect(written[1]).toMatchObject({
+      service: 'claude',
+      requested_model: 'configured/default',
       request_id: written[0]?.request_id,
       trace_id: written[0]?.trace_id,
       span_id: written[0]?.span_id,
+      provider_observations: {
+        status: 'partial',
+        execution_service: 'pi',
+        observations: [expect.objectContaining({
+          session_id: 'provider-session', provider: 'openai', resolved_model: 'gpt-5',
+        })],
+      },
+    });
+  });
+
+  it('adds explicit unavailable provider truth to non-provider terminal paths', async () => {
+    const written: Record<string, unknown>[] = [];
+    const lifecycle = new InvocationLifecycle({
+      workingDirectory: '/tmp',
+      junoCodeVersion: 'test',
+      writeEvent: async (_cwd, event) => { written.push(event); },
+    });
+    await lifecycle.start({ service: 'juno-code' });
+    await lifecycle.finish(1);
+    expect(written.at(-1)).toMatchObject({
+      status: 'failure',
+      provider_observations: {
+        status: 'unavailable',
+        execution_service: 'juno-code',
+        observations: [],
+        usage: { status: 'unavailable', input_tokens: null, output_tokens: null },
+        estimated_cost: { status: 'unavailable', amount: null, currency: null },
+      },
     });
   });
 

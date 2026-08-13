@@ -7,6 +7,11 @@ import {
   type InvocationStartedEvent,
   writeInvocationTelemetryEvent,
 } from './invocation-telemetry.js';
+import {
+  normalizeProviderObservations,
+  type ProviderObservations,
+  unavailableProviderObservations,
+} from './provider-observations.js';
 
 export type InvocationStatus = InvocationFinishedEvent['status'];
 export type InvocationEventWriter = (
@@ -90,6 +95,7 @@ export class InvocationLifecycle {
   private finishPromise: Promise<void> | null = null;
   private interrupted = false;
   private terminalStatus: InvocationStatus | undefined;
+  private providerObservations: ProviderObservations | null = null;
 
   constructor(options: InvocationLifecycleOptions) {
     this.env = options.env ?? process.env;
@@ -144,6 +150,12 @@ export class InvocationLifecycle {
   isInterrupted(): boolean { return this.interrupted; }
   markTerminalStatus(status: InvocationStatus): void { this.terminalStatus = status; }
 
+  /** Capture the completed engine result while it is still structured and in-process. */
+  observeProviderResult(result: unknown): void {
+    if (this.finishPromise) return;
+    this.providerObservations = normalizeProviderObservations(result);
+  }
+
   start(context?: InvocationExecutionContext): Promise<void> {
     if (context) this.configure(context);
     if (!this.startPromise) {
@@ -183,6 +195,7 @@ export class InvocationLifecycle {
           duration_ms: Math.max(0, finishedMonotonicMs - this.startedMonotonicMs),
           status: truthfulStatus,
           exit_code: exitCode,
+          provider_observations: this.providerObservations ?? unavailableProviderObservations(this.service),
         });
       })();
     }
@@ -238,6 +251,10 @@ export function joinActiveInvocation(promise: Promise<unknown>): void {
 
 export function markActiveInvocationTimeout(): void {
   activeInvocation?.lifecycle.markTerminalStatus('timeout');
+}
+
+export function observeActiveInvocationProviderResult(result: unknown): void {
+  activeInvocation?.lifecycle.observeProviderResult(result);
 }
 
 /**

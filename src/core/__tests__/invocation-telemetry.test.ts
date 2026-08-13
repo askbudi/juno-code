@@ -8,6 +8,7 @@ import {
   parseInvocationTelemetryEvent,
   writeInvocationTelemetryEvent,
 } from '../invocation-telemetry.js';
+import { unavailableProviderObservations } from '../provider-observations.js';
 
 const roots: string[] = [];
 
@@ -79,6 +80,20 @@ describe('invocation telemetry schema', () => {
   it('accepts bounded v1 start and finish events', () => {
     expect(parseInvocationTelemetryEvent(started()).event_type).toBe('invocation_started');
     expect(parseInvocationTelemetryEvent(finished()).event_type).toBe('invocation_finished');
+  });
+
+  it('accepts enriched finishes while preserving pre-enrichment v1 compatibility', () => {
+    expect(parseInvocationTelemetryEvent(finished({
+      provider_observations: unavailableProviderObservations('pi'),
+    }))).toMatchObject({
+      provider_observations: { status: 'unavailable', execution_service: 'pi' },
+    });
+    expect(() => parseInvocationTelemetryEvent(finished({
+      provider_observations: {
+        ...unavailableProviderObservations('pi'),
+        response: 'must not enter telemetry',
+      },
+    }))).toThrow();
   });
 
   it('rejects unknown content fields and malformed terminal truth', () => {

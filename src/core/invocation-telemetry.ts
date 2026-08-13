@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
 
+import { providerObservationsSchema } from './provider-observations.js';
 import { resolveJunoProjectStateLocation } from './session-metadata.js';
 
 export const INVOCATION_TELEMETRY_SCHEMA_VERSION = 1 as const;
@@ -47,6 +48,9 @@ const invocationFinishedEventBaseSchema = z.object({
   duration_ms: monotonicMilliseconds,
   status: z.enum(['success', 'failure', 'timeout', 'interrupted']),
   exit_code: z.number().int(),
+  // Optional only so immutable v1 events written before provider enrichment
+  // remain parseable. Current lifecycle producers always emit this field.
+  provider_observations: providerObservationsSchema.optional(),
 }).strict();
 
 export const invocationFinishedEventSchema = invocationFinishedEventBaseSchema.superRefine((event, context) => {

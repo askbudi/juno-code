@@ -2024,6 +2024,8 @@ export async function mainCommandHandler(
       continueScopeMarkedRunning = true;
 
       const result = await coordinator.execute(executionRequest, executionBranchName);
+      const { observeActiveInvocationProviderResult } = await import('../../core/invocation-lifecycle.js');
+      observeActiveInvocationProviderResult(result);
 
       await persistSessionHistory(result, effectiveVerbose);
       const sessionIds = extractSessionIds(result);
