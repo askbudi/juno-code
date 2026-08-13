@@ -487,6 +487,28 @@ raise SystemExit(2)
         self.assertEqual(len(first["target_refreshes"]), 1)
         self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), state_before)
 
+    def test_target_refresh_accepts_only_exact_inherited_target_bytes_on_second_refresh(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        self.advance_target("src/first-target.txt", "first\n")
+        first_refreshed = self.merge_target_into("X")
+        first_plan = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        with mock.patch.object(merge_runtime, "validation_rows", return_value=[]):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", first_plan["receipt"]["path"],
+                first_plan["receipt"]["sha256"])
+
+        self.advance_target("src/second-target.txt", "second\n")
+        second_refreshed = self.merge_target_into("X")
+        second_plan = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        classes = {row["path"]: row["classification"]
+                   for row in second_plan["classifications"]}
+
+        self.assertNotEqual(first_refreshed, second_refreshed)
+        self.assertEqual(classes["src/first-target.txt"], "inherited-target-derived")
+        self.assertEqual(classes["src/second-target.txt"], "unchanged-target-derived")
+        self.assertEqual(second_plan["authored_paths"], ["docs/feature.txt"])
+
     def test_target_refresh_reopen_candidate_preserves_evidence_and_cleans_exact_owner(self) -> None:
         self.install_merge_planner_runtime()
         checkout, marker = self.prepare_moved_finding_reopen()

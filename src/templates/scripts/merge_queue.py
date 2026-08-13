@@ -2928,26 +2928,40 @@ def target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
     admitted = sorted(record.get("changed_paths", []))
     original_changed = sorted(set(task_runtime.git(
         repository, "diff", "--name-only", f"{base_sha}..{source_tip}").splitlines()))
-    if admitted != original_changed:
-        raise MergeQueueError("original immutable queue path admission drifted")
     frozen_allowed = creation.get("allowed_paths")
     if (not admitted or any(task_runtime.path_within(path, config["controller_private_paths"])
                             or not task_runtime.path_within(path, frozen_allowed)
                             for path in admitted)):
         raise MergeQueueError("original feature admission is empty, private, or disallowed")
 
+    source_target_bases = task_runtime.git(
+        repository, "merge-base", "--all", source_tip, target_sha).splitlines()
+    if len(source_target_bases) != 1 or task_runtime.SHA_RE.fullmatch(source_target_bases[0]) is None:
+        raise MergeQueueError("source and protected target require one exact merge base")
     trees = {name: _git_tree(repository, sha) for name, sha in {
-        "base": base_sha, "source": source_tip, "target": target_sha, "refreshed": new_tip}.items()}
+        "base": base_sha, "source_target_base": source_target_bases[0],
+        "source": source_tip, "target": target_sha, "refreshed": new_tip}.items()}
+    admitted_set = set(admitted)
+    original_set = set(original_changed)
+    if not admitted_set.issubset(original_set):
+        raise MergeQueueError("original immutable queue path admission drifted")
+    inherited_source_paths = original_set - admitted_set
+    if any(trees["source"].get(path) != trees["source_target_base"].get(path)
+           for path in inherited_source_paths):
+        raise MergeQueueError("original immutable queue path admission drifted")
     paths = sorted(set().union(*(set(tree) for tree in trees.values())))
     rows: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
-    admitted_set = set(admitted)
     for path in paths:
         base_blob = trees["base"].get(path); source_blob = trees["source"].get(path)
         target_blob = trees["target"].get(path); refreshed_blob = trees["refreshed"].get(path)
         classification: Optional[str] = None
         if path in admitted_set:
             classification = "feature-authored"
+        elif path in inherited_source_paths:
+            classification = "inherited-target-derived"
+            if refreshed_blob != target_blob:
+                rejected.append({"path": path, "reason": "altered-target-derived-byte"})
         elif source_blob != base_blob:
             rejected.append({"path": path, "reason": "unadmitted-original-feature-byte"})
         elif target_blob != base_blob:
