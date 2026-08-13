@@ -40,7 +40,10 @@ try {
   await mkdir(path.dirname(guessedFixture), { recursive: true });
   await writeFile(guessedFixture, hostileFixture);
 
-  const packageJson = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  const packagePath = path.join(packageRoot, 'package.json');
+  const inventoryPath = path.join(installed, '.juno_task/managed-assets.json');
+  const identityPath = path.join(installed, '.juno_task/runtime/identity.json');
+  const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
   const executable = path.join(packageRoot, 'dist/bin/cli.mjs');
   const executableBytes = await readFile(executable);
   const inventory = {
@@ -54,9 +57,9 @@ try {
     executable_sha256: createHash('sha256').update(executableBytes).digest('hex'),
     source: 'installed-release', tracked: false,
   };
-  await mkdir(path.join(installed, '.juno_task/runtime'), { recursive: true });
-  await writeFile(path.join(installed, '.juno_task/managed-assets.json'), JSON.stringify(inventory));
-  await writeFile(path.join(installed, '.juno_task/runtime/identity.json'), JSON.stringify(identity));
+  await mkdir(path.dirname(identityPath), { recursive: true });
+  await writeFile(inventoryPath, JSON.stringify(inventory));
+  await writeFile(identityPath, JSON.stringify(identity));
 
   const selections = [
     ['test_task_workspace.py',
@@ -74,18 +77,79 @@ try {
     });
   }
 
-  const identityPath = path.join(installed, '.juno_task/runtime/identity.json');
+  const fixtureProbe = () => spawnSync(
+    'python3', [path.join(installedScripts, 'tests/test_task_workspace.py'), '--help'],
+    { cwd: installed, env: testEnv, encoding: 'utf8' },
+  );
+  const assertAvailable = (label) => {
+    const available = fixtureProbe();
+    assert.equal(available.status, 0,
+      `${label} package fixture must load: ${available.stderr || available.stdout}`);
+  };
   const assertUnavailable = (label) => {
-    const unavailable = spawnSync(
-      'python3', [path.join(installedScripts, 'tests/test_task_workspace.py'), '--help'],
-      { cwd: installed, env: testEnv, encoding: 'utf8' },
-    );
+    const unavailable = fixtureProbe();
     assert.notEqual(unavailable.status, 0, `${label} installed tests must fail closed`);
     assert.equal((unavailable.stderr.match(/package-bound test fixture unavailable/g) ?? []).length, 1,
       `${label} package fixture must emit one setup diagnostic`);
     assert.match(unavailable.stderr, /yy scripts update --force/,
       `${label} package fixture diagnostic must name supported recovery`);
   };
+  const writeBindings = async (bindings) => {
+    const identityVersion = bindings.identityVersion;
+    const inventoryVersion = Object.hasOwn(bindings, 'inventoryVersion')
+      ? bindings.inventoryVersion : identityVersion;
+    const packageVersion = Object.hasOwn(bindings, 'packageVersion')
+      ? bindings.packageVersion : identityVersion;
+    const nextIdentity = { ...identity };
+    const nextInventory = { ...inventory };
+    const nextPackage = { ...packageJson };
+    if (identityVersion === undefined) delete nextIdentity.version;
+    else nextIdentity.version = identityVersion;
+    if (inventoryVersion === undefined) delete nextInventory.packageVersion;
+    else nextInventory.packageVersion = inventoryVersion;
+    if (packageVersion === undefined) delete nextPackage.version;
+    else nextPackage.version = packageVersion;
+    await writeFile(identityPath, JSON.stringify(nextIdentity));
+    await writeFile(inventoryPath, JSON.stringify(nextInventory));
+    await writeFile(packagePath, JSON.stringify(nextPackage));
+  };
+
+  for (const [label, version] of Object.entries({
+    stable: '2.1.3',
+    prerelease: '2.1.3-rc.0.11',
+    build: '2.1.3+build.11',
+    prerelease_build: '2.1.3-rc.0.11+build.7',
+  })) {
+    await writeBindings({ identityVersion: version });
+    assertAvailable(label);
+  }
+  for (const [label, version] of Object.entries({
+    leading_zero_core: '02.1.3',
+    leading_zero_prerelease: '2.1.3-rc.01',
+    empty_prerelease_identifier: '2.1.3-rc..1',
+    invalid_build_character: '2.1.3+build_1',
+  })) {
+    await writeBindings({ identityVersion: version });
+    assertUnavailable(label);
+  }
+  await writeBindings({ identityVersion: undefined });
+  assertUnavailable('missing-versions');
+  await writeBindings({ identityVersion: 213 });
+  assertUnavailable('non-string-versions');
+  await writeBindings({ identityVersion: '2.1.3', inventoryVersion: undefined });
+  assertUnavailable('missing-inventory-version');
+  await writeBindings({ identityVersion: '2.1.3', inventoryVersion: 213 });
+  assertUnavailable('non-string-inventory-version');
+  await writeBindings({ identityVersion: '2.1.3', packageVersion: undefined });
+  assertUnavailable('missing-package-version');
+  await writeBindings({ identityVersion: '2.1.3', packageVersion: 213 });
+  assertUnavailable('non-string-package-version');
+  await writeBindings({ identityVersion: '2.1.3-rc.0.11', inventoryVersion: '2.1.3-rc.0.10' });
+  assertUnavailable('inventory-version-mismatch');
+  await writeBindings({ identityVersion: '2.1.3-rc.0.11', packageVersion: '2.1.3-rc.0.10' });
+  assertUnavailable('package-version-mismatch');
+  await writeBindings({ identityVersion: packageJson.version });
+
   const hiddenIdentity = identityPath + '.unavailable';
   await rename(identityPath, hiddenIdentity);
   assertUnavailable('unbound');

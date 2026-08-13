@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import semver from 'semver';
 import { ScriptInstaller } from '../script-installer.js';
 import { ManagedProjectAssets } from '../managed-project-assets.js';
 import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
@@ -949,7 +950,8 @@ describe('ScriptInstaller', () => {
       const hash = createHash('sha256').update(exactTargetBytes).digest('hex');
       const packageRoot = path.resolve(process.cwd());
       const packageVersion = (await fs.readJson(path.join(packageRoot, 'package.json'))).version;
-      expect(packageVersion).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+      expect(typeof packageVersion).toBe('string');
+      expect(semver.valid(packageVersion)).not.toBeNull();
       const packagedBytes = await fs.readFile(
         path.join(packageRoot, 'src/templates/scripts/task_workspace.py'),
       );

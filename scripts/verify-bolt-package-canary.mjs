@@ -60,6 +60,9 @@ try {
 
   const selections = {
     task_workspace: [
+      'SemVerValidationTests.test_accepts_stable_prerelease_build_and_combined_versions',
+      'SemVerValidationTests.test_rejects_malformed_versions',
+      'SemVerValidationTests.test_validation_is_exact_string_only_without_trimming_or_coercion',
       'TaskWorkspaceTests.test_concurrent_tasks_share_frozen_base_without_controller_data',
       'TaskWorkspaceTests.test_finish_refuses_failed_focused_validation_without_state_advance',
     ],
