@@ -1382,6 +1382,51 @@ def endpoint_snapshot_at(directory_fd: int, name: str) -> tuple[bytes, tuple[int
     return data, identity(after)
 
 
+def rename_noreplace_at(directory_fd: int, source: str, destination: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if hasattr(libc, "renameatx_np"):
+        operation = libc.renameatx_np
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x00000004
+    elif hasattr(libc, "renameat2"):
+        operation = libc.renameat2
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        flag = 0x1
+    else:
+        raise BoundaryError("metadata-policy migration requires atomic no-clobber rename support")
+    if operation(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), flag) != 0:
+        error = ctypes.get_errno()
+        raise BoundaryError(f"metadata-policy atomic quarantine refused: {source}: {os.strerror(error)}")
+
+
+def exact_unlink_endpoint_at(directory_fd: int, name: str,
+                             expected: tuple[bytes, tuple[int, int, int, int, int]]) -> None:
+    quarantine = f".juno-unlink-{os.getpid()}-{os.urandom(16).hex()}"
+    rename_noreplace_at(directory_fd, name, quarantine)
+    if endpoint_snapshot_at(directory_fd, quarantine) != expected:
+        try: rename_noreplace_at(directory_fd, quarantine, name)
+        except BoundaryError as exc:
+            raise BoundaryError(f"metadata-policy endpoint quarantine raced and restoration failed: {name}") from exc
+        raise BoundaryError(f"metadata-policy endpoint identity raced before unlink: {name}")
+    os.unlink(quarantine, dir_fd=directory_fd)
+
+
+def exact_unlink_path(path: Path, expected: dict[str, Any]) -> None:
+    directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    quarantine = f".juno-unlink-{os.getpid()}-{os.urandom(16).hex()}"
+    try:
+        rename_noreplace_at(directory_fd, path.name, quarantine)
+        quarantined = path.parent / quarantine
+        if not identity_matches(index_lock_identity(quarantined), expected, relocated=True):
+            try: rename_noreplace_at(directory_fd, quarantine, path.name)
+            except BoundaryError as exc:
+                raise BoundaryError(f"metadata-policy path quarantine raced and restoration failed: {path}") from exc
+            raise BoundaryError(f"metadata-policy path identity raced before unlink: {path}")
+        os.unlink(quarantine, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+
+
 def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
                             expected: tuple[bytes, tuple[int, int, int, int, int]] | None) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
@@ -1409,7 +1454,7 @@ def atomic_endpoint_publish(directory_fd: int, temporary_name: str, name: str,
                 raise BoundaryError(
                     f"metadata-policy endpoint raced and atomic restoration failed: {name}: {os.strerror(error)}")
             raise BoundaryError(f"metadata-policy endpoint raced at atomic publication: {name}")
-        os.unlink(temporary_name, dir_fd=directory_fd)
+        exact_unlink_endpoint_at(directory_fd, temporary_name, displaced)
 
 
 def atomic_index_publish(index_lock: Path, index_path: Path,
@@ -1442,7 +1487,7 @@ def atomic_index_publish(index_lock: Path, index_path: Path,
                 error = ctypes.get_errno()
                 raise BoundaryError(f"metadata-policy index raced and restoration failed: {os.strerror(error)}")
             raise BoundaryError("metadata-policy real index bytes or identity raced before atomic publication")
-        os.unlink(temporary_name, dir_fd=directory_fd)
+        exact_unlink_path(displaced_path, displaced_identity)
         os.fsync(directory_fd)
     finally: os.close(directory_fd)
 
@@ -1644,7 +1689,12 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     and exact_displaced_index(recovery_lock, ownership_path))
             if not (prepared_still_locked or published_with_displaced_lock):
                 raise BoundaryError(f"metadata-policy migration index serialization is busy or unowned: {recovery_lock}")
-            durable_unlink(recovery_lock); durable_unlink(ownership_path)
+            lock_expected = index_lock_identity(recovery_lock)
+            marker_expected = index_lock_identity(ownership_path)
+            if lock_expected is None or marker_expected is None:
+                raise BoundaryError("metadata-policy recovery evidence changed before cleanup")
+            exact_unlink_path(recovery_lock, lock_expected)
+            exact_unlink_path(ownership_path, marker_expected)
         completed = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
         if ownership_path.exists() or ownership_path.is_symlink():
             # A crash after publishing the prepared index may leave only its
@@ -1653,7 +1703,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     or not exact_prepared_index(root, expected_index, ownership_path,
                                                 plan_hash, completed[1])):
                 raise BoundaryError(f"metadata-policy migration index ownership is stranded or unowned: {ownership_path}")
-            durable_unlink(ownership_path)
+            marker_expected = index_lock_identity(ownership_path)
+            if marker_expected is None:
+                raise BoundaryError("metadata-policy index ownership changed before cleanup")
+            exact_unlink_path(ownership_path, marker_expected)
         if completed is None:
             if output.exists() or output.is_symlink():
                 raise BoundaryError("metadata-policy apply receipt path must be fresh before mutation")
@@ -1721,7 +1774,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     if temporary is not None:
                         if temporary[0] != data:
                             raise BoundaryError(f"metadata-policy migration temporary collision: {temporary_name}")
-                        os.unlink(temporary_name, dir_fd=config_fd)
+                        exact_unlink_endpoint_at(config_fd, temporary_name, temporary)
                 os.fsync(config_fd)
                 if completed is None:
                     assert_policy_plan_snapshot(plan, owned_index_lock=True)
@@ -1761,7 +1814,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         current = before_snapshot[0] if before_snapshot is not None else None
                         before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
                         if current not in {None, before, data}:
-                            os.unlink(temporary_name, dir_fd=config_fd)
+                            owned_temporary = endpoint_snapshot_at(config_fd, temporary_name)
+                            if owned_temporary is None:
+                                raise BoundaryError(f"metadata-policy endpoint temporary disappeared: {temporary_name}")
+                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary)
                             raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
                         race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
                         if race_pause:
@@ -1773,7 +1829,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                             else: raise BoundaryError("metadata-policy endpoint race test pause timed out")
                         final_snapshot = endpoint_snapshot_at(config_fd, name)
                         if final_snapshot != before_snapshot:
-                            os.unlink(temporary_name, dir_fd=config_fd)
+                            owned_temporary = endpoint_snapshot_at(config_fd, temporary_name)
+                            if owned_temporary is None:
+                                raise BoundaryError(f"metadata-policy endpoint temporary disappeared: {temporary_name}")
+                            exact_unlink_endpoint_at(config_fd, temporary_name, owned_temporary)
                             raise BoundaryError(f"metadata-policy endpoint raced before atomic publication: {relative}")
                         atomic_endpoint_publish(config_fd, temporary_name, name, before_snapshot)
                     os.fsync(config_fd)
@@ -1784,7 +1843,10 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     verify_locks()
                     atomic_index_publish(index_lock, index_path, expected_real_index_identity)
                     index_published = True
-                    durable_unlink(ownership_path)
+                    marker_expected = index_lock_identity(ownership_path)
+                    if marker_expected is None:
+                        raise BoundaryError("metadata-policy index ownership changed before final cleanup")
+                    exact_unlink_path(ownership_path, marker_expected)
                     if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
                         raise BoundaryError("HEAD/tree readback failed")
                     if git(root, "diff", "--name-only", plan["head"], committed).splitlines() != plan["changed_paths"]:

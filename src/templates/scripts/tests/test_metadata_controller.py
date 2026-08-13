@@ -943,6 +943,33 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
         self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
 
+    def test_metadata_policy_exact_unlink_restores_racing_replacement(self) -> None:
+        directory = self.temp / "unlink-race"
+        directory.mkdir()
+        target = directory / "temporary"
+        target.write_bytes(b"owned")
+        descriptor = os.open(directory, os.O_RDONLY)
+        expected = mc.endpoint_snapshot_at(descriptor, target.name)
+        self.assertIsNotNone(expected)
+        original = mc.rename_noreplace_at
+        injected = False
+        def race(directory_fd: int, source: str, destination: str) -> None:
+            nonlocal injected
+            if not injected:
+                injected = True
+                os.rename(target, directory / "preserved-owned")
+                target.write_bytes(b"attacker")
+            original(directory_fd, source, destination)
+        mc.rename_noreplace_at = race
+        try:
+            with self.assertRaisesRegex(mc.BoundaryError, "identity raced before unlink"):
+                mc.exact_unlink_endpoint_at(descriptor, target.name, expected)
+        finally:
+            mc.rename_noreplace_at = original
+            os.close(descriptor)
+        self.assertEqual(target.read_bytes(), b"attacker")
+        self.assertEqual((directory / "preserved-owned").read_bytes(), b"owned")
+
     def test_metadata_policy_endpoint_writer_completes_partial_writes(self) -> None:
         path = self.temp / "partial-write"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
