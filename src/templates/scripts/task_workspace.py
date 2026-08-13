@@ -1550,7 +1550,94 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
         return False
 
 
-def _runtime_prior_state(repository: Path, target_sha: str,
+def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: str,
+                                    recovery_package_version: str) -> dict[str, Any]:
+    """Prove an inventory-less consumer blob came from the registered old release."""
+    identity_path = controller / ".juno_task/runtime/identity.json"
+    if identity_path.is_symlink() or not identity_path.is_file():
+        raise TaskWorkspaceError(
+            "consumer target task runtime lacks managed inventory and installed runtime identity")
+    try:
+        identity_bytes = identity_path.read_bytes()
+        identity = json.loads(identity_bytes)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(
+            "consumer target installed runtime identity is missing or invalid") from exc
+    required = {"package", "version", "executable", "executable_sha256", "source", "tracked"}
+    if (not isinstance(identity, dict) or set(identity) != required
+            or identity.get("package") != "juno-code"
+            or identity.get("source") != "installed-release"
+            or identity.get("tracked") is not False
+            or not is_valid_semver(identity.get("version"))
+            or not semver_precedes(identity["version"], recovery_package_version)
+            or re.fullmatch(r"[0-9a-f]{64}", str(identity.get("executable_sha256", ""))) is None):
+        raise TaskWorkspaceError(
+            "consumer target installed runtime identity is invalid or not older than recovery")
+    configured_version = git(
+        controller, "config", "--worktree", "--get", "juno.controller.runtimeVersion",
+        check=False)
+    configured_executable = git(
+        controller, "config", "--worktree", "--get", "juno.controller.runtimeExecutable",
+        check=False)
+    try:
+        executable = Path(identity["executable"]).expanduser().resolve(strict=True)
+    except (OSError, TypeError, ValueError) as exc:
+        raise TaskWorkspaceError("consumer target installed runtime executable is missing") from exc
+    if (str(executable) != identity["executable"]
+            or configured_version != identity["version"]
+            or configured_executable != identity["executable"]
+            or not executable.is_file() or not os.access(executable, os.X_OK)):
+        raise TaskWorkspaceError("consumer target installed runtime identity is stale or tampered")
+    executable_sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
+    if executable_sha256 != identity["executable_sha256"]:
+        raise TaskWorkspaceError("consumer target installed runtime identity is stale or tampered")
+    if git(executable.parent, "rev-parse", "--show-toplevel", check=False):
+        raise TaskWorkspaceError("consumer target installed runtime must be outside Git")
+    try:
+        package_root = executable.parents[2]
+    except IndexError as exc:
+        raise TaskWorkspaceError(
+            "consumer target installed runtime package layout is invalid") from exc
+    if (executable.parent.parent != package_root / "dist"
+            or executable.name not in {"cli.mjs", "cli.js"}):
+        raise TaskWorkspaceError("consumer target installed runtime package layout is invalid")
+    try:
+        manifest_path = package_root / "package.json"
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        template = package_root / "dist/templates/scripts/task_workspace.py"
+        template_bytes = template.read_bytes()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(
+            "consumer target installed runtime package/template identity is missing") from exc
+    if (not isinstance(manifest, dict) or manifest.get("name") != "juno-code"
+            or manifest.get("version") != identity["version"] or template.is_symlink()
+            or template_bytes != prior):
+        raise TaskWorkspaceError(
+            "consumer target task runtime does not match the registered installed template")
+    version_result = run([str(executable), "--version"], executable.parent, check=False)
+    if (version_result.returncode != 0 or version_result.stdout.strip()
+            != f"juno-code {identity['version']}" or version_result.stderr.strip()
+            or hashlib.sha256(executable.read_bytes()).hexdigest() != executable_sha256):
+        raise TaskWorkspaceError("consumer target installed runtime version output mismatched")
+    prior_sha = hashlib.sha256(prior).hexdigest()
+    provenance = {
+        "identity_sha256": hashlib.sha256(identity_bytes).hexdigest(),
+        "version": identity["version"], "executable": str(executable),
+        "executable_sha256": executable_sha256, "package_root": str(package_root),
+        "package_json_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "template": str(template),
+        "template_sha256": hashlib.sha256(template_bytes).hexdigest(),
+    }
+    return {"state": "present", "mode": prior_mode, "sha256": prior_sha,
+            "bytes_base64": base64.b64encode(prior).decode(),
+            "classification": "exact_registered_legacy_installed_consumer_generation",
+            "package_version": identity["version"], "inventory_package_version": None,
+            "inventory_mode": None, "inventory_sha256": None,
+            "inventory_bytes_base64": None, "legacy_runtime": provenance}
+
+
+def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
                          proposed: bytes, recovery_package_version: str) -> dict[str, Any]:
     prior = target_blob(repository, target_sha, RUNTIME_PATH)
     package_bytes = target_blob(repository, target_sha, "juno-code/package.json")
@@ -1671,6 +1758,9 @@ def _runtime_prior_state(repository: Path, target_sha: str,
             "Juno source target runtime is stale; update package template/runtime/inventory "
             "atomically instead of runtime bootstrap")
     if not inventory_valid:
+        if inventory_bytes is None:
+            return _legacy_installed_runtime_prior(
+                controller, prior, prior_mode, recovery_package_version)
         raise TaskWorkspaceError(
             "consumer target task runtime is customized or lacks exact managed-inventory "
             "provenance; refusing bootstrap")
@@ -1742,7 +1832,8 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
     target_ref = config["target_ref"]
     target_sha = ref_sha(repository, target_ref)
     target_tree = git(repository, "rev-parse", f"{target_sha}^{{tree}}")
-    prior = _runtime_prior_state(repository, target_sha, running, package_version)
+    prior = _runtime_prior_state(
+        controller, repository, target_sha, running, package_version)
     if prior["sha256"] == running_sha:
         raise TaskWorkspaceError("target task runtime already matches the package")
     proposed_inventory = _proposed_inventory(prior, package_version, running_sha)
@@ -2089,7 +2180,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
     if str(repository) != target.get("repository") or config["target_ref"] != target.get("ref"):
         raise TaskWorkspaceError("task-runtime bootstrap target identity changed")
     proposed = base64.b64decode(plan["proposed"]["bytes_base64"], validate=True)
-    if (_runtime_prior_state(repository, target["sha"], proposed, package_version)
+    if (_runtime_prior_state(controller, repository, target["sha"], proposed, package_version)
             != plan.get("prior")):
         raise TaskWorkspaceError(
             "task-runtime bootstrap bound target prior state does not match the receipt")
@@ -2130,7 +2221,7 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
         if (current_sha != target.get("sha")
                 or git(repository, "rev-parse", f"{current_sha}^{{tree}}") != target.get("tree")):
             raise TaskWorkspaceError("task-runtime bootstrap target ref moved after planning")
-        if _runtime_prior_state(repository, current_sha, proposed,
+        if _runtime_prior_state(controller, repository, current_sha, proposed,
                                 package_version) != plan.get("prior"):
             raise TaskWorkspaceError("task-runtime bootstrap prior path state changed")
         workspace_root = Path(config["workspace_root"])

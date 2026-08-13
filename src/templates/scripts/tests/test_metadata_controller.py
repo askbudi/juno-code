@@ -580,15 +580,15 @@ class MetadataControllerTest(unittest.TestCase):
         nvm.mkdir(parents=True)
         command("git", "init", cwd=nvm)
         nvm_runtime = nvm / "versions/node/v22/lib/node_modules/juno-code/dist/bin/cli.mjs"
-        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
         nvm_runtime.chmod(nvm_runtime.stat().st_mode | stat.S_IXUSR)
         execution_marker = self.temp / "nvm-runtime-executed"
-        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33\\n'\n")
+        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
         with self.assertRaisesRegex(mc.BoundaryError, "runtime-install-rebind --help"):
-            mc.runtime_identity(nvm_runtime, "2.0.33", self.new_controller)
+            mc.runtime_identity(nvm_runtime, "2.0.33-rc.0.10", self.new_controller)
         self.assertFalse(execution_marker.exists())
 
-        prefix = self.temp / "durable-runtimes/2.0.33"
+        prefix = self.temp / "durable-runtimes/2.0.33-rc.0.10"
         receipt_path = self.temp / "nvm-install-rebind.json"
         fake_npm = self.temp / "nvm/versions/node/v22/bin/npm"
         write(fake_npm, "#!/bin/sh\nexit 99\n")
@@ -599,9 +599,9 @@ class MetadataControllerTest(unittest.TestCase):
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm):
                 installed = prefix / "node_modules/juno-code"
-                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33"}) + "\n")
+                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33-rc.0.10"}) + "\n")
                 executable = installed / "dist/bin/cli.mjs"
-                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
                 return subprocess.CompletedProcess(argv, 0, "installed\n", "")
             return original_run(argv, cwd, check, **kwargs)
@@ -612,7 +612,7 @@ class MetadataControllerTest(unittest.TestCase):
             receipt = mc.runtime_install_rebind(argparse.Namespace(
                 root=self.new_controller,
                 branch="refs/heads/juno/controller-metadata-v1",
-                runtime_version="2.0.33",
+                runtime_version="2.0.33-rc.0.10",
                 install_prefix=prefix,
                 output=receipt_path,
             ), self.policy)
@@ -1158,6 +1158,23 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(rollback["outcome"], "planned_no_mutation")
         self.assertFalse(rollback["product_ref_mutation"])
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo), self.product_head)
+
+    def test_runtime_rebind_accepts_exact_semver_prerelease(self) -> None:
+        self.prepare()
+        newer = self.temp / "installed-prerelease/bin/yy"
+        write(newer, "#!/bin/sh\nprintf 'juno-code 2.1.3-rc.0.10\\n'\n")
+        newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
+        receipt = mc.runtime_rebind(argparse.Namespace(
+            root=self.new_controller,
+            branch="refs/heads/juno/controller-metadata-v1",
+            runtime=newer,
+            runtime_version="2.1.3-rc.0.10",
+            output=self.temp / "runtime-prerelease-rebind.json",
+        ), self.policy)
+        self.assertEqual(receipt["runtime"]["version"], "2.1.3-rc.0.10")
+        self.assertEqual(command(
+            "git", "config", "--worktree", "--get", "juno.controller.runtimeVersion",
+            cwd=self.new_controller), "2.1.3-rc.0.10")
 
     def test_runtime_rebind_preflight_and_failure_restore_identity(self) -> None:
         self.prepare()

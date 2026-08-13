@@ -46,7 +46,6 @@ RETIRED_CONTROLLER_WORKSPACE = {
 CANONICAL_CONTROLLER_CONFIG = {"controllerWorkspace": CANONICAL_CONTROLLER_WORKSPACE}
 CONFIG_PATH = ".juno_task/config.json"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
-VERSION_RE = re.compile(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?![-+0-9A-Za-z.])")
 
 
 class BoundaryError(RuntimeError):
@@ -381,9 +380,14 @@ def resolve_commit(root: Path, ref: str, expected: str, label: str) -> str:
     return actual
 
 
+def valid_semver(value: Any) -> bool:
+    """Use the packaged task-runtime's single SemVer 2.0.0 validator."""
+    return bool(load_sibling("task_workspace.py").is_valid_semver(value))
+
+
 def runtime_identity(executable: Path, expected_version: str, repository: Path) -> dict[str, str]:
     executable = executable.expanduser().resolve()
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", expected_version):
+    if not valid_semver(expected_version):
         raise BoundaryError("runtime version must be an exact released semantic version")
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise BoundaryError(f"runtime executable is not executable: {executable}")
@@ -408,8 +412,8 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
             "install and rebind an exact release into a fresh non-Git prefix with `yy migrate runtime-install-rebind --help`"
         )
     result = run([str(executable), "--version"], executable.parent, False)
-    match = VERSION_RE.search(result.stdout + "\n" + result.stderr)
-    if result.returncode or not match or match.group(1) != expected_version:
+    if (result.returncode or result.stdout.strip() != f"juno-code {expected_version}"
+            or result.stderr.strip()):
         raise BoundaryError(f"runtime identity mismatch: expected juno-code {expected_version}")
     return {"package": "juno-code", "version": expected_version, "executable": str(executable),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
@@ -2066,7 +2070,7 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
     The destination is deliberately fresh: this command never upgrades or
     repairs an existing installation in place.
     """
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.runtime_version):
+    if not valid_semver(args.runtime_version):
         raise BoundaryError("runtime version must be an exact released semantic version")
     prefix = args.install_prefix.expanduser().resolve()
     root = exact_worktree(args.root)
