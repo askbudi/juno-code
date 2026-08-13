@@ -659,6 +659,50 @@ describe('Binary Execution Tests', () => {
       expect(await fs.pathExists(path.join(tempDir, '.claude'))).toBe(false);
     });
 
+    it('refuses legacy tracked metadata-policy mutation and routes to the receipt-bound command', async () => {
+      const policyDir = path.join(tempDir, '.juno_task/config');
+      const metadata = await fs.readJson(
+        path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'),
+      );
+      metadata.controller_branch = 'refs/heads/customer/controller';
+      metadata.product_ref = 'refs/heads/customer/release';
+      metadata.generated_metadata = metadata.generated_metadata.filter(
+        (entry: string) => entry !== '.juno_task/config/integration-workspace.json',
+      );
+      metadata.tracked_exact = metadata.tracked_exact.filter(
+        (entry: string) => entry !== '.juno_task/config/integration-workspace.json',
+      );
+      await fs.ensureDir(policyDir);
+      await fs.writeJson(path.join(tempDir, '.juno_task/config.json'), {
+        controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
+      });
+      const policyPath = path.join(policyDir, 'metadata-controller.json');
+      const policyBytes = `${JSON.stringify(metadata)}\n`;
+      await fs.writeFile(policyPath, policyBytes);
+      for (const name of ['task-workspace.json', 'risk-policy.json']) {
+        await fs.copyFile(path.resolve(process.cwd(), 'src/templates/config', name), path.join(policyDir, name));
+      }
+      await fs.writeFile(path.join(tempDir, '.gitignore'), [
+        '.juno_task/scripts/', '.juno_task/runtime/', '.venv_juno/', '.env.juno',
+        '/AGENTS.md', '/CLAUDE.md', '/.agents/', '/.claude/', '/.pi/',
+        'built-cli-session-metadata/', '',
+      ].join('\n'));
+      execFileSync('git', ['init', '-q'], { cwd: tempDir });
+      execFileSync('git', ['add', '.'], { cwd: tempDir });
+      execFileSync('git', ['-c', 'user.name=Juno Test', '-c', 'user.email=juno-test@example.invalid',
+        'commit', '-qm', 'legacy controller'], { cwd: tempDir });
+
+      const update = await executeCLI(['scripts', 'update', '--force'], { expectError: true });
+      expect(update.exitCode).not.toBe(0);
+      expect(update.stderr).toContain('scripts update is mutation-free for tracked policy');
+      expect(update.stderr).toContain('yy migrate metadata-policy plan');
+      expect(await fs.readFile(policyPath, 'utf8')).toBe(policyBytes);
+      expect(await fs.pathExists(path.join(policyDir, 'integration-workspace.json'))).toBe(false);
+      expect(execFileSync('git', ['status', '--porcelain=v2', '--untracked-files=all'], {
+        cwd: tempDir, encoding: 'utf8',
+      })).toBe('');
+    });
+
     it('keeps metadata-controller script updates runtime-only and Git-clean', async () => {
       const junoTaskDir = path.join(tempDir, '.juno_task');
       const policyDir = path.join(junoTaskDir, 'config');

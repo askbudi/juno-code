@@ -29,6 +29,12 @@ PLAN_SCHEMA = "juno_metadata_controller_plan.v1"
 RECEIPT_SCHEMA = "juno_metadata_controller_receipt.v1"
 CONFIG_REPAIR_SCHEMA = "juno_metadata_controller_config_repair.v1"
 AGENT_SURFACE_REPAIR_SCHEMA = "juno_metadata_controller_agent_surface_repair.v1"
+POLICY_MIGRATION_SCHEMA = "juno_metadata_policy_migration.v1"
+POLICY_PATH = ".juno_task/config/metadata-controller.json"
+INTEGRATION_POLICY_PATH = ".juno_task/config/integration-workspace.json"
+TASK_POLICY_PATH = ".juno_task/config/task-workspace.json"
+RISK_POLICY_PATH = ".juno_task/config/risk-policy.json"
+POLICY_MIGRATION_PATHS = (INTEGRATION_POLICY_PATH, POLICY_PATH)
 AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
 REQUIRED_ROOT_IGNORES = ("/AGENTS.md", "/CLAUDE.md", "/.agents/", "/.claude/", "/.pi/")
 CANONICAL_CONTROLLER_WORKSPACE = {
@@ -253,8 +259,12 @@ def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
     if path.exists() and path.read_bytes() != data:
         raise BoundaryError(f"immutable receipt collision: {path}")
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_bytes(data)
+    with temporary.open("xb") as stream:
+        stream.write(data); stream.flush(); os.fsync(stream.fileno())
     os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
 
 
 def preflight_receipt(path: Path, value: dict[str, Any]) -> None:
@@ -930,6 +940,568 @@ def config_repair_apply(args: argparse.Namespace, policy: dict[str, Any]) -> dic
     return payload
 
 
+def reject_alternate_index() -> None:
+    if os.environ.get("GIT_INDEX_FILE"):
+        raise BoundaryError("alternate GIT_INDEX_FILE is not allowed for metadata-policy migration")
+
+
+def exact_physical_controller(value: Path) -> Path:
+    supplied = value.expanduser().absolute()
+    if supplied.is_symlink():
+        raise BoundaryError("metadata-policy migration refuses a symbolic-link controller root")
+    root = exact_worktree(supplied)
+    for relative in (".juno_task", ".juno_task/config", POLICY_PATH, TASK_POLICY_PATH, RISK_POLICY_PATH):
+        cursor = root / relative
+        if cursor.is_symlink():
+            raise BoundaryError(f"metadata-policy migration refuses symbolic-link endpoint: {relative}")
+    nested = root / ".juno_task/config/.git"
+    if nested.exists() or nested.is_symlink():
+        raise BoundaryError("metadata-policy migration refuses a nested repository at .juno_task/config")
+    return root
+
+
+def package_policy_source(root: Path, runtime_executable: str | None = None) -> dict[str, Any]:
+    engine = Path(__file__).resolve()
+    if runtime_executable:
+        entrypoint = Path(runtime_executable).expanduser().resolve()
+        if entrypoint.parent.name != "bin" or entrypoint.parent.parent.name not in {"src", "dist"}:
+            raise BoundaryError("registered controller runtime executable is not a juno-code package entrypoint")
+        package_root = entrypoint.parent.parent.parent
+    elif engine.parent.parent.parent.name in {"src", "dist"}:
+        package_root = engine.parents[3]
+    elif (root / "juno-code/package.json").is_file():
+        package_root = root / "juno-code"
+    else:
+        raise BoundaryError("cannot locate migration package from the managed runtime without registered runtime identity")
+    manifest_path = package_root / "package.json"
+    manifest = read_json(manifest_path, "juno-code package manifest")
+    if manifest.get("name") != "juno-code" or not isinstance(manifest.get("version"), str):
+        raise BoundaryError("metadata-policy migration requires an identifiable juno-code package")
+    generation_name = "src" if (runtime_executable and Path(runtime_executable).resolve().parent.parent.name == "src") \
+        or (not runtime_executable and engine.parent.parent.parent.name == "src") else "dist"
+    template_root = package_root / generation_name / "templates"
+    package_engine = template_root / "scripts/metadata_controller.py"
+    integration_path = template_root / "config/integration-workspace.json"
+    if package_engine.is_symlink() or not package_engine.is_file() or file_digest(package_engine) != file_digest(engine):
+        raise BoundaryError("running metadata-policy engine differs from the exact registered package source")
+    if integration_path.is_symlink() or not integration_path.is_file():
+        raise BoundaryError("packaged integration-workspace policy source is missing or unsafe")
+    integration_bytes = integration_path.read_bytes()
+    try:
+        integration_value = json.loads(integration_bytes)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"packaged integration-workspace policy is invalid: {exc}") from exc
+    if not isinstance(integration_value, dict):
+        raise BoundaryError("packaged integration-workspace policy must be an object")
+    engine_sha256 = file_digest(engine)
+    validators: dict[str, dict[str, str]] = {}
+    for name in ("task_workspace.py", "risk_policy.py", "integration_workspace.py"):
+        executing = engine.with_name(name); packaged = template_root / "scripts" / name
+        if (executing.is_symlink() or packaged.is_symlink() or not executing.is_file()
+                or not packaged.is_file() or file_digest(executing) != file_digest(packaged)):
+            raise BoundaryError(f"running metadata-policy validator differs from registered package source: {name}")
+        validators[name] = {"path": str(packaged.resolve()), "sha256": file_digest(packaged)}
+    source_execution = generation_name == "src"
+    runtime_entrypoint = package_root / ("src/bin/cli.ts" if source_execution else "dist/bin/cli.mjs")
+    if runtime_entrypoint.is_symlink() or not runtime_entrypoint.is_file():
+        raise BoundaryError("juno-code migration package runtime entrypoint is missing or unsafe")
+    generation_path = root / ".juno_task/runtime/managed-controller/generation.json"
+    generation: dict[str, Any] = {"present": False}
+    if generation_path.exists() or generation_path.is_symlink():
+        if generation_path.is_symlink() or not generation_path.is_file():
+            raise BoundaryError("managed controller generation evidence is unsafe")
+        generation_bytes = generation_path.read_bytes()
+        try:
+            generation_value = json.loads(generation_bytes)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise BoundaryError(f"managed controller generation evidence is invalid: {exc}") from exc
+        scripts = generation_value.get("scripts") if isinstance(generation_value, dict) else None
+        engine_binding = scripts.get(POLICY_PATH.replace("config/metadata-controller.json", "scripts/metadata_controller.py")) \
+            if isinstance(scripts, dict) else None
+        runtime_engine = root / ".juno_task/scripts/metadata_controller.py"
+        if (not isinstance(generation_value, dict)
+                or generation_value.get("schema_version") != "juno_managed_controller_runtime.v1"
+                or generation_value.get("package_version") != manifest["version"]
+                or not isinstance(generation_value.get("target_sha"), str)
+                or not SHA_RE.fullmatch(generation_value["target_sha"])
+                or not isinstance(engine_binding, dict)
+                or engine_binding.get("classification") != "exact"
+                or engine_binding.get("source_sha256") != engine_sha256
+                or engine_binding.get("actual_sha256") != engine_sha256
+                or runtime_engine.is_symlink() or not runtime_engine.is_file()
+                or file_digest(runtime_engine) != engine_sha256):
+            raise BoundaryError("managed controller generation does not match the exact migration package/runtime engine")
+        generation = {"present": True, "sha256": bytes_digest(generation_bytes),
+                      "package_version": generation_value["package_version"],
+                      "target_sha": generation_value["target_sha"],
+                      "engine_binding_sha256": digest(engine_binding)}
+    return {"package": "juno-code", "version": manifest["version"],
+            "package_manifest_sha256": file_digest(manifest_path),
+            "engine_path": str(engine), "engine_sha256": engine_sha256,
+            "runtime_entrypoint": str(runtime_entrypoint.resolve()),
+            "runtime_entrypoint_sha256": file_digest(runtime_entrypoint),
+            "validators": validators,
+            "integration_source_path": str(integration_path),
+            "integration_source_sha256": bytes_digest(integration_bytes),
+            "integration_source_utf8": integration_bytes.decode("utf-8"),
+            "runtime_generation": generation}
+
+
+def require_controller_registration(root: Path, branch: str) -> dict[str, str]:
+    paths = git(root, "config", "--local", "--get-all", "juno.controller.path", check=False).splitlines()
+    branches = git(root, "config", "--local", "--get-all", "juno.controller.branch", check=False).splitlines()
+    if len(paths) != 1 or len(branches) != 1:
+        raise BoundaryError("metadata-policy migration requires exactly one persisted controller path/branch registration")
+    registered = Path(paths[0]).expanduser().resolve()
+    if registered != root or branches[0] != branch:
+        raise BoundaryError("metadata-policy migration root/branch does not match persisted controller registration")
+    role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+    mode = git(root, "config", "--worktree", "--get", "juno.controller.mode", check=False)
+    runtime_version = git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion", check=False)
+    runtime_executable = git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable", check=False)
+    if role != "controller" or mode != "metadata-only":
+        raise BoundaryError("metadata-policy migration requires the registered active metadata-only controller role")
+    if not runtime_version or not runtime_executable:
+        raise BoundaryError("metadata-policy migration requires exact registered controller runtime identity")
+    return {"path": paths[0], "branch": branches[0], "role": role, "mode": mode,
+            "runtime_version": runtime_version,
+            "runtime_executable": str(Path(runtime_executable).expanduser().resolve())}
+
+
+def insert_array_string(source: bytes, field: str, addition: str) -> bytes:
+    try:
+        text = source.decode("utf-8")
+        value = json.loads(text)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"metadata-controller policy bytes are invalid: {exc}") from exc
+    entries = value.get(field) if isinstance(value, dict) else None
+    if not isinstance(entries, list) or any(not isinstance(item, str) for item in entries):
+        raise BoundaryError(f"metadata-controller policy {field} must be a string array")
+    if addition in entries:
+        return source
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*\[', text)
+    if not match:
+        raise BoundaryError(f"metadata-controller policy lacks a byte-preservable {field} array")
+    index = match.end(); depth = 1; quoted = False; escaped = False
+    while index < len(text) and depth:
+        char = text[index]
+        if quoted:
+            if escaped: escaped = False
+            elif char == "\\": escaped = True
+            elif char == '"': quoted = False
+        elif char == '"': quoted = True
+        elif char == '[': depth += 1
+        elif char == ']': depth -= 1
+        index += 1
+    if depth:
+        raise BoundaryError(f"metadata-controller policy has an unterminated {field} array")
+    close = index - 1
+    prefix = text[:close]; suffix = text[close:]
+    array_body = text[match.end():close]
+    encoded = json.dumps(addition, ensure_ascii=False)
+    if not array_body.strip():
+        insertion = encoded
+    elif "\n" not in array_body:
+        insertion = "," + encoded
+    else:
+        trailing = re.search(r"(\n[ \t]*)$", array_body)
+        closing_indent = trailing.group(1) if trailing else "\n"
+        item_indent_match = re.search(r"\n([ \t]*)\S", array_body)
+        item_indent = item_indent_match.group(1) if item_indent_match else "  "
+        if trailing:
+            prefix = prefix[:-len(closing_indent)]
+        insertion = f",\n{item_indent}{encoded}{closing_indent}"
+    return (prefix + insertion + suffix).encode("utf-8")
+
+
+def derive_policy_migration(before: bytes) -> tuple[str, bytes, dict[str, Any]]:
+    try:
+        value = json.loads(before)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"metadata-controller identity policy is invalid: {exc}") from exc
+    if not isinstance(value, dict):
+        raise BoundaryError("metadata-controller identity policy must be an object")
+    generated = value.get("generated_metadata"); tracked = value.get("tracked_exact")
+    if not isinstance(generated, list) or not isinstance(tracked, list):
+        raise BoundaryError("metadata-controller policy lacks supported classification arrays")
+    generated_has = INTEGRATION_POLICY_PATH in generated
+    tracked_has = INTEGRATION_POLICY_PATH in tracked
+    if generated_has != tracked_has:
+        raise BoundaryError("metadata-controller policy has a partial integration-workspace classification")
+    immutable_fields = {key: value.get(key) for key in (
+        "schema_version", "controller_branch", "product_ref", "spec_copy_mode",
+        "copied_metadata", "product_forbidden", "tracked_recursive",
+        "tracked_top_level_files", "runtime")}
+    if generated_has:
+        return "already_migrated", before, immutable_fields
+    required_existing = (POLICY_PATH, TASK_POLICY_PATH, RISK_POLICY_PATH)
+    if any(item not in generated or item not in tracked for item in required_existing):
+        raise BoundaryError("policy is not the known legacy pre-integration-workspace classification shape")
+    after = insert_array_string(insert_array_string(before, "generated_metadata", INTEGRATION_POLICY_PATH),
+                                "tracked_exact", INTEGRATION_POLICY_PATH)
+    after_value = json.loads(after)
+    for key, expected in immutable_fields.items():
+        if after_value.get(key) != expected:
+            raise BoundaryError(f"metadata-policy migration changed immutable identity field: {key}")
+    if set(after_value["generated_metadata"]) != set(generated) | {INTEGRATION_POLICY_PATH} \
+            or set(after_value["tracked_exact"]) != set(tracked) | {INTEGRATION_POLICY_PATH}:
+        raise BoundaryError("metadata-policy migration derived changes outside the exact semantic additions")
+    return "legacy_migration", after, immutable_fields
+
+
+def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
+                              *, owned_index_lock: bool = False) -> dict[str, Any]:
+    reject_alternate_index()
+    branch = git(root, "symbolic-ref", "-q", "HEAD", check=False)
+    if not branch or (expected_branch is not None and branch != expected_branch):
+        raise BoundaryError("metadata-policy migration requires the exact attached controller branch")
+    registration = require_controller_registration(root, branch)
+    config_bytes, config_value = controller_config(root, git(root, "rev-parse", "HEAD"))
+    if ("lifecycle" in config_value
+            or config_value.get("controllerWorkspace") != CANONICAL_CONTROLLER_WORKSPACE):
+        raise BoundaryError("metadata-policy migration requires the exact metadata-only controller workspace pointer")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("metadata-policy migration requires a clean controller with no staged or unrelated dirt")
+    index_lock = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index.lock"))
+    if (index_lock.exists() or index_lock.is_symlink()) and not owned_index_lock:
+        raise BoundaryError(f"metadata-policy migration refuses an existing Git index lock: {index_lock}")
+    head = git(root, "rev-parse", "HEAD"); tree = git(root, "rev-parse", "HEAD^{tree}")
+    policy_bytes = committed_bytes(root, head, POLICY_PATH)
+    if (root / POLICY_PATH).read_bytes() != policy_bytes:
+        raise BoundaryError("metadata-controller policy worktree bytes differ from HEAD")
+    state, result_bytes, immutable_fields = derive_policy_migration(policy_bytes)
+    parsed = json.loads(policy_bytes)
+    branch = safe_ref(parsed.get("controller_branch"), "controller_branch")
+    product_ref = safe_ref(parsed.get("product_ref"), "product_ref")
+    if registration["branch"] != branch:
+        raise BoundaryError("registered controller branch differs from reviewed metadata policy")
+    product_head = git(root, "rev-parse", f"{product_ref}^{{commit}}", check=False)
+    if not SHA_RE.fullmatch(product_head):
+        raise BoundaryError("reviewed product ref does not resolve to a commit")
+    task_bytes = committed_bytes(root, head, TASK_POLICY_PATH)
+    risk_bytes = committed_bytes(root, head, RISK_POLICY_PATH)
+    if (root / TASK_POLICY_PATH).read_bytes() != task_bytes or (root / RISK_POLICY_PATH).read_bytes() != risk_bytes:
+        raise BoundaryError("reviewed task/risk policy worktree bytes differ from HEAD")
+    try:
+        task_value = validate_task_policy(json.loads(task_bytes))
+        validate_risk_policy(json.loads(risk_bytes))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError(f"reviewed task/risk policy bytes are invalid: {exc}") from exc
+    source = package_policy_source(root, registration["runtime_executable"])
+    if (registration["runtime_version"] != source["version"]
+            or registration["runtime_executable"] != source["runtime_entrypoint"]):
+        raise BoundaryError("registered controller runtime differs from the exact executing migration package")
+    integration_bytes = source["integration_source_utf8"].encode("utf-8")
+    validate_integration_policy(json.loads(integration_bytes), task_value)
+    with tempfile.TemporaryDirectory(prefix="juno-policy-result-") as temporary:
+        result_path = Path(temporary) / "metadata-controller.json"
+        result_path.write_bytes(result_bytes)
+        load_policy(result_path)
+    if state == "already_migrated":
+        committed_integration = committed_bytes(root, head, INTEGRATION_POLICY_PATH)
+        if committed_integration != integration_bytes or (root / INTEGRATION_POLICY_PATH).read_bytes() != committed_integration:
+            raise BoundaryError("already-migrated integration-workspace bytes differ from exact package source")
+    else:
+        endpoint = root / INTEGRATION_POLICY_PATH
+        if endpoint.exists() or endpoint.is_symlink():
+            raise BoundaryError("legacy migration requires an absent integration-workspace endpoint")
+    return {"root": str(root), "branch": branch, "registration": registration,
+            "head": head, "tree": tree, "config_sha256": bytes_digest(config_bytes),
+            "product_ref": product_ref, "product_head": product_head,
+            "policy_before_sha256": bytes_digest(policy_bytes),
+            "policy_before_utf8": policy_bytes.decode("utf-8"),
+            "policy_result_sha256": bytes_digest(result_bytes),
+            "policy_result_utf8": result_bytes.decode("utf-8"),
+            "task_policy_sha256": bytes_digest(task_bytes), "risk_policy_sha256": bytes_digest(risk_bytes),
+            "immutable_identity": immutable_fields, "source": source, "state": state,
+            "integration_result_sha256": source["integration_source_sha256"]}
+
+
+def expected_policy_commit_intent(value: dict[str, Any], changed: list[str]) -> dict[str, Any]:
+    return {"parent": value["head"], "base_tree": value["tree"],
+            "message": "Migrate metadata controller integration policy\n\nJuno-Metadata-Policy-Migration-Plan: {plan_sha256}",
+            "authority": "juno-metadata-policy-migration.v1", "changed_paths": changed,
+            "result_bindings": {POLICY_PATH: value["policy_result_sha256"],
+                                INTEGRATION_POLICY_PATH: value["integration_result_sha256"]}}
+
+
+def policy_migration_plan(args: argparse.Namespace) -> dict[str, Any]:
+    root = exact_physical_controller(args.root)
+    snapshot = policy_migration_snapshot(root)
+    output = external_config_repair_receipt(args.output, root, Path(common_dir(root)))
+    changed = [] if snapshot["state"] == "already_migrated" else list(POLICY_MIGRATION_PATHS)
+    intent = expected_policy_commit_intent(snapshot, changed)
+    core = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration",
+            "outcome": "already_migrated_no_mutation" if not changed else "planned_no_mutation",
+            **snapshot, "changed_paths": changed,
+            "semantic_additions": [] if not changed else [
+                {"field": "generated_metadata", "value": INTEGRATION_POLICY_PATH},
+                {"field": "tracked_exact", "value": INTEGRATION_POLICY_PATH}],
+            "result_tree_commit_intent": intent, "apply_authorized": False}
+    payload = {**core, "plan_sha256": digest(core)}
+    atomic_receipt(output, payload)
+    return payload
+
+
+def validate_policy_migration_plan(path: Path) -> tuple[dict[str, Any], str]:
+    plan = read_json(path, "metadata-policy migration plan"); plan_hash = plan.pop("plan_sha256", None)
+    changed = plan.get("changed_paths")
+    expected_changed = [] if plan.get("state") == "already_migrated" else list(POLICY_MIGRATION_PATHS)
+    expected_additions = [] if not expected_changed else [
+        {"field": "generated_metadata", "value": INTEGRATION_POLICY_PATH},
+        {"field": "tracked_exact", "value": INTEGRATION_POLICY_PATH}]
+    if (plan.get("schema_version") != POLICY_MIGRATION_SCHEMA
+            or plan.get("operation") != "metadata-policy-migration"
+            or plan.get("outcome") not in {"planned_no_mutation", "already_migrated_no_mutation"}
+            or plan.get("apply_authorized") is not False or changed != expected_changed
+            or plan.get("semantic_additions") != expected_additions
+            or plan.get("result_tree_commit_intent") != expected_policy_commit_intent(plan, expected_changed)
+            or plan_hash != digest(plan)):
+        raise BoundaryError("metadata-policy migration requires an exact canonical hash-bound plan")
+    return plan, plan_hash
+
+
+def acquire_policy_migration_locks(common: Path, branch: str) -> Any:
+    identity = f"{common.resolve()}\0{branch}".encode()
+    paths = [common / "juno-repository-writer.lock",
+             common / "juno-integration-channels" / (hashlib.sha256(identity).hexdigest() + ".lock"),
+             common / "juno-metadata-policy-migration.lock"]
+    @contextmanager
+    def locks() -> Any:
+        streams = []
+        try:
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stream = path.open("a+")
+                try: fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    stream.close()
+                    raise BoundaryError(f"metadata-policy migration serialization lease busy: {path}") from exc
+                streams.append(stream)
+            yield
+        finally:
+            for stream in reversed(streams):
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN); stream.close()
+    return locks()
+
+
+def assert_policy_plan_snapshot(plan: dict[str, Any], *, owned_index_lock: bool = False) -> tuple[Path, dict[str, Any]]:
+    root = exact_physical_controller(Path(plan["root"]))
+    current = policy_migration_snapshot(root, plan["branch"], owned_index_lock=owned_index_lock)
+    keys = ("root", "branch", "registration", "head", "tree", "config_sha256", "product_ref",
+            "product_head", "policy_before_sha256", "policy_before_utf8", "policy_result_sha256",
+            "policy_result_utf8", "task_policy_sha256", "risk_policy_sha256", "immutable_identity",
+            "source", "state", "integration_result_sha256")
+    if any(current.get(key) != plan.get(key) for key in keys):
+        raise BoundaryError("metadata-policy migration plan is stale: controller, policy, package, product ref, or runtime generation drifted")
+    return root, current
+
+
+def migration_temporary_endpoints(root: Path) -> list[Path]:
+    return [path for relative in POLICY_MIGRATION_PATHS
+            for path in (root / relative).parent.glob(f".{Path(relative).name}.migration-*")]
+
+
+def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
+                               *, allow_pending_endpoints: bool) -> tuple[str, str] | None:
+    head = git(root, "rev-parse", "HEAD")
+    if head == plan["head"]:
+        return None
+    registration = require_controller_registration(root, plan["branch"])
+    source = package_policy_source(root, registration["runtime_executable"])
+    if (registration != plan["registration"] or source != plan["source"]
+            or git(root, "symbolic-ref", "-q", "HEAD", check=False) != plan["branch"]
+            or git(root, "rev-parse", f"{plan['product_ref']}^{{commit}}", check=False) != plan["product_head"]):
+        raise BoundaryError("completed metadata-policy commit has stale authority bindings")
+    tree = git(root, "rev-parse", "HEAD^{tree}")
+    message = plan["result_tree_commit_intent"]["message"].format(plan_sha256=plan_hash)
+    if (git(root, "rev-parse", "HEAD^") != plan["head"]
+            or git(root, "show", "-s", "--format=%B", head) != message
+            or git(root, "diff", "--name-only", plan["head"], head).splitlines() != plan["changed_paths"]
+            or bytes_digest(committed_bytes(root, head, POLICY_PATH)) != plan["policy_result_sha256"]
+            or bytes_digest(committed_bytes(root, head, INTEGRATION_POLICY_PATH)) != plan["integration_result_sha256"]
+            or bytes_digest(committed_bytes(root, head, CONFIG_PATH)) != plan["config_sha256"]
+            or bytes_digest(committed_bytes(root, head, TASK_POLICY_PATH)) != plan["task_policy_sha256"]
+            or bytes_digest(committed_bytes(root, head, RISK_POLICY_PATH)) != plan["risk_policy_sha256"]):
+        raise BoundaryError("controller HEAD is not the exact completed metadata-policy migration")
+    temporary_endpoints = migration_temporary_endpoints(root)
+    pending = set(git(root, "diff", "--name-only", check=False).splitlines()) \
+        | set(git(root, "diff", "--cached", "--name-only", check=False).splitlines()) \
+        | set(git(root, "ls-files", "--others", "--exclude-standard", check=False).splitlines())
+    temporary_relatives = {path.relative_to(root).as_posix() for path in temporary_endpoints}
+    pending_without_temporary = pending - temporary_relatives
+    if pending_without_temporary and (not allow_pending_endpoints or not pending_without_temporary.issubset(set(plan["changed_paths"]))):
+        raise BoundaryError("completed metadata-policy commit has unrelated pending work")
+    return head, tree
+
+
+def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.authorize:
+        raise BoundaryError("metadata-policy migration apply requires --authorize-metadata-policy-migration")
+    reject_alternate_index()
+    plan_path = args.plan.expanduser().resolve(); plan, plan_hash = validate_policy_migration_plan(plan_path)
+    root = exact_physical_controller(Path(plan["root"])); common = Path(common_dir(root))
+    output = external_config_repair_receipt(args.output, root, common)
+    plan_file_hash = file_digest(plan_path)
+    if not plan["changed_paths"]:
+        with acquire_policy_migration_locks(common, plan["branch"]):
+            assert_policy_plan_snapshot(plan)
+            payload = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-apply",
+                       "outcome": "already_migrated_noop", "plan_sha256": plan_hash,
+                       "plan_file_sha256": plan_file_hash, "controller": str(root), "head": plan["head"],
+                       "changed_paths": [], "commit_created": False, "clean": True}
+            atomic_receipt(output, payload)
+        return payload
+    intent_path = external_config_repair_receipt(output.with_name(output.name + ".intent.json"), root, common)
+    intent_payload = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-intent",
+                      "outcome": "intent_persisted_before_mutation", "plan_sha256": plan_hash,
+                      "plan_file_sha256": plan_file_hash, "expected_head": plan["head"],
+                      "changed_paths": plan["changed_paths"], "commit_intent": plan["result_tree_commit_intent"]}
+    preflight_receipt(intent_path, intent_payload); atomic_receipt(intent_path, intent_payload)
+    committed: str | None = None; result_tree: str | None = None
+    with acquire_policy_migration_locks(common, plan["branch"]):
+        expected_index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+        recovery_lock = Path(str(expected_index) + ".lock")
+        if recovery_lock.exists() or recovery_lock.is_symlink():
+            # Only the exact completed commit may recover its own prepared index.
+            completed_probe = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
+            if completed_probe is None:
+                raise BoundaryError(f"metadata-policy migration index serialization is busy: {recovery_lock}")
+            recovery_lock.unlink()
+        completed = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
+        if completed is None:
+            if output.exists() or output.is_symlink():
+                raise BoundaryError("metadata-policy apply receipt path must be fresh before mutation")
+            root, _ = assert_policy_plan_snapshot(plan)
+        else:
+            committed, result_tree = completed
+        if completed is None:
+            pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_PAUSE_FILE")
+            if pause:
+                ready = Path(pause + ".ready"); release = Path(pause + ".release")
+                ready.write_text("ready\n")
+                for _ in range(500):
+                    if release.exists(): break
+                    import time; time.sleep(0.01)
+                else: raise BoundaryError("metadata-policy migration test pause timed out")
+                assert_policy_plan_snapshot(plan)
+        with tempfile.TemporaryDirectory(prefix="juno-policy-migration-index-") as temporary:
+            temporary_index = Path(temporary) / "index"
+            index_env = {"GIT_INDEX_FILE": str(temporary_index)}
+            git(root, "read-tree", plan["head"], env=index_env)
+            add_blob(root, index_env, POLICY_PATH, plan["policy_result_utf8"].encode("utf-8"))
+            add_blob(root, index_env, INTEGRATION_POLICY_PATH,
+                     plan["source"]["integration_source_utf8"].encode("utf-8"))
+            result_tree = git(root, "write-tree", env=index_env)
+            changed = git(root, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                          plan["tree"], result_tree).splitlines()
+            if changed != plan["changed_paths"]:
+                raise BoundaryError("metadata-policy migration result tree escaped declared paths")
+            index_path = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+            index_lock = Path(str(index_path) + ".lock")
+            try:
+                with index_lock.open("xb") as stream:
+                    stream.write(temporary_index.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+            except FileExistsError as exc:
+                raise BoundaryError(f"metadata-policy migration index serialization is busy: {index_lock}") from exc
+            index_published = False
+            try:
+                if completed is None:
+                    assert_policy_plan_snapshot(plan, owned_index_lock=True)
+                    index_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_INDEX_PAUSE_FILE")
+                    if index_pause:
+                        ready = Path(index_pause + ".ready"); release = Path(index_pause + ".release")
+                        ready.write_text("ready\n")
+                        for _ in range(500):
+                            if release.exists(): break
+                            import time; time.sleep(0.01)
+                        else: raise BoundaryError("metadata-policy migration index test pause timed out")
+                        assert_policy_plan_snapshot(plan, owned_index_lock=True)
+                    message = plan["result_tree_commit_intent"]["message"].format(plan_sha256=plan_hash)
+                    commit_env = {"GIT_AUTHOR_NAME": "Juno Metadata Policy Migration",
+                                  "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
+                                  "GIT_COMMITTER_NAME": "Juno Metadata Policy Migration",
+                                  "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
+                    committed = run(["git", "-C", str(root), "commit-tree", result_tree, "-p", plan["head"], "-m", message],
+                                    root, env=commit_env).stdout.strip()
+                    update = run(["git", "-C", str(root), "update-ref", "-m", "juno metadata-policy migration",
+                                  plan["branch"], committed, plan["head"]], root, False)
+                    if update.returncode:
+                        committed = None
+                        raise BoundaryError("metadata-policy migration HEAD CAS failed before commit publication")
+                try:
+                    endpoint_payloads = (
+                        (POLICY_PATH, plan["policy_result_utf8"].encode("utf-8")),
+                        (INTEGRATION_POLICY_PATH, plan["source"]["integration_source_utf8"].encode("utf-8")),
+                    )
+                    for relative, data in endpoint_payloads:
+                        endpoint = root / relative
+                        current = endpoint.read_bytes() if endpoint.exists() else None
+                        before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
+                        if current not in {None, before, data}:
+                            raise BoundaryError(f"metadata-policy endpoint changed after final snapshot: {relative}")
+                    for stale in migration_temporary_endpoints(root): stale.unlink()
+                    for relative, data in endpoint_payloads:
+                        endpoint = root / relative
+                        temporary_endpoint = endpoint.with_name(f".{endpoint.name}.migration-{os.getpid()}")
+                        with temporary_endpoint.open("xb") as stream:
+                            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+                        current = endpoint.read_bytes() if endpoint.exists() else None
+                        before = plan["policy_before_utf8"].encode("utf-8") if relative == POLICY_PATH else None
+                        if current not in {None, before, data}:
+                            temporary_endpoint.unlink(missing_ok=True)
+                            raise BoundaryError(f"metadata-policy endpoint raced before publication: {relative}")
+                        os.replace(temporary_endpoint, endpoint)
+                    os.replace(index_lock, index_path); index_published = True
+                    if git(root, "rev-parse", "HEAD") != committed or git(root, "rev-parse", "HEAD^{tree}") != result_tree:
+                        raise BoundaryError("HEAD/tree readback failed")
+                    if git(root, "diff", "--name-only", plan["head"], committed).splitlines() != plan["changed_paths"]:
+                        raise BoundaryError("commit has an unexpected path set")
+                    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+                        raise BoundaryError("controller is not clean")
+                    migrated = load_policy(root / POLICY_PATH)
+                    validate_integration_policy(json.loads((root / INTEGRATION_POLICY_PATH).read_bytes()),
+                                                validate_task_policy(json.loads((root / TASK_POLICY_PATH).read_bytes())))
+                    if migrated["controller_branch"] != plan["branch"] or migrated["product_ref"] != plan["product_ref"]:
+                        raise BoundaryError("topology parity failed")
+                    verified = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=False)
+                    if verified != (committed, result_tree):
+                        raise BoundaryError("authority and commit readback changed after publication")
+                except BaseException as exc:
+                    failure = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-apply",
+                               "outcome": "committed_postcondition_failed", "plan_sha256": plan_hash,
+                               "controller": str(root), "old_head": plan["head"], "new_head": committed,
+                               "result_tree": result_tree, "changed_paths": plan["changed_paths"],
+                               "commit_created": True, "index_lock_preserved": index_lock.exists(),
+                               "error": str(exc)}
+                    receipt_error: BaseException | None = None
+                    try: atomic_receipt(output, failure)
+                    except BaseException as failure_receipt_error: receipt_error = failure_receipt_error
+                    detail = f"; failure receipt emission also failed: {receipt_error}" if receipt_error else f"; receipt: {output}"
+                    raise BoundaryError(
+                        f"metadata-policy migration commit {committed} is durable but post-commit readback failed{detail}"
+                    ) from exc
+            finally:
+                if committed is None and not index_published:
+                    index_lock.unlink(missing_ok=True)
+    payload = {"schema_version": POLICY_MIGRATION_SCHEMA, "operation": "metadata-policy-migration-apply",
+               "outcome": "migrated", "plan_sha256": plan_hash, "plan_file_sha256": plan_file_hash,
+               "intent_sha256": file_digest(intent_path), "controller": str(root), "branch": plan["branch"],
+               "old_head": plan["head"], "new_head": committed, "result_tree": result_tree,
+               "changed_paths": plan["changed_paths"], "semantic_additions": plan["semantic_additions"],
+               "commit_created": True, "commit_parent_verified": True, "tree_binding_verified": True,
+               "task_policy_sha256": plan["task_policy_sha256"], "risk_policy_sha256": plan["risk_policy_sha256"],
+               "product_ref": plan["product_ref"], "product_head": plan["product_head"],
+               "product_ref_mutation": False, "clean": True}
+    try:
+        atomic_receipt(output, payload)
+    except BaseException as exc:
+        raise BoundaryError(
+            f"metadata-policy migration commit {committed} is durable and verified, but receipt emission failed: {output}"
+        ) from exc
+    return payload
+
+
 def agent_surface_repair_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     root = exact_worktree(args.root)
     branch = safe_ref(args.branch, "branch"); product_ref = safe_ref(args.product_ref, "product_ref")
@@ -1245,6 +1817,11 @@ def main() -> None:
     repair_apply = sub.add_parser("config-repair-apply")
     repair_apply.add_argument("--plan", type=Path, required=True); repair_apply.add_argument("--output", type=Path, required=True)
     repair_apply.add_argument("--authorize-config-repair", dest="authorize", action="store_true")
+    policy_plan = sub.add_parser("metadata-policy-plan")
+    policy_plan.add_argument("--root", type=Path, required=True); policy_plan.add_argument("--output", type=Path, required=True)
+    policy_apply = sub.add_parser("metadata-policy-apply")
+    policy_apply.add_argument("--plan", type=Path, required=True); policy_apply.add_argument("--output", type=Path, required=True)
+    policy_apply.add_argument("--authorize-metadata-policy-migration", dest="authorize", action="store_true")
     surface_plan = sub.add_parser("agent-surface-repair-plan")
     surface_plan.add_argument("--root", type=Path, required=True); surface_plan.add_argument("--branch", required=True)
     surface_plan.add_argument("--expected-head", required=True); surface_plan.add_argument("--product-ref", required=True)
@@ -1264,7 +1841,9 @@ def main() -> None:
     for name in ("cutover-plan", "rollback-plan"):
         item = sub.add_parser(name); item.add_argument("--plan", type=Path, required=True); item.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "migration-plan" and args.policy_bundle is not None and args.policy is None:
+    if args.command in {"metadata-policy-plan", "metadata-policy-apply"}:
+        policy = {}
+    elif args.command == "migration-plan" and args.policy_bundle is not None and args.policy is None:
         policy = metadata_policy_from_bundle(args.policy_bundle)
     elif args.command in {"prepare", "cutover-plan", "rollback-plan"} and args.policy is None:
         policy = policy_from_plan_bundle(args.plan)
@@ -1290,6 +1869,8 @@ def main() -> None:
         if not payload["passed"]: raise BoundaryError("product tree still contains controller-private paths")
     elif args.command == "config-repair-plan": payload = config_repair_plan(args, policy)
     elif args.command == "config-repair-apply": payload = config_repair_apply(args, policy)
+    elif args.command == "metadata-policy-plan": payload = policy_migration_plan(args)
+    elif args.command == "metadata-policy-apply": payload = policy_migration_apply(args)
     elif args.command == "agent-surface-repair-plan": payload = agent_surface_repair_plan(args, policy)
     elif args.command == "agent-surface-repair-apply": payload = agent_surface_repair_apply(args, policy)
     elif args.command == "agent-surface-repair-verify": payload = agent_surface_repair_verify(args, policy)

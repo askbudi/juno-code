@@ -648,6 +648,239 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(prefix.exists())
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
 
+    def legacy_policy_controller(self) -> tuple[Path, bytes]:
+        self.prepare()
+        root = self.new_controller
+        branch = "refs/heads/juno/controller-metadata-v1"
+        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=root)
+        command("git", "config", "--local", "juno.controller.path", str(root), cwd=root)
+        command("git", "config", "--local", "juno.controller.branch", branch, cwd=root)
+        runtime_entrypoint = Path(__file__).resolve().parents[3] / "bin/cli.ts"
+        package_source = mc.package_policy_source(root, str(runtime_entrypoint))
+        command("git", "config", "--worktree", "juno.controller.runtimeVersion",
+                package_source["version"], cwd=root)
+        command("git", "config", "--worktree", "juno.controller.runtimeExecutable",
+                package_source["runtime_entrypoint"], cwd=root)
+        config_path = root / mc.CONFIG_PATH
+        config = json.loads(config_path.read_bytes())
+        config["gitCheckpoint"] = {"include": [".juno_task/tasks"]}
+        config_path.write_text(json.dumps(config, separators=(",", ":")) + "\n")
+        policy_path = root / mc.POLICY_PATH
+        value = json.loads(policy_path.read_bytes())
+        value["generated_metadata"].remove(mc.INTEGRATION_POLICY_PATH)
+        value["tracked_exact"].remove(mc.INTEGRATION_POLICY_PATH)
+        legacy = (json.dumps(value, separators=(",", ":")) + "\n").encode()
+        policy_path.write_bytes(legacy)
+        (root / mc.INTEGRATION_POLICY_PATH).unlink()
+        command("git", "add", "-A", "--", mc.CONFIG_PATH, mc.POLICY_PATH, mc.INTEGRATION_POLICY_PATH, cwd=root)
+        command("git", "commit", "-m", "legacy metadata policy", cwd=root)
+        return root, legacy
+
+    def policy_plan(self, root: Path, name: str = "metadata-policy-plan.json") -> tuple[Path, dict[str, object]]:
+        path = self.temp / name
+        payload = mc.policy_migration_plan(argparse.Namespace(root=root, output=path))
+        return path, payload
+
+    def test_metadata_policy_plan_is_read_only_and_apply_creates_one_exact_clean_commit(self) -> None:
+        root, legacy = self.legacy_policy_controller()
+        before = command("git", "rev-parse", "HEAD", cwd=root)
+        plan_path, plan = self.policy_plan(root)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=root), before)
+        self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
+        self.assertEqual(plan["policy_before_sha256"], mc.bytes_digest(legacy))
+        self.assertEqual(plan["changed_paths"], sorted(mc.POLICY_MIGRATION_PATHS))
+        self.assertEqual(plan["semantic_additions"], [
+            {"field": "generated_metadata", "value": mc.INTEGRATION_POLICY_PATH},
+            {"field": "tracked_exact", "value": mc.INTEGRATION_POLICY_PATH},
+        ])
+        receipt = mc.policy_migration_apply(argparse.Namespace(
+            plan=plan_path, output=self.temp / "metadata-policy-apply.json", authorize=True))
+        self.assertEqual(receipt["outcome"], "migrated")
+        self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), before)
+        self.assertEqual(command("git", "diff", "--name-only", "HEAD^", "HEAD", cwd=root).splitlines(),
+                         sorted(mc.POLICY_MIGRATION_PATHS))
+        self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
+        migrated = (root / mc.POLICY_PATH).read_bytes()
+        # The compact owner formatting remains compact; only two array strings were inserted.
+        self.assertNotIn(b"\n  ", migrated)
+        self.assertEqual(json.loads(migrated)["controller_branch"], "refs/heads/juno/controller-metadata-v1")
+        self.assertEqual((root / mc.INTEGRATION_POLICY_PATH).read_bytes(),
+                         (POLICY.parent / "integration-workspace.json").read_bytes())
+
+        idempotent_plan, no_change = self.policy_plan(root, "metadata-policy-idempotent-plan.json")
+        self.assertEqual(no_change["outcome"], "already_migrated_no_mutation")
+        tip = command("git", "rev-parse", "HEAD", cwd=root)
+        noop = mc.policy_migration_apply(argparse.Namespace(
+            plan=idempotent_plan, output=self.temp / "metadata-policy-idempotent.json", authorize=True))
+        self.assertEqual(noop["outcome"], "already_migrated_noop")
+        replay = mc.policy_migration_apply(argparse.Namespace(
+            plan=plan_path, output=self.temp / "metadata-policy-apply.json", authorize=True))
+        self.assertEqual(replay["new_head"], tip)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=root), tip)
+
+    def test_metadata_policy_apply_refuses_stale_tampered_dirty_and_alternate_index(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, _ = self.policy_plan(root)
+        original = plan_path.read_bytes()
+        tampered = json.loads(original); tampered["policy_result_sha256"] = "0" * 64
+        plan_path.write_text(json.dumps(tampered))
+        with self.assertRaisesRegex(mc.BoundaryError, "hash-bound plan"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "tampered.json", authorize=True))
+        plan_path.write_bytes(original)
+
+        write(root / ".juno_task/tasks/unrelated.md", "dirt\n")
+        with self.assertRaisesRegex(mc.BoundaryError, "clean controller"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "dirty.json", authorize=True))
+        (root / ".juno_task/tasks/unrelated.md").unlink()
+
+        previous = os.environ.get("GIT_INDEX_FILE")
+        os.environ["GIT_INDEX_FILE"] = str(self.temp / "alternate-index")
+        try:
+            with self.assertRaisesRegex(mc.BoundaryError, "alternate GIT_INDEX_FILE"):
+                mc.policy_migration_apply(argparse.Namespace(
+                    plan=plan_path, output=self.temp / "alternate.json", authorize=True))
+        finally:
+            if previous is None: os.environ.pop("GIT_INDEX_FILE", None)
+            else: os.environ["GIT_INDEX_FILE"] = previous
+
+        write(root / ".juno_task/tasks/stale.md", "stale\n")
+        command("git", "add", ".juno_task/tasks/stale.md", cwd=root)
+        command("git", "commit", "-m", "move controller head", cwd=root)
+        with self.assertRaisesRegex(mc.BoundaryError, "not the exact completed"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "stale-head.json", authorize=True))
+
+    def test_metadata_policy_refuses_wrong_role_root_symlink_and_policy_runtime_product_drift(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        command("git", "config", "--worktree", "juno.workspace.role", "task", cwd=root)
+        with self.assertRaisesRegex(mc.BoundaryError, "active metadata-only controller role"):
+            self.policy_plan(root)
+        command("git", "config", "--worktree", "juno.workspace.role", "controller", cwd=root)
+        runtime_version = command("git", "config", "--worktree", "--get",
+                                  "juno.controller.runtimeVersion", cwd=root)
+        command("git", "config", "--worktree", "juno.controller.runtimeVersion", "0.0.0", cwd=root)
+        with self.assertRaisesRegex(mc.BoundaryError, "registered controller runtime differs"):
+            self.policy_plan(root)
+        command("git", "config", "--worktree", "juno.controller.runtimeVersion", runtime_version, cwd=root)
+        link = self.temp / "controller-link"; link.symlink_to(root, target_is_directory=True)
+        with self.assertRaisesRegex(mc.BoundaryError, "symbolic-link controller root"):
+            self.policy_plan(link)
+        nested = root / ".juno_task/config/.git"; nested.mkdir()
+        with self.assertRaisesRegex(mc.BoundaryError, "nested repository"):
+            self.policy_plan(root)
+        nested.rmdir()
+        command("git", "config", "--local", "juno.controller.path", str(self.repo), cwd=root)
+        with self.assertRaisesRegex(mc.BoundaryError, "registration"):
+            self.policy_plan(root)
+        command("git", "config", "--local", "juno.controller.path", str(root), cwd=root)
+
+        plan_path, _ = self.policy_plan(root)
+        original_source = mc.package_policy_source
+        try:
+            mc.package_policy_source = lambda candidate, runtime=None: {
+                **original_source(candidate, runtime), "version": "package-drift"}
+            with self.assertRaisesRegex(mc.BoundaryError, "registered controller runtime differs"):
+                mc.policy_migration_apply(argparse.Namespace(
+                    plan=plan_path, output=self.temp / "package-drift.json", authorize=True))
+        finally:
+            mc.package_policy_source = original_source
+        generation = root / ".juno_task/runtime/managed-controller/generation.json"
+        write(generation, json.dumps({"schema_version": "juno_managed_controller_runtime.v1",
+                                     "package_version": "9.9.9", "target_sha": "a" * 40, "scripts": {}}))
+        with self.assertRaisesRegex(mc.BoundaryError, "generation does not match"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "runtime-drift.json", authorize=True))
+        generation.unlink()
+
+        (root / mc.POLICY_PATH).write_bytes((root / mc.POLICY_PATH).read_bytes() + b" ")
+        with self.assertRaisesRegex(mc.BoundaryError, "clean controller"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "policy-drift.json", authorize=True))
+        command("git", "restore", "--", mc.POLICY_PATH, cwd=root)
+
+        tree = command("git", "rev-parse", "refs/heads/juno-mono-002^{tree}", cwd=root)
+        moved = command("git", "commit-tree", tree, "-p", self.product_head, "-m", "move product", cwd=root)
+        command("git", "update-ref", "refs/heads/juno-mono-002", moved, self.product_head, cwd=root)
+        with self.assertRaisesRegex(mc.BoundaryError, "stale"):
+            mc.policy_migration_apply(argparse.Namespace(
+                plan=plan_path, output=self.temp / "product-drift.json", authorize=True))
+
+    def test_metadata_policy_concurrent_worktree_mutation_fails_before_commit_and_checkpoint_still_refuses_policy(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, _ = self.policy_plan(root)
+        pause = str(self.temp / "pause")
+        env = {**os.environ, "JUNO_METADATA_POLICY_MIGRATION_TEST_PAUSE_FILE": pause}
+        process = subprocess.Popen([
+            "python3", str(SCRIPT), "metadata-policy-apply", "--plan", str(plan_path),
+            "--output", str(self.temp / "race-apply.json"), "--authorize-metadata-policy-migration",
+        ], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        for _ in range(500):
+            if Path(pause + ".ready").exists(): break
+            import time; time.sleep(0.01)
+        else:
+            process.kill(); self.fail("migration apply did not reach deterministic race seam")
+        (root / mc.POLICY_PATH).write_bytes((root / mc.POLICY_PATH).read_bytes() + b" ")
+        Path(pause + ".release").write_text("release\n")
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertNotEqual(process.returncode, 0, stdout)
+        self.assertIn("clean controller", stderr)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=root), json.loads(plan_path.read_text())["head"])
+        self.assertEqual(command("git", "diff", "--cached", "--name-only", cwd=root), "")
+
+        checkpoint = SCRIPT.with_name("controller_checkpoint.py")
+        result = subprocess.run(["python3", str(checkpoint), "--root", str(root), "plan"],
+                                text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("blocked non-controller paths", result.stderr)
+
+    def test_metadata_policy_holds_real_index_lock_and_rejects_concurrent_staging_before_commit(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        pause = str(self.temp / "index-pause")
+        process = subprocess.Popen([
+            "python3", str(SCRIPT), "metadata-policy-apply", "--plan", str(plan_path),
+            "--output", str(self.temp / "index-race-apply.json"), "--authorize-metadata-policy-migration",
+        ], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+           env={**os.environ, "JUNO_METADATA_POLICY_MIGRATION_TEST_INDEX_PAUSE_FILE": pause})
+        for _ in range(500):
+            if Path(pause + ".ready").exists(): break
+            import time; time.sleep(0.01)
+        else:
+            process.kill(); self.fail("migration apply did not acquire the deterministic index lock")
+        task = root / ".juno_task/tasks/TASK.md"; task.write_text("concurrent staging\n")
+        staged = subprocess.run(["git", "add", ".juno_task/tasks/TASK.md"], cwd=root,
+                                text=True, capture_output=True)
+        self.assertNotEqual(staged.returncode, 0)
+        self.assertIn("index.lock", staged.stderr)
+        Path(pause + ".release").write_text("release\n")
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertNotEqual(process.returncode, 0, stdout)
+        self.assertIn("clean controller", stderr)
+        self.assertEqual(command("git", "rev-parse", "HEAD", cwd=root), plan["head"])
+        self.assertEqual(command("git", "diff", "--cached", "--name-only", cwd=root), "")
+        index_lock = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index.lock", cwd=root))
+        self.assertFalse(index_lock.exists())
+
+    def test_metadata_policy_same_plan_recovers_completed_commit_with_stranded_index_and_temp(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        receipt_path = self.temp / "recovery-apply.json"
+        mc.policy_migration_apply(argparse.Namespace(plan=plan_path, output=receipt_path, authorize=True))
+        receipt_path.unlink()
+        index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
+        Path(str(index) + ".lock").write_bytes(index.read_bytes())
+        stale = root / ".juno_task/config/.metadata-controller.json.migration-999"
+        stale.write_text("stranded\n")
+        recovered = mc.policy_migration_apply(argparse.Namespace(
+            plan=plan_path, output=receipt_path, authorize=True))
+        self.assertEqual(recovered["new_head"], command("git", "rev-parse", "HEAD", cwd=root))
+        self.assertFalse(Path(str(index) + ".lock").exists())
+        self.assertFalse(stale.exists())
+        self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
+        self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
+
     def test_runtime_rebind_is_local_and_rollback_is_plan_only(self) -> None:
         self.prepare()
         before_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)

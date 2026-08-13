@@ -25,7 +25,8 @@ export async function invokeMigration(args: string[]): Promise<void> {
   const evacuation = args[0]?.startsWith('evacuation-');
   const registration = args[0] === 'registration';
   const runtimeRebind = args[0] === 'runtime-rebind' || args[0] === 'runtime-install-rebind';
-  const metadataController = runtimeRebind || args[0]?.startsWith('agent-surface-repair-');
+  const metadataController = runtimeRebind || args[0]?.startsWith('agent-surface-repair-')
+    || args[0]?.startsWith('metadata-policy-');
   const engine = packagedEngine(
     registration
       ? 'controller_registration.py'
@@ -101,6 +102,27 @@ export function configureMigrationCommand(
       'runtime-install-rebind', '--root', options.root, '--branch', options.branch,
       '--runtime-version', options.runtimeVersion, '--install-prefix', options.installPrefix,
       '--output', options.output,
+    ]));
+  const metadataPolicy = migrate
+    .command('metadata-policy')
+    .description('Plan or apply the narrow legacy integration-workspace policy classification');
+  metadataPolicy
+    .command('plan')
+    .description('Create a mutation-free, hash-bound legacy metadata-policy migration plan')
+    .requiredOption('--root <path>', 'Exact registered metadata-controller worktree')
+    .requiredOption('--output <path>', 'New plan outside every worktree and Git administration directory')
+    .action((options) => invoke([
+      'metadata-policy-plan', '--root', options.root, '--output', options.output,
+    ]));
+  metadataPolicy
+    .command('apply')
+    .description('Create one bounded controller commit from an exact reviewed migration plan')
+    .requiredOption('--plan <path>', 'Reviewed immutable migration plan')
+    .requiredOption('--output <path>', 'New immutable apply receipt outside every worktree')
+    .requiredOption('--authorize-metadata-policy-migration', 'Authorize only the receipt-bound structural migration')
+    .action((options) => invoke([
+      'metadata-policy-apply', '--plan', options.plan, '--output', options.output,
+      '--authorize-metadata-policy-migration',
     ]));
   migrate
     .command('agent-surface-repair-plan')

@@ -893,7 +893,7 @@ describe('ScriptInstaller', () => {
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
     });
 
-    it('force-migrates one sparse pre-2.1.2 controller to policy and routed-command parity', async () => {
+    it('routes one sparse pre-2.1.2 controller to the receipt-bound migration without tracked mutation', async () => {
       const templateRoot = path.resolve(process.cwd(), 'src/templates/config');
       const metadata = await fs.readJson(path.join(templateRoot, 'metadata-controller.json'));
       metadata.controller_branch = 'refs/heads/customer/controller';
@@ -918,60 +918,29 @@ describe('ScriptInstaller', () => {
       await fs.writeFile(path.join(testDir, '.juno_task/config/task-workspace.json'), taskBytes);
       await fs.writeFile(path.join(testDir, '.juno_task/config/risk-policy.json'), riskBytes);
 
-      await expect(
-        ScriptInstaller.updateMetadataControllerPolicies(testDir),
-      ).rejects.toThrow('yy scripts update --force');
-      expect(await fs.pathExists(
-        path.join(testDir, '.juno_task/config/integration-workspace.json'),
-      )).toBe(false);
-
-      const policies = await ScriptInstaller.updateMetadataControllerPolicies(testDir, true);
-      expect(policies.installed).toEqual(['.juno_task/config/integration-workspace.json']);
-      expect(policies.updated).toEqual(['.juno_task/config/metadata-controller.json']);
-      expect(policies.backups).toHaveLength(1);
-      const policyBackup = policies.backups[0];
-      expect(policyBackup).toBeDefined();
-      if (policyBackup === undefined) throw new Error('expected metadata policy backup');
-      expect(await fs.readFile(path.join(testDir, policyBackup), 'utf8')).toContain(
-        'customer/controller',
-      );
-      expect(await fs.readFile(
-        path.join(testDir, '.juno_task/config/task-workspace.json'), 'utf8',
-      )).toBe(taskBytes);
-      expect(await fs.readFile(
-        path.join(testDir, '.juno_task/config/risk-policy.json'), 'utf8',
-      )).toBe(riskBytes);
-      const migrated = await fs.readJson(
+      const policyBefore = await fs.readFile(
         path.join(testDir, '.juno_task/config/metadata-controller.json'),
       );
-      expect(migrated.controller_branch).toBe('refs/heads/customer/controller');
-      expect(migrated.product_ref).toBe('refs/heads/customer/release');
-      expect(migrated.generated_metadata).toContain(
-        '.juno_task/config/integration-workspace.json',
+      for (const force of [false, true]) {
+        await expect(
+          ScriptInstaller.updateMetadataControllerPolicies(testDir, force),
+        ).rejects.toThrow('yy migrate metadata-policy plan');
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/metadata-controller.json'),
+        )).toEqual(policyBefore);
+        expect(await fs.pathExists(
+          path.join(testDir, '.juno_task/config/integration-workspace.json'),
+        )).toBe(false);
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/task-workspace.json'), 'utf8',
+        )).toBe(taskBytes);
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/risk-policy.json'), 'utf8',
+        )).toBe(riskBytes);
+      }
+      await expect(ScriptInstaller.preflightUpdate(testDir, true)).rejects.toThrow(
+        'scripts update is mutation-free for tracked policy',
       );
-      expect(migrated.tracked_exact).toContain(
-        '.juno_task/config/integration-workspace.json',
-      );
-
-      await ScriptInstaller.autoUpdate(testDir, true);
-      await expect(
-        ScriptInstaller.assertMetadataControllerUpdateComplete(testDir),
-      ).resolves.toBeUndefined();
-      const runtime = await fs.readFile(
-        path.join(testDir, '.juno_task/scripts/integration_workspace.py'), 'utf8',
-      );
-      expect(runtime).toContain('add_parser("status"');
-      expect(runtime).toContain('for name in ("repair", "push")');
-      expect(runtime).toContain('add_parser("runtime-doctor"');
-      expect(runtime).toContain('add_parser("runtime-refresh"');
-
-      await fs.writeFile(
-        path.join(testDir, '.juno_task/scripts/integration_workspace.py'),
-        'commands.add_parser("status")\nfor name in ("repair", "push"):\n    pass\n',
-      );
-      await expect(
-        ScriptInstaller.assertMetadataControllerUpdateComplete(testDir),
-      ).rejects.toThrow('outdated: integration_workspace.py');
     });
 
     it('preserves newer receipt-bound bytes when package and generation versions match but hashes differ', async () => {
