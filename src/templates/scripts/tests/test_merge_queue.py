@@ -1259,6 +1259,17 @@ raise SystemExit(2)
         self.assertNotIn("queue_attempt", reopened)
         self.assertEqual(self.counter.read_text().splitlines(), ["run", "run"])
 
+    def test_queued_target_refresh_validates_only_target_to_refreshed_tip(self) -> None:
+        self.commit_feature("X", "src/x.py", "feature\n")
+        self.advance_target("target-derived/outside-task-admission.txt")
+        refreshed_tip = self.merge_target_into("X")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual((reopened["state"], reopened["tip_sha"]),
+                         ("QUEUED", refreshed_tip))
+        self.assertEqual(reopened["changed_paths"], ["src/x.py"])
+
     def test_prior_findings_survive_repairs_and_legacy_nonreviewed_refresh_links(self) -> None:
         findings_tip = self.commit_feature("X", "src/security/auth.py", "broken\n")
         self.queue_payload("next")

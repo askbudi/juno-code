@@ -3187,6 +3187,7 @@ def merge_reopen(controller: Path, task_id: str,
                     or Path(record["repository"]).resolve() != repository):
                 raise MergeQueueError("feature task/repository/target identity drifted")
             expected_target_sha = old_attempt.get("expected_target_sha")
+            target_sha = task_runtime.ref_sha(repository, config["target_ref"])
             if resolved_validation_repair:
                 if (conflict.get("repository_identity") != repository_identity(repository)
                         or conflict.get("target_ref") != config["target_ref"]
@@ -3195,10 +3196,9 @@ def merge_reopen(controller: Path, task_id: str,
                         or conflict.get("resolved_candidate_sha") != old_attempt.get("candidate_sha")
                         or expected_target_sha != conflict.get("expected_target_sha")):
                     raise MergeQueueError("resolved conflict repair identity drifted")
-                current_target_sha = task_runtime.ref_sha(repository, config["target_ref"])
-                if current_target_sha != expected_target_sha:
+                if target_sha != expected_target_sha:
                     return requeue_stale_candidate(
-                        controller, config, repository, record, current_target_sha)
+                        controller, config, repository, record, target_sha)
             if task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]:
                 raise MergeQueueError("feature worktree branch identity drifted")
             new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
@@ -3264,7 +3264,7 @@ def merge_reopen(controller: Path, task_id: str,
                         raise MergeQueueError(
                             "dependency-lock refusal identity drifted before tip refresh")
             changed = sorted(set(task_runtime.git(
-                worktree, "diff", "--name-only", f"{record['base_sha']}..{new_tip}"
+                worktree, "diff", "--name-only", f"{target_sha}..{new_tip}"
             ).splitlines()))
             forbidden = [path for path in changed
                          if task_runtime.path_within(path, config["controller_private_paths"])]
