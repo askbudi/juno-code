@@ -233,6 +233,7 @@ describe('ScriptInstaller', () => {
         'release_gate.py',
         'release_train.py',
         'risk_policy.py',
+        'target_runtime_provenance.py',
         'task_workspace.py',
         'tests/test_controller_registration.py',
         'tests/test_integration_workspace.py',
@@ -362,6 +363,7 @@ describe('ScriptInstaller', () => {
         { name: 'managed_agent_runner.py', installed: false },
         { name: 'watch_progress.py', installed: false },
         { name: 'task_workspace.py', installed: false },
+        { name: 'target_runtime_provenance.py', installed: false },
         { name: 'integration_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
         { name: 'release_train.py', installed: false },
@@ -544,6 +546,7 @@ describe('ScriptInstaller', () => {
       );
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'target_runtime_provenance.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'merge_queue.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'release_train.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'tests/test_release_train.py'), '#!/usr/bin/env python3\n');
@@ -608,6 +611,7 @@ describe('ScriptInstaller', () => {
         { name: 'managed_agent_runner.py', installed: true },
         { name: 'watch_progress.py', installed: true },
         { name: 'task_workspace.py', installed: true },
+        { name: 'target_runtime_provenance.py', installed: true },
         { name: 'integration_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },
         { name: 'release_train.py', installed: true },
