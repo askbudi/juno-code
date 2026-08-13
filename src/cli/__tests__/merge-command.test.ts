@@ -84,13 +84,21 @@ describe('merge queue CLI', () => {
     invoke.mockClear();
     await program.parseAsync(['node', 'yy', 'merge', 'resolve', 'T123', '--plan-id', 'abc']);
     expect(invoke).toHaveBeenCalledWith('resolve', 'T123', ['--plan-id', 'abc']);
+    invoke.mockClear();
+    await program.parseAsync(['node', 'yy', 'merge', 'refresh', 'plan', 'T123']);
+    expect(invoke).toHaveBeenCalledWith('refresh', undefined, ['plan', 'T123']);
+    invoke.mockClear();
+    await program.parseAsync(['node', 'yy', 'merge', 'refresh', 'apply', 'T123',
+      '--receipt', '/receipt.json', '--receipt-sha256', 'abc']);
+    expect(invoke).toHaveBeenCalledWith('refresh', undefined,
+      ['apply', 'T123', '--receipt', '/receipt.json', '--receipt-sha256', 'abc']);
   });
 
   it('keeps next TASK_ID optional and requires it for plan, resolve, review, and reopen', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
     const merge = program.commands.find((command) => command.name() === 'merge');
-    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen']);
+    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'refresh']);
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[1]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(false);

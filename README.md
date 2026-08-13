@@ -289,7 +289,12 @@ yy task runtime-bootstrap --apply RECEIPT
 # source targets use a matching controller runtime, or update source identities atomically
 
 yy merge status
+yy merge plan TASK_ID --json
 yy merge next
+# if a queued/reopen branch intentionally merged the current protected target:
+yy merge refresh plan TASK_ID
+# apply only the exact receipt path and SHA-256 returned by that plan:
+yy merge refresh apply TASK_ID --receipt PATH --receipt-sha256 SHA256
 # if a conflict is preserved, resolve only listed paths, then:
 yy merge resolve TASK_ID
 ```

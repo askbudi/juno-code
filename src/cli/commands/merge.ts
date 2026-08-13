@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen';
+export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'refresh';
 export type MergeQueueInvoker = (
   operation: MergeQueueOperation,
   taskId?: string,
@@ -168,4 +168,14 @@ export function configureMergeQueueCommand(
     .action((taskId: string, options: { planId?: string }) => options.planId
       ? invoke('reopen', taskId, ['--plan-id', options.planId])
       : invoke('reopen', taskId));
+  const refresh = merge.command('refresh')
+    .description('Safely admit exact protected-target bytes into a queued candidate');
+  refresh.command('plan').argument('<task-id>', 'Queued or reopen candidate')
+    .action((taskId: string) => invoke('refresh', undefined, ['plan', taskId]));
+  refresh.command('apply').argument('<task-id>', 'Candidate bound by the refresh receipt')
+    .requiredOption('--receipt <path>', 'Canonical immutable refresh receipt')
+    .requiredOption('--receipt-sha256 <sha256>', 'Exact receipt byte identity')
+    .action((taskId: string, options: { receipt: string; receiptSha256: string }) =>
+      invoke('refresh', undefined, ['apply', taskId, '--receipt', options.receipt,
+        '--receipt-sha256', options.receiptSha256]));
 }

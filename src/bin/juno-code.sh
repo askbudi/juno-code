@@ -170,8 +170,8 @@ route_registered_product_control() {
         kanban:*) effective_operation=kanban ;;
         task:status|task:|task:-h|task:--help) effective_operation=kanban ;;
         task:start|task:finish|task:runtime-bootstrap) effective_operation=orchestration ;;
-        merge:status|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
-        merge:next|merge:resolve|merge:review|merge:reopen) effective_operation=orchestration ;;
+        merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
+        merge:next|merge:resolve|merge:review|merge:reopen|merge:refresh) effective_operation=orchestration ;;
         integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
         integration:sync|integration:runtime-doctor|integration:runtime-refresh|integration:register|integration:repair|integration:push) effective_operation=orchestration ;;
         *)

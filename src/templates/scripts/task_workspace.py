@@ -1017,7 +1017,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight"} else "orchestration")
     if surface == "task" and operation not in {"start", "status", "preflight", "finish"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
-    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen"}:
+    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "refresh"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
     if forwarded_policy is not None and forwarded_policy != expected_policy:
         raise TaskWorkspaceError(

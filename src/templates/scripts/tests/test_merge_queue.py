@@ -425,6 +425,133 @@ raise SystemExit(2)
         target = self.controller / ".juno_task/scripts/merge_queue.py"
         target.write_bytes(QUEUE.read_bytes())
 
+    def advance_target(self, path: str = ".juno_task/state/target.json",
+                       text: str = "target\n") -> str:
+        checkout = self.root / f"target-{len(list(self.root.glob('target-*')))}"
+        git(self.repository, "worktree", "add", str(checkout), "product")
+        target = checkout / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        git(checkout, "add", path)
+        git(checkout, "commit", "-m", "advance protected target")
+        sha = git(checkout, "rev-parse", "HEAD")
+        git(self.repository, "worktree", "remove", str(checkout))
+        return sha
+
+    def merge_target_into(self, task_id: str) -> str:
+        worktree = self.workspaces / task_id
+        git(worktree, "merge", "--no-edit", "refs/heads/product")
+        return git(worktree, "rev-parse", "HEAD")
+
+    def test_target_refresh_direct_apply_preserves_admission_and_queue_evidence(self) -> None:
+        self.install_merge_planner_runtime()
+        old_tip = self.commit_feature("X", "docs/feature.txt", "feature\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        before = json.loads(state_path.read_text())["tasks"]["X"]
+        target = self.advance_target()
+        refreshed = self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        classes = {row["path"]: row["classification"] for row in planned["classifications"]}
+        self.assertEqual(classes["docs/feature.txt"], "feature-authored")
+        self.assertEqual(classes[".juno_task/state/target.json"], "unchanged-target-derived")
+        applied = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        self.assertEqual((applied["outcome"], applied["tip_sha"]),
+                         ("TARGET_REFRESH_APPLIED", refreshed))
+        self.assertEqual(applied["changed_paths"], ["docs/feature.txt"])
+        self.assertEqual(applied["creation_receipt"], before["creation_receipt"])
+        self.assertEqual(applied.get("queue_attempt"), before.get("queue_attempt"))
+        reference = applied["target_refreshes"][0]
+        self.assertEqual((reference["source_tip"], reference["target_sha"]), (old_tip, target))
+        self.assertTrue(Path(reference["receipt_path"]).is_file())
+
+    def test_target_refresh_composed_authored_repair_and_retry_are_idempotent(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "v1\n")
+        self.advance_target("src/target.txt")
+        self.merge_target_into("X")
+        worktree = self.workspaces / "X"
+        (worktree / "docs/feature.txt").write_text("v2\n")
+        git(worktree, "add", "docs/feature.txt")
+        git(worktree, "commit", "-m", "compose authored repair after refresh")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        first = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        state_before = (self.controller / ".juno_task/state/tasks.json").read_bytes()
+        second = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        self.assertEqual(second["outcome"], "TARGET_REFRESH_ALREADY_APPLIED")
+        self.assertEqual(len(first["target_refreshes"]), 1)
+        self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), state_before)
+
+    def test_target_refresh_reopen_candidate_preserves_evidence_and_cleans_exact_owner(self) -> None:
+        self.install_merge_planner_runtime()
+        checkout, marker = self.prepare_moved_finding_reopen()
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        old_attempt = json.loads(state_path.read_text())["tasks"]["Y"]["queue_attempt"]
+        self.advance_target("src/target.txt")
+        self.merge_target_into("Y")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "Y")
+        self.assertEqual(planned["evidence"]["queue_attempt"], old_attempt)
+        applied = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "Y", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        self.assertEqual(applied["state"], "QUEUED")
+        self.assertNotIn("queue_attempt", applied)
+        self.assertFalse(checkout.exists())
+        self.assertFalse(marker.exists())
+        self.assertEqual(json.loads(Path(planned["receipt"]["path"]).read_text())
+                         ["evidence"]["queue_attempt"], old_attempt)
+
+    def test_target_refresh_rejects_altered_private_dirty_and_non_descendant_tips(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        self.advance_target()
+        self.merge_target_into("X")
+        worktree = self.workspaces / "X"
+        (worktree / ".juno_task/state").mkdir(parents=True, exist_ok=True)
+        (worktree / ".juno_task/state/target.json").write_text("altered\n")
+        git(worktree, "add", ".juno_task/state/target.json")
+        git(worktree, "commit", "-m", "alter inherited private bytes")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "altered-target-derived-byte"):
+            merge_runtime.target_refresh_plan(self.controller.resolve(), "X")
+        git(worktree, "reset", "--hard", "HEAD^")
+        (worktree / "dirty.txt").write_text("dirty\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "must be clean"):
+            merge_runtime.target_refresh_plan(self.controller.resolve(), "X")
+        (worktree / "dirty.txt").unlink()
+        git(worktree, "reset", "--hard", "HEAD^")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "protected target.*non-descendant"):
+            merge_runtime.target_refresh_plan(self.controller.resolve(), "X")
+
+    def test_target_refresh_rejects_tampered_receipt_and_target_or_plan_drift(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        self.advance_target("src/one.txt")
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        receipt = Path(planned["receipt"]["path"])
+        original = receipt.read_bytes()
+        receipt.write_bytes(original.replace(b'"operation":"target-refresh"',
+                                             b'"operation":"target-forged"'))
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "forged or tampered"):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", str(receipt), planned["receipt"]["sha256"])
+        receipt.write_bytes(original)
+        self.advance_target("src/two.txt")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "drifted"):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", str(receipt), planned["receipt"]["sha256"])
+        outside = self.root / "copied-receipt.json"
+        outside.write_bytes(original)
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "unauthorized"):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", str(outside),
+                hashlib.sha256(original).hexdigest())
+
     def test_feasibility_plan_clean_ready_is_stable_and_byte_non_mutating(self) -> None:
         self.install_merge_planner_runtime()
         self.commit_feature("X", "docs/plan.txt", "ready\n")

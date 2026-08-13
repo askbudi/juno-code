@@ -29,6 +29,8 @@ QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
 PLAN_SCHEMA = "juno_merge_candidate_feasibility.v1"
 PLAN_ID_SCHEMA = "juno_merge_candidate_plan_identity.v1"
+REFRESH_SCHEMA = "juno_merge_target_refresh_plan.v1"
+REFRESH_ID_SCHEMA = "juno_merge_target_refresh_identity.v1"
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 REVIEW_PROMPT_FIELDS = {
@@ -608,13 +610,18 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     if isinstance(generated, dict):
         generated_paths.update(path for path in generated.get("destinations", []) if isinstance(path, str))
     classifications: list[dict[str, Any]] = []
+    admitted = sorted(record.get("changed_paths", []))
+    admitted_set = set(admitted)
     for path in all_paths:
         base_blob, target_blob = base_tree.get(path), target_tree.get(path)
         feature_blob, merged_blob = feature_tree.get(path), prospective_tree.get(path)
         origins: list[str] = []
-        if feature_blob != base_blob:
+        # A supported target refresh retains the original frozen authored-path
+        # admission. Bytes equal to the protected target on every other path
+        # are inherited, not newly authored by the task.
+        if feature_blob != base_blob and (path in admitted_set or feature_blob != target_blob):
             origins.append("task-authored")
-        if target_blob != base_blob and feature_blob == base_blob:
+        if target_blob != base_blob and feature_blob == target_blob and path not in admitted_set:
             origins.append("unchanged target-derived")
         if path in conflicts:
             origins.append("conflicted")
@@ -633,7 +640,6 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     disallowed = sorted(row["path"] for row in classifications
                         if "disallowed/controller-private" in row["origins"]
                         and "task-authored" in row["origins"])
-    admitted = sorted(record.get("changed_paths", []))
     authored = sorted(row["path"] for row in classifications if "task-authored" in row["origins"])
     if disallowed or (admitted and authored != admitted):
         findings.append(_finding("admission.path_scope", "error", "path_admission",
@@ -2864,6 +2870,231 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         return updated
 
 
+def _refresh_receipt_root(controller: Path) -> Path:
+    return (controller / ".juno_task/runtime/merge-queue/target-refresh").resolve()
+
+
+def target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
+    """Classify a committed target refresh without trusting its merge message."""
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with task_runtime.state_lock(controller):
+        state = task_runtime.read_state(controller)
+        record = state.get("tasks", {}).get(task_id)
+        queue_entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
+    if not isinstance(record, dict) or record.get("state") not in {
+            "QUEUED", "AWAITING_RISK", "REVIEW_FINDINGS", "CONFLICT_RESOLVED"}:
+        raise MergeQueueError("target refresh is not eligible in the current queue state")
+    required = {"base_sha", "tip_sha", "branch_ref", "worktree", "repository",
+                "target_ref", "changed_paths", "creation_receipt", "workspace_identity"}
+    if not required.issubset(record):
+        raise MergeQueueError("target refresh source record is incomplete")
+    repository_path = Path(record["repository"]).resolve()
+    worktree = task_runtime.exact_root(Path(record["worktree"]), "feature worktree")
+    if (repository_path != repository or record["target_ref"] != config["target_ref"]
+            or task_runtime.git(worktree, "symbolic-ref", "-q", "HEAD", check=False)
+                != record["branch_ref"]):
+        raise MergeQueueError("target refresh repository/branch/worktree identity drifted")
+    if task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise MergeQueueError("feature worktree must be clean before target refresh")
+    new_tip = task_runtime.git(worktree, "rev-parse", "HEAD")
+    if task_runtime.git(repository, "rev-parse", record["branch_ref"], check=False) != new_tip:
+        raise MergeQueueError("target refresh branch tip identity drifted")
+    base_sha, source_tip = record["base_sha"], record["tip_sha"]
+    target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+    for ancestor, descendant, label in ((base_sha, source_tip, "original feature"),
+                                        (source_tip, new_tip, "refreshed feature"),
+                                        (target_sha, new_tip, "protected target"),
+                                        (base_sha, target_sha, "protected target")):
+        if task_runtime.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                             ancestor, descendant], repository, check=False).returncode:
+            raise MergeQueueError(f"{label} ancestry is forged or non-descendant")
+    if new_tip == source_tip:
+        raise MergeQueueError("target refresh requires a new committed tip")
+
+    creation = record["creation_receipt"]
+    identity = record["workspace_identity"]
+    if (not isinstance(creation, dict) or not isinstance(identity, dict)
+            or digest(creation) != identity.get("create_receipt_sha256")):
+        # task_workspace uses the same canonical JSON SHA-256 projection.
+        raise MergeQueueError("original immutable creation admission drifted")
+    admitted = sorted(record.get("changed_paths", []))
+    original_changed = sorted(set(task_runtime.git(
+        repository, "diff", "--name-only", f"{base_sha}..{source_tip}").splitlines()))
+    if admitted != original_changed:
+        raise MergeQueueError("original immutable queue path admission drifted")
+    frozen_allowed = creation.get("allowed_paths")
+    if (not admitted or any(task_runtime.path_within(path, config["controller_private_paths"])
+                            or not task_runtime.path_within(path, frozen_allowed)
+                            for path in admitted)):
+        raise MergeQueueError("original feature admission is empty, private, or disallowed")
+
+    trees = {name: _git_tree(repository, sha) for name, sha in {
+        "base": base_sha, "source": source_tip, "target": target_sha, "refreshed": new_tip}.items()}
+    paths = sorted(set().union(*(set(tree) for tree in trees.values())))
+    rows: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    admitted_set = set(admitted)
+    for path in paths:
+        base_blob = trees["base"].get(path); source_blob = trees["source"].get(path)
+        target_blob = trees["target"].get(path); refreshed_blob = trees["refreshed"].get(path)
+        classification: Optional[str] = None
+        if path in admitted_set:
+            classification = "feature-authored"
+        elif source_blob != base_blob:
+            rejected.append({"path": path, "reason": "unadmitted-original-feature-byte"})
+        elif target_blob != base_blob:
+            classification = "unchanged-target-derived"
+            if refreshed_blob != target_blob:
+                rejected.append({"path": path, "reason": "altered-target-derived-byte"})
+        elif refreshed_blob != source_blob:
+            rejected.append({"path": path, "reason": "private-or-unauthorized-addition"})
+        if classification or refreshed_blob != source_blob:
+            rows.append({"path": path, "classification": classification or "rejected",
+                         "base_blob": base_blob, "source_blob": source_blob,
+                         "target_blob": target_blob, "refreshed_blob": refreshed_blob})
+    if rejected:
+        detail = ", ".join(f"{row['path']}:{row['reason']}" for row in rejected[:12])
+        raise MergeQueueError(f"target refresh byte admission refused: {detail}")
+
+    evidence = {"creation_receipt": creation,
+                "creation_receipt_sha256": digest(creation),
+                "queue_record_sha256": digest(record),
+                "queue_entry_sha256": digest(queue_entry),
+                "queue_attempt": record.get("queue_attempt"),
+                "prior_queue_failure": record.get("prior_queue_failure")}
+    body = {"schema_version": REFRESH_SCHEMA, "task_id": task_id,
+            "operation": "target-refresh", "repository_identity": repository_identity(repository),
+            "repository": str(repository), "target_ref": config["target_ref"],
+            "target_sha": target_sha, "base_sha": base_sha, "source_tip": source_tip,
+            "refreshed_tip": new_tip, "branch_ref": record["branch_ref"],
+            "worktree": str(worktree), "source_state": record["state"],
+            "authored_paths": admitted, "classifications": rows, "evidence": evidence}
+    return {**body, "plan_id": digest({"schema_version": REFRESH_ID_SCHEMA, "plan": body})}
+
+
+def persist_target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
+    plan = target_refresh_plan(controller, task_id)
+    path = _refresh_receipt_root(controller) / task_id / f"{plan['plan_id']}.json"
+    data = (canonical(plan) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if path.read_bytes() != data:
+            raise MergeQueueError("target refresh receipt identity collided")
+    else:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data); handle.flush(); os.fsync(handle.fileno())
+    return {**plan, "receipt": {"path": str(path),
+                                "sha256": hashlib.sha256(data).hexdigest()}}
+
+
+def _cleanup_refreshed_candidate(controller: Path, repository: Path,
+                                 plan: dict[str, Any]) -> None:
+    attempt = plan.get("evidence", {}).get("queue_attempt")
+    if not isinstance(attempt, dict):
+        return
+    checkout_value, token = attempt.get("candidate_checkout"), attempt.get("candidate_token")
+    if not checkout_value:
+        return
+    if not isinstance(token, str):
+        raise MergeQueueError("target refresh historical candidate token is missing")
+    checkout = Path(checkout_value)
+    if checkout.exists():
+        owner = verify_candidate_owner(controller, repository, checkout, token)
+        if (owner.get("task_id") != plan.get("task_id")
+                or owner.get("feature_sha") != plan.get("source_tip")):
+            raise MergeQueueError("target refresh historical candidate ownership drifted")
+        rollback_unadmitted_candidate(controller, repository, checkout, token)
+        return
+    marker = owner_marker(controller, checkout)
+    if marker.exists():
+        owner = read_candidate_owner(controller, checkout)
+        if (owner.get("token") != token or owner.get("task_id") != plan.get("task_id")
+                or owner.get("feature_sha") != plan.get("source_tip")):
+            raise MergeQueueError("target refresh orphan candidate ownership drifted")
+        marker.unlink()
+
+
+def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
+                         receipt_sha256: str) -> dict[str, Any]:
+    """Apply only an exact canonical refresh receipt; retries are read-only."""
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    path = Path(receipt_path).expanduser().resolve()
+    root = _refresh_receipt_root(controller)
+    try:
+        path.relative_to(root)
+        data = path.read_bytes()
+        plan = json.loads(data)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise MergeQueueError("target refresh receipt is absent or unauthorized") from exc
+    if (hashlib.sha256(data).hexdigest() != receipt_sha256
+            or not isinstance(plan, dict) or plan.get("schema_version") != REFRESH_SCHEMA
+            or plan.get("task_id") != task_id
+            or path != root / task_id / f"{plan.get('plan_id')}.json"
+            or plan.get("plan_id") != digest({"schema_version": REFRESH_ID_SCHEMA,
+                                               "plan": {key: value for key, value in plan.items()
+                                                        if key != "plan_id"}})):
+        raise MergeQueueError("target refresh receipt is forged or tampered")
+    with target_lock(controller, repository, config["target_ref"]):
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            record = state.get("tasks", {}).get(task_id)
+        if not isinstance(record, dict):
+            raise MergeQueueError("target refresh task record disappeared")
+        references = record.get("target_refreshes", [])
+        prior = next((row for row in references if isinstance(row, dict)
+                      and row.get("plan_id") == plan["plan_id"]), None)
+        if prior is not None:
+            _cleanup_refreshed_candidate(controller, repository, plan)
+            return {**record, "outcome": "TARGET_REFRESH_ALREADY_APPLIED",
+                    "target_refresh": prior}
+        if (task_runtime.ref_sha(repository, config["target_ref"]) != plan.get("target_sha")
+                or digest(record) != plan.get("evidence", {}).get("queue_record_sha256")):
+            raise MergeQueueError("target refresh target, ancestry, queue, or plan identity drifted")
+        current = target_refresh_plan(controller, task_id)
+        if current != plan:
+            raise MergeQueueError("target refresh target, ancestry, queue, or plan identity drifted")
+        # Reuse the shared static authored/target-derived feasibility gate before
+        # any validation process. It observes the refreshed branch tip while
+        # the immutable queue record still binds the original admission.
+        static = assert_static_plan(controller, task_id, "reopen")
+        worktree = task_runtime.exact_root(Path(plan["worktree"]), "feature worktree")
+        validations = validation_rows(config, worktree)
+        if (task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]
+                or task_runtime.git(worktree, "rev-parse", "HEAD") != plan["refreshed_tip"]
+                or task_runtime.git(repository, "rev-parse", plan["branch_ref"], check=False)
+                    != plan["refreshed_tip"]
+                or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+            raise MergeQueueError("target refresh identity drifted during validation")
+        reference = {"schema_version": "juno_merge_target_refresh_reference.v1",
+                     "plan_id": plan["plan_id"], "receipt_path": str(path),
+                     "receipt_sha256": receipt_sha256, "source_tip": plan["source_tip"],
+                     "target_sha": plan["target_sha"], "refreshed_tip": plan["refreshed_tip"],
+                     "feasibility_plan_id": static["plan_id"]}
+        updated = {key: value for key, value in record.items()
+                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
+        updated.update({"state": "QUEUED", "tip_sha": plan["refreshed_tip"],
+                        "changed_paths": plan["authored_paths"], "validation": validations,
+                        "last_validation_outcome": "PASSED",
+                        "target_refreshes": [*references, reference]})
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            if state.get("tasks", {}).get(task_id) != record:
+                raise MergeQueueError("target refresh queue identity drifted before apply")
+            updated["enqueue_sequence"] = task_runtime.assign_enqueue_sequence(state)
+            state["tasks"][task_id] = updated
+            task_runtime.write_state(controller, state)
+        # Durable QUEUED truth and its immutable receipt precede deletion. A
+        # cleanup failure therefore retries this exact owner-bound step only.
+        _cleanup_refreshed_candidate(controller, repository, plan)
+        return {**updated, "outcome": "TARGET_REFRESH_APPLIED", "target_refresh": reference}
+
+
 def merge_reopen(controller: Path, task_id: str,
                  expected_plan_id: Optional[str] = None) -> dict[str, Any]:
     """Recoverable two-phase requeue after a new validated feature tip."""
@@ -3320,6 +3551,14 @@ def parser() -> argparse.ArgumentParser:
     reopen = sub.add_parser("reopen")
     reopen.add_argument("task_id")
     reopen.add_argument("--plan-id")
+    refresh = sub.add_parser("refresh")
+    refresh_sub = refresh.add_subparsers(dest="refresh_operation", required=True)
+    refresh_plan = refresh_sub.add_parser("plan")
+    refresh_plan.add_argument("task_id")
+    refresh_apply = refresh_sub.add_parser("apply")
+    refresh_apply.add_argument("task_id")
+    refresh_apply.add_argument("--receipt", required=True)
+    refresh_apply.add_argument("--receipt-sha256", required=True)
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
 
@@ -3357,8 +3596,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = merge_resolve(controller, args.task_id, args.plan_id)
         elif args.operation == "review":
             result = merge_review(controller, args.task_id)
-        else:
+        elif args.operation == "reopen":
             result = merge_reopen(controller, args.task_id, args.plan_id)
+        elif args.refresh_operation == "plan":
+            result = persist_target_refresh_plan(controller, args.task_id)
+        else:
+            result = apply_target_refresh(
+                controller, args.task_id, args.receipt, args.receipt_sha256)
         result = {**result, "control_audit": audit}
         print(canonical(result))
         return 0
