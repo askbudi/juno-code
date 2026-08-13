@@ -330,6 +330,18 @@
       "type": "script"
     },
     {
+      "source": "scripts/release_train.py",
+      "destination": ".juno_task/scripts/release_train.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_release_train.py",
+      "destination": ".juno_task/scripts/tests/test_release_train.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/tests/test_task_workspace.py",
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
       "installClass": "script",

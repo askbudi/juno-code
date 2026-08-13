@@ -41,6 +41,7 @@ import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
 import { configureIntegrationCommand } from '../cli/commands/integration.js';
 import { configureMergeQueueCommand } from '../cli/commands/merge.js';
+import { configureReleaseTrainCommand } from '../cli/commands/release.js';
 import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
 import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
@@ -1892,6 +1893,7 @@ function configureCommandSurface(program: Command): void {
   configureTaskWorkspaceCommand(program);
   configureIntegrationCommand(program);
   configureMergeQueueCommand(program);
+  configureReleaseTrainCommand(program);
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);
   setupCompletion(program);

@@ -3543,9 +3543,11 @@ def parser() -> argparse.ArgumentParser:
     next_command = sub.add_parser("next")
     next_command.add_argument("task_id", nargs="?")
     next_command.add_argument("--plan-id")
+    next_command.add_argument("--train-plan")
     resolve = sub.add_parser("resolve")
     resolve.add_argument("task_id")
     resolve.add_argument("--plan-id")
+    resolve.add_argument("--train-plan")
     review = sub.add_parser("review")
     review.add_argument("task_id")
     reopen = sub.add_parser("reopen")
@@ -3586,6 +3588,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = merge_plan(controller, args.task_id, args.against)
             print(canonical(result) if args.json else human_plan(result))
             return 0
+        train_plan = getattr(args, "train_plan", None)
+        if args.operation in {"next", "resolve"} and train_plan:
+            # One shared stale-identity/FIFO/dependency gate; merge_queue remains
+            # the sole composition, validation, and target-CAS engine.
+            import release_train
+            try:
+                release_train.check_plan(
+                    controller, Path(train_plan), "merge", getattr(args, "task_id", None))
+            except release_train.ReleaseTrainError as exc:
+                raise MergeQueueError(str(exc)) from exc
         audit = task_runtime.record_control_audit(
             controller, "merge", args.operation, getattr(args, "task_id", None))
         if args.operation == "status":

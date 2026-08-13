@@ -82,8 +82,13 @@ describe('merge queue CLI', () => {
     await program.parseAsync(['node', 'yy', 'merge', 'plan', 'T123', '--against', 'HEAD', '--json']);
     expect(invoke).toHaveBeenCalledWith('plan', 'T123', ['--against', 'HEAD', '--json']);
     invoke.mockClear();
-    await program.parseAsync(['node', 'yy', 'merge', 'resolve', 'T123', '--plan-id', 'abc']);
-    expect(invoke).toHaveBeenCalledWith('resolve', 'T123', ['--plan-id', 'abc']);
+    await program.parseAsync(['node', 'yy', 'merge', 'resolve', 'T123', '--plan-id', 'abc',
+      '--train-plan', '/train-plan.json']);
+    expect(invoke).toHaveBeenCalledWith('resolve', 'T123', ['--plan-id', 'abc',
+      '--train-plan', '/train-plan.json']);
+    invoke.mockClear();
+    await program.parseAsync(['node', 'yy', 'merge', 'next', '--train-plan', '/train-plan.json']);
+    expect(invoke).toHaveBeenCalledWith('next', undefined, ['--train-plan', '/train-plan.json']);
     invoke.mockClear();
     await program.parseAsync(['node', 'yy', 'merge', 'refresh', 'plan', 'T123']);
     expect(invoke).toHaveBeenCalledWith('refresh', undefined, ['plan', 'T123']);

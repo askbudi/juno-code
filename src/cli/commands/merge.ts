@@ -153,15 +153,21 @@ export function configureMergeQueueCommand(
     .description('Advance the queue, or continue paused evidence for TASK_ID')
     .argument('[task-id]', 'Paused task whose evidence/review processing should continue')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
-    .action((taskId: string | undefined, options: { planId?: string }) => {
-      if (!options.planId) return taskId === undefined ? invoke('next') : invoke('next', taskId);
-      return invoke('next', taskId, ['--plan-id', options.planId]);
+    .option('--train-plan <path>', 'Require this exact current release-train/FIFO identity')
+    .action((taskId: string | undefined, options: { planId?: string; trainPlan?: string }) => {
+      const args = [...(options.planId ? ['--plan-id', options.planId] : []),
+        ...(options.trainPlan ? ['--train-plan', options.trainPlan] : [])];
+      return args.length ? invoke('next', taskId, args)
+        : taskId === undefined ? invoke('next') : invoke('next', taskId);
     });
   merge.command('resolve').argument('<task-id>', 'Canonical Kanban task ID')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
-    .action((taskId: string, options: { planId?: string }) => options.planId
-      ? invoke('resolve', taskId, ['--plan-id', options.planId])
-      : invoke('resolve', taskId));
+    .option('--train-plan <path>', 'Require this exact current release-train/FIFO identity')
+    .action((taskId: string, options: { planId?: string; trainPlan?: string }) => {
+      const args = [...(options.planId ? ['--plan-id', options.planId] : []),
+        ...(options.trainPlan ? ['--train-plan', options.trainPlan] : [])];
+      return args.length ? invoke('resolve', taskId, args) : invoke('resolve', taskId);
+    });
   merge.command('review').argument('<task-id>', 'Canonical Kanban task ID').action((taskId: string) => invoke('review', taskId));
   merge.command('reopen').argument('<task-id>', 'Task with review findings and a new committed tip')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
