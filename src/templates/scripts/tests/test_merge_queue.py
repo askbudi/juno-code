@@ -48,7 +48,7 @@ class MergeQueueTests(unittest.TestCase):
         )
         self.kanban_finalization = self.kanban_finalization_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repo"
         self.controller = self.root / "controller"
         self.workspaces = self.root / "features"
