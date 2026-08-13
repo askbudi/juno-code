@@ -1487,6 +1487,15 @@ def persist_index_lock_ownership(common: Path, plan_hash: str, index_path: Path,
     return marker
 
 
+def write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise BoundaryError("metadata-policy endpoint write made no progress")
+        view = view[written:]
+
+
 def durable_unlink(path: Path) -> None:
     path.unlink(missing_ok=True)
     directory_fd = os.open(path.parent, os.O_RDONLY)
@@ -1746,7 +1755,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         descriptor = os.open(temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                                              0o600, dir_fd=config_fd)
                         try:
-                            os.write(descriptor, data); os.fsync(descriptor)
+                            write_all(descriptor, data); os.fsync(descriptor)
                         finally: os.close(descriptor)
                         before_snapshot = endpoint_snapshot_at(config_fd, name)
                         current = before_snapshot[0] if before_snapshot is not None else None

@@ -943,6 +943,25 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "status", "--porcelain=v2", "--untracked-files=all", cwd=root), "")
         self.assertEqual(command("git", "rev-parse", "HEAD^", cwd=root), plan["head"])
 
+    def test_metadata_policy_endpoint_writer_completes_partial_writes(self) -> None:
+        path = self.temp / "partial-write"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        original = mc.os.write
+        calls = 0
+        def partial(fd: int, data: object) -> int:
+            nonlocal calls
+            calls += 1
+            view = memoryview(data)
+            return original(fd, view[:max(1, len(view) // 2)])
+        mc.os.write = partial
+        try:
+            mc.write_all(descriptor, b"complete endpoint bytes")
+        finally:
+            mc.os.write = original
+            os.close(descriptor)
+        self.assertGreater(calls, 1)
+        self.assertEqual(path.read_bytes(), b"complete endpoint bytes")
+
     def test_metadata_policy_index_exchange_refuses_in_place_byte_race(self) -> None:
         directory = self.temp / "index-byte-race"
         directory.mkdir()
