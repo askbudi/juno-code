@@ -887,6 +887,31 @@ class MetadataControllerTest(unittest.TestCase):
         index_lock = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index.lock", cwd=root))
         self.assertFalse(index_lock.exists())
 
+    def test_metadata_policy_same_plan_recovers_owned_precommit_index_lock(self) -> None:
+        root, _ = self.legacy_policy_controller()
+        plan_path, plan = self.policy_plan(root)
+        index = Path(command("git", "rev-parse", "--path-format=absolute", "--git-path", "index", cwd=root))
+        index_lock = Path(str(index) + ".lock")
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary) / "index"
+            env = {"GIT_INDEX_FILE": str(prepared)}
+            mc.git(root, "read-tree", plan["head"], env=env)
+            mc.add_blob(root, env, mc.POLICY_PATH, plan["policy_result_utf8"].encode())
+            mc.add_blob(root, env, mc.INTEGRATION_POLICY_PATH,
+                        plan["source"]["integration_source_utf8"].encode())
+            result_tree = mc.git(root, "write-tree", env=env)
+            index_lock.write_bytes(prepared.read_bytes())
+        common = Path(command("git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root))
+        ownership = mc.persist_index_lock_ownership(
+            common, plan["plan_sha256"], index_lock, result_tree, index)
+        receipt = self.temp / "precommit-recovery.json"
+        recovered = mc.policy_migration_apply(argparse.Namespace(
+            plan=plan_path, output=receipt, authorize=True))
+        self.assertEqual(recovered["old_head"], plan["head"])
+        self.assertFalse(index_lock.exists())
+        self.assertFalse(ownership.exists())
+        self.assertEqual(command("git", "status", "--porcelain=v2", cwd=root), "")
+
     def test_metadata_policy_same_plan_recovers_completed_commit_with_stranded_index_and_temp(self) -> None:
         root, _ = self.legacy_policy_controller()
         plan_path, plan = self.policy_plan(root)
@@ -945,10 +970,12 @@ class MetadataControllerTest(unittest.TestCase):
         tip = command("git", "rev-parse", "HEAD", cwd=root)
         tree = command("git", "rev-parse", "HEAD^{tree}", cwd=root)
         message = command("git", "show", "-s", "--format=%B", cwd=root)
-        environment = {**os.environ, "GIT_AUTHOR_NAME": "Substituted Author",
-                       "GIT_AUTHOR_EMAIL": "substitute@example.invalid",
-                       "GIT_COMMITTER_NAME": "Substituted Committer",
-                       "GIT_COMMITTER_EMAIL": "substitute@example.invalid"}
+        environment = {**os.environ, "GIT_AUTHOR_NAME": "Juno Metadata Policy Migration",
+                       "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
+                       "GIT_AUTHOR_DATE": "2001-01-01T00:00:00+00:00",
+                       "GIT_COMMITTER_NAME": "Juno Metadata Policy Migration",
+                       "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid",
+                       "GIT_COMMITTER_DATE": "2001-01-01T00:00:00+00:00"}
         replacement = subprocess.run(
             ["git", "commit-tree", tree, "-p", plan["head"], "-m", message], cwd=root,
             env=environment, text=True, capture_output=True, check=True).stdout.strip()

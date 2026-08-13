@@ -1228,7 +1228,9 @@ def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
             "git_common_identity": list(common.stat()[:3]),
             "index_identity": [index_stat.st_dev, index_stat.st_ino, index_stat.st_mode],
             "branch": branch, "registration": registration,
-            "head": head, "tree": tree, "config_sha256": bytes_digest(config_bytes),
+            "head": head, "tree": tree,
+            "commit_timestamp": git(root, "show", "-s", "--format=%aI", head),
+            "config_sha256": bytes_digest(config_bytes),
             "product_ref": product_ref, "product_head": product_head,
             "policy_before_sha256": bytes_digest(policy_bytes),
             "policy_before_utf8": policy_bytes.decode("utf-8"),
@@ -1242,7 +1244,14 @@ def policy_migration_snapshot(root: Path, expected_branch: str | None = None,
 def expected_policy_commit_intent(value: dict[str, Any], changed: list[str]) -> dict[str, Any]:
     return {"parent": value["head"], "base_tree": value["tree"],
             "message": "Migrate metadata controller integration policy\n\nJuno-Metadata-Policy-Migration-Plan: {plan_sha256}",
-            "authority": "juno-metadata-policy-migration.v1", "changed_paths": changed,
+            "authority": "juno-metadata-policy-migration.v1",
+            "identity": {"author_name": "Juno Metadata Policy Migration",
+                         "author_email": "juno-controller@local.invalid",
+                         "author_date": value["commit_timestamp"],
+                         "committer_name": "Juno Metadata Policy Migration",
+                         "committer_email": "juno-controller@local.invalid",
+                         "committer_date": value["commit_timestamp"]},
+            "changed_paths": changed,
             "result_bindings": {POLICY_PATH: value["policy_result_sha256"],
                                 INTEGRATION_POLICY_PATH: value["integration_result_sha256"]}}
 
@@ -1323,7 +1332,8 @@ def assert_policy_plan_snapshot(plan: dict[str, Any], *, owned_index_lock: bool 
     root = exact_physical_controller(Path(plan["root"]))
     current = policy_migration_snapshot(root, plan["branch"], owned_index_lock=owned_index_lock)
     keys = ("root", "root_identity", "git_common_dir", "index_path", "git_common_identity",
-            "index_identity", "branch", "registration", "head", "tree", "config_sha256", "product_ref",
+            "index_identity", "branch", "registration", "head", "tree", "commit_timestamp",
+            "config_sha256", "product_ref",
             "product_head", "policy_before_sha256", "policy_before_utf8", "policy_result_sha256",
             "policy_result_utf8", "task_policy_sha256", "risk_policy_sha256", "immutable_identity",
             "source", "state", "integration_result_sha256")
@@ -1497,6 +1507,17 @@ def index_has_exact_tree(root: Path, index_path: Path, identity: dict[str, Any],
                    env={"GIT_INDEX_FILE": str(copy)}) == expected_tree
 
 
+def policy_result_tree(root: Path, plan: dict[str, Any]) -> str:
+    with tempfile.TemporaryDirectory(prefix="juno-policy-result-tree-") as temporary:
+        index = Path(temporary) / "index"
+        env = {"GIT_INDEX_FILE": str(index)}
+        git(root, "read-tree", plan["head"], env=env)
+        add_blob(root, env, POLICY_PATH, plan["policy_result_utf8"].encode("utf-8"))
+        add_blob(root, env, INTEGRATION_POLICY_PATH,
+                 plan["source"]["integration_source_utf8"].encode("utf-8"))
+        return git(root, "write-tree", env=env)
+
+
 def exact_prepared_index(root: Path, index_path: Path, ownership_path: Path,
                          plan_hash: str, expected_tree: str) -> bool:
     identity = index_lock_identity(index_path)
@@ -1536,12 +1557,14 @@ def completed_policy_migration(root: Path, plan: dict[str, Any], plan_hash: str,
             or git(root, "rev-parse", f"{plan['product_ref']}^{{commit}}", check=False) != plan["product_head"]):
         raise BoundaryError("completed metadata-policy commit has stale authority bindings")
     tree = git(root, "rev-parse", "HEAD^{tree}")
-    message = plan["result_tree_commit_intent"]["message"].format(plan_sha256=plan_hash)
+    intent = plan["result_tree_commit_intent"]
+    message = intent["message"].format(plan_sha256=plan_hash)
     if (git(root, "rev-parse", "HEAD^") != plan["head"]
             or git(root, "show", "-s", "--format=%B", head) != message
-            or git(root, "show", "-s", "--format=%an%n%ae%n%cn%n%ce", head).splitlines()
-                != ["Juno Metadata Policy Migration", "juno-controller@local.invalid",
-                    "Juno Metadata Policy Migration", "juno-controller@local.invalid"]
+            or git(root, "show", "-s", "--format=%an%n%ae%n%aI%n%cn%n%ce%n%cI", head).splitlines()
+                != [intent["identity"]["author_name"], intent["identity"]["author_email"],
+                    intent["identity"]["author_date"], intent["identity"]["committer_name"],
+                    intent["identity"]["committer_email"], intent["identity"]["committer_date"]]
             or git(root, "diff", "--name-only", plan["head"], head).splitlines() != plan["changed_paths"]
             or bytes_digest(committed_bytes(root, head, POLICY_PATH)) != plan["policy_result_sha256"]
             or bytes_digest(committed_bytes(root, head, INTEGRATION_POLICY_PATH)) != plan["integration_result_sha256"]
@@ -1601,12 +1624,15 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             # written with this plan's prepared index. Tree equality alone cannot
             # distinguish an active ordinary Git process.
             completed_probe = completed_policy_migration(root, plan, plan_hash, allow_pending_endpoints=True)
-            prepared_still_locked = (completed_probe is not None
-                    and exact_prepared_index(root, recovery_lock, ownership_path,
-                                             plan_hash, completed_probe[1]))
+            expected_result_tree = completed_probe[1] if completed_probe is not None \
+                else policy_result_tree(root, plan)
+            prepared_still_locked = (exact_prepared_index(
+                    root, recovery_lock, ownership_path, plan_hash, expected_result_tree)
+                    and (completed_probe is not None
+                         or exact_displaced_index(expected_index, ownership_path)))
             published_with_displaced_lock = (completed_probe is not None
                     and exact_prepared_index(root, expected_index, ownership_path,
-                                             plan_hash, completed_probe[1])
+                                             plan_hash, expected_result_tree)
                     and exact_displaced_index(recovery_lock, ownership_path))
             if not (prepared_still_locked or published_with_displaced_lock):
                 raise BoundaryError(f"metadata-policy migration index serialization is busy or unowned: {recovery_lock}")
@@ -1700,10 +1726,13 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         else: raise BoundaryError("metadata-policy migration index test pause timed out")
                         assert_policy_plan_snapshot(plan, owned_index_lock=True)
                     message = plan["result_tree_commit_intent"]["message"].format(plan_sha256=plan_hash)
-                    commit_env = {"GIT_AUTHOR_NAME": "Juno Metadata Policy Migration",
-                                  "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
-                                  "GIT_COMMITTER_NAME": "Juno Metadata Policy Migration",
-                                  "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
+                    identity = plan["result_tree_commit_intent"]["identity"]
+                    commit_env = {"GIT_AUTHOR_NAME": identity["author_name"],
+                                  "GIT_AUTHOR_EMAIL": identity["author_email"],
+                                  "GIT_AUTHOR_DATE": identity["author_date"],
+                                  "GIT_COMMITTER_NAME": identity["committer_name"],
+                                  "GIT_COMMITTER_EMAIL": identity["committer_email"],
+                                  "GIT_COMMITTER_DATE": identity["committer_date"]}
                     committed = run(["git", "-C", str(root), "commit-tree", result_tree, "-p", plan["head"], "-m", message],
                                     root, env=commit_env).stdout.strip()
                     verify_locks()
