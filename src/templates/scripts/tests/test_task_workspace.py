@@ -900,7 +900,8 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "commit", "-m", "exact older consumer runtime generation")
         return stale
 
-    def install_legacy_consumer_runtime(self, version: str = "2.1.3-rc.0.9") -> dict[str, Path | bytes]:
+    def install_legacy_consumer_runtime(self, version: str = "2.1.2",
+                                        output_shape: str = "historical") -> dict[str, Path | bytes]:
         legacy = b"#!/usr/bin/env python3\n# exact immutable legacy consumer runtime\n"
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.write_bytes(legacy)
@@ -915,7 +916,21 @@ class TaskWorkspaceTests(unittest.TestCase):
         package_root = self.root / "installed-runtimes" / version / "node_modules/juno-code"
         executable = package_root / "dist/bin/cli.mjs"
         executable.parent.mkdir(parents=True)
-        executable.write_text(f"#!/bin/sh\nprintf 'juno-code {version}\\n'\n")
+        if output_shape == "historical":
+            stdout = f"{version}\n"
+            stderr = (
+                f"\n🎯 Juno Code v{version} - TypeScript CLI\n"
+                "   Node.js v22.22.3 on darwin\n"
+                f"   Working directory: {executable.parent.resolve()}\n\n"
+            )
+        elif output_shape == "release":
+            stdout, stderr = f"juno-code {version}\n", ""
+        else:
+            raise ValueError(f"unknown legacy version output shape: {output_shape}")
+        executable.write_text(
+            "#!/usr/bin/env python3\nimport sys\n"
+            f"sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n"
+        )
         executable.chmod(0o755)
         template = package_root / "dist/templates/scripts/task_workspace.py"
         template.parent.mkdir(parents=True)
@@ -936,6 +951,19 @@ class TaskWorkspaceTests(unittest.TestCase):
             str(executable.resolve()))
         return {"legacy": legacy, "executable": executable, "template": template,
                 "identity": identity_path, "package_root": package_root}
+
+    def set_legacy_version_output(self, fixture: dict[str, Path | bytes],
+                                  stdout: str, stderr: str) -> None:
+        executable = Path(fixture["executable"])
+        executable.write_text(
+            "#!/usr/bin/env python3\nimport sys\n"
+            f"sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n"
+        )
+        executable.chmod(0o755)
+        identity_path = Path(fixture["identity"])
+        identity = json.loads(identity_path.read_text())
+        identity["executable_sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
+        identity_path.write_text(json.dumps(identity) + "\n")
 
     def install_declared_output_fixtures(self, *, omit: Optional[str] = None) -> dict[str, list[str] | str]:
         generated_source = "juno-code/canonical/implement.md"
@@ -2116,7 +2144,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(
             plan["prior"]["classification"],
             "exact_registered_legacy_installed_consumer_generation")
-        self.assertEqual(plan["prior"]["package_version"], "2.1.3-rc.0.9")
+        self.assertEqual(plan["prior"]["package_version"], "2.1.2")
         self.assertEqual(plan["prior"]["legacy_runtime"]["executable"],
                          str(Path(fixture["executable"]).resolve()))
         self.assertEqual(plan["prior"]["legacy_runtime"]["template_sha256"],
@@ -2128,6 +2156,36 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(),
                          SCRIPT.read_bytes())
         self.assertTrue(Path(fixture["identity"]).is_file())
+
+    def test_runtime_bootstrap_retains_exact_prefixed_legacy_version_output(self) -> None:
+        self.install_legacy_consumer_runtime(output_shape="release")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3-rc.0.10", package_hash, None)
+        self.assertEqual(plan["prior"]["package_version"], "2.1.2")
+
+    def test_runtime_bootstrap_refuses_noncanonical_legacy_version_output(self) -> None:
+        fixture = self.install_legacy_consumer_runtime()
+        executable = Path(fixture["executable"])
+        canonical_banner = (
+            "\n🎯 Juno Code v2.1.2 - TypeScript CLI\n"
+            "   Node.js v22.22.3 on darwin\n"
+            f"   Working directory: {executable.parent.resolve()}\n\n"
+        )
+        cases = {
+            "wrong version": ("2.1.1\n", canonical_banner.replace("v2.1.2", "v2.1.1")),
+            "malformed banner": ("2.1.2\n", canonical_banner.replace("Node.js", "Node")),
+            "ambiguous stdout": ("2.1.2\njuno-code 2.1.2\n", canonical_banner),
+            "unexpected stderr": ("2.1.2\n", canonical_banner + "unexpected\n"),
+        }
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        for label, (stdout, stderr) in cases.items():
+            with self.subTest(label=label):
+                self.set_legacy_version_output(fixture, stdout, stderr)
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "version output mismatched"):
+                    task_runtime.runtime_bootstrap(
+                        self.controller, "2.1.3-rc.0.10", package_hash, None)
 
     def test_runtime_bootstrap_receipt_binds_exact_legacy_identity_bytes(self) -> None:
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()

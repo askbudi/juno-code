@@ -1550,6 +1550,23 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
         return False
 
 
+def _legacy_cli_version_output_valid(result: subprocess.CompletedProcess[str],
+                                     version: str, cwd: Path) -> bool:
+    """Accept only the exact release or canonical historical --version contract."""
+    if result.stdout == f"juno-code {version}\n" and result.stderr == "":
+        return True
+    if result.stdout != f"{version}\n":
+        return False
+    node_version = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    node_platform = r"(?:aix|android|darwin|freebsd|linux|openbsd|sunos|win32)"
+    historical_banner = (
+        rf"\n🎯 Juno Code v{re.escape(version)} - TypeScript CLI\n"
+        rf"   Node\.js {node_version} on {node_platform}\n"
+        rf"   Working directory: {re.escape(str(cwd))}\n\n"
+    )
+    return re.fullmatch(historical_banner, result.stderr) is not None
+
+
 def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: str,
                                     recovery_package_version: str) -> dict[str, Any]:
     """Prove an inventory-less consumer blob came from the registered old release."""
@@ -1616,8 +1633,9 @@ def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: 
         raise TaskWorkspaceError(
             "consumer target task runtime does not match the registered installed template")
     version_result = run([str(executable), "--version"], executable.parent, check=False)
-    if (version_result.returncode != 0 or version_result.stdout.strip()
-            != f"juno-code {identity['version']}" or version_result.stderr.strip()
+    if (version_result.returncode != 0
+            or not _legacy_cli_version_output_valid(
+                version_result, identity["version"], executable.parent)
             or hashlib.sha256(executable.read_bytes()).hexdigest() != executable_sha256):
         raise TaskWorkspaceError("consumer target installed runtime version output mismatched")
     prior_sha = hashlib.sha256(prior).hexdigest()
