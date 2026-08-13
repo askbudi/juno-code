@@ -1183,6 +1183,36 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "HEAD"), recovered["commit_sha"])
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
+    def test_runtime_bootstrap_preserves_destination_dirt_racing_holder_preparation(self) -> None:
+        git(self.repository, "rm", task_runtime.RUNTIME_PATH)
+        git(self.repository, "commit", "-m", "consumer target lacks task runtime")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        receipt = Path(plan["receipt"]["path"])
+        before = git(self.repository, "rev-parse", "HEAD")
+        original_run = task_runtime.run
+        injected = {"done": False}
+        dirt = b"CONCURRENT USER DIRT\n"
+
+        def inject_before_non_destructive_read_tree(
+                argv: list[str], cwd: Path, *, check: bool = True):
+            if (len(argv) >= 7 and argv[-3:-1] == ["-m", "-u"]
+                    and not injected["done"]):
+                destination = self.repository / task_runtime.RUNTIME_PATH
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(dirt)
+                injected["done"] = True
+            return original_run(argv, cwd, check=check)
+
+        with mock.patch.object(task_runtime, "run",
+                               side_effect=inject_before_non_destructive_read_tree):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "synchronization was interrupted before CAS"):
+                task_runtime.runtime_bootstrap(
+                    self.controller, "2.1.3", package_hash, receipt)
+        self.assertEqual(git(self.repository, "rev-parse", "HEAD"), before)
+        self.assertEqual((self.repository / task_runtime.RUNTIME_PATH).read_bytes(), dirt)
+
     def test_runtime_bootstrap_refuses_holder_dirt_racing_final_pre_cas_revalidation(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "consumer target lacks task runtime")

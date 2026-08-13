@@ -1733,7 +1733,9 @@ def _prepare_target_holder_for_cas(holder: Path, target_ref: str,
     # Prepare the one-path index/worktree transition while the ref still names
     # previous_sha. Only after exact prepared-state verification may CAS advance
     # the branch. Thus no post-CAS operation can overwrite concurrent holder dirt.
-    result = run(["git", "-C", str(holder), "read-tree", "--reset", "-u", commit_sha],
+    # A one-tree merge is deliberately non-destructive: unlike --reset, Git
+    # refuses when tracked or untracked working bytes raced the admitted index.
+    result = run(["git", "-C", str(holder), "read-tree", "-m", "-u", commit_sha],
                  holder, check=False)
     if result.returncode:
         raise TaskWorkspaceError(

@@ -170,8 +170,8 @@ otherwise it creates a one-path reviewed commit in an isolated clean worktree
 and durably records its apply intent. Before mutation it discovers exact target-ref
 holders under the merge queue's repository/target-ref lock. Every advancement uses
 expected-SHA CAS; with one exact clean unlocked holder, its one-path index and
-files are prepared and revalidated before CAS, with no post-CAS overwrite or
-unconditional branch reset. Dirty,
+files are prepared by a non-destructive Git merge and revalidated before CAS.
+Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. Dirty,
 locked, moved, or multiple holders refuse with explicit
 recovery guidance before mutation. If holder synchronization or completion
 recording is interrupted, rerun the same receipt to recover the existing durable
