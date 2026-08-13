@@ -124,6 +124,13 @@
       "type": "wiki"
     },
     {
+      "source": "prompts/life_cycle.md",
+      "destination": ".juno_task/prompts/life_cycle.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "life_cycle"
+    },
+    {
       "source": "prompts/clean_worktree.md",
       "destination": ".juno_task/prompts/clean_worktree.md",
       "installClass": "project",
@@ -181,6 +188,12 @@
     {
       "source": "wiki/git_worktree_lifecycle.md",
       "destination": ".juno_task/wiki/git_worktree_lifecycle.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/watching_progress.md",
+      "destination": ".juno_task/wiki/watching_progress.md",
       "installClass": "project",
       "type": "wiki"
     },
@@ -289,6 +302,12 @@
     {
       "source": "scripts/managed_agent_runner.py",
       "destination": ".juno_task/scripts/managed_agent_runner.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/watch_progress.py",
+      "destination": ".juno_task/scripts/watch_progress.py",
       "installClass": "script",
       "type": "script"
     },

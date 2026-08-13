@@ -14,6 +14,7 @@ export const MANAGED_UPDATE_ROOTS = [
   '.juno_task/managed-conflicts',
   '.juno_task/managed-specializations',
   '.juno_task/.requirements-cache',
+  '.juno_task/runtime/managed-controller/policy-backups',
   '.venv_juno',
   'scripts/git-flow.sh',
   '.agents',

@@ -210,6 +210,24 @@ describe('normalized workspace topology', () => {
     expect(() => workspaceLocation(report, 'integration')).toThrow(/found 2/);
   });
 
+  it('uses the registered canonical owner when extra protected owners exist', () => {
+    const value = fixture();
+    const extra = path.join(path.dirname(value.primary), 'extra-integration');
+    git(value.primary, 'worktree', 'add', '-q', '--detach', extra, 'target');
+    git(extra, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
+    git(extra, 'config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1');
+    git(value.primary, 'config', 'juno.integration.ownerPath', value.integration);
+
+    const report = inspectWorkspaceTopology(value.controller, '2.1.1');
+    expect(report.integration).toMatchObject({
+      status: 'registered',
+      registeredPath: value.integration,
+      owner: { path: value.integration },
+    });
+    expect(workspaceLocation(report, 'integration')).toBe(value.integration);
+    expect(report.findings.map((item) => item.code)).not.toContain('integration-owner-multiple');
+  });
+
   it('detects stale owners, wrong-role target holders, and task-role mismatch', () => {
     const value = fixture();
     git(value.primary, 'checkout', 'target');
@@ -306,10 +324,17 @@ describe('normalized workspace topology', () => {
     expect(humanInfo.stdout).toContain('Juno workspace (juno.workspace-topology.v1)');
     expect(humanInfo.stdout).toContain('Role authority');
 
-    const where = cli(['where', 'controller', '--cwd', value.task], value.task);
-    expect(where.status, where.stderr).toBe(0);
-    expect(where.stderr).toBe('');
-    expect(where.stdout.trim()).toBe(value.controller);
+    const nestedTask = path.join(value.task, 'nested', 'surface');
+    mkdirSync(nestedTask, { recursive: true });
+    for (const surface of [value.controller, value.task, value.integration, nestedTask]) {
+      const where = cli(['where', 'controller', '--cwd', surface], surface);
+      expect(where.status, `${surface}: ${where.stderr}`).toBe(0);
+      expect(where.stderr).toBe('');
+      expect(where.stdout.trim()).toBe(value.controller);
+      expect(path.join(where.stdout.trim(), '.juno_task/scripts/watch_progress.py')).toBe(
+        path.join(value.controller, '.juno_task/scripts/watch_progress.py'),
+      );
+    }
 
     git(value.primary, 'config', '--worktree', 'juno.workspace.role', 'integration-owner');
     git(

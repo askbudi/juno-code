@@ -64,10 +64,9 @@ export default function setup() {
   const fixtureScripts = path.join(fixtureController, '.juno_task', 'scripts');
   const fixtureBin = path.join(fixtureController, '.venv_juno', 'bin');
   fs.mkdirSync(fixtureScripts, { recursive: true });
-  fs.mkdirSync(fixtureBin, { recursive: true });
   execFileSync('git', ['init', '-b', 'fixture-controller', fixtureController], { stdio: 'ignore' });
   const python = execFileSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim();
-  fs.symlinkSync(python, path.join(fixtureBin, 'python'));
+  execFileSync(python, ['-m', 'venv', path.dirname(fixtureBin)], { stdio: 'ignore' });
 
   process.env.JUNO_CODE_TEST_FIXTURE_ROOT = fixtureRoot;
   process.env.JUNO_TASK_ROOT = fixtureController;

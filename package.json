@@ -1,6 +1,6 @@
 {
   "name": "juno-code",
-  "version": "2.1.3-rc.0.5",
+  "version": "2.1.3-rc.0.14",
   "description": "Ralph Wiggum meet Kanban! Ralph style execution for [Claude Code, Codex, Gemini, Cursor]. One task per iteration, automatic progress tracking, and git commits. Set it and let it run.",
   "keywords": [
     "Ralph",
@@ -42,10 +42,10 @@
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",
-    "build": "npm run generate:implementation-contract -- --check && tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-skills && npm run build:copy-extensions && npm run build:copy-wrapper",
+    "build": "npm run test:skill-contracts && npm run generate:implementation-contract -- --check && tsup && npm run build:copy-templates && npm run build:copy-services && npm run build:copy-skills && npm run build:copy-extensions && npm run build:copy-wrapper && node scripts/clean-template-bytecode.mjs dist/templates",
     "generate:implementation-contract": "node scripts/generate-implementation-contract.mjs",
     "test:implementation-contract": "node scripts/generate-implementation-contract.mjs --check",
-    "build:copy-templates": "node -e \"const fs = require('fs-extra'); const path = require('path'); for (const dir of ['scripts','prompts','wiki','config','controller-agent']) { const src = path.join('src/templates', dir); const dest = path.join('dist/templates', dir); if (!fs.existsSync(src)) throw new Error('Missing managed template directory: ' + src); fs.copySync(src, dest, { recursive: true }); } fs.copyFileSync('src/templates/managed-assets.json', 'dist/templates/managed-assets.json'); for (const generated of ['dist/templates/scripts/logs','dist/templates/scripts/__pycache__']) fs.removeSync(generated); fs.readdirSync('dist/templates/scripts').filter(f => f.endsWith('.sh')).forEach(f => fs.chmodSync(path.join('dist/templates/scripts', f), 0o755));\"",
+    "build:copy-templates": "node -e \"const fs = require('fs-extra'); const path = require('path'); for (const dir of ['scripts','prompts','wiki','config','controller-agent']) { const src = path.join('src/templates', dir); const dest = path.join('dist/templates', dir); if (!fs.existsSync(src)) throw new Error('Missing managed template directory: ' + src); fs.copySync(src, dest, { recursive: true }); } fs.copyFileSync('src/templates/managed-assets.json', 'dist/templates/managed-assets.json'); fs.removeSync('dist/templates/scripts/logs'); fs.readdirSync('dist/templates/scripts').filter(f => f.endsWith('.sh')).forEach(f => fs.chmodSync(path.join('dist/templates/scripts', f), 0o755));\"",
     "build:copy-services": "node -e \"const fs = require('fs-extra'); const path = require('path'); const src = 'src/templates/services'; const dest = 'dist/templates/services'; fs.copySync(src, dest, { recursive: true }); const required = ['codex.py','claude.py','gemini.py','pi.py','environment_boundary.py']; const missing = required.filter(file => !fs.existsSync(path.join(dest, file))); if (missing.length) { throw new Error('Missing required service scripts in dist: ' + missing.join(', ')); } required.forEach(file => fs.chmodSync(path.join(dest, file), 0o755));\"",
     "build:copy-skills": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/skills'; const dest = 'dist/templates/skills'; fs.copySync(src, dest, { recursive: true, dereference: true });\"",
     "build:copy-extensions": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/extensions'; const dest = 'dist/templates/extensions'; if (fs.existsSync(src)) { fs.copySync(src, dest, { recursive: true }); }\"",
@@ -54,6 +54,9 @@
     "test": "vitest run -c ./vitest.fast.config.ts",
     "test:full": "vitest run",
     "test:managed-assets": "node scripts/verify-managed-assets.mjs",
+    "test:skill-contracts": "node scripts/verify-skill-argument-contracts.mjs",
+    "test:template-bytecode-package": "node scripts/verify-template-bytecode-cleanup.mjs",
+    "test:installed-test-fixture-package": "node scripts/verify-installed-test-fixture.mjs",
     "test:config-migration-package": "node scripts/verify-config-migration.mjs",
     "test:bolt-package-canary": "node scripts/verify-bolt-package-canary.mjs",
     "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",

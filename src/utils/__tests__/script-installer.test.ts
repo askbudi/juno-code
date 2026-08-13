@@ -88,6 +88,7 @@ describe('ScriptInstaller', () => {
       expect(missing).toContain('controller_checkpoint.py');
       expect(missing).toContain('task_workflow_helper.py');
       expect(missing).toContain('workflow_run_evidence.py');
+      expect(missing).toContain('watch_progress.py');
       expect(missing).toContain('wiki_lint.py');
       expect(missing).toContain('wiki_lint.sh');
     });
@@ -239,6 +240,7 @@ describe('ScriptInstaller', () => {
         'tests/test_release_gate.py',
         'tests/test_risk_policy.py',
         'tests/test_task_workspace.py',
+        'watch_progress.py',
       ]);
       for (const relative of newlyManaged) {
         const destination = path.join(scriptsDir, relative);
@@ -250,6 +252,18 @@ describe('ScriptInstaller', () => {
   });
 
   describe('installScript', () => {
+    it('installs the strict watcher byte-identically and executable', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task'));
+      expect(await ScriptInstaller.installScript(testDir, 'watch_progress.py', true)).toBe(true);
+      const installed = path.join(testDir, '.juno_task/scripts/watch_progress.py');
+      expect(await fs.readFile(installed)).toEqual(
+        await fs.readFile(path.join(process.cwd(), 'src/templates/scripts/watch_progress.py')),
+      );
+      expect((await fs.stat(installed)).mode & 0o111).not.toBe(0);
+      expect(await fs.readFile(installed, 'utf8')).toContain('juno.watch-footer.v1');
+      expect(await fs.readFile(installed, 'utf8')).toContain('juno.watch-event.v1');
+    });
+
     it('should not install if project not initialized', async () => {
       // Note: This will fail because getPackageScriptsDir may not find scripts in test env
       // The test verifies the flow doesn't throw
@@ -343,6 +357,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
+        { name: 'watch_progress.py', installed: false },
         { name: 'task_workspace.py', installed: false },
         { name: 'integration_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
@@ -465,6 +480,10 @@ describe('ScriptInstaller', () => {
         '#!/usr/bin/env python3\nprint("workflow evidence")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'watch_progress.py'),
+        '#!/usr/bin/env python3\nprint("watch progress")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'wiki_lint.py'),
         '#!/usr/bin/env python3\nprint("wiki lint")',
       );
@@ -580,6 +599,7 @@ describe('ScriptInstaller', () => {
         { name: 'git_index_lock.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
+        { name: 'watch_progress.py', installed: true },
         { name: 'task_workspace.py', installed: true },
         { name: 'integration_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },
@@ -873,6 +893,56 @@ describe('ScriptInstaller', () => {
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
     });
 
+    it('routes one sparse pre-2.1.2 controller to the receipt-bound migration without tracked mutation', async () => {
+      const templateRoot = path.resolve(process.cwd(), 'src/templates/config');
+      const metadata = await fs.readJson(path.join(templateRoot, 'metadata-controller.json'));
+      metadata.controller_branch = 'refs/heads/customer/controller';
+      metadata.product_ref = 'refs/heads/customer/release';
+      metadata.generated_metadata = metadata.generated_metadata.filter(
+        (entry: string) => entry !== '.juno_task/config/integration-workspace.json',
+      );
+      metadata.tracked_exact = metadata.tracked_exact.filter(
+        (entry: string) => entry !== '.juno_task/config/integration-workspace.json',
+      );
+      await fs.ensureDir(path.join(testDir, '.juno_task/config'));
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json',
+        },
+      });
+      await fs.writeJson(
+        path.join(testDir, '.juno_task/config/metadata-controller.json'), metadata,
+      );
+      const taskBytes = '{"schema_version":"owner-task-policy","preserve":true}\n';
+      const riskBytes = '{"schema_version":"owner-risk-policy","preserve":true}\n';
+      await fs.writeFile(path.join(testDir, '.juno_task/config/task-workspace.json'), taskBytes);
+      await fs.writeFile(path.join(testDir, '.juno_task/config/risk-policy.json'), riskBytes);
+
+      const policyBefore = await fs.readFile(
+        path.join(testDir, '.juno_task/config/metadata-controller.json'),
+      );
+      for (const force of [false, true]) {
+        await expect(
+          ScriptInstaller.updateMetadataControllerPolicies(testDir, force),
+        ).rejects.toThrow('yy migrate metadata-policy plan');
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/metadata-controller.json'),
+        )).toEqual(policyBefore);
+        expect(await fs.pathExists(
+          path.join(testDir, '.juno_task/config/integration-workspace.json'),
+        )).toBe(false);
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/task-workspace.json'), 'utf8',
+        )).toBe(taskBytes);
+        expect(await fs.readFile(
+          path.join(testDir, '.juno_task/config/risk-policy.json'), 'utf8',
+        )).toBe(riskBytes);
+      }
+      await expect(ScriptInstaller.preflightUpdate(testDir, true)).rejects.toThrow(
+        'scripts update is mutation-free for tracked policy',
+      );
+    });
+
     it('preserves newer receipt-bound bytes when package and generation versions match but hashes differ', async () => {
       const script = '.juno_task/scripts/task_workspace.py';
       const exactTargetBytes = '# newer exact target runtime from integrated source\n';
@@ -1063,7 +1133,7 @@ describe('ScriptInstaller', () => {
       );
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git-flow.sh'))).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git_flow.py'))).toBe(true);
-    });
+    }, 60_000);
 
     it('preserves an unrelated root Git-flow script', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));

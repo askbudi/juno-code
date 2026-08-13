@@ -126,16 +126,35 @@ describe('Bolt task workspace managed runtime', () => {
     );
   });
 
-  it('ships one small standalone engine with real-Git contract tests', () => {
+  it('keeps guarded runtime-bootstrap admission representation-neutral', () => {
+    const runtime = readFileSync(
+      resolve(repository, 'juno-code/src/templates/scripts/task_workspace.py'), 'utf8',
+    );
+    const admission = runtime.slice(
+      runtime.indexOf('def require_metadata_only_controller('),
+      runtime.indexOf('\ndef _file_sha256('),
+    );
+    expect(admission).not.toContain('core.sparseCheckout');
+    expect(admission).toContain('exact registered metadata-only controller');
+    expect(admission).toContain(
+      'required_checks = {"branch_exact", "tracked_boundary", "product_absent", "role"}',
+    );
+  });
+
+  it('ships one small standalone engine with sparse, orphan, and negative real-Git contracts', () => {
     const runtime = resolve(repository, 'juno-code/src/templates/scripts/task_workspace.py');
     const tests = resolve(repository, 'juno-code/src/templates/scripts/tests/test_task_workspace.py');
     const source = readFileSync(runtime, 'utf8');
+    const testSource = readFileSync(tests, 'utf8');
     expect(source).toContain('def start(');
     expect(source).toContain('def status(');
     expect(source).toContain('def finish(');
     expect(source).not.toContain('task_lifecycle');
     expect(source).not.toContain('integration_candidate');
     expect(source).not.toContain('managed_agent_runner');
+    expect(testSource).toContain('test_sparse_metadata_controller_runtime_bootstrap');
+    expect(testSource).toContain('test_orphan_metadata_only_controller_runtime_bootstrap_without_sparse_checkout');
+    expect(testSource).toContain('test_runtime_bootstrap_refuses_product_bearing_metadata_controller');
     execFileSync('python3', [tests], {
       cwd: repository,
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-task-workspace-test-pycache' },

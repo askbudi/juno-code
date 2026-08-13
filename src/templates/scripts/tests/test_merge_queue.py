@@ -21,6 +21,13 @@ QUEUE = SCRIPTS / "merge_queue.py"
 sys.path.insert(0, str(SCRIPTS))
 import merge_queue as merge_runtime  # noqa: E402
 import risk_policy as risk_runtime  # noqa: E402
+import task_workspace as task_runtime  # noqa: E402
+try:
+    _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
+except task_runtime.TaskWorkspaceError as exc:
+    print(f"merge queue test setup: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+install_juno_admission_fixture = _fixture.install_juno_admission_fixture
 
 
 def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -48,7 +55,9 @@ class MergeQueueTests(unittest.TestCase):
         )
         self.kanban_finalization = self.kanban_finalization_patcher.start()
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        # Keep fixture records on the physical macOS temp identity; production
+        # exact-root guards must continue rejecting lexical symlink aliases.
+        self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repo"
         self.controller = self.root / "controller"
         self.workspaces = self.root / "features"
@@ -785,6 +794,32 @@ raise SystemExit(2)
         self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+
+    def test_one_repair_round_exhausts_instead_of_starting_an_unbounded_review_loop(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "broken\n")
+        self.queue_payload("next")
+        finding = lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            first = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(first["outcome"], "REVIEW_FINDINGS")
+        self.assertEqual(self.task("status", "X")["review_round"], 1)
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("repair\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "consolidated repair")
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(reopened["review_round"], 2)
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            second = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(second["outcome"], "REVIEW_FINDINGS_EXHAUSTED")
+        self.assertEqual(self.task("status", "X")["state"],
+                         "REVIEW_FINDINGS_EXHAUSTED")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "review budget exhausted"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
 
     def test_review_findings_clear_stale_failure_from_an_earlier_attempt(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")

@@ -35,6 +35,12 @@ const COHERENCE_BLOCKING_MANAGED_ASSETS = new Set(
 const MANAGED_CONTROLLER_GENERATION = path.join(
   '.juno_task', 'runtime', 'managed-controller', 'generation.json',
 );
+const CONTROLLER_POLICY_PATHS = [
+  '.juno_task/config/metadata-controller.json',
+  '.juno_task/config/task-workspace.json',
+  '.juno_task/config/integration-workspace.json',
+  '.juno_task/config/risk-policy.json',
+] as const;
 
 type ManagedControllerGeneration = {
   schema_version: 'juno_managed_controller_runtime.v1';
@@ -158,6 +164,137 @@ export class ScriptInstaller {
         `Preserved the exact target generation. Rebind the executable with \`yy migrate runtime-rebind\`; ` +
         `recover scripts with \`yy integration runtime-refresh --previous-sha ${generation.target_sha} --target-sha ${generation.target_sha}\`.`,
       );
+    }
+  }
+
+  /**
+   * Materialize the project-class policy subset owned by a sparse metadata
+   * controller. Existing reviewed policy bytes are never replaced with package
+   * defaults. The one structural migration needed by pre-2.1.2 controllers is
+   * explicit-force only and archives the original bytes in ignored runtime state.
+   */
+  static async updateMetadataControllerPolicies(
+    projectDir: string,
+    force = false,
+  ): Promise<{ installed: string[]; updated: string[]; backups: string[] }> {
+    if (!(await this.isMetadataOnlyController(projectDir))) {
+      return { installed: [], updated: [], backups: [] };
+    }
+    const packageScriptsDir = this.getPackageScriptsDir();
+    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    const packageConfigDir = path.join(path.dirname(packageScriptsDir), 'config');
+    await assertPackageSource(packageConfigDir, path.dirname(packageScriptsDir), 'directory');
+
+    const metadataRelative = CONTROLLER_POLICY_PATHS[0];
+    const metadataPath = path.join(projectDir, metadataRelative);
+    if (!(await fs.pathExists(metadataPath))) {
+      throw new Error(
+        'Metadata-controller identity policy is missing; a package default cannot reconstruct reviewed controller and product refs',
+      );
+    }
+    await assertSafeManagedWritePath(projectDir, metadataPath);
+    const originalMetadata = await fs.readFile(metadataPath);
+    let metadataPolicy: Record<string, unknown>;
+    try {
+      metadataPolicy = JSON.parse(originalMetadata.toString('utf8')) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`Metadata-controller identity policy is invalid: ${String(error)}`);
+    }
+    if (metadataPolicy.schema_version !== 'juno_metadata_controller_policy.v1' ||
+        !Array.isArray(metadataPolicy.generated_metadata) ||
+        !metadataPolicy.generated_metadata.every((entry) => typeof entry === 'string') ||
+        !Array.isArray(metadataPolicy.tracked_exact) ||
+        !metadataPolicy.tracked_exact.every((entry) => typeof entry === 'string')) {
+      throw new Error('Metadata-controller identity policy is invalid or predates the supported migration shape');
+    }
+    const generatedMetadata = metadataPolicy.generated_metadata as string[];
+    const trackedExact = metadataPolicy.tracked_exact as string[];
+    const missingClassifications = CONTROLLER_POLICY_PATHS.filter((relative) =>
+      !generatedMetadata.includes(relative) || !trackedExact.includes(relative),
+    );
+    void force;
+    if (missingClassifications.length > 0) {
+      const exactLegacy = missingClassifications.length === 1
+        && missingClassifications[0] === '.juno_task/config/integration-workspace.json';
+      if (exactLegacy) {
+        throw new Error(
+          'Metadata-controller policy requires the receipt-bound legacy migration; scripts update is mutation-free for tracked policy. ' +
+          'Run `yy migrate metadata-policy plan --root "$PWD" --output /external/metadata-policy-plan.json`, ' +
+          'review it, then run `yy migrate metadata-policy apply --plan /external/metadata-policy-plan.json ' +
+          '--output /external/metadata-policy-apply.json --authorize-metadata-policy-migration`.',
+        );
+      }
+      throw new Error(
+        `Metadata-controller policy has unsupported managed classification gaps: ${missingClassifications.join(', ')}. ` +
+        'Preserved tracked policy bytes for owner review.',
+      );
+    }
+    const missingEndpoints = CONTROLLER_POLICY_PATHS.filter((relative) =>
+      !fs.existsSync(path.join(projectDir, relative)),
+    );
+    if (missingEndpoints.length > 0) {
+      throw new Error(
+        `Metadata-controller tracked policy endpoints are missing: ${missingEndpoints.join(', ')}. ` +
+        'Generic scripts update will not recreate tracked controller policy.',
+      );
+    }
+    return { installed: [], updated: [], backups: [] };
+  }
+
+  /** Refuse a success message until sparse policy and routed runtime parity are proven. */
+  static async assertMetadataControllerUpdateComplete(projectDir: string): Promise<void> {
+    if (!(await this.isMetadataOnlyController(projectDir))) return;
+    const metadataPath = path.join(projectDir, CONTROLLER_POLICY_PATHS[0]);
+    const metadata = await fs.readJson(metadataPath).catch((error) => {
+      throw new Error(`Updated metadata-controller policy is unreadable: ${String(error)}`);
+    }) as Record<string, unknown>;
+    const generatedMetadata = Array.isArray(metadata.generated_metadata)
+      ? metadata.generated_metadata : [];
+    const trackedExact = Array.isArray(metadata.tracked_exact) ? metadata.tracked_exact : [];
+    for (const relative of CONTROLLER_POLICY_PATHS) {
+      if (!generatedMetadata.includes(relative) || !trackedExact.includes(relative)) {
+        throw new Error(`Updated metadata-controller policy still omits required asset: ${relative}`);
+      }
+      const destination = path.join(projectDir, relative);
+      if (!(await fs.pathExists(destination))) {
+        throw new Error(`Required metadata-controller managed asset is missing: ${relative}`);
+      }
+      await fs.readJson(destination).catch((error) => {
+        throw new Error(`Required metadata-controller managed asset is invalid: ${relative}: ${String(error)}`);
+      });
+    }
+    const generation = await this.inspectManagedControllerGeneration(projectDir);
+    if (generation.present) {
+      if (!generation.healthy) {
+        throw new Error(
+          `Receipt-bound metadata-controller runtime remains unhealthy: ${generation.findings.join('; ')}`,
+        );
+      }
+    } else {
+      const missing = await this.getMissingScripts(projectDir);
+      const outdated = await this.getOutdatedScripts(projectDir);
+      if (missing.length > 0 || outdated.length > 0) {
+        throw new Error(
+          `Metadata-controller routed scripts remain incomplete after update` +
+          `${missing.length ? `; missing: ${missing.join(', ')}` : ''}` +
+          `${outdated.length ? `; outdated: ${outdated.join(', ')}` : ''}`,
+        );
+      }
+    }
+    const integrationRuntime = path.join(
+      projectDir, '.juno_task', 'scripts', 'integration_workspace.py',
+    );
+    const runtime = await fs.readFile(integrationRuntime, 'utf8');
+    const routedMarkers: Record<string, string> = {
+      status: 'add_parser("status"',
+      repair: 'for name in ("repair", "push")',
+      'runtime-doctor': 'add_parser("runtime-doctor"',
+      'runtime-refresh': 'add_parser("runtime-refresh"',
+    };
+    for (const [operation, marker] of Object.entries(routedMarkers)) {
+      if (!runtime.includes(marker)) {
+        throw new Error(`Updated integration runtime does not route advertised command: ${operation}`);
+      }
     }
   }
 
@@ -611,6 +748,9 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     const junoTaskDir = path.join(projectDir, '.juno_task');
     if (!(await lstatIfPresent(junoTaskDir))) return;
     await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    if (await this.isMetadataOnlyController(projectDir)) {
+      await this.updateMetadataControllerPolicies(projectDir, force);
+    }
 
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
     await ManagedProjectAssets.preflight(projectDir, { force });
@@ -771,6 +911,10 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       const scriptsUpdated = await this.autoUpdate(projectDir, silent, true);
       await this.assertForcedScriptsInstalled(projectDir);
 
+      // Retire the old worktree-local version-check cache. The installed script
+      // now uses Git-common-dir (or XDG outside Git), keeping sparse controllers clean.
+      await fs.remove(path.join(projectDir, '.juno_task', '.requirements-cache'));
+
       // Then run install_requirements.sh with --force-update
       const scriptsDir = path.join(projectDir, '.juno_task', 'scripts');
       const installScript = path.join(scriptsDir, 'install_requirements.sh');
@@ -795,11 +939,6 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
               PATH: await fs.pathExists(path.join(localVenv, 'bin'))
                 ? `${path.join(localVenv, 'bin')}${path.delimiter}${inheritedPath}`
                 : inheritedPath,
-              VERSION_CHECK_CACHE_DIR: path.join(
-                projectDir,
-                '.juno_task',
-                '.requirements-cache',
-              ),
             },
           });
 

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "description": "Declared invocation argument contracts for every managed skill. Exact placeholder counts are enforced across Pi, Claude, and Codex.",
+  "surfaces": ["pi", "claude", "codex"],
+  "skills": {
+    "kanban-workflow": {
+      "semantics": "complete-request",
+      "placeholders": { "$ARGUMENTS": 1 }
+    },
+    "plan-kanban-tasks": {
+      "semantics": "complete-request",
+      "placeholders": { "$ARGUMENTS": 1 }
+    },
+    "ralph-loop": {
+      "semantics": "complete-assigned-request",
+      "placeholders": { "$ARGUMENTS": 1 }
+    },
+    "understand-project": {
+      "semantics": "structured-main-task-constraints-and-complete-request",
+      "placeholders": { "$1": 1, "$2": 1, "$ARGUMENTS": 1 }
+    }
+  }
+}

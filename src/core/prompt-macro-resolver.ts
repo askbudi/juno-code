@@ -102,10 +102,14 @@ export function resolvePromptMacros(
     return result;
   };
 
-  return {
-    resolvedPrompt: resolveText(prompt, [], 0),
-    warnings,
-  };
+  // life_cycle is a prefix contract: expand its managed body, but keep the
+  // caller-owned suffix opaque. This prevents nested project macros such as
+  // @@no_code from being reinterpreted or duplicated.
+  const leading = parseMacroToken(prompt, 0, true);
+  const resolvedPrompt = leading?.key === 'life_cycle'
+    ? resolveToken(leading.key, leading.token, [], 0) + prompt.slice(leading.endIndex)
+    : resolveText(prompt, [], 0);
+  return { resolvedPrompt, warnings };
 }
 
 interface ParsedToken {
