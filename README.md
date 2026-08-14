@@ -259,6 +259,8 @@ implementation. Use receipt-bound operations for topology repair and publication
 yy integration repair --dry-run
 yy integration repair --apply /absolute/path/to/repair-plan.json
 
+yy integration push
+# Optional reviewed/two-step mode:
 yy integration push --dry-run
 yy integration push --apply /absolute/path/to/push-plan.json
 ```
