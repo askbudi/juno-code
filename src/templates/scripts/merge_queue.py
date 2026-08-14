@@ -3451,8 +3451,15 @@ def merge_reopen(controller: Path, task_id: str,
                             or new_blob != candidate_blob):
                         raise MergeQueueError(
                             "dependency-lock refusal identity drifted before tip refresh")
+            # A findings/validation repair remains authored against the task's
+            # immutable creation base. Diffing it against a moved protected
+            # target would misclassify target-only paths as task deletions and
+            # persist them as admitted repair paths. A plain queued-tip refresh,
+            # however, may have deliberately merged the target and must exclude
+            # those inherited bytes with a target-relative diff.
+            changed_base = target_sha if queued_tip_refresh else record["base_sha"]
             changed = sorted(set(task_runtime.git(
-                worktree, "diff", "--name-only", f"{target_sha}..{new_tip}"
+                worktree, "diff", "--name-only", f"{changed_base}..{new_tip}"
             ).splitlines()))
             forbidden = [path for path in changed
                          if task_runtime.path_within(path, config["controller_private_paths"])]

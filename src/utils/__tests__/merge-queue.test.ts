@@ -21,5 +21,9 @@ describe('Bolt merge queue managed runtime', () => {
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-merge-queue-test-pycache' },
       stdio: 'pipe',
     });
-  }, 300_000);
+  // The 109-case real-Git matrix regularly exceeds five minutes on an
+  // eight-core host once the fast suite's other process fixtures have run.
+  // Keep the wrapper bounded without forcing Vitest to retry a successful
+  // synchronous Python child after it returns.
+  }, 900_000);
 });

@@ -2587,7 +2587,10 @@ raise SystemExit(2)
         state = merge_runtime.task_runtime.read_state(self.controller)
         self.assertEqual(state["tasks"]["X"]["state"], "QUEUED")
         self.assertEqual(state["queues"], {
-            "task_workspace_fifo": {"schema_version": "juno_task_workspace_fifo.v1", "next": 2}
+            "task_workspace_fifo": {"schema_version": "juno_task_workspace_fifo.v1", "next": 2},
+            "umbrella_child_reservations": {
+                "schema_version": "juno_task_umbrella_child_reservations.v1", "owners": {}
+            },
         })
         self.assertFalse((self.controller / ".juno_task/state/queue.json").exists())
 
