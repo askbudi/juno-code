@@ -100,7 +100,7 @@ class MergeQueueTests(unittest.TestCase):
             "destinations": ["fixtures/generated.txt"],
         }) + "\n")
         package = self.repository / "juno-code/package.json"
-        package.write_text(json.dumps({"version": "9.0.0"}) + "\n")
+        package.write_text(json.dumps({"name": "juno-code", "version": "9.0.0"}) + "\n")
         (self.repository / "src").mkdir()
         (self.repository / "src/shared.txt").write_text("base\n")
         git(self.repository, "add", ".")
