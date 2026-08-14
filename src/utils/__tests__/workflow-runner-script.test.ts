@@ -39,6 +39,62 @@ function cleanPythonDiscoveryEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
+type FixturePython = {
+  executable: string;
+  version: string;
+  yamlPackage: string;
+};
+
+type FixtureSpawn = (
+  command: string,
+  args: string[],
+  options: { encoding: 'utf8'; env: NodeJS.ProcessEnv },
+) => FixtureDiscoveryResult;
+
+function fixturePythonCandidates(start: string): string[] {
+  const candidates: string[] = [];
+  let cursor = path.resolve(start);
+  for (let depth = 0; depth < 10; depth += 1) {
+    candidates.push(path.join(cursor, '.venv_juno', 'bin', 'python'));
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  candidates.push('python3');
+  return [...new Set(candidates)];
+}
+
+function discoverFixturePython(start: string, spawnFixture: FixtureSpawn): FixturePython {
+  const environment = cleanPythonDiscoveryEnvironment();
+  const diagnostics: string[] = [];
+  const discoveryCode = [
+    'import json, pathlib, sys, yaml',
+    'print(json.dumps({',
+    "  'executable': str(pathlib.Path(sys.executable).resolve()),",
+    "  'version': f'{sys.version_info.major}.{sys.version_info.minor}',",
+    "  'yamlPackage': str(pathlib.Path(yaml.__file__).parent.resolve()),",
+    '}))',
+  ].join('\n');
+
+  for (const candidate of fixturePythonCandidates(start)) {
+    const result = spawnFixture(candidate, ['-c', discoveryCode], {
+      encoding: 'utf8',
+      env: environment,
+    });
+    try {
+      const output = requireFixtureDiscoveryOutput(candidate, result);
+      const parsed = JSON.parse(output) as Partial<FixturePython>;
+      if (!parsed.executable || !parsed.version || !parsed.yamlPackage) {
+        throw new Error('discovery payload omitted executable, version, or yamlPackage');
+      }
+      return parsed as FixturePython;
+    } catch (error) {
+      diagnostics.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`Workflow Runner fixture could not find a PyYAML-capable Python:\n${diagnostics.join('\n')}`);
+}
+
 // This process-heavy file runs real Python/Git subprocesses. Keep the larger
 // budget file-scoped while every child remains independently bounded above.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 });
@@ -281,37 +337,19 @@ describe('workflow_runner.sh template script', () => {
     );
     const fixtureBin = path.join(workflowFixtureController, '.venv_juno', 'bin');
     await fs.ensureDir(fixtureBin);
-    const pythonEnvironment = cleanPythonDiscoveryEnvironment();
-    // Ask Python for its own resolved executable instead of routing discovery
-    // through a shell. The full Vitest suite contains intentional child-process
-    // mocks, and an empty mocked `command -v` result previously flowed into an
-    // fs-extra copy as lstat('').
-    const realPythonExecutable = requireFixtureDiscoveryOutput('Python interpreter', nativeSpawnSync('python3', [
-      '-c',
-      'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())',
-    ], {
-      encoding: 'utf8',
-      env: pythonEnvironment,
-    }));
+    // Prefer a managed ancestor interpreter (including the controller that owns
+    // merge candidates), then accept ambient python3 only when that exact
+    // interpreter proves it owns PyYAML. Candidate checkouts intentionally do
+    // not depend on user-site packages.
+    const fixturePython = discoverFixturePython(process.cwd(), nativeSpawnSync);
+    const realPythonExecutable = fixturePython.executable;
     await fs.symlink(realPythonExecutable, path.join(fixtureBin, 'python'));
-    const pythonVersion = requireFixtureDiscoveryOutput('Python version', nativeSpawnSync(realPythonExecutable, [
-      '-c',
-      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")',
-    ], {
-      encoding: 'utf8',
-      env: pythonEnvironment,
-    }));
+    const pythonVersion = fixturePython.version;
     await fs.writeFile(
       path.join(workflowFixtureController, '.venv_juno', 'pyvenv.cfg'),
       `home = ${path.dirname(realPythonExecutable)}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
     );
-    const yamlPackage = requireFixtureDiscoveryOutput('PyYAML package', nativeSpawnSync(realPythonExecutable, [
-      '-c',
-      'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)',
-    ], {
-      encoding: 'utf8',
-      env: pythonEnvironment,
-    }));
+    const yamlPackage = fixturePython.yamlPackage;
     const managedSitePackages = path.join(workflowFixtureController, '.venv_juno', 'lib', `python${pythonVersion}`, 'site-packages');
     await fs.ensureDir(managedSitePackages);
     await fs.copy(yamlPackage, path.join(managedSitePackages, 'yaml'));
@@ -355,6 +393,31 @@ describe('workflow_runner.sh template script', () => {
     })).toThrow(
       'Workflow Runner fixture dependency discovery failed for PyYAML package: ModuleNotFoundError: No module named yaml',
     );
+  });
+
+  it('selects an ancestor managed interpreter when ambient Python lacks PyYAML', () => {
+    const start = '/controller/.juno_task/runtime/merge-queue/candidates/task-candidate/juno-code';
+    const managed = '/controller/.venv_juno/bin/python';
+    const selected = discoverFixturePython(start, (command) => command === managed
+      ? {
+          status: 0,
+          stdout: JSON.stringify({ executable: managed, version: '3.13', yamlPackage: '/managed/yaml' }),
+          stderr: '',
+        }
+      : {
+          status: 1,
+          stdout: '',
+          stderr: command === 'python3' ? 'ModuleNotFoundError: No module named yaml' : 'not found',
+        });
+    expect(selected).toEqual({ executable: managed, version: '3.13', yamlPackage: '/managed/yaml' });
+  });
+
+  it('reports every attempted interpreter when none owns PyYAML', () => {
+    expect(() => discoverFixturePython('/isolated/task/juno-code', (command) => ({
+      status: 1,
+      stdout: '',
+      stderr: command === 'python3' ? 'ModuleNotFoundError: No module named yaml' : 'not found',
+    }))).toThrow(/could not find a PyYAML-capable Python:[\s\S]*python3:[\s\S]*ModuleNotFoundError/);
   });
 
   it('delegates managed-agent steps, binds live artifacts, fails closed, and recovery detects drift', async () => {
