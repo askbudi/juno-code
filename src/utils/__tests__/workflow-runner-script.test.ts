@@ -11,6 +11,34 @@ const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner
 const WORKFLOW_CHILD_TIMEOUT_MS = 30_000;
 let workflowFixtureController: string | undefined;
 
+type FixtureDiscoveryResult = {
+  error?: Error;
+  status: number | null;
+  stdout: string | Buffer | null;
+  stderr: string | Buffer | null;
+};
+
+function requireFixtureDiscoveryOutput(
+  label: string,
+  result: FixtureDiscoveryResult,
+): string {
+  const stdout = result.stdout?.toString().trim() ?? '';
+  const stderr = result.stderr?.toString().trim() ?? '';
+  if (result.error || result.status !== 0 || !stdout) {
+    const detail = result.error?.message || stderr || `exit=${String(result.status)}`;
+    throw new Error(`Workflow Runner fixture dependency discovery failed for ${label}: ${detail}`);
+  }
+  return stdout;
+}
+
+function cleanPythonDiscoveryEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.PYTHONHOME;
+  delete env.PYTHONPATH;
+  delete env.VIRTUAL_ENV;
+  return env;
+}
+
 // This process-heavy file runs real Python/Git subprocesses. Keep the larger
 // budget file-scoped while every child remains independently bounded above.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 });
@@ -253,25 +281,37 @@ describe('workflow_runner.sh template script', () => {
     );
     const fixtureBin = path.join(workflowFixtureController, '.venv_juno', 'bin');
     await fs.ensureDir(fixtureBin);
-    const pythonExecutable = nativeSpawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
-    // Resolve the executable before linking it into the synthetic venv. On
-    // macOS, /usr/bin/python3 and version-manager launchers can themselves be
-    // links/shims; linking that spelling instead of the real interpreter makes
-    // adjacent pyvenv.cfg selection depend on /var -> /private/var aliases.
-    const realPythonExecutable = nativeSpawnSync(pythonExecutable, ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], {
+    const pythonEnvironment = cleanPythonDiscoveryEnvironment();
+    // Ask Python for its own resolved executable instead of routing discovery
+    // through a shell. The full Vitest suite contains intentional child-process
+    // mocks, and an empty mocked `command -v` result previously flowed into an
+    // fs-extra copy as lstat('').
+    const realPythonExecutable = requireFixtureDiscoveryOutput('Python interpreter', nativeSpawnSync('python3', [
+      '-c',
+      'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())',
+    ], {
       encoding: 'utf8',
-    }).stdout.trim();
+      env: pythonEnvironment,
+    }));
     await fs.symlink(realPythonExecutable, path.join(fixtureBin, 'python'));
-    const pythonVersion = nativeSpawnSync(realPythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
+    const pythonVersion = requireFixtureDiscoveryOutput('Python version', nativeSpawnSync(realPythonExecutable, [
+      '-c',
+      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")',
+    ], {
       encoding: 'utf8',
-    }).stdout.trim();
+      env: pythonEnvironment,
+    }));
     await fs.writeFile(
       path.join(workflowFixtureController, '.venv_juno', 'pyvenv.cfg'),
       `home = ${path.dirname(realPythonExecutable)}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
     );
-    const yamlPackage = nativeSpawnSync(pythonExecutable, ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)'], {
+    const yamlPackage = requireFixtureDiscoveryOutput('PyYAML package', nativeSpawnSync(realPythonExecutable, [
+      '-c',
+      'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)',
+    ], {
       encoding: 'utf8',
-    }).stdout.trim();
+      env: pythonEnvironment,
+    }));
     const managedSitePackages = path.join(workflowFixtureController, '.venv_juno', 'lib', `python${pythonVersion}`, 'site-packages');
     await fs.ensureDir(managedSitePackages);
     await fs.copy(yamlPackage, path.join(managedSitePackages, 'yaml'));
@@ -305,6 +345,16 @@ describe('workflow_runner.sh template script', () => {
     expect(templateContent).not.toContain('local_integration requires schema_version: 2');
     expect(templateContent).toContain('required_fields must include producer_step_digest');
     expect(templateContent).not.toContain('--checkpoint-controller');
+  });
+
+  it('fails fixture dependency discovery before an empty path reaches the filesystem', () => {
+    expect(() => requireFixtureDiscoveryOutput('PyYAML package', {
+      status: 1,
+      stdout: '',
+      stderr: 'ModuleNotFoundError: No module named yaml',
+    })).toThrow(
+      'Workflow Runner fixture dependency discovery failed for PyYAML package: ModuleNotFoundError: No module named yaml',
+    );
   });
 
   it('delegates managed-agent steps, binds live artifacts, fails closed, and recovery detects drift', async () => {
