@@ -608,6 +608,45 @@ class ManagedRuntimeTests(unittest.TestCase):
                                   task_id="UOsd11-retry")
         self.assertEqual(retried["outcome"], "completed")
 
+    def test_refresh_repair_and_doctor_use_packaged_source_for_untracked_destination(self) -> None:
+        manifest_path = self.repo / runtime.MANAGED_MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text())
+        manifest["assets"].append({
+            "source": "scripts/template-only.py",
+            "destination": ".juno_task/scripts/template-only.py",
+            "installClass": "script",
+            "type": "script",
+        })
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        self.write("juno-code/src/templates/scripts/template-only.py", "template only\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "add template-only managed runtime")
+        target = git(self.repo, "rev-parse", "HEAD")
+        self.assertFalse((self.repo / ".juno_task/scripts/template-only.py").exists())
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, target, task_id="template-only")
+
+        destination = self.controller / ".juno_task/scripts/template-only.py"
+        self.assertEqual(destination.read_text(), "template only\n")
+        row = next(item for item in result["scripts"]
+                   if item["path"] == ".juno_task/scripts/template-only.py")
+        self.assertEqual(row["outcome"], "installed")
+        self.assertEqual(row["classification"], "exact")
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, target)
+        self.assertTrue(doctor["healthy"], doctor)
+
+        destination.write_text("owner template-only customization\n")
+        self.write("juno-code/src/templates/scripts/template-only.py", "template only v2\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "update template-only managed runtime")
+        updated_target = git(self.repo, "rev-parse", "HEAD")
+        repair = runtime.managed_runtime_repair_plan(
+            self.controller, self.repo, target, updated_target, task_id="template-only-repair")
+        action = next(item for item in repair["actions"]
+                      if item["path"] == ".juno_task/scripts/template-only.py")
+        self.assertEqual(action["resolution"], "conflict")
+
     def test_unchanged_source_customization_is_preserved_while_changed_runtime_refreshes(self) -> None:
         customized = self.controller / ".juno_task/scripts/two.py"
         customized.write_text("owner controller registration customization\n")

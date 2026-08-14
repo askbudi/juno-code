@@ -111,6 +111,22 @@ def managed_script_destinations(repository: Path, commit: str) -> list[str]:
     return sorted(managed_script_assets(repository, commit))
 
 
+def managed_script_source_bytes(repository: Path, commit: str,
+                                assets: dict[str, str], destination: str) -> bytes:
+    """Read the committed runtime when present, otherwise its packaged template."""
+    source = destination
+    direct = managed_run(
+        ["git", "-C", str(repository), "cat-file", "-e", f"{commit}:{destination}"],
+        repository, check=False)
+    if direct.returncode:
+        try:
+            source = assets[destination]
+        except KeyError as exc:
+            raise ManagedRuntimeError(
+                f"managed script destination is absent from its manifest: {destination}") from exc
+    return managed_source_bytes(repository, commit, source)
+
+
 def managed_package_version(repository: Path, commit: str) -> str:
     package = managed_source_json(repository, commit, "juno-code/package.json")
     version = package.get("version") if isinstance(package, dict) else None
@@ -309,8 +325,10 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
     actions = []
     for relative in sorted(scripts | prior_scripts):
         destination = managed_safe_path(controller, relative)
-        old = managed_source_bytes(repository, previous_sha, relative) if relative in prior_scripts else None
-        new = managed_source_bytes(repository, target_sha, relative) if relative in scripts else None
+        old = managed_script_source_bytes(repository, previous_sha, previous_assets, relative) \
+            if relative in prior_scripts else None
+        new = managed_script_source_bytes(repository, target_sha, target_assets, relative) \
+            if relative in scripts else None
         current = destination.read_bytes() if destination.exists() else None
         classification = "exact"
         prior_binding = (managed_obsolete_generation_binding(
@@ -486,8 +504,8 @@ def managed_changed_source_overlaps(controller: Path, repository: Path, previous
     target_assets = managed_script_assets(repository, target_sha)
     overlaps: dict[str, dict[str, Any]] = {}
     for relative in sorted(set(previous_assets) & set(target_assets)):
-        old = managed_source_bytes(repository, previous_sha, relative)
-        new = managed_source_bytes(repository, target_sha, relative)
+        old = managed_script_source_bytes(repository, previous_sha, previous_assets, relative)
+        new = managed_script_source_bytes(repository, target_sha, target_assets, relative)
         destination = managed_safe_path(controller, relative)
         current = destination.read_bytes() if destination.is_file() else None
         if current is None or old == new or current in {old, new}:
@@ -707,7 +725,8 @@ def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str)
         findings.append({"code": "managed_generation_receipt_missing_or_invalid", "path": MANAGED_GENERATION_PATH})
     policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
     policy_hash = managed_sha256(policy_path.read_bytes()) if policy_path.is_file() else None
-    expected_paths = managed_script_destinations(repository, target_sha)
+    target_assets = managed_script_assets(repository, target_sha)
+    expected_paths = sorted(target_assets)
     generation_scripts = generation.get("scripts") if isinstance(generation, dict) else None
     identity_valid = (isinstance(generation, dict)
                       and generation.get("schema_version") == MANAGED_RUNTIME_SCHEMA
@@ -718,7 +737,8 @@ def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str)
                       and set(generation_scripts) == set(expected_paths))
     scripts: dict[str, dict[str, Any]] = {}
     for relative in expected_paths:
-        source_hash = managed_sha256(managed_source_bytes(repository, target_sha, relative))
+        source_hash = managed_sha256(managed_script_source_bytes(
+            repository, target_sha, target_assets, relative))
         destination = managed_safe_path(controller, relative)
         actual_hash = managed_sha256(destination.read_bytes()) if destination.is_file() else None
         entry = generation_scripts.get(relative) if isinstance(generation_scripts, dict) else None
