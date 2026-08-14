@@ -3,6 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
+import fullConfig, { MANAGED_INSTALL_POOL_MATCH_GLOBS } from '../../../vitest.config.js';
+import fastConfig from '../../../vitest.fast.config.js';
 import {
   acquireTestResourceLock,
   normalizeTestResourceLockPath,
@@ -46,6 +48,28 @@ afterEach(async () => {
 });
 
 describe('cross-language heavy test resource lock', () => {
+  it('routes every managed-install lock sharer through one single-fork file lane', async () => {
+    const testDirectory = path.resolve(import.meta.dirname);
+    const files = (await fs.readdir(testDirectory)).filter((name) => name.endsWith('.test.ts'));
+    const sources = await Promise.all(files.map(async (name) => ({
+      name, source: await fs.readFile(path.join(testDirectory, name), 'utf8'),
+    })));
+    const lockSharers = sources
+      .filter(({ source }) => source.includes(['useShared', 'HeavyWorkloadLock('].join('')))
+      .map(({ name }) => `src/utils/__tests__/${name}`).sort();
+    const scheduled = MANAGED_INSTALL_POOL_MATCH_GLOBS.map(([glob, pool]) => {
+      expect(pool).toBe('forks');
+      return glob;
+    }).sort();
+
+    expect(lockSharers).toEqual(scheduled);
+    for (const config of [fullConfig, fastConfig]) {
+      expect(config.test?.poolMatchGlobs).toEqual(MANAGED_INSTALL_POOL_MATCH_GLOBS);
+      expect(config.test?.poolOptions?.forks).toMatchObject({ singleFork: true, isolate: true });
+      expect(config.test?.poolOptions?.threads).toMatchObject({ singleThread: false });
+    }
+  });
+
   it('serializes simultaneous acquirers with fully published owner diagnostics', async () => {
     const { lockPath } = await fixture();
     const diagnostics: string[] = [];
