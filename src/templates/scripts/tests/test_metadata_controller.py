@@ -63,6 +63,11 @@ class MetadataControllerTest(unittest.TestCase):
         self.runtime.chmod(self.runtime.stat().st_mode | stat.S_IXUSR)
         write(self.temp / "installed/dist/templates/scripts/controller_resolver.py", "# runtime resolver\n")
         write(self.temp / "installed/dist/templates/scripts/task_workspace.py", "# task workspace\n")
+        packaged_wiki = POLICY.parents[1] / "wiki/controller"
+        for name in mc.CORE_CONTROLLER_WIKI:
+            source = packaged_wiki / name
+            write(self.temp / "installed/dist/templates/wiki/controller" / name,
+                  source.read_text() if source.is_file() else f"# {name}\n")
         self.new_controller = self.temp / "metadata-controller"
         self.policy = mc.load_policy(POLICY)
         self.plan_path = self.temp / "plan.json"
@@ -113,6 +118,9 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
         self.assertTrue((self.new_controller / ".juno_task/scripts/controller_resolver.py").is_file())
         self.assertEqual(payload["runtime_scripts"]["file_count"], 2)
+        self.assertEqual(payload["controller_wiki"]["file_count"], len(mc.CORE_CONTROLLER_WIKI))
+        for name in mc.CORE_CONTROLLER_WIKI:
+            self.assertTrue((self.new_controller / ".juno_task/wiki/controller" / name).is_file())
         self.assertTrue((self.new_controller / ".gitignore").is_file())
         self.assertTrue((self.new_controller / ".juno_task/state/tasks.json").is_file())
         self.assertTrue((self.new_controller / ".juno_task/receipts/controller-boundary.json").is_file())
@@ -197,6 +205,19 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(missing["passed"])
         self.assertFalse(missing["checks"]["root_agent_ignores"])
         self.assertEqual(missing["missing_root_agent_ignores"], ["/.claude/"])
+
+    def test_inspect_refuses_missing_packaged_controller_wiki(self) -> None:
+        self.prepare()
+        missing = self.new_controller / ".juno_task/wiki/controller/task_dependency_hydration.md"
+        missing.unlink()
+        command("git", "add", "-u", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "remove controller wiki", cwd=self.new_controller)
+        inspected = mc.inspect(self.new_controller, self.policy,
+                               expected_branch="refs/heads/juno/controller-metadata-v1",
+                               require_active=False)
+        self.assertFalse(inspected["passed"])
+        self.assertFalse(inspected["checks"]["controller_wiki_core"])
 
     def test_agent_surface_repair_is_reviewed_hash_bound_and_preserves_committed_evidence(self) -> None:
         self.prepare()

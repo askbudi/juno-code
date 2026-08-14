@@ -38,6 +38,16 @@ TASK_POLICY_PATH = ".juno_task/config/task-workspace.json"
 RISK_POLICY_PATH = ".juno_task/config/risk-policy.json"
 POLICY_MIGRATION_PATHS = (INTEGRATION_POLICY_PATH, POLICY_PATH)
 AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
+CORE_CONTROLLER_WIKI = (
+    "git_worktree_lifecycle.md",
+    "metadata_controller_boundary.md",
+    "parallel_runner_and_spec_review.md",
+    "runtime_migration_and_replacement_contract.md",
+    "task_dependency_hydration.md",
+    "tmux_best_practices.md",
+    "wiki_maintenance.md",
+    "yy_pi_progress.md",
+)
 REQUIRED_ROOT_IGNORES = ("/AGENTS.md", "/CLAUDE.md", "/.agents/", "/.claude/", "/.pi/")
 CANONICAL_CONTROLLER_WORKSPACE = {
     "mode": "metadata-only", "policy": ".juno_task/config/metadata-controller.json"}
@@ -443,6 +453,23 @@ def install_runtime_scripts(executable: Path, controller: Path) -> dict[str, Any
     return {"source": str(source), "file_count": len(entries), "sha256": digest(entries)}
 
 
+def packaged_controller_wiki(executable: Path) -> tuple[dict[str, bytes], dict[str, Any]]:
+    source = executable.expanduser().resolve().parent.parent / "templates/wiki/controller"
+    if not source.is_dir() or source.is_symlink():
+        raise BoundaryError(f"installed runtime is missing packaged controller wiki: {source}")
+    generated: dict[str, bytes] = {}
+    entries: list[dict[str, str]] = []
+    for name in CORE_CONTROLLER_WIKI:
+        item = source / name
+        if item.is_symlink() or not item.is_file():
+            raise BoundaryError(f"packaged controller wiki is incomplete or unsafe: {item}")
+        data = item.read_bytes()
+        destination = f".juno_task/wiki/controller/{name}"
+        generated[destination] = data
+        entries.append({"path": destination, "sha256": hashlib.sha256(data).hexdigest()})
+    return generated, {"source": str(source), "file_count": len(entries), "sha256": digest(entries)}
+
+
 def listed_tree(root: Path, head: str) -> list[tuple[str, str, str]]:
     raw = git(root, "ls-tree", "-r", "-z", head)
     entries: list[tuple[str, str, str]] = []
@@ -593,6 +620,9 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
         ".juno_task/state/tasks.json": canonical({"schema_version": "juno_task_workspace_state.v1", "tasks": {}, "queues": {}}),
     }
+    controller_wiki, controller_wiki_evidence = packaged_controller_wiki(
+        Path(plan["runtime"]["executable"]))
+    generated.update(controller_wiki)
     with tempfile.TemporaryDirectory(prefix="juno-metadata-index-") as temporary:
         index_env = {"GIT_INDEX_FILE": str(Path(temporary) / "index")}
         git(old, "read-tree", "--empty", env=index_env)
@@ -638,6 +668,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
                "new_branch": plan["new_branch"], "new_head": commit, "new_tree": tree, "root_commit": True,
                "old_controller_preserved": True, "product_head": plan["product_head"], "evidence": evidence,
                "runtime_scripts": runtime_scripts,
+               "controller_wiki": controller_wiki_evidence,
                "cutover_authorized": False}
     atomic_receipt(args.output, payload)
     return payload
@@ -770,6 +801,8 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             runtime_ok = identity == {**checked, "source": "installed-release", "tracked": False}
         except (BoundaryError, OSError, json.JSONDecodeError):
             runtime_ok = False
+    controller_wiki_core = all(
+        f".juno_task/wiki/controller/{name}" in names for name in CORE_CONTROLLER_WIKI)
     checks = {"branch_exact": expected_branch is None or branch == expected_branch, "single_root_ancestry": len(ancestry_roots) == 1,
               "root_boundary": not [name for name in forbidden_root if not agent_surface_path(name)],
               "root_preservation": preservation_receipt_ok,
@@ -783,6 +816,7 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
               "regular_files_only": not unsafe_modes,
               "staged_boundary": all(tracked_allowed(name, policy) for name in staged),
               "runtime_bound": runtime_ok, "runtime_untracked": policy["runtime"]["identity_file"] not in names,
+              "controller_wiki_core": controller_wiki_core,
               "role": role == ("controller" if require_active else "controller-pending"),
               "clean": git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False) == ""}
     return {"root": str(root), "branch_ref": branch, "head": head, "root_commit": ancestry_roots[0] if len(ancestry_roots) == 1 else None,

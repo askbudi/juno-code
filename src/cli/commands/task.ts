@@ -10,6 +10,7 @@ import { checkpointControllerAfterFinalization } from '../../utils/controller-ch
 export type TaskWorkspaceOperation =
   | 'start'
   | 'status'
+  | 'hydrate'
   | 'preflight'
   | 'finish'
   | 'recovery-plan'
@@ -142,6 +143,10 @@ export function configureTaskWorkspaceCommand(
     .description('Read-only finish/admission check before expensive validation')
     .argument('<task-id>', 'Canonical Kanban task ID')
     .action((taskId: string) => invoke('preflight', taskId, []));
+  task.command('hydrate')
+    .description('Rerun the frozen task hydration workflow on a clean task worktree')
+    .argument('<task-id>', 'Canonical Kanban task ID')
+    .action((taskId: string) => invoke('hydrate', taskId, []));
   for (const operation of ['status', 'finish'] as const) {
     task.command(operation)
       .argument('<task-id>', 'Canonical Kanban task ID')

@@ -184,7 +184,7 @@ describe('ManagedProjectAssets', () => {
       await fs.readFile(path.join(process.cwd(), 'src/templates/scripts/watch_progress.py')),
     );
     expect(installedWatchingWiki).toEqual(
-      await fs.readFile(path.join(process.cwd(), 'src/templates/wiki/watching_progress.md')),
+      await fs.readFile(path.join(process.cwd(), 'src/templates/wiki/controller/yy_pi_progress.md')),
     );
     expect(installedWatchingWiki.toString()).toContain('juno.watch-footer.v1');
     expect(installedWatchingWiki.toString()).toContain('juno.watch-event.v1');
@@ -253,7 +253,7 @@ describe('ManagedProjectAssets', () => {
       'utf8',
     );
     const sourceWiki = await fs.readFile(
-      path.join(process.cwd(), 'src/templates/wiki/task_dependency_hydration.md'),
+      path.join(process.cwd(), 'src/templates/wiki/controller/task_dependency_hydration.md'),
       'utf8',
     );
     expect(installedWiki).toBe(sourceWiki);
@@ -272,7 +272,7 @@ describe('ManagedProjectAssets', () => {
       'git status --short',
       'stop before implementation',
       'exact command above',
-      '`cjM2Uc`',
+      'yy task hydrate TASK_ID',
     ]) {
       expect(installedWiki).toContain(required);
     }
@@ -292,7 +292,7 @@ describe('ManagedProjectAssets', () => {
       'src/templates/prompts/migrate_juno_code_v1_to_v2.md',
       'src/templates/controller-agent/AGENTS.md',
       'src/templates/controller-agent/CLAUDE.md',
-      'src/templates/wiki/git_worktree_lifecycle.md',
+      'src/templates/wiki/controller/git_worktree_lifecycle.md',
     ]) {
       const instruction = await fs.readFile(path.join(process.cwd(), relative), 'utf8');
       expect(instruction, relative).toContain('task_dependency_hydration.md');
@@ -303,7 +303,7 @@ describe('ManagedProjectAssets', () => {
 
   it('runs the documented Juno Code command for fresh, lock-changed, and failed installs', async () => {
     const wiki = await fs.readFile(
-      path.join(process.cwd(), 'src/templates/wiki/task_dependency_hydration.md'),
+      path.join(process.cwd(), 'src/templates/wiki/controller/task_dependency_hydration.md'),
       'utf8',
     );
     const command = wiki.match(/```bash\n([\s\S]*?)\n```/)?.[1];

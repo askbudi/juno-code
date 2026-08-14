@@ -1788,6 +1788,7 @@ summary: |
     const managedRunner = path.join(managedScripts, 'workflow_runner.sh');
     await fs.copy(templateScript, managedRunner);
     await fs.copy(path.join(path.dirname(templateScript), 'workflow_run_evidence.py'), path.join(managedScripts, 'workflow_run_evidence.py'));
+    await fs.copy(path.join(path.dirname(templateScript), 'invocation_correlation.py'), path.join(managedScripts, 'invocation_correlation.py'));
     await installFakeChildEvidenceProducer(managedScripts);
     const workflowPath = path.join(testDir, 'relative-owner-child-capability.json');
     const outDir = path.join(testDir, 'relative-owner-child-capability-out');
@@ -1809,6 +1810,7 @@ summary: |
     const managedRunner = path.join(managedScripts, 'workflow_runner.sh');
     await fs.copy(templateScript, managedRunner);
     await fs.copy(path.join(path.dirname(templateScript), 'workflow_run_evidence.py'), path.join(managedScripts, 'workflow_run_evidence.py'));
+    await fs.copy(path.join(path.dirname(templateScript), 'invocation_correlation.py'), path.join(managedScripts, 'invocation_correlation.py'));
     const owner = path.join(managedScripts, 'integration_owner_preflight.py');
     await fs.writeFile(owner, "#!/usr/bin/env python3\nimport os; print(os.environ.get('JUNO_WORKFLOW_CHILD_EVIDENCE_DIR', 'CLEARED'))\n");
     await fs.chmod(owner, 0o755);
@@ -1841,6 +1843,45 @@ steps:
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.steps[0].id).toBe('from_stdin');
     expect(manifest.steps[0].command).toBe('echo stdin-ok');
+  });
+
+  it('lints task hydration as a bounded fail-closed argv profile', async () => {
+    const workflowPath = path.join(testDir, 'unsafe-task-hydration.json');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'unsafe_task_hydration',
+      workflow_class: 'task_hydration',
+      steps: [{
+        id: 'unsafe', probe: ['false'], command: ['yy', 'task', 'finish', 'X'],
+        timeout_seconds: 30, fail_workflow: true, non_interactive: true,
+        network: false, sensitive: false, outputs: [],
+      }],
+    });
+    const result = runWorkflow(['lint', '--workflow', workflowPath]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('forbidden controller/lifecycle surface');
+  });
+
+  it('terminates a timed-out task hydration step with typed exit 124 evidence', async () => {
+    const workflowPath = path.join(testDir, 'timeout-task-hydration.json');
+    const outDir = path.join(testDir, 'timeout-task-hydration-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'timeout_task_hydration',
+      workflow_class: 'task_hydration',
+      steps: [{
+        id: 'timeout', probe: ['python3', '-c', 'raise SystemExit(1)'],
+        command: ['python3', '-c', 'import time; time.sleep(30)'],
+        timeout_seconds: 1, fail_workflow: true, non_interactive: true,
+        network: false, sensitive: false, outputs: [],
+      }],
+    });
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status).toBe(124);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].exit_code).toBe(124);
+    expect(await fs.readFile(path.join(outDir, '001_timeout.stderr.txt'), 'utf8'))
+      .toContain('command timed out after 1s');
   });
 
   it('does not exit non-zero for a failed step by default but reports the failure', async () => {

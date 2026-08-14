@@ -3,10 +3,10 @@
 Read `AGENTS.md` first. This checkout is the orchestration entry point, not a
 product workspace. Use the controller-local core skills, start assigned product
 work with `yy task start TASK_ID`, and continue inside the returned feature
-worktree after reading its project instructions and skills. Before any edit or
-test, follow `.juno_task/wiki/task_dependency_hydration.md` from this controller
-for each configured validation cwd; stop before implementation if exact-lock
-provisioning or its clean-tree check fails.
+worktree after reading its project instructions and skills. Run `yy wiki` for the
+canonical guidance inventory. Before any edit or test, verify task-start hydration
+and consult `$(yy wiki --path)/controller/task_dependency_hydration.md`; stop before implementation if
+exact-lock provisioning or its clean-tree check failed.
 
 After a clean task commit, run read-only `yy task preflight TASK_ID` before
 `yy task finish TASK_ID`. Implementation and repair agents never launch

@@ -1,6 +1,6 @@
 ---
 wiki_contract:
-  line_limit: 220
+  line_limit: 225
   purpose: 'Plan, prepare, verify, and roll back the metadata-only controller boundary without product-ref mutation.'
   failure_mode_prevented: 'Controller/product history reconciliation, tracked runtime copies, in-place conversion, and ambiguous rollback.'
   runtime_contract_enforced: 'metadata_controller.py'

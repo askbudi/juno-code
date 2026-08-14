@@ -1,0 +1,24 @@
+schema_version: v1
+workflow_id: worktree-hydration
+workflow_class: task_hydration
+steps:
+  - id: node_dependencies
+    name: Hydrate exact Node lock
+    probe: ["test", "-x", "juno-code/node_modules/.bin/vitest"]
+    command: ["npm", "ci", "--prefix", "juno-code", "--no-audit", "--no-fund"]
+    timeout_seconds: 900
+    fail_workflow: true
+    non_interactive: true
+    network: true
+    sensitive: false
+    outputs: ["juno-code/node_modules"]
+  - id: clean_tree
+    name: Prove hydration outputs are ignored
+    probe: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "verify-clean"]
+    command: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "verify-clean"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []

@@ -167,8 +167,8 @@ strict `juno.watch-footer.v1` footer immediately after exit. Resolve
 `controller_root=$(yy where controller)` and invoke the absolute
 `$controller_root/.juno_task/scripts/watch_progress.py` path rather than a
 checkout-relative script or rewritten polling loop. Its producer example,
-JSONL/raw-payload framing, and footer/PID identity contract are in [watching
-progress](watching_progress.md). A quiet process doing real-Git or test work is
+JSONL/raw-payload framing, and footer/PID identity contract are in the watching
+progress guidance (`yy_pi_progress.md`). A quiet process doing real-Git or test work is
 active until PID/process evidence or a valid terminal footer proves completion;
 log silence alone is never a hang signal. Report exact exit, elapsed duration,
 and run-directory paths. This pattern adds observation only; Workflow Runner and

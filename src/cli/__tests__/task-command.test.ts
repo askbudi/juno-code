@@ -7,7 +7,7 @@ import {
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
-  it.each(['start', 'status', 'preflight', 'finish'] as const)(
+  it.each(['start', 'status', 'hydrate', 'preflight', 'finish'] as const)(
     'forwards task %s and its positional ID to one managed-runtime invoker',
     async (operation) => {
       const invoke = vi.fn(async () => undefined);
@@ -24,11 +24,11 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'start', 'preflight', 'status', 'finish',
+      'start', 'preflight', 'hydrate', 'status', 'finish',
       'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 7).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[7]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 8).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[8]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -88,7 +88,7 @@ describe('task workspace CLI', () => {
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });
 
-  it.each(['start', 'finish', 'recovery-authorize', 'recovery-apply'] as const)(
+  it.each(['start', 'hydrate', 'finish', 'recovery-authorize', 'recovery-apply'] as const)(
     'checkpoints durable controller state after task %s without replacing its outcome',
     async (operation) => {
       const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));

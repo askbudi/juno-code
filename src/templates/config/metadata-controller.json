@@ -6,6 +6,7 @@
   "copied_metadata": [
     ".juno_task/cutover.json",
     ".juno_task/ledger",
+    ".juno_task/wiki",
     ".juno_task/specs",
     ".juno_task/tasks",
     ".juno_task/tasks.md"
@@ -18,7 +19,15 @@
     ".juno_task/config/integration-workspace.json",
     ".juno_task/config/risk-policy.json",
     ".juno_task/receipts/controller-boundary.json",
-    ".juno_task/state/tasks.json"
+    ".juno_task/state/tasks.json",
+    ".juno_task/wiki/controller/git_worktree_lifecycle.md",
+    ".juno_task/wiki/controller/metadata_controller_boundary.md",
+    ".juno_task/wiki/controller/parallel_runner_and_spec_review.md",
+    ".juno_task/wiki/controller/runtime_migration_and_replacement_contract.md",
+    ".juno_task/wiki/controller/task_dependency_hydration.md",
+    ".juno_task/wiki/controller/tmux_best_practices.md",
+    ".juno_task/wiki/controller/wiki_maintenance.md",
+    ".juno_task/wiki/controller/yy_pi_progress.md"
   ],
   "product_forbidden": [
     ".juno_task/artifacts",
@@ -30,7 +39,8 @@
     ".juno_task/state",
     ".juno_task/tasks",
     ".juno_task/tasks.md",
-    ".juno_task/workflows"
+    ".juno_task/workflows",
+    ".juno_task/wiki"
   ],
   "tracked_exact": [
     ".gitignore",
@@ -46,7 +56,8 @@
   ],
   "tracked_recursive": [
     ".juno_task/ledger",
-    ".juno_task/tasks"
+    ".juno_task/tasks",
+    ".juno_task/wiki"
   ],
   "tracked_top_level_files": [
     ".juno_task/receipts",

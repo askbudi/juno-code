@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -736,6 +737,46 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         raise WorkflowError(f"continue_from_step references unknown step: {continue_from_step}")
     if continue_from_step == "summary" and not summary_has_command:
         raise WorkflowError("continue_from_step references summary, but summary.command is not configured")
+
+    if str(workflow.get("workflow_class") or "").strip() == "task_hydration":
+        if summary_has_command or workflow.get("continue_from_step"):
+            raise WorkflowError("task_hydration workflows cannot launch summary commands or continuation")
+        forbidden = re.compile(
+            r"(?:^|\s)(?:yy|juno-code|ypl)\s+(?:task|merge|kanban|release|pi|codex|claude|gemini)|"
+            r"JUNO_TASK_ROOT|\.juno_task/(?:state|tasks|ledger|receipts|runtime/merge)", re.IGNORECASE)
+        for hydration_step in steps:
+            step_id = str(hydration_step["id"])
+            command = hydration_step.get("command")
+            probe = hydration_step.get("probe")
+            if hydration_step.get("managed_agent") is not None:
+                raise WorkflowError(f"task_hydration step {step_id} cannot launch an agent")
+            if (not isinstance(command, list) or not command
+                    or not all(isinstance(part, str) and part for part in command)):
+                raise WorkflowError(f"task_hydration step {step_id} command must be a non-empty argv list")
+            if (not isinstance(probe, list) or not probe
+                    or not all(isinstance(part, str) and part for part in probe)):
+                raise WorkflowError(f"task_hydration step {step_id} requires a non-empty idempotency probe argv")
+            timeout = hydration_step.get("timeout_seconds")
+            if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600:
+                raise WorkflowError(f"task_hydration step {step_id} timeout_seconds must be 1..3600")
+            if hydration_step.get("fail_workflow") is not True or hydration_step.get("non_interactive") is not True:
+                raise WorkflowError(f"task_hydration step {step_id} must be non-interactive and workflow-fatal")
+            if not isinstance(hydration_step.get("network"), bool) or not isinstance(hydration_step.get("sensitive"), bool):
+                raise WorkflowError(f"task_hydration step {step_id} must declare network and sensitive booleans")
+            outputs = hydration_step.get("outputs")
+            if not isinstance(outputs, list) or not all(isinstance(item, str) and item for item in outputs):
+                raise WorkflowError(f"task_hydration step {step_id} outputs must be a path list")
+            for output in outputs:
+                candidate = Path(output)
+                if candidate.is_absolute() or ".." in candidate.parts or ".git" in candidate.parts:
+                    raise WorkflowError(f"task_hydration step {step_id} output escapes the worktree: {output}")
+            policy_text = " ".join([*probe, *command])
+            if forbidden.search(policy_text):
+                raise WorkflowError(f"task_hydration step {step_id} invokes a forbidden controller/lifecycle surface")
+            if any(token in {"-i", "--interactive", "--live"} for token in command):
+                raise WorkflowError(f"task_hydration step {step_id} is interactive")
+            if hydration_step.get("sensitive") and "worktree_hydration.py" not in policy_text:
+                raise WorkflowError(f"task_hydration sensitive step {step_id} must use the non-echoing helper")
 
     for step in steps:
         if step.get("managed_agent") is not None:
@@ -1998,6 +2039,7 @@ def execute_rendered_command(
     live_log_path: Path | None = None,
     activity: dict[str, Any] | None = None,
     active_marker: Path | None = None,
+    timeout_seconds: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv: Any = [str(part) for part in command] if isinstance(command, list) else str(command)
     shell = not isinstance(command, list)
@@ -2016,7 +2058,12 @@ def execute_rendered_command(
         activity.update({"child_pid": proc.pid, "process_group_id": proc.pid})
         write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
     if live_log_path is None:
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(argv, timeout_seconds or 0, output=stdout, stderr=stderr)
         return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
     stdout_chunks: list[str] = []
@@ -2038,7 +2085,15 @@ def execute_rendered_command(
     ]
     for thread in threads:
         thread.start()
-    return_code = proc.wait()
+    try:
+        return_code = proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        for thread in threads:
+            thread.join()
+        raise subprocess.TimeoutExpired(
+            argv, timeout_seconds or 0, output="".join(stdout_chunks), stderr="".join(stderr_chunks))
     for thread in threads:
         thread.join()
     return subprocess.CompletedProcess(argv, return_code, "".join(stdout_chunks), "".join(stderr_chunks))
@@ -2226,6 +2281,7 @@ def maybe_run_summary_command(
         stdout = ""
         stderr = ""
         exit_code = 0
+        probe_satisfied = False
     else:
         append_live_log(live_log_path, "\n=== SUMMARY COMMAND ===\n")
         proc = execute_rendered_command(command, project_root, env, live_log_path)
@@ -2976,6 +3032,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         stdout = ""
         stderr = ""
         exit_code = 0
+        probe_satisfied = False
         dispatch_root = project_root
         dispatch_root_error = ""
         if not args.dry_run:
@@ -3078,11 +3135,30 @@ def run_workflow(args: argparse.Namespace) -> int:
             write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
             inject_interruption("command_started")
             try:
-                proc = execute_rendered_command(command, dispatch_root, env, live_log_path, activity, active_marker)
-                stdout = proc.stdout or ""
-                stderr = proc.stderr or ""
-                exit_code = int(proc.returncode)
-                status = "success" if exit_code == 0 else "failed"
+                timeout_seconds = step.get("timeout_seconds")
+                timeout_seconds = int(timeout_seconds) if timeout_seconds is not None else None
+                probe_command = render(step.get("probe"), context) if step.get("probe") is not None else None
+                if probe_command is not None:
+                    probe_result = execute_rendered_command(
+                        probe_command, dispatch_root, env, live_log_path,
+                        timeout_seconds=min(timeout_seconds or 30, 30))
+                    probe_satisfied = probe_result.returncode == 0
+                if probe_satisfied:
+                    stdout = "Hydration/idempotency probe already satisfied; command skipped.\n"
+                    status = "success"
+                else:
+                    proc = execute_rendered_command(
+                        command, dispatch_root, env, live_log_path, activity, active_marker,
+                        timeout_seconds=timeout_seconds)
+                    stdout = proc.stdout or ""
+                    stderr = proc.stderr or ""
+                    exit_code = int(proc.returncode)
+                    status = "success" if exit_code == 0 else "failed"
+            except subprocess.TimeoutExpired as exc:
+                stdout = str(exc.output or "")
+                stderr = str(exc.stderr or "") + f"\ncommand timed out after {exc.timeout}s\n"
+                exit_code = 124
+                status = "failed"
             except OSError as exc:
                 stderr = f"command dispatch failed: {exc}\n"
                 exit_code = 1
@@ -3143,6 +3219,7 @@ def run_workflow(args: argparse.Namespace) -> int:
             "session_id": "",
             "command_sha256": command_digest,
             "workflow_model_selection": model_selection,
+            "probe_satisfied": probe_satisfied,
         }
         if step.get("candidate_read_only") is not None and candidate_guard_path.is_file():
             result["candidate_read_only_evidence"] = {

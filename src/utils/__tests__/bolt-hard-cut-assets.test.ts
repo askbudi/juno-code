@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const sourceRoot = resolve(process.cwd(), 'src/templates');
-const metadataBoundary = join(sourceRoot, 'wiki/metadata_controller_boundary.md');
+const metadataBoundary = join(sourceRoot, 'wiki/controller/metadata_controller_boundary.md');
 const projectAgents = resolve(process.cwd(), '..', 'AGENTS.md');
 const retired = [
   'scripts/task_lifecycle.py',

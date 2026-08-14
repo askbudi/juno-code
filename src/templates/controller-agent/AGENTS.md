@@ -12,11 +12,12 @@ product code.
 3. Read `.juno_task/config/task-workspace.json` for the exact product target and
    worktree root. For read-only product context, inspect the target ref or its
    registered integration-owner worktree.
-4. Start implementation with `yy task start TASK_ID`, then change directory to
-   the returned feature worktree and read its `AGENTS.md`/`CLAUDE.md` and
-   project-specific skills. Before editing or testing, follow the controller's
-   `.juno_task/wiki/task_dependency_hydration.md` exact-lock instructions for
-   every configured validation cwd; stop before implementation on failure.
+4. Use `yy wiki` to discover controller and project guidance. Start implementation
+   with `yy task start TASK_ID`, then change directory to the returned feature
+   worktree and read its `AGENTS.md`/`CLAUDE.md` and project-specific skills.
+   Task start runs the frozen project hydration workflow before reporting the
+   worktree agent-ready. Before editing, inspect `$(yy wiki --path)/controller/task_dependency_hydration.md`
+   and stop before implementation if hydration is missing, stale, or failed.
 5. After a clean task commit, run the read-only `yy task preflight TASK_ID`,
    repair any reported closure defect while the task is still `WORKING`, then
    finish with `yy task finish TASK_ID`.

@@ -246,6 +246,7 @@ describe('ScriptInstaller', () => {
         'tests/test_risk_policy.py',
         'tests/test_task_workspace.py',
         'watch_progress.py',
+        'worktree_hydration.py',
       ]);
       for (const relative of newlyManaged) {
         const destination = path.join(scriptsDir, relative);
@@ -346,6 +347,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_assert.py', installed: false },
         { name: 'git-flow.sh', installed: false },
         { name: 'git_flow.py', installed: false },
+        { name: 'worktree_hydration.py', installed: false },
         { name: 'wiki_lint.py', installed: false },
         { name: 'metadata_controller.py', installed: false },
         { name: 'migration_inventory.py', installed: false },
@@ -565,6 +567,7 @@ describe('ScriptInstaller', () => {
       );
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'worktree_hydration.py'), '#!/usr/bin/env python3\n');
 
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
@@ -596,6 +599,7 @@ describe('ScriptInstaller', () => {
         { name: 'workflow_assert.py', installed: true },
         { name: 'git-flow.sh', installed: true },
         { name: 'git_flow.py', installed: true },
+        { name: 'worktree_hydration.py', installed: true },
         { name: 'wiki_lint.py', installed: true },
         { name: 'metadata_controller.py', installed: true },
         { name: 'migration_inventory.py', installed: true },

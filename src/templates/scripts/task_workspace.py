@@ -31,7 +31,7 @@ import time
 import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 CONFIG_SCHEMA = "juno_task_workspace_config.v1"
 STATE_SCHEMA = "juno_task_workspace_state.v1"
@@ -66,6 +66,12 @@ PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
 
 class TaskWorkspaceError(RuntimeError):
     pass
+
+
+class HydrationFailure(TaskWorkspaceError):
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        super().__init__(message)
+        self.evidence = evidence
 
 
 def is_valid_semver(value: Any) -> bool:
@@ -247,10 +253,14 @@ def load_config(controller: Path) -> dict[str, Any]:
     required = {"schema_version", "repository", "target_ref", "workspace_root", "branch_prefix",
                 "allowed_paths", "controller_private_paths", "focused_validation",
                 "full_suite_validation"}
-    if (not isinstance(value, dict) or frozenset(value) not in {frozenset(required), frozenset(required | {"selectable_paths"})}
+    optional = {"selectable_paths", "hydration_workflow"}
+    if (not isinstance(value, dict) or not required.issubset(value) or set(value) - required - optional
             or value.get("schema_version") != CONFIG_SCHEMA):
         raise TaskWorkspaceError(f"task workspace policy must contain exactly the {CONFIG_SCHEMA} fields")
     value.setdefault("selectable_paths", [])
+    value.setdefault("hydration_workflow", ".juno_task/config/worktree-hydration.yaml")
+    value["hydration_workflow"] = normalized_relative(
+        value["hydration_workflow"], "hydration_workflow")
     repository = Path(value["repository"])
     if repository.is_absolute() or ".." in repository.parts:
         raise TaskWorkspaceError("repository must stay inside the controller Git worktree")
@@ -521,13 +531,26 @@ def assign_enqueue_sequence(state: dict[str, Any]) -> int:
 
 
 @contextmanager
-def state_lock(controller: Path) -> Iterator[None]:
+def state_lock(controller: Path) -> Iterator[Callable[[bool], None]]:
     # Runtime locks are ignored controller-local state; only tasks.json is durable truth.
     lock = controller / ".juno_task/runtime/task-workspace.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with lock.open("a+b") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
+        locked = True
+
+        def set_locked(required: bool) -> None:
+            nonlocal locked
+            if required == locked:
+                return
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX if required else fcntl.LOCK_UN)
+            locked = required
+
+        try:
+            yield set_locked
+        finally:
+            if not locked:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
 
 
 @contextmanager
@@ -1424,7 +1447,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
 
 
 def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
-                   config: dict[str, Any]) -> bool:
+                   config: dict[str, Any], states: set[str] | None = None) -> bool:
     worktree = Path(record["worktree"])
     branch = record["branch_ref"]
     identity = record.get("workspace_identity", {})
@@ -1447,7 +1470,7 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
     except (OSError, TaskWorkspaceError):
         return False
     return (
-        record.get("state") == "WORKING"
+        record.get("state") in (states or {"WORKING"})
         and stable_sha256(creation_receipt) == identity.get("create_receipt_sha256")
         and record.get("base_sha") == target_sha
         and worktree.is_dir()
@@ -1464,6 +1487,135 @@ def clean_identity(record: dict[str, Any], repository: Path, target_sha: str,
         and git(repository, "rev-parse", branch, check=False) == target_sha
         and git(worktree, "symbolic-ref", "-q", "HEAD", check=False) == branch
     )
+
+
+def hydration_identity(repository: Path, target_sha: str, config: dict[str, Any]) -> dict[str, Any]:
+    relative = config["hydration_workflow"]
+    data = target_blob(repository, target_sha, relative)
+    if data is None:
+        return {"configured": False, "path": relative, "sha256": None,
+                "reason": "legacy_target_has_no_hydration_workflow"}
+    return {"configured": True, "path": relative,
+            "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+
+
+def validation_dependency_evidence(worktree: Path, config: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    rows = [*config["focused_validation"], config["full_suite_validation"]]
+    for row in rows:
+        relative = normalized_relative(row["cwd"], "validation cwd")
+        if relative in seen:
+            continue
+        seen.add(relative)
+        cwd = worktree / relative
+        node_lock = cwd / "package-lock.json"
+        if node_lock.is_file():
+            sentinel = cwd / "node_modules/.package-lock.json"
+            if not sentinel.is_file():
+                raise TaskWorkspaceError(
+                    f"validation_dependencies_missing: {relative}/node_modules is absent after hydration")
+            evidence.append({"cwd": relative, "ecosystem": "node",
+                             "lock_path": f"{relative}/package-lock.json",
+                             "lock_sha256": hashlib.sha256(node_lock.read_bytes()).hexdigest(),
+                             "sentinel": f"{relative}/node_modules/.package-lock.json"})
+    return evidence
+
+
+def run_task_hydration(controller: Path, worktree: Path, task_id: str,
+                       frozen: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    if not frozen.get("configured"):
+        return {"status": "legacy_skipped", "workflow": frozen,
+                "dependency_locks": [], "recovery_command": None}
+    workflow = worktree / str(frozen["path"])
+    if (not workflow.is_file()
+            or hashlib.sha256(workflow.read_bytes()).hexdigest() != frozen["sha256"]):
+        raise HydrationFailure("frozen hydration workflow is missing or drifted", {
+            "status": "failed", "workflow": frozen, "failed_stage": "identity",
+            "recovery_command": f"yy task hydrate {task_id}",
+        })
+    runner = Path(__file__).resolve().with_name("workflow_runner.sh")
+    attempt = f"{time.time_ns()}-{secrets.token_hex(6)}"
+    out_dir = controller / ".juno_task/runtime/task-hydration" / task_id / attempt
+    env = dict(os.environ)
+    env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
+    commands = [
+        [sys.executable, str(runner), "lint", "--workflow", str(workflow),
+         "--project-root", str(worktree)],
+        [sys.executable, str(runner), "--workflow", str(workflow),
+         "--project-root", str(worktree), "--out-dir", str(out_dir),
+         "--no-print-step-stdout", "--print-output", "none"],
+    ]
+    started = time.monotonic()
+    for stage, argv in zip(("lint", "run"), commands):
+        try:
+            completed = subprocess.run(
+                argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3700, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise HydrationFailure(f"task hydration {stage} could not complete", {
+                "status": "failed", "workflow": frozen, "failed_stage": stage,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+            }) from exc
+        if completed.returncode:
+            raise HydrationFailure(f"task hydration {stage} failed; inspect {out_dir}", {
+                "status": "failed", "workflow": frozen, "failed_stage": stage,
+                "exit_code": completed.returncode,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+            })
+    drift = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False)
+    if drift:
+        raise HydrationFailure("task hydration left tracked or unignored drift", {
+            "status": "failed", "workflow": frozen, "failed_stage": "clean_tree",
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+        })
+    manifest = out_dir / "manifest.json"
+    try:
+        dependencies = validation_dependency_evidence(worktree, config)
+    except TaskWorkspaceError as exc:
+        raise HydrationFailure(str(exc), {
+            "status": "failed", "workflow": frozen, "failed_stage": "dependency_evidence",
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+        }) from exc
+    return {"status": "passed", "workflow": frozen,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "artifact_dir": str(out_dir),
+            "manifest_path": str(manifest) if manifest.is_file() else None,
+            "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.is_file() else None,
+            "dependency_locks": dependencies,
+            "recovery_command": f"yy task hydrate {task_id}"}
+
+
+def verify_hydration_evidence(record: dict[str, Any], worktree: Path) -> None:
+    frozen = record.get("creation_receipt", {}).get("hydration_workflow")
+    evidence = record.get("hydration")
+    if not isinstance(frozen, dict) or not isinstance(evidence, dict):
+        raise TaskWorkspaceError("validation_dependencies_missing: task has no hydration identity/evidence")
+    allowed = {"passed"} if frozen.get("configured") else {"legacy_skipped"}
+    if evidence.get("status") not in allowed or evidence.get("workflow") != frozen:
+        raise TaskWorkspaceError("validation_dependencies_missing: hydration evidence is missing or stale")
+    manifest_path = evidence.get("manifest_path")
+    manifest_sha256 = evidence.get("manifest_sha256")
+    if frozen.get("configured") and (not isinstance(manifest_path, str)
+            or not isinstance(manifest_sha256, str)):
+        raise TaskWorkspaceError("validation_dependencies_missing: hydration manifest evidence is absent")
+    if frozen.get("configured"):
+        manifest = Path(manifest_path)
+        if (not manifest.is_file()
+                or hashlib.sha256(manifest.read_bytes()).hexdigest() != manifest_sha256):
+            raise TaskWorkspaceError("validation_dependencies_missing: hydration manifest is missing or stale")
+    for lock in evidence.get("dependency_locks", []):
+        lock_path = worktree / lock["lock_path"]
+        sentinel = worktree / lock["sentinel"]
+        if (not lock_path.is_file() or not sentinel.is_file()
+                or hashlib.sha256(lock_path.read_bytes()).hexdigest() != lock["lock_sha256"]):
+            raise TaskWorkspaceError(
+                f"validation_dependencies_missing: {lock['cwd']} dependencies are absent or lock-mismatched; "
+                f"safe recovery: run the frozen workflow at {frozen['path']} through Workflow Runner")
 
 
 def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None,
@@ -1485,11 +1637,12 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
     else:
         allowed_paths, generated_output_admission = derived_output_admission(
             repository, target_sha, allowed_paths)
+    frozen_hydration = hydration_identity(repository, target_sha, config)
     generation = require_current_runtime(repository, target_sha, controller)
     assert_no_controller_data(repository, target_sha, config["controller_private_paths"])
     branch = branch_ref(config, task_id)
     worktree = worktree_path(config, task_id)
-    with state_lock(controller):
+    with state_lock(controller) as control_state_lock:
         state = read_state(controller)
         reservations = child_reservations(state)
         reserved_owner = reservations.get(task_id)
@@ -1517,6 +1670,34 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                     or (umbrella_admission is not None and umbrella_admission != frozen_umbrella)):
                 raise TaskWorkspaceError(
                     "task start umbrella admission differs from the frozen creation receipt")
+            if receipt.get("hydration_workflow") != frozen_hydration:
+                raise TaskWorkspaceError("task start hydration identity differs from the frozen creation receipt")
+            if (existing.get("state") in {"HYDRATION_FAILED", "HYDRATING"}
+                    and clean_identity(existing, repository, target_sha, config,
+                                       {"HYDRATION_FAILED", "HYDRATING"})):
+                frozen_existing = json.loads(json.dumps(existing))
+                control_state_lock(False)
+                try:
+                    hydration = run_task_hydration(
+                        controller, Path(existing["worktree"]), task_id, frozen_hydration, config)
+                except HydrationFailure as exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != frozen_existing:
+                        raise TaskWorkspaceError("task state changed during hydration retry") from exc
+                    existing = {**existing, "hydration": exc.evidence}
+                    state["tasks"][task_id] = existing
+                    write_state(controller, state)
+                    raise
+                finally:
+                    control_state_lock(True)
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != frozen_existing:
+                    raise TaskWorkspaceError("task state changed during hydration retry")
+                existing = {**existing, "state": "WORKING", "hydration": hydration}
+                state["tasks"][task_id] = existing
+                write_state(controller, state)
+                return {**existing, "outcome": "hydration_recovered"}
             if clean_identity(existing, repository, target_sha, config):
                 return {**existing, "outcome": "already_started"}
             raise TaskWorkspaceError("task start identity drifted; preserve the worktree and inspect task status")
@@ -1527,6 +1708,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
             raise TaskWorkspaceError(f"task worktree path already exists without a task record: {worktree}")
         worktree.parent.mkdir(parents=True, exist_ok=True)
         created = False
+        persisted = False
         try:
             run(["git", "-C", str(repository), "worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(worktree), target_sha], repository)
             created = True
@@ -1548,6 +1730,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                                 "expected_paths_sha256": expected_paths_sha256,
                                 "materialization": materialization, "routing": routing,
                                 "runtime_generation": generation,
+                                "hydration_workflow": frozen_hydration,
                                 "generated_output_admission": generated_output_admission}
             if umbrella_admission is not None:
                 creation_receipt["umbrella_admission"] = umbrella_admission
@@ -1556,7 +1739,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                         "create_receipt_sha256": create_receipt_sha256,
                         "expected_paths_sha256": expected_paths_sha256,
                         "materialization_sha256": materialization_sha256}
-            record = {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "WORKING",
+            record = {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "HYDRATING",
                       "repository": str(repository), "target_ref": config["target_ref"], "base_sha": target_sha,
                       "branch_ref": branch, "worktree": str(worktree), "tip_sha": target_sha,
                       "workspace_identity": identity, "creation_receipt": creation_receipt, "routing": routing,
@@ -1574,10 +1757,33 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
             run(["git", "-C", str(worktree), "config", "--worktree", "--unset-all",
                  "juno.workspace.roleAuthority"], worktree, check=False)
             write_state(controller, state)
+            persisted = True
+            frozen_record = json.loads(json.dumps(record))
+            control_state_lock(False)
+            try:
+                hydration = run_task_hydration(
+                    controller, worktree, task_id, frozen_hydration, config)
+            except HydrationFailure as exc:
+                control_state_lock(True)
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != frozen_record:
+                    raise TaskWorkspaceError("task state changed during initial hydration") from exc
+                record = {**record, "state": "HYDRATION_FAILED", "hydration": exc.evidence}
+                state["tasks"][task_id] = record
+                write_state(controller, state)
+                raise
+            finally:
+                control_state_lock(True)
+            state = read_state(controller)
+            if state["tasks"].get(task_id) != frozen_record:
+                raise TaskWorkspaceError("task state changed during initial hydration")
+            record = {**record, "state": "WORKING", "hydration": hydration}
+            state["tasks"][task_id] = record
+            write_state(controller, state)
         except Exception as creation_error:
             # Creation is not admitted without durable controller truth. Keep no
             # unrecorded branch/worktree if the atomic state write itself fails.
-            if created:
+            if created and not persisted:
                 run(["git", "-C", str(worktree), "submodule", "deinit", "-f", "--all"], worktree, check=False)
                 run(["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)], repository, check=False)
                 run(["git", "-C", str(repository), "branch", "-D", branch.removeprefix("refs/heads/")], repository, check=False)
@@ -1589,6 +1795,56 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                     ) from creation_error
             raise
     return {**record, "outcome": "started"}
+
+
+def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
+    """Explicitly rerun frozen hydration without broadening task authority."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    config = load_config(controller)
+    require_task(controller, task_id)
+    repository = product_repository(controller, config)
+    with finish_lock(controller, task_id):
+        with state_lock(controller):
+            state = read_state(controller)
+            record = state["tasks"].get(task_id)
+            if not isinstance(record, dict) or record.get("state") not in {
+                    "WORKING", "HYDRATION_FAILED", "HYDRATING"}:
+                raise TaskWorkspaceError(f"task cannot hydrate from {record.get('state') if isinstance(record, dict) else 'missing'}")
+            receipt = record.get("creation_receipt", {})
+            if stable_sha256(receipt) != record.get("workspace_identity", {}).get("create_receipt_sha256"):
+                raise TaskWorkspaceError("task hydration creation identity drifted")
+            worktree = exact_root(Path(record["worktree"]), "task worktree")
+            head = git(worktree, "rev-parse", "HEAD")
+            if (git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != record["branch_ref"]
+                    or optional_ref_sha(repository, record["branch_ref"]) != head
+                    or git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False)):
+                raise TaskWorkspaceError("task hydration requires the exact clean task branch/worktree")
+            frozen = receipt.get("hydration_workflow")
+            if not isinstance(frozen, dict):
+                raise TaskWorkspaceError("task hydration identity is absent")
+            pending = {**record, "state": "HYDRATING"}
+            state["tasks"][task_id] = pending
+            write_state(controller, state)
+        try:
+            evidence = run_task_hydration(controller, worktree, task_id, frozen, config)
+        except HydrationFailure as exc:
+            with state_lock(controller):
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != pending:
+                    raise TaskWorkspaceError("task state changed during hydration") from exc
+                failed = {**pending, "state": "HYDRATION_FAILED", "hydration": exc.evidence}
+                state["tasks"][task_id] = failed
+                write_state(controller, state)
+            raise
+        with state_lock(controller):
+            state = read_state(controller)
+            if state["tasks"].get(task_id) != pending:
+                raise TaskWorkspaceError("task state changed during hydration")
+            completed = {**pending, "state": "WORKING", "hydration": evidence}
+            state["tasks"][task_id] = completed
+            write_state(controller, state)
+        return {**completed, "outcome": "hydrated"}
 
 
 def _recovery_plan_locked(controller: Path, task_id: str, input_path: Path,
@@ -1935,6 +2191,7 @@ def preflight(controller: Path, task_id: str) -> dict[str, Any]:
         if record.get("state") != "WORKING":
             raise TaskWorkspaceError(f"task cannot preflight from {record.get('state')}")
         frozen_record = json.loads(json.dumps(record))
+    verify_hydration_evidence(frozen_record, Path(frozen_record["worktree"]))
     _, worktree, head, changed, closure = review_ready_closure(
         controller, config, frozen_record, configured_repository, task_id, runtime
     )
@@ -1962,6 +2219,7 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         if record.get("state") != "WORKING":
             raise TaskWorkspaceError(f"task cannot finish from {record.get('state')}")
         frozen_record = json.loads(json.dumps(record))
+    verify_hydration_evidence(frozen_record, Path(frozen_record["worktree"]))
 
     # Validations run outside the controller state lock. Independent feature
     # finishes therefore stay concurrent; the compare below prevents stale state.
@@ -3099,7 +3357,7 @@ def runtime_bootstrap(controller: Path, package_version: str,
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "status", "preflight", "finish",
+        "start", "status", "hydrate", "preflight", "finish",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -3176,7 +3434,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.umbrella_admission or args.plan or args.output or args.authorization_receipt:
                     raise TaskWorkspaceError(
                         "admission/recovery options are unsupported for this operation")
-                result = {"status": status, "preflight": preflight,
+                result = {"status": status, "hydrate": hydrate, "preflight": preflight,
                           "finish": finish}[args.operation](controller, args.task)
             result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

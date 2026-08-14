@@ -4,6 +4,7 @@
   "target_ref": "refs/heads/juno-mono-002",
   "workspace_root": "/private/tmp/juno-code/task-worktrees",
   "branch_prefix": "refs/heads/juno/task-",
+  "hydration_workflow": ".juno_task/config/worktree-hydration.yaml",
   "allowed_paths": [
     ".juno_task/config",
     ".juno_task/prompts",

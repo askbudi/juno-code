@@ -88,6 +88,18 @@
   ],
   "assets": [
     {
+      "source": "config/worktree-hydration.yaml",
+      "destination": ".juno_task/config/worktree-hydration.yaml",
+      "installClass": "project",
+      "type": "config"
+    },
+    {
+      "source": "scripts/worktree_hydration.py",
+      "destination": ".juno_task/scripts/worktree_hydration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "config/metadata-controller.json",
       "destination": ".juno_task/config/metadata-controller.json",
       "installClass": "project",
@@ -112,13 +124,13 @@
       "type": "config"
     },
     {
-      "source": "wiki/metadata_controller_boundary.md",
+      "source": "wiki/controller/metadata_controller_boundary.md",
       "destination": ".juno_task/wiki/metadata_controller_boundary.md",
       "installClass": "project",
       "type": "wiki"
     },
     {
-      "source": "wiki/task_dependency_hydration.md",
+      "source": "wiki/controller/task_dependency_hydration.md",
       "destination": ".juno_task/wiki/task_dependency_hydration.md",
       "installClass": "project",
       "type": "wiki"
@@ -165,6 +177,13 @@
       "macro": "run_workflow"
     },
     {
+      "source": "prompts/migrate_controller_wiki_and_hydration.md",
+      "destination": ".juno_task/prompts/migrate_controller_wiki_and_hydration.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "migrate_controller_wiki_and_hydration"
+    },
+    {
       "source": "prompts/migrate_juno_code_v1_to_v2.md",
       "destination": ".juno_task/prompts/migrate_juno_code_v1_to_v2.md",
       "installClass": "project",
@@ -186,25 +205,25 @@
       "macro": "migrate_juno_kanban_v1_to_v2"
     },
     {
-      "source": "wiki/git_worktree_lifecycle.md",
+      "source": "wiki/controller/git_worktree_lifecycle.md",
       "destination": ".juno_task/wiki/git_worktree_lifecycle.md",
       "installClass": "project",
       "type": "wiki"
     },
     {
-      "source": "wiki/watching_progress.md",
+      "source": "wiki/controller/yy_pi_progress.md",
       "destination": ".juno_task/wiki/watching_progress.md",
       "installClass": "project",
       "type": "wiki"
     },
     {
-      "source": "wiki/parallel_runner_and_spec_review.md",
+      "source": "wiki/controller/parallel_runner_and_spec_review.md",
       "destination": ".juno_task/wiki/parallel_runner_and_spec_review.md",
       "installClass": "project",
       "type": "wiki"
     },
     {
-      "source": "wiki/runtime_migration_and_replacement_contract.md",
+      "source": "wiki/controller/runtime_migration_and_replacement_contract.md",
       "destination": ".juno_task/wiki/runtime_migration_and_replacement_contract.md",
       "installClass": "project",
       "type": "wiki"

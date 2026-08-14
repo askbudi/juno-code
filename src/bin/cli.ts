@@ -92,6 +92,7 @@ import { configureReleaseTrainCommand } from '../cli/commands/release.js';
 import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
 import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
+import { configureWikiCommand } from '../cli/commands/wiki.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -1988,6 +1989,7 @@ function configureCommandSurface(program: Command): void {
   configureReleaseTrainCommand(program);
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);
+  configureWikiCommand(program);
   setupCompletion(program);
   setupAliases(program);
   setupContinueCommand(program);

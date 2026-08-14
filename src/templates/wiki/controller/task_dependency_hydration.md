@@ -1,19 +1,38 @@
 ---
 wiki_contract:
   line_limit: 140
-  purpose: "Prepare each Bolt task worktree from the exact locks required by its configured validation roots before implementation."
+  purpose: "Hydrate each task worktree through its frozen project workflow before implementation."
   failure_mode_prevented: "Fresh task worktrees reach validation without task-local tools, borrow dependencies from another checkout, or begin implementation after provisioning failed."
-  runtime_contract_enforced: "Workers inspect configured validation cwd values, hydrate only missing or lock-mismatched task-local dependencies, preserve a clean Git tree, and stop before implementation on failure."
+  runtime_contract_enforced: "Task start runs bounded exact-base hydration; preflight and finish verify its clean, lock-bound evidence without provisioning."
   validation_gate: "npm test -- src/utils/__tests__/managed-project-assets.test.ts && npm run test:implementation-contract"
   related_sots:
     - "git_worktree_lifecycle.md"
   owns:
-    - "Instruction-level exact-lock dependency preparation immediately after task start."
+    - "Workflow-driven exact-lock dependency preparation during task start and explicit retry."
   does_not_own:
-    - "Automatic lifecycle provisioning, which remains owned by Kanban task cjM2Uc."
+    - "Project-specific commands, network authorization, and sensitive-file source approval."
 ---
 
 # Task-worktree dependency hydration
+
+## Workflow-driven task start
+
+New task targets own `.juno_task/config/worktree-hydration.yaml`. `yy task start`
+freezes its exact path and bytes, lints `workflow_class: task_hydration`, and runs
+the canonical Workflow Runner with the new task worktree as project/run root.
+The worktree is reported `WORKING` only after the workflow succeeds, its declared
+dependency locks are present, and Git proves all outputs are ignored or admitted.
+
+Each hydration step is an argv list with a bounded timeout, an idempotency probe,
+workflow-fatal/non-interactive flags, explicit network/sensitive declarations,
+and declared output paths. Use deterministic exact-lock installers. Env files use
+only owner-approved source/destination pairs through `worktree_hydration.py`; the
+helper copies without echoing content and enforces mode `0600`.
+
+On failure the worktree and bounded Workflow Runner artifacts are preserved in a
+non-agent-ready `HYDRATION_FAILED` state. Repair the stated prerequisite and rerun
+`yy task hydrate TASK_ID`; successful probes skip already satisfied steps. Preflight
+and finish never install or copy files—they verify frozen workflow and lock evidence.
 
 Immediately after `yy task start TASK_ID` and entering its returned worktree,
 before the first edit or test, read `.juno_task/config/task-workspace.json` from
@@ -117,6 +136,5 @@ lockfile, `/tmp` log, terminal footer, and the exact command above (including th
 required `cd` and `TASK_ID`) as the recovery command. Do not continue with a
 partial dependency tree.
 
-This page is instruction-level preparation only. Automatic typed provisioning
-before lifecycle validation remains the explicit future hardening contract in
-`cjM2Uc`; these instructions must not be represented as runtime enforcement.
+For configured projects, `yy task start` runs the frozen hydration workflow before
+`WORKING`; preflight and finish verify its receipt and exact-lock evidence without rerunning provisioning.
