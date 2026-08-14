@@ -17,6 +17,18 @@
 
 set -euo pipefail
 
+# Preserve the process environment that executable delegates must observe.
+# Node selection below may normalize PATH for Juno Code's own runtime, but a
+# transparent delegate must discover and execute from the caller's PATH.
+JUNO_CODE_CALLER_PATH="$PATH"
+if [ "${JUNO_CODE_NODE_EXECUTABLE+x}" = x ]; then
+    JUNO_CODE_CALLER_NODE_EXECUTABLE_SET=1
+    JUNO_CODE_CALLER_NODE_EXECUTABLE="$JUNO_CODE_NODE_EXECUTABLE"
+else
+    JUNO_CODE_CALLER_NODE_EXECUTABLE_SET=0
+    JUNO_CODE_CALLER_NODE_EXECUTABLE=""
+fi
+
 # Derive identity only from the executable boundary. ypl sources this wrapper,
 # preserving its own $0; yy is an npm symlink to this file. exec -a carries the
 # derived identity in kernel-owned argv[0] without adding a marker argument or
@@ -72,7 +84,7 @@ classify_prebootstrap_command() {
         esac
     done
     case "$PREBOOTSTRAP_COMMAND" in
-        -V|--version|info|where|kanban|task|merge|integration) return 0 ;;
+        -V|--version|info|where|benchmark|kanban|task|merge|integration) return 0 ;;
         doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
     esac
     return 1
@@ -289,6 +301,33 @@ exec_current_runtime() {
     exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@"
 }
 
+restore_caller_delegate_environment() {
+    PATH="$JUNO_CODE_CALLER_PATH"
+    export PATH
+    if [ "$JUNO_CODE_CALLER_NODE_EXECUTABLE_SET" -eq 1 ]; then
+        JUNO_CODE_NODE_EXECUTABLE="$JUNO_CODE_CALLER_NODE_EXECUTABLE"
+        export JUNO_CODE_NODE_EXECUTABLE
+    else
+        unset JUNO_CODE_NODE_EXECUTABLE
+    fi
+}
+
+exec_transparent_delegate_runtime() {
+    local selected_node="$JUNO_CODE_NODE_EXECUTABLE"
+    restore_caller_delegate_environment
+    exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$selected_node" "$CLI_ENTRYPOINT" "$@"
+}
+
+run_transparent_delegate_runtime() {
+    local selected_node="$JUNO_CODE_NODE_EXECUTABLE" status=0
+    (
+        restore_caller_delegate_environment
+        exec -a "$JUNO_CODE_LAUNCH_SURFACE_VALUE" "$selected_node" "$CLI_ENTRYPOINT" "$@"
+    ) || status=$?
+    finish_wrapper_invocation "$status"
+    return "$status"
+}
+
 finalize_bootstrap_failure() {
     local status=$?
     trap - EXIT
@@ -330,6 +369,13 @@ main() {
             finish_wrapper_invocation "$status"
             return "$status"
         }
+        if [ "$PREBOOTSTRAP_COMMAND" = benchmark ]; then
+            if current_runtime_supports_lifecycle; then
+                exec_transparent_delegate_runtime "$@"
+            fi
+            run_transparent_delegate_runtime "$@"
+            return $?
+        fi
         if current_runtime_supports_lifecycle; then
             exec_current_runtime "$@"
         fi

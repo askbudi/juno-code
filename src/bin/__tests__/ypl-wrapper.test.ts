@@ -514,6 +514,58 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it('preserves the caller environment when benchmark delegation has competing binaries', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-wrapper-env-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      const preferredBin = path.join(tempDir, 'preferred-bin');
+      const runtimeBin = path.join(tempDir, 'runtime-bin');
+      const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
+      const record = path.join(tempDir, 'record.json');
+      await Promise.all([binDir, preferredBin, runtimeBin, scriptsDir].map((directory) => fs.ensureDir(directory)));
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'yy'));
+      await fs.chmod(path.join(binDir, 'yy'), 0o755);
+      await fs.writeFile(
+        path.join(binDir, 'cli.mjs'),
+        [
+          "import { spawnSync } from 'node:child_process';",
+          "import fs from 'node:fs';",
+          "const child = spawnSync('juno-benchmark', ['probe'], { encoding: 'utf8' });",
+          `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({`,
+          "  delegate: child.stdout.trim(), marker: process.env.DELEGATE_MARKER,",
+          "  path: process.env.PATH, nodeExecutablePresent: Object.prototype.hasOwnProperty.call(process.env, 'JUNO_CODE_NODE_EXECUTABLE')",
+          '}));',
+          'process.exit(child.status ?? 1);',
+        ].join('\n'),
+      );
+      await fs.writeFile(
+        path.join(runtimeBin, 'node'),
+        `#!/usr/bin/env bash\nif [ "$1" = "-p" ]; then echo 22.22.3; exit 0; fi\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+        { mode: 0o755 },
+      );
+      await fs.writeFile(path.join(preferredBin, 'juno-benchmark'), '#!/bin/sh\nprintf preferred', { mode: 0o755 });
+      await fs.writeFile(path.join(runtimeBin, 'juno-benchmark'), '#!/bin/sh\nprintf competitor', { mode: 0o755 });
+      await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), '#!/bin/sh\nexit 91', { mode: 0o755 });
+      const callerPath = `${preferredBin}${path.delimiter}${runtimeBin}${path.delimiter}${process.env.PATH ?? ''}`;
+
+      const result = await execa(path.join(binDir, 'yy'), ['benchmark', 'probe'], {
+        cwd: tempDir,
+        env: { PATH: callerPath, DELEGATE_MARKER: 'exact caller value', JUNO_CODE_NODE_EXECUTABLE: undefined },
+        reject: false,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(await fs.readJson(record)).toEqual({
+        delegate: 'preferred',
+        marker: 'exact caller value',
+        path: callerPath,
+        nodeExecutablePresent: false,
+      });
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it('refuses modern distribution code under an unsupported ambient Node', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-node-wrapper-'));
     try {
