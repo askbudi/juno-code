@@ -922,6 +922,8 @@ raise SystemExit(2)
         claim_path.write_bytes(risk_runtime.canonical(claim))
         claim_ref = {"claim_path": str(claim_path),
                      "claim_sha256": hashlib.sha256(claim_path.read_bytes()).hexdigest()}
+        digest = hashlib.sha256(b"external-full-suite-fixture").hexdigest()
+        resource = command.get("resource")
         receipt = {"schema_version": risk_runtime.FULL_SUITE_SCHEMA,
                    "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
                                 "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
@@ -930,6 +932,30 @@ raise SystemExit(2)
                    "validation_identity": identity, "command": command,
                    "started_at": "2026-08-09T00:00:00Z",
                    "completed_at": "2026-08-09T00:00:01Z",
+                   "timing": {
+                       "schema_version": risk_runtime.VALIDATION_TIMING_SCHEMA,
+                       "states": [
+                           {"state": "WAITING_FOR_RESOURCE", "duration_ms": 0},
+                           {"state": "SETUP", "duration_ms": 0},
+                           {"state": "RUNNING", "duration_ms": 1},
+                           {"state": "TEARDOWN", "duration_ms": 0},
+                           {"state": "PASSED", "duration_ms": 0},
+                       ],
+                       "wall_duration_ms": 1, "critical_path_contribution_ms": 1,
+                   },
+                   "resource": {
+                       "id": resource["id"] if resource else None,
+                       "lock_identity_sha256": digest if resource else None,
+                       "wait_timeout_seconds": (resource["wait_timeout_seconds"]
+                                                if resource else None),
+                       "owner_diagnostics": None,
+                   },
+                   "identity": {
+                       "command_sha256": digest, "cwd_sha256": digest,
+                       "policy_sha256": digest,
+                       "candidate_sha": claim["candidate"]["candidate_sha"],
+                       "candidate_tree": claim["candidate"]["candidate_tree"],
+                   },
                    "result": {"exit_code": 0, "timed_out": False,
                               "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
                                          "tail": "", "truncated_bytes": 0},
