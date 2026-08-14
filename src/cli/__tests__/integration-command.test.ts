@@ -77,4 +77,25 @@ describe('integration workspace CLI', () => {
     await applyProgram.parseAsync(['node', 'yy', 'integration', operation, '--apply', '/tmp/plan.json']);
     expect(invoke).toHaveBeenLastCalledWith(operation, { apply: '/tmp/plan.json' });
   });
+
+  it('treats bare integration push as explicit plan-and-publish authority', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'integration', 'push']);
+    expect(invoke).toHaveBeenLastCalledWith('push', {});
+  });
+
+  it('keeps bare repair invalid and rejects combined push modes', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const repair = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(repair, invoke);
+    await expect(repair.parseAsync(['node', 'yy', 'integration', 'repair']))
+      .rejects.toThrow('requires exactly one');
+    const push = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(push, invoke);
+    await expect(push.parseAsync([
+      'node', 'yy', 'integration', 'push', '--dry-run', '--apply', '/tmp/plan.json',
+    ])).rejects.toThrow('accepts only one');
+  });
 });

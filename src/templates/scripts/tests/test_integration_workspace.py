@@ -478,6 +478,44 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in retried["phases"]],
                          ["already_complete"])
 
+    def test_bare_push_plans_and_applies_with_bound_terminal_receipts(self) -> None:
+        advanced = self.local_advance()
+        runtime.register(self.controller, self.owner)
+        synced, sync_code = runtime.sync(self.controller)
+        self.assertEqual(sync_code, 0, synced)
+
+        published, code = runtime.push(self.controller, dry_run=False, apply=None)
+
+        self.assertEqual((code, published["outcome"]), (0, "completed"), published)
+        self.assertEqual(published["mode"], "plan-and-apply")
+        self.assertEqual(published["final_status"], "completed")
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), advanced)
+        plan_path = Path(published["plan_receipt"]["path"])
+        outcome_path = Path(published["outcome_receipt"]["path"])
+        self.assertNotEqual(plan_path, outcome_path)
+        plan = json.loads(plan_path.read_text())
+        outcome = json.loads(outcome_path.read_text())
+        self.assertEqual(plan["outcome"], "planned")
+        self.assertEqual(outcome["plan_sha256"], plan["plan_sha256"])
+        self.assertEqual(outcome["plan_receipt"], published["plan_receipt"])
+
+    def test_bare_push_blockers_emit_plan_and_terminal_refusal_without_mutation(self) -> None:
+        runtime.register(self.controller, self.owner)
+        (self.owner / "dirty.txt").write_text("preserve\n")
+        before = git(self.remote, "rev-parse", "refs/heads/product")
+
+        refused, code = runtime.push(self.controller, dry_run=False, apply=None)
+
+        self.assertEqual((code, refused["outcome"]), (2, "refused"), refused)
+        self.assertEqual(refused["final_status"], "refused")
+        self.assertTrue(Path(refused["plan_receipt"]["path"]).is_file())
+        self.assertTrue(Path(refused["outcome_receipt"]["path"]).is_file())
+        self.assertNotEqual(refused["plan_receipt"]["path"],
+                            refused["outcome_receipt"]["path"])
+        self.assertIn("integration_owner_dirty", refused["blockers"])
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), before)
+        self.assertEqual((self.owner / "dirty.txt").read_text(), "preserve\n")
+
     def test_push_apply_refuses_remote_race_without_overwrite(self) -> None:
         local = self.local_advance()
         runtime.register(self.controller, self.owner)

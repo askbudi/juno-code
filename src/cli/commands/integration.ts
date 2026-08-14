@@ -154,16 +154,19 @@ export function configureIntegrationCommand(
       .command(operation)
       .description(operation === 'repair'
         ? 'Plan or apply exact, receipt-bound integration topology repair'
-        : 'Plan or apply child-first, root-last remote publication')
+        : 'Plan and publish by default, or use explicit plan/apply publication modes')
       .option('--dry-run', 'Persist and print a non-mutating plan receipt')
       .option('--apply <receipt>', 'Apply one exact previously generated plan receipt')
       .action((options: { dryRun?: boolean; apply?: string }) => {
-        if (Boolean(options.dryRun) === Boolean(options.apply)) {
-          throw new Error(`integration ${operation} requires exactly one of --dry-run or --apply <receipt>`);
+        if (options.dryRun && options.apply) {
+          throw new Error(`integration ${operation} accepts only one of --dry-run or --apply <receipt>`);
         }
-        return invoke(operation, options.dryRun
-          ? { dryRun: true }
-          : { apply: options.apply! });
+        if (operation === 'repair' && !options.dryRun && !options.apply) {
+          throw new Error('integration repair requires exactly one of --dry-run or --apply <receipt>');
+        }
+        return invoke(operation, options.dryRun ? { dryRun: true }
+          : options.apply ? { apply: options.apply }
+            : {});
       });
   }
 }

@@ -142,12 +142,15 @@ sync: guard -> fetch -> verify target -> fast-forward -> exact submodules
        +--> healthy: inspect/debug/start local server here
        +--> refusal: repair --dry-run -> review receipt -> repair --apply RECEIPT
 
-publication: push --dry-run -> separate authorization -> push --apply RECEIPT
+publication: push --------------------------------------------> plan + apply under one lock
+             push --dry-run -> optional review -> push --apply RECEIPT
              child repositories first -----------------------> root last
 ```
 
 Repair never discards local work, and push never follows from sync or repair
-authority. Every apply binds the reviewed receipt to exact topology and SHAs,
+authority. Bare `yy integration push` is explicit publication authority and
+internally persists then applies one exact plan; dry-run/apply remain available
+for delayed or audited publication. Every apply binds its plan receipt to exact topology and SHAs,
 rechecks readiness under a lock, and records partial-failure truth for safe
 retry. Package publication, deployment, production mutation, and post-deploy
 E2E remain outside these commands.

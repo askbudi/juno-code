@@ -1244,7 +1244,9 @@ def push_plan(controller: Path) -> dict[str, Any]:
     return {**core, "plan_sha256": json_digest(core)}
 
 
-def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[str, Any], int]:
+def push(controller: Path, *, dry_run: bool, apply: Path | None,
+         _lock_held: bool = False,
+         _plan_receipt: dict[str, str] | None = None) -> tuple[dict[str, Any], int]:
     import merge_queue as merge_runtime
     controller = exact_root(controller, "controller")
     policy, task_policy, policy_path = load_policy(controller)
@@ -1255,7 +1257,25 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[s
         reference = write_receipt(operation_receipt_path(controller, policy, "push-plan"), receipt)
         return {**receipt, "receipt": reference}, 0 if not plan["blockers"] else 2
     if apply is None:
-        raise IntegrationError("push apply requires a plan receipt")
+        with merge_runtime.target_lock(controller, repository, task_policy["target_ref"]):
+            plan = push_plan(controller)
+            planned = {**plan, "outcome": "planned" if not plan["blockers"] else "refused"}
+            plan_reference = write_receipt(
+                operation_receipt_path(controller, policy, "push-plan"), planned)
+            if plan["blockers"]:
+                terminal = {
+                    "schema_version": SCHEMA, "operation": "push",
+                    "mode": "plan-and-apply", "outcome": "refused",
+                    "final_status": "refused", "plan_sha256": plan["plan_sha256"],
+                    "blockers": plan["blockers"], "plan_receipt": plan_reference,
+                    "phases": [],
+                }
+                outcome_reference = write_receipt(
+                    operation_receipt_path(controller, policy, "push-outcome"), terminal)
+                return {**terminal, "outcome_receipt": outcome_reference,
+                        "receipt": outcome_reference}, 2
+            return push(controller, dry_run=False, apply=Path(plan_reference["path"]),
+                        _lock_held=True, _plan_receipt=plan_reference)
     try:
         approved = json.loads(apply.expanduser().resolve().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -1312,9 +1332,12 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[s
         raise IntegrationError("push plan with publication actions must end in root push")
     result_path = operation_receipt_path(controller, policy, "push-apply")
     result = {**approved, "outcome": "running", "phases": []}
+    if _plan_receipt is not None:
+        result["plan_receipt"] = _plan_receipt
     reference = write_receipt(result_path, result)
-    try:
-        with merge_runtime.target_lock(controller, repository, target_ref):
+    def apply_locked() -> tuple[dict[str, Any], int]:
+        nonlocal reference
+        try:
             status = status_payload(controller)
             if (not status["ready"]
                     or status["integration"]["registered_path"] != approved["registered_owner"]
@@ -1346,12 +1369,29 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict[s
                 reference = write_receipt(result_path, result)
             result["outcome"] = "completed"
             reference = write_receipt(result_path, result)
-            return {**result, "receipt": reference}, 0
-    except (IntegrationError, task_workspace.TaskWorkspaceError,
-            merge_runtime.MergeQueueError, OSError) as exc:
-        result.update({"outcome": "failed", "error": str(exc)})
-        reference = write_receipt(result_path, result)
-        return {**result, "receipt": reference}, 2
+            payload = {**result, "receipt": reference}
+            if _plan_receipt is not None:
+                payload.update({"mode": "plan-and-apply", "final_status": "completed",
+                                "outcome_receipt": reference})
+            return payload, 0
+        except (IntegrationError, task_workspace.TaskWorkspaceError,
+                merge_runtime.MergeQueueError, OSError) as exc:
+            result.update({"outcome": "failed", "error": str(exc)})
+            reference = write_receipt(result_path, result)
+            payload = {**result, "receipt": reference}
+            if _plan_receipt is not None:
+                payload.update({"mode": "plan-and-apply", "final_status": "failed",
+                                "outcome_receipt": reference})
+            return payload, 2
+        except (KeyboardInterrupt, SystemExit) as exc:
+            result.update({"outcome": "interrupted", "error": type(exc).__name__})
+            reference = write_receipt(result_path, result)
+            raise
+
+    if _lock_held:
+        return apply_locked()
+    with merge_runtime.target_lock(controller, repository, target_ref):
+        return apply_locked()
 
 
 def sync(controller: Path) -> tuple[dict[str, Any], int]:
@@ -1540,7 +1580,7 @@ def parser() -> argparse.ArgumentParser:
     register_command.add_argument("--replace", action="store_true")
     for name in ("repair", "push"):
         command = commands.add_parser(name, allow_abbrev=False)
-        mode = command.add_mutually_exclusive_group(required=True)
+        mode = command.add_mutually_exclusive_group(required=name == "repair")
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--apply", type=Path)
     return root
