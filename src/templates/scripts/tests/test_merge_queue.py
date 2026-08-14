@@ -930,6 +930,17 @@ raise SystemExit(2)
                    "validation_identity": identity, "command": command,
                    "started_at": "2026-08-09T00:00:00Z",
                    "completed_at": "2026-08-09T00:00:01Z",
+                   "timing": {"schema_version": "juno_validation_timing.v1",
+                              "states": [{"state": state, "duration_ms": 0} for state in
+                                         ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED")],
+                              "wall_duration_ms": 0, "critical_path_contribution_ms": 0},
+                   "resource": {"id": None, "lock_identity_sha256": None,
+                                "wait_timeout_seconds": None, "owner_diagnostics": None},
+                   "identity": {"command_sha256": hashlib.sha256(
+                                    risk_runtime.canonical(command["argv"])).hexdigest(),
+                                "cwd_sha256": "a" * 64, "policy_sha256": "b" * 64,
+                                "candidate_sha": claim["candidate"]["candidate_sha"],
+                                "candidate_tree": claim["candidate"]["candidate_tree"]},
                    "result": {"exit_code": 0, "timed_out": False,
                               "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
                                          "tail": "", "truncated_bytes": 0},
@@ -1399,6 +1410,12 @@ raise SystemExit(2)
         self.assertTrue(all(row["id"] != "full-suite" for row in ready["validation"]))
         complete = ready["risk"]["review_progress"]["full_suite_admission"]
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
+        receipt = json.loads(Path(complete["receipt"]["receipt_path"]).read_text())
+        self.assertEqual(receipt["timing"]["schema_version"], "juno_validation_timing.v1")
+        self.assertEqual([item["state"] for item in receipt["timing"]["states"]],
+                         ["WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED"])
+        self.assertEqual(set(receipt["identity"]), {"command_sha256", "cwd_sha256",
+                                                   "policy_sha256", "candidate_sha", "candidate_tree"})
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
 
     def test_failed_suite_new_tip_reopens_and_requeues_the_repair(self) -> None:
