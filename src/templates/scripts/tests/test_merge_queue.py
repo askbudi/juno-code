@@ -1015,27 +1015,6 @@ raise SystemExit(2)
         self.assertEqual(self.counter.read_text().splitlines(), ["run"])
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
-    def test_pre_review_moved_tip_requeues_without_dispatching_or_spending_review_budget(self) -> None:
-        old_tip = self.commit_feature("X", "src/security/auth.py", "first\n")
-        waiting = self.queue_payload("next")
-        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
-
-        worktree = self.workspaces / "X"
-        (worktree / "src/security/auth.py").write_text("second\n")
-        git(worktree, "add", ".")
-        git(worktree, "commit", "-m", "pre-review repair")
-        new_tip = git(worktree, "rev-parse", "HEAD")
-
-        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
-            reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
-
-        dispatch.assert_not_called()
-        self.assertNotEqual(old_tip, new_tip)
-        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_TIP_REFRESH")
-        self.assertEqual((reopened["state"], reopened["tip_sha"]), ("QUEUED", new_tip))
-        self.assertEqual(reopened.get("completed_reviewer_count", 0), 0)
-        self.assertFalse(reopened.get("completed_reviewers"))
-
     def test_merge_status_returns_a_durable_controller_audit_receipt(self) -> None:
         result = self.queue_payload("status")
         reference = result["control_audit"]

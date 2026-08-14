@@ -3378,21 +3378,11 @@ def merge_reopen(controller: Path, task_id: str,
              and record["queue_attempt"].get("outcome") == failure_outcome)
             or resolved_validation_repair
         )
-        pre_review_tip_refresh = (
-            source_state == "AWAITING_RISK"
-            and isinstance(record.get("queue_attempt"), dict)
-            and record["queue_attempt"].get("outcome") == "AWAITING_RISK"
-            and record["queue_attempt"].get("candidate_checkout") is None
-            and isinstance(record["queue_attempt"].get("review"), dict)
-            and record["queue_attempt"]["review"].get("evidence") is None
-            and record.get("completed_reviewer_count", 0) == 0
-            and not record.get("completed_reviewers")
-        )
         queued_tip_refresh = (
             source_state == "QUEUED"
             and isinstance(record.get("tip_sha"), str)
             and not failed_queue_repair
-        ) or pre_review_tip_refresh
+        )
         if source_state == "REVIEW_FINDINGS_EXHAUSTED":
             raise MergeQueueError(
                 "bounded semantic review budget exhausted; inspect the consolidated evidence "
@@ -3590,8 +3580,7 @@ def merge_reopen(controller: Path, task_id: str,
                 "old_candidate_token": token,
                 "old_candidate_owner": owner,
                 "source_state": source_state,
-                "source_outcome": ("QUEUED_TIP_REFRESH" if pre_review_tip_refresh
-                                   else old_attempt.get("outcome")),
+                "source_outcome": old_attempt.get("outcome"),
                 "source_failure_evidence": failure_evidence,
                 "repository_identity": repository_identity(repository),
                 "repository": str(repository),
