@@ -48,8 +48,15 @@ failure. Runtime identity is validated before any Juno-specific generated-output
 admission. Task preflight is read-only and checks the clean committed tip,
 admitted changed paths, generated-output closure, risk policy, and runtime
 identity before expensive final gates. Task finish repeats that closure,
-persists it, and runs focused validation before queueing. Independent features
-can remain active concurrently. Project classification is explicit: a source repository whose
+persists it, and runs focused validation before queueing. Focused rows without a
+`resource` declaration run in independent concurrent lanes. Rows declaring the
+same bounded `resource.id`, absolute `lock_path`, and `wait_timeout_seconds` run
+once in policy order on one exclusive lane; resource wait precedes and never
+consumes each row's operation `timeout_seconds`. Receipts retain bounded owner
+and wait diagnostics, lane position, and critical-path contribution. A terminal
+failure persists the complete schedule and is not automatically retried against
+an unchanged candidate. Independent features can remain active concurrently.
+Project classification is explicit: a source repository whose
 `juno-code/package.json` names `juno-code` must provide both authoritative,
 strict declarations; an ordinary consumer without that package identity has no
 Juno-source declaration requirement.

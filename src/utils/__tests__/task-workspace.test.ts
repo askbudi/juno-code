@@ -6,6 +6,35 @@ import { describe, expect, it } from 'vitest';
 const repository = resolve(import.meta.dirname, '../../../..');
 
 describe('Bolt task workspace managed runtime', () => {
+  it('schedules only managed-install lock sharers on one exclusive focused lane', () => {
+    for (const policyPath of [
+      resolve(repository, '.juno_task/config/task-workspace.json'),
+      resolve(repository, 'juno-code/src/templates/config/task-workspace.json'),
+    ]) {
+      const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as {
+        focused_validation: Array<{
+          id: string;
+          argv: string[];
+          resource?: { id: string; lock_path: string; wait_timeout_seconds: number };
+        }>;
+      };
+      expect(policy.focused_validation.map(({ id }) => id)).toEqual([
+        'task-workspace', 'integration-workspace', 'script-installer',
+      ]);
+      const [task, integration, installer] = policy.focused_validation;
+      expect(task?.resource).toEqual(installer?.resource);
+      expect(task?.resource).toMatchObject({
+        id: 'juno-code-real-git-managed-install',
+        lock_path: '/tmp/juno-code-focused-real-git-managed-install.lock',
+      });
+      expect(task!.resource!.wait_timeout_seconds).toBe(1200);
+      expect(integration?.resource).toBeUndefined();
+      expect(task?.argv).toContain('src/utils/__tests__/task-workspace.test.ts');
+      expect(installer?.argv).toContain('src/utils/__tests__/script-installer.test.ts');
+      expect(integration?.argv).toContain('src/utils/__tests__/integration-workspace.test.ts');
+    }
+  });
+
   it('admits exact runtime/template parity paths without opening the scripts root', () => {
     const policies = [
       resolve(repository, '.juno_task/config/task-workspace.json'),

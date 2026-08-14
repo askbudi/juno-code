@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
@@ -301,14 +302,16 @@ def load_config(controller: Path) -> dict[str, Any]:
             raise TaskWorkspaceError(
                 f"{label} requires id, cwd, argv, timeout_seconds, max_output_bytes, and optional resource")
         normalized_relative(row["cwd"], f"{label} cwd")
+        if (not isinstance(row["timeout_seconds"], int)
+                or isinstance(row["timeout_seconds"], bool)
+                or not 1 <= row["timeout_seconds"] <= 3600):
+            raise TaskWorkspaceError(
+                f"{label} timeout_seconds must be an integer from 1 through 3600")
         if (not isinstance(row["id"], str) or not row["id"] or len(row["id"].encode()) > 128
                 or len(row["cwd"].encode()) > 1024
                 or not isinstance(row["argv"], list) or not row["argv"] or len(row["argv"]) > 128
                 or any(not isinstance(part, str) or not part or len(part.encode()) > 4096
                        for part in row["argv"])
-                or not isinstance(row["timeout_seconds"], int)
-                or isinstance(row["timeout_seconds"], bool)
-                or not 1 <= row["timeout_seconds"] <= 3600
                 or not isinstance(row["max_output_bytes"], int)
                 or isinstance(row["max_output_bytes"], bool)
                 or not 1024 <= row["max_output_bytes"] <= 1048576):
@@ -328,6 +331,17 @@ def load_config(controller: Path) -> dict[str, Any]:
                 raise TaskWorkspaceError(f"{label} resource declaration is invalid")
     for row in validations:
         validate_row(row, "focused validation")
+    resource_declarations: dict[str, tuple[str, int]] = {}
+    for row in validations:
+        resource = row.get("resource")
+        if resource is None:
+            continue
+        declaration = (str(lexical_absolute(Path(resource["lock_path"]))),
+                       resource["wait_timeout_seconds"])
+        prior = resource_declarations.setdefault(resource["id"], declaration)
+        if prior != declaration:
+            raise TaskWorkspaceError(
+                f"focused validation resource {resource['id']!r} has conflicting declarations")
     full_suite = value["full_suite_validation"]
     validate_row(full_suite, "full-suite validation")
     return value
@@ -850,6 +864,63 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
             "stderr_truncated_bytes": totals["stderr"] - len(stderr_tail),
             "stdout_sha256": hashes["stdout"].hexdigest(),
             "stderr_sha256": hashes["stderr"].hexdigest()}
+
+def run_focused_validations(rows: list[dict[str, Any]], worktree: Path) -> list[dict[str, Any]]:
+    """Run independent lanes concurrently and each exclusive-resource lane in policy order."""
+    lanes: dict[str, list[tuple[int, dict[str, Any], Path]]] = {}
+    lane_order: list[str] = []
+    for index, row in enumerate(rows):
+        cwd = (worktree / row["cwd"]).resolve()
+        try:
+            cwd.relative_to(worktree)
+        except ValueError as exc:
+            raise TaskWorkspaceError("focused validation cwd escaped task worktree") from exc
+        resource = row.get("resource")
+        lane = (f"resource:{resource['id']}:{lexical_absolute(Path(resource['lock_path']))}"
+                if resource is not None else f"independent:{index}")
+        if lane not in lanes:
+            lanes[lane] = []
+            lane_order.append(lane)
+        lanes[lane].append((index, row, cwd))
+
+    results: list[Optional[dict[str, Any]]] = [None] * len(rows)
+    lane_totals: dict[str, int] = {}
+
+    def run_lane(lane: str) -> tuple[str, list[tuple[int, dict[str, Any]]], int]:
+        completed: list[tuple[int, dict[str, Any]]] = []
+        total = 0
+        for position, (index, row, cwd) in enumerate(lanes[lane]):
+            evidence = run_validation(row, cwd)
+            evidence["schedule"] = {
+                "lane": "exclusive_resource" if row.get("resource") is not None else "independent",
+                "policy_index": index, "lane_position": position,
+                "resource_id": row.get("resource", {}).get("id"),
+            }
+            completed.append((index, evidence))
+            total += evidence["timing"]["wall_duration_ms"]
+        return lane, completed, total
+
+    # One worker per lane: only rows declaring the same exclusive resource are
+    # serialized. All resource-independent rows retain concurrent execution.
+    with ThreadPoolExecutor(max_workers=len(lane_order),
+                            thread_name_prefix="juno-focused-validation") as pool:
+        futures = [pool.submit(run_lane, lane) for lane in lane_order]
+        for future in futures:
+            lane, completed, total = future.result()
+            lane_totals[lane] = total
+            for index, evidence in completed:
+                results[index] = evidence
+
+    critical_lane = min(lane_order, key=lambda lane: (-lane_totals[lane], lane_order.index(lane)))
+    for lane in lane_order:
+        for index, _row, _cwd in lanes[lane]:
+            evidence = results[index]
+            if evidence is None:  # Defensive: every configured row must produce terminal evidence.
+                raise TaskWorkspaceError("focused validation scheduler lost terminal evidence")
+            on_critical_path = lane == critical_lane
+            evidence["schedule"]["critical_path"] = on_critical_path
+    return [evidence for evidence in results if evidence is not None]
+
 
 def path_within(path: str, roots: list[str]) -> bool:
     return any(path == root or path.startswith(root + "/") for root in roots)
@@ -2382,18 +2453,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         if frozen_record.get("admission_supersessions")
         else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
     )
-    validations = []
-    for row in config["focused_validation"]:
-        cwd = (worktree / row["cwd"]).resolve()
-        try:
-            cwd.relative_to(worktree)
-        except ValueError as exc:
-            raise TaskWorkspaceError("focused validation cwd escaped task worktree") from exc
-        evidence = run_validation(row, cwd)
-        validations.append(evidence)
+    validations = run_focused_validations(config["focused_validation"], worktree)
+    for row, evidence in zip(config["focused_validation"], validations):
         if evidence["timed_out"] or evidence["exit_code"]:
+            # Persist every terminal result from this one deterministic schedule.
+            # A failed row never causes automatic multiplication of an unchanged run.
             _persist_failed_validation(controller, task_id, frozen_record, validations)
             if evidence["timed_out"]:
+                resource = evidence.get("resource", {})
+                wait_ms = evidence["timing"]["states"][0]["duration_ms"]
+                wait_budget_ms = (resource.get("wait_timeout_seconds") or 0) * 1000
+                if resource.get("id") and wait_ms >= max(0, wait_budget_ms - 100):
+                    raise TaskWorkspaceError(
+                        f"focused validation resource wait timed out ({row['id']}, {resource['id']}): "
+                        f"owner={resource.get('owner_diagnostics')}; unchanged retries are not automatic")
                 raise TaskWorkspaceError(f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
             detail = evidence["stderr_tail"] or evidence["stdout_tail"]
             raise TaskWorkspaceError(f"focused validation failed ({row['id']}, exit {evidence['exit_code']}): {detail}")
