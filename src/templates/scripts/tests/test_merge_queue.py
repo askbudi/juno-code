@@ -443,6 +443,164 @@ raise SystemExit(2)
         git(worktree, "merge", "--no-edit", "refs/heads/product")
         return git(worktree, "rev-parse", "HEAD")
 
+    def prepare_terminal_reconciliation(self, task_id: str = "X",
+                                        state_name: str = "REVIEW_FINDINGS") -> tuple[str, str, dict]:
+        tip = self.commit_feature(task_id, f"docs/{task_id}.txt", "feature\n")
+        checkout = self.root / f"cumulative-{task_id}"
+        git(self.repository, "worktree", "add", str(checkout), "product")
+        git(checkout, "merge", "--no-ff", "--no-edit", tip)
+        target = git(checkout, "rev-parse", "HEAD")
+        git(self.repository, "worktree", "remove", str(checkout))
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        record = state["tasks"][task_id]
+        record["state"] = state_name
+        record["review_round"] = 2
+        record["last_queue_outcome"] = state_name
+        record["queue_attempt"] = {
+            "schema_version": merge_runtime.ATTEMPT_SCHEMA,
+            "task_id": task_id, "target_ref": "refs/heads/product",
+            "expected_target_sha": self.base, "feature_sha": tip,
+            "candidate_sha": tip, "outcome": state_name,
+            "risk": {"review_progress": {"review_attempt_counter": 2,
+                                           "steps": [{"reviewer": "reviewer_a"}]}},
+        }
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        board[task_id].update({"status": "done", "commit_hash": target})
+        board_path.write_text(json.dumps(board) + "\n")
+        return tip, target, json.loads(json.dumps(record))
+
+    def test_terminal_findings_reconciliation_is_receipt_bound_idempotent_and_review_free(self) -> None:
+        tip, target, before = self.prepare_terminal_reconciliation()
+        validation_before = self.counter.read_bytes()
+        with (mock.patch.object(merge_runtime, "validation_rows") as validation,
+              mock.patch.object(merge_runtime, "review_candidate") as review,
+              mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch):
+            plan = merge_runtime.persist_terminal_reconciliation_plan(
+                self.controller.resolve(), "X")
+            applied = merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", plan["receipt"]["path"],
+                plan["receipt"]["sha256"])
+            state_before_retry = (self.controller / ".juno_task/state/tasks.json").read_bytes()
+            retried = merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", plan["receipt"]["path"],
+                plan["receipt"]["sha256"])
+        self.assertEqual((plan["tip_sha"], plan["target_sha"]), (tip, target))
+        self.assertEqual(applied["outcome"], "TERMINAL_RECONCILIATION_APPLIED")
+        self.assertEqual(retried["outcome"], "TERMINAL_RECONCILIATION_ALREADY_APPLIED")
+        self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(),
+                         state_before_retry)
+        self.assertEqual(applied["queue_attempt"], before["queue_attempt"])
+        self.assertEqual(applied["review_round"], before["review_round"])
+        self.assertEqual(self.counter.read_bytes(), validation_before)
+        self.assertTrue(Path(plan["receipt"]["path"]).is_file())
+        validation.assert_not_called(); review.assert_not_called(); dispatch.assert_not_called()
+
+    def test_reconcile_cli_forwards_plan_and_apply_with_orchestration_audits(self) -> None:
+        _, _, before = self.prepare_terminal_reconciliation()
+        validation_before = self.counter.read_bytes()
+
+        planned = json.loads(self.command(QUEUE, ["reconcile", "plan", "X"]).stdout)
+        applied = json.loads(self.command(QUEUE, [
+            "reconcile", "apply", "X",
+            "--receipt", planned["receipt"]["path"],
+            "--receipt-sha256", planned["receipt"]["sha256"],
+        ]).stdout)
+
+        self.assertEqual(applied["outcome"], "TERMINAL_RECONCILIATION_APPLIED")
+        for result in (planned, applied):
+            reference = result["control_audit"]
+            receipt = json.loads(Path(reference["path"]).read_text())
+            self.assertEqual(
+                (receipt["surface"], receipt["operation"], receipt["policy_operation"],
+                 receipt["task_id"]),
+                ("merge", "reconcile", "orchestration", "X"),
+            )
+        self.assertEqual(applied["queue_attempt"], before["queue_attempt"])
+        self.assertEqual(applied["review_round"], before["review_round"])
+        self.assertEqual(self.counter.read_bytes(), validation_before)
+
+    def test_terminal_reconciliation_supports_exhausted_but_refuses_nonancestor_and_nonterminal(self) -> None:
+        self.prepare_terminal_reconciliation(state_name="REVIEW_FINDINGS_EXHAUSTED")
+        exhausted = merge_runtime.persist_terminal_reconciliation_plan(
+            self.controller.resolve(), "X")
+        self.assertEqual(exhausted["source_state"], "REVIEW_FINDINGS_EXHAUSTED")
+
+        tip = self.commit_feature("Y", "docs/Y.txt", "not integrated\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["Y"]["state"] = "REVIEW_FINDINGS"
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        board["Y"].update({"status": "done", "commit_hash": tip})
+        board_path.write_text(json.dumps(board) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "not an ancestor"):
+            merge_runtime.persist_terminal_reconciliation_plan(self.controller.resolve(), "Y")
+        board["Y"]["status"] = "in_progress"
+        board_path.write_text(json.dumps(board) + "\n")
+        # Even a contained tip cannot bypass canonical terminal Kanban truth.
+        git(self.repository, "update-ref", "refs/heads/product", tip)
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "not terminal done"):
+            merge_runtime.persist_terminal_reconciliation_plan(self.controller.resolve(), "Y")
+
+    def test_terminal_reconciliation_refuses_stale_tampered_and_concurrent_apply(self) -> None:
+        self.prepare_terminal_reconciliation()
+        plan = merge_runtime.persist_terminal_reconciliation_plan(self.controller.resolve(), "X")
+        receipt = Path(plan["receipt"]["path"])
+        original = receipt.read_bytes()
+        receipt.write_bytes(original.replace(b'"source_state":"REVIEW_FINDINGS"',
+                                             b'"source_state":"REVIEW_FINDINGS_EXHAUSTED"'))
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "forged or tampered"):
+            merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", str(receipt), plan["receipt"]["sha256"])
+        receipt.write_bytes(original)
+        common = Path(git(self.repository, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir")).resolve()
+        key = merge_runtime.target_key(self.repository, "refs/heads/product")
+        lock = common / "juno-locks/merge-queue" / f"{key}.lock"
+        with lock.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "another worker owns"):
+                merge_runtime.apply_terminal_reconciliation(
+                    self.controller.resolve(), "X", str(receipt), plan["receipt"]["sha256"])
+        self.advance_target("src/later.txt", "later\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "target moved"):
+            merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", str(receipt), plan["receipt"]["sha256"])
+
+    def test_terminal_reconciliation_refuses_queue_and_kanban_drift_and_is_crash_atomic(self) -> None:
+        self.prepare_terminal_reconciliation()
+        plan = merge_runtime.persist_terminal_reconciliation_plan(self.controller.resolve(), "X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        before = state_path.read_bytes()
+        with mock.patch.object(merge_runtime.task_runtime.os, "replace",
+                               side_effect=OSError("injected crash")):
+            with self.assertRaisesRegex(OSError, "injected crash"):
+                merge_runtime.apply_terminal_reconciliation(
+                    self.controller.resolve(), "X", plan["receipt"]["path"],
+                    plan["receipt"]["sha256"])
+        self.assertEqual(state_path.read_bytes(), before)
+
+        state = json.loads(before)
+        state["tasks"]["X"]["review_round"] = 99
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "queue identity drifted"):
+            merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", plan["receipt"]["path"],
+                plan["receipt"]["sha256"])
+        state_path.write_bytes(before)
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        board["X"]["agent_response"] = "changed terminal identity"
+        board_path.write_text(json.dumps(board) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "Kanban identity"):
+            merge_runtime.apply_terminal_reconciliation(
+                self.controller.resolve(), "X", plan["receipt"]["path"],
+                plan["receipt"]["sha256"])
+
     def test_target_refresh_direct_apply_preserves_admission_and_queue_evidence(self) -> None:
         self.install_merge_planner_runtime()
         old_tip = self.commit_feature("X", "docs/feature.txt", "feature\n")

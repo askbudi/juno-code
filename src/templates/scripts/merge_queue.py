@@ -31,6 +31,9 @@ PLAN_SCHEMA = "juno_merge_candidate_feasibility.v1"
 PLAN_ID_SCHEMA = "juno_merge_candidate_plan_identity.v1"
 REFRESH_SCHEMA = "juno_merge_target_refresh_plan.v1"
 REFRESH_ID_SCHEMA = "juno_merge_target_refresh_identity.v1"
+RECONCILE_SCHEMA = "juno_merge_terminal_reconciliation_plan.v1"
+RECONCILE_ID_SCHEMA = "juno_merge_terminal_reconciliation_identity.v1"
+RECONCILE_REFERENCE_SCHEMA = "juno_merge_terminal_reconciliation_reference.v1"
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 REVIEW_PROMPT_FIELDS = {
@@ -2890,6 +2893,160 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         return updated
 
 
+def _reconciliation_receipt_root(controller: Path) -> Path:
+    return (controller / ".juno_task/runtime/merge-queue/reconciliation").resolve()
+
+
+def _kanban_terminal_identity(task: dict[str, Any]) -> dict[str, Any]:
+    """Bind canonical task truth without expanded, independently mutable relations."""
+    canonical_task = {key: value for key, value in task.items() if not key.startswith("_")}
+    return {"task": canonical_task, "sha256": digest(canonical_task)}
+
+
+def terminal_reconciliation_plan(controller: Path, task_id: str) -> dict[str, Any]:
+    """Plan an evidence-only terminal transition for one exact contained tip."""
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with task_runtime.state_lock(controller):
+        state = task_runtime.read_state(controller)
+        record = state.get("tasks", {}).get(task_id)
+        entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
+    if not isinstance(record, dict) or record.get("state") not in {
+            "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED"}:
+        raise MergeQueueError("terminal reconciliation requires REVIEW_FINDINGS or REVIEW_FINDINGS_EXHAUSTED")
+    tip_sha = record.get("tip_sha")
+    if (record.get("task_id") != task_id
+            or record.get("target_ref") != config["target_ref"]
+            or not isinstance(record.get("repository"), str)
+            or Path(record["repository"]).resolve() != repository
+            or not isinstance(tip_sha, str)
+            or optional_revision(repository, tip_sha) != tip_sha):
+        raise MergeQueueError("terminal reconciliation queue identity is incomplete or drifted")
+    target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+    if task_runtime.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor", tip_sha, target_sha],
+            repository, check=False).returncode:
+        raise MergeQueueError("exact queued feature tip is not an ancestor of the protected target")
+    kanban = read_kanban_task(controller, task_id)
+    if kanban.get("status") != "done":
+        raise MergeQueueError("canonical Kanban task is not terminal done")
+    kanban_identity = _kanban_terminal_identity(kanban)
+    body = {
+        "schema_version": RECONCILE_SCHEMA,
+        "operation": "terminal-already-in-target",
+        "repository_identity": repository_identity(repository),
+        "repository": str(repository),
+        "target_ref": config["target_ref"],
+        "target_sha": target_sha,
+        "task_id": task_id,
+        "tip_sha": tip_sha,
+        "source_state": record["state"],
+        "queue_record_sha256": digest(record),
+        "queue_entry_sha256": digest(entry),
+        "kanban_identity": kanban_identity,
+    }
+    return {**body, "plan_id": digest({"schema_version": RECONCILE_ID_SCHEMA, "plan": body})}
+
+
+def persist_terminal_reconciliation_plan(controller: Path, task_id: str) -> dict[str, Any]:
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with target_lock(controller, repository, config["target_ref"]):
+        plan = terminal_reconciliation_plan(controller, task_id)
+        # Recheck state and target after the external Kanban read and before receipt durability.
+        with task_runtime.state_lock(controller):
+            record = task_runtime.read_state(controller).get("tasks", {}).get(task_id)
+        if (not isinstance(record, dict) or digest(record) != plan["queue_record_sha256"]
+                or task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]):
+            raise MergeQueueError("terminal reconciliation identity moved while planning")
+        path = _reconciliation_receipt_root(controller) / task_id / f"{plan['plan_id']}.json"
+        data = (canonical(plan) + "\n").encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            if path.read_bytes() != data:
+                raise MergeQueueError("terminal reconciliation receipt identity collided")
+        else:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        return {**plan, "receipt": {"path": str(path),
+                                     "sha256": hashlib.sha256(data).hexdigest()}}
+
+
+def apply_terminal_reconciliation(controller: Path, task_id: str, receipt_path: str,
+                                  receipt_sha256: str) -> dict[str, Any]:
+    """Apply one immutable plan under the target lock without executing product work."""
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    path = Path(receipt_path).expanduser().resolve()
+    root = _reconciliation_receipt_root(controller)
+    try:
+        path.relative_to(root)
+        data = path.read_bytes()
+        plan = json.loads(data)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        raise MergeQueueError("terminal reconciliation receipt is absent or unauthorized") from exc
+    body = ({key: value for key, value in plan.items() if key != "plan_id"}
+            if isinstance(plan, dict) else {})
+    if (hashlib.sha256(data).hexdigest() != receipt_sha256
+            or not isinstance(plan, dict) or plan.get("schema_version") != RECONCILE_SCHEMA
+            or plan.get("task_id") != task_id
+            or path != root / task_id / f"{plan.get('plan_id')}.json"
+            or plan.get("plan_id") != digest({"schema_version": RECONCILE_ID_SCHEMA,
+                                               "plan": body})
+            or plan.get("repository_identity") != repository_identity(repository)
+            or plan.get("repository") != str(repository)
+            or plan.get("target_ref") != config["target_ref"]):
+        raise MergeQueueError("terminal reconciliation receipt is forged or tampered")
+    reference = {
+        "schema_version": RECONCILE_REFERENCE_SCHEMA,
+        "plan_id": plan["plan_id"], "receipt_path": str(path),
+        "receipt_sha256": receipt_sha256, "repository_identity": plan["repository_identity"],
+        "target_ref": plan["target_ref"], "target_sha": plan["target_sha"],
+        "task_id": task_id, "tip_sha": plan["tip_sha"],
+        "source_state": plan["source_state"],
+        "queue_record_sha256": plan["queue_record_sha256"],
+        "kanban_sha256": plan["kanban_identity"]["sha256"],
+    }
+    with target_lock(controller, repository, config["target_ref"]):
+        if task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]:
+            raise MergeQueueError("terminal reconciliation protected target moved")
+        kanban_identity = _kanban_terminal_identity(read_kanban_task(controller, task_id))
+        if (kanban_identity != plan.get("kanban_identity")
+                or kanban_identity["task"].get("status") != "done"):
+            raise MergeQueueError("terminal reconciliation Kanban identity or terminal truth drifted")
+        with task_runtime.state_lock(controller):
+            state = task_runtime.read_state(controller)
+            record = state.get("tasks", {}).get(task_id)
+            entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
+            if digest(entry) != plan.get("queue_entry_sha256"):
+                raise MergeQueueError("terminal reconciliation target queue identity drifted")
+            if isinstance(record, dict) and record.get("state") == "MERGED":
+                if record.get("terminal_reconciliation") != reference:
+                    raise MergeQueueError("task is MERGED without this exact reconciliation identity")
+                return {**record, "outcome": "TERMINAL_RECONCILIATION_ALREADY_APPLIED",
+                        "terminal_reconciliation": reference}
+            if (not isinstance(record, dict)
+                    or record.get("state") != plan["source_state"]
+                    or digest(record) != plan["queue_record_sha256"]):
+                raise MergeQueueError("terminal reconciliation queue identity drifted")
+            if record.get("tip_sha") != plan["tip_sha"]:
+                raise MergeQueueError("terminal reconciliation exact feature tip drifted")
+            if task_runtime.run(
+                    ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                     plan["tip_sha"], plan["target_sha"]], repository, check=False).returncode:
+                raise MergeQueueError("exact queued feature tip is not an ancestor of the protected target")
+            updated = {**record, "state": "MERGED",
+                       "last_queue_outcome": "ALREADY_IN_TARGET_RECONCILED",
+                       "terminal_reconciliation": reference}
+            state["tasks"][task_id] = updated
+            task_runtime.write_state(controller, state)
+        return {**updated, "outcome": "TERMINAL_RECONCILIATION_APPLIED"}
+
+
 def _refresh_receipt_root(controller: Path) -> Path:
     return (controller / ".juno_task/runtime/merge-queue/target-refresh").resolve()
 
@@ -3590,6 +3747,14 @@ def parser() -> argparse.ArgumentParser:
     reopen = sub.add_parser("reopen")
     reopen.add_argument("task_id")
     reopen.add_argument("--plan-id")
+    reconcile = sub.add_parser("reconcile")
+    reconcile_sub = reconcile.add_subparsers(dest="reconcile_operation", required=True)
+    reconcile_plan = reconcile_sub.add_parser("plan")
+    reconcile_plan.add_argument("task_id")
+    reconcile_apply = reconcile_sub.add_parser("apply")
+    reconcile_apply.add_argument("task_id")
+    reconcile_apply.add_argument("--receipt", required=True)
+    reconcile_apply.add_argument("--receipt-sha256", required=True)
     refresh = sub.add_parser("refresh")
     refresh_sub = refresh.add_subparsers(dest="refresh_operation", required=True)
     refresh_plan = refresh_sub.add_parser("plan")
@@ -3647,6 +3812,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = merge_review(controller, args.task_id)
         elif args.operation == "reopen":
             result = merge_reopen(controller, args.task_id, args.plan_id)
+        elif args.operation == "reconcile":
+            if args.reconcile_operation == "plan":
+                result = persist_terminal_reconciliation_plan(controller, args.task_id)
+            else:
+                result = apply_terminal_reconciliation(
+                    controller, args.task_id, args.receipt, args.receipt_sha256)
         elif args.refresh_operation == "plan":
             result = persist_target_refresh_plan(controller, args.task_id)
         else:
