@@ -435,6 +435,11 @@ describe('ManagedProjectAssets', () => {
       expect(await fs.pathExists(path.join(projectDir, requiredPath)), requiredPath).toBe(true);
     }
 
+    const subprocessEnv = { ...process.env };
+    for (const key of Object.keys(subprocessEnv)) {
+      if (key.startsWith('GIT_')) delete subprocessEnv[key];
+    }
+
     for (const command of [
       './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md',
       './.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md',
@@ -449,7 +454,7 @@ describe('ManagedProjectAssets', () => {
         cwd: projectDir,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...subprocessEnv,
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPYCACHEPREFIX: '/tmp/juno-managed-assets-pycache',
         },

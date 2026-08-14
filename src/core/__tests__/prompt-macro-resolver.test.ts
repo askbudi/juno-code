@@ -15,12 +15,10 @@ describe('prompt-macro-resolver', () => {
       maxDepth: 8,
     });
     expect(result.resolvedPrompt).toBe(`${lifecycle} ${payload}`);
-    expect(result.resolvedPrompt).toContain('Implementation workers never');
-    expect(result.resolvedPrompt).toContain(
-      'managed merge queue is the sole lifecycle-semantic review owner',
-    );
-    expect(result.resolvedPrompt).toContain('Reviewer A then Reviewer B');
-    expect(result.resolvedPrompt).toContain('at most one repair candidate');
+    expect(result.resolvedPrompt).toContain('Implementation and repair');
+    expect(result.resolvedPrompt).toContain('sole owner: low risk uses zero reviewers');
+    expect(result.resolvedPrompt).toContain('two sequential predecessor-bound v1 reviewers');
+    expect(result.resolvedPrompt).toContain('one repair candidate and one delta review group');
     expect(result.resolvedPrompt).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(result.resolvedPrompt).not.toContain('launch a fresh read-only independent');
     expect(result.resolvedPrompt.indexOf(payload)).toBe(result.resolvedPrompt.lastIndexOf(payload));

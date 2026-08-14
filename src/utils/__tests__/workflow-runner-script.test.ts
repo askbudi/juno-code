@@ -237,6 +237,12 @@ describe('workflow_runner.sh template script', () => {
   let testDir: string;
 
   beforeEach(async () => {
+    // Other fast-suite files intentionally mock node:child_process. Resolve the
+    // real implementation explicitly so this process-heavy fixture cannot
+    // inherit a hoisted mock when Vitest co-locates files in one worker.
+    const { spawnSync: nativeSpawnSync } = await vi.importActual<
+      typeof import('node:child_process')
+    >('node:child_process');
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-runner-test-'));
     workflowFixtureController = path.join(testDir, 'controller');
     const fixtureScripts = path.join(workflowFixtureController, '.juno_task', 'scripts');
@@ -247,29 +253,29 @@ describe('workflow_runner.sh template script', () => {
     );
     const fixtureBin = path.join(workflowFixtureController, '.venv_juno', 'bin');
     await fs.ensureDir(fixtureBin);
-    const pythonExecutable = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    const pythonExecutable = nativeSpawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
     // Resolve the executable before linking it into the synthetic venv. On
     // macOS, /usr/bin/python3 and version-manager launchers can themselves be
     // links/shims; linking that spelling instead of the real interpreter makes
     // adjacent pyvenv.cfg selection depend on /var -> /private/var aliases.
-    const realPythonExecutable = spawnSync(pythonExecutable, ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], {
+    const realPythonExecutable = nativeSpawnSync(pythonExecutable, ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], {
       encoding: 'utf8',
     }).stdout.trim();
     await fs.symlink(realPythonExecutable, path.join(fixtureBin, 'python'));
-    const pythonVersion = spawnSync(realPythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
+    const pythonVersion = nativeSpawnSync(realPythonExecutable, ['-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], {
       encoding: 'utf8',
     }).stdout.trim();
     await fs.writeFile(
       path.join(workflowFixtureController, '.venv_juno', 'pyvenv.cfg'),
       `home = ${path.dirname(realPythonExecutable)}\ninclude-system-site-packages = false\nversion = ${pythonVersion}\n`,
     );
-    const yamlPackage = spawnSync(pythonExecutable, ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)'], {
+    const yamlPackage = nativeSpawnSync(pythonExecutable, ['-c', 'import pathlib, yaml; print(pathlib.Path(yaml.__file__).parent)'], {
       encoding: 'utf8',
     }).stdout.trim();
     const managedSitePackages = path.join(workflowFixtureController, '.venv_juno', 'lib', `python${pythonVersion}`, 'site-packages');
     await fs.ensureDir(managedSitePackages);
     await fs.copy(yamlPackage, path.join(managedSitePackages, 'yaml'));
-    spawnSync('git', ['init', '-b', 'fixture-controller'], {
+    nativeSpawnSync('git', ['init', '-b', 'fixture-controller'], {
       cwd: workflowFixtureController,
       encoding: 'utf8',
     });
