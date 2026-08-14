@@ -1400,7 +1400,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
             "start", "status", "preflight", "finish",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
-    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "refresh"}:
+    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
     if forwarded_policy is not None and forwarded_policy != expected_policy:
         raise TaskWorkspaceError(

@@ -498,6 +498,30 @@ raise SystemExit(2)
         self.assertTrue(Path(plan["receipt"]["path"]).is_file())
         validation.assert_not_called(); review.assert_not_called(); dispatch.assert_not_called()
 
+    def test_reconcile_cli_forwards_plan_and_apply_with_orchestration_audits(self) -> None:
+        _, _, before = self.prepare_terminal_reconciliation()
+        validation_before = self.counter.read_bytes()
+
+        planned = json.loads(self.command(QUEUE, ["reconcile", "plan", "X"]).stdout)
+        applied = json.loads(self.command(QUEUE, [
+            "reconcile", "apply", "X",
+            "--receipt", planned["receipt"]["path"],
+            "--receipt-sha256", planned["receipt"]["sha256"],
+        ]).stdout)
+
+        self.assertEqual(applied["outcome"], "TERMINAL_RECONCILIATION_APPLIED")
+        for result in (planned, applied):
+            reference = result["control_audit"]
+            receipt = json.loads(Path(reference["path"]).read_text())
+            self.assertEqual(
+                (receipt["surface"], receipt["operation"], receipt["policy_operation"],
+                 receipt["task_id"]),
+                ("merge", "reconcile", "orchestration", "X"),
+            )
+        self.assertEqual(applied["queue_attempt"], before["queue_attempt"])
+        self.assertEqual(applied["review_round"], before["review_round"])
+        self.assertEqual(self.counter.read_bytes(), validation_before)
+
     def test_terminal_reconciliation_supports_exhausted_but_refuses_nonancestor_and_nonterminal(self) -> None:
         self.prepare_terminal_reconciliation(state_name="REVIEW_FINDINGS_EXHAUSTED")
         exhausted = merge_runtime.persist_terminal_reconciliation_plan(
