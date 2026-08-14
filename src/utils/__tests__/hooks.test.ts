@@ -557,6 +557,8 @@ describe('hooks', () => {
     });
 
     it('should use default working directory when not specified in context', async () => {
+      const defaultWorkingDirectory = process.cwd();
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(defaultWorkingDirectory);
       const basicHooks: HooksConfig = {
         START_RUN: {
           commands: ['pwd'],
@@ -565,9 +567,9 @@ describe('hooks', () => {
 
       mockedExeca.mockResolvedValueOnce({
         exitCode: 0,
-        stdout: process.cwd(),
+        stdout: defaultWorkingDirectory,
         stderr: '',
-        all: process.cwd(),
+        all: defaultWorkingDirectory,
       } as any);
 
       await executeHook('START_RUN', basicHooks, {});
@@ -576,9 +578,10 @@ describe('hooks', () => {
         'pwd',
         expect.objectContaining({
           shell: true,
-          cwd: process.cwd(),
+          cwd: defaultWorkingDirectory,
         }),
       );
+      expect(cwdSpy).toHaveBeenCalledTimes(1);
     });
   });
 

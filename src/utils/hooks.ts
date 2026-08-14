@@ -262,6 +262,7 @@ export async function executeHook(
   options: HookExecutionOptions = {},
 ): Promise<HookExecutionResult> {
   const startTime = Date.now();
+  const requestedWorkingDirectory = context.workingDirectory ?? process.cwd();
   const {
     commandTimeout = 300000, // 5 minutes default (increased from 30s to support long-running hook scripts)
     env = {},
@@ -274,7 +275,7 @@ export async function executeHook(
 
   contextLogger.debug(`Starting hook execution: ${hookType}`, {
     context,
-    workingDirectory: context.workingDirectory || process.cwd(),
+    workingDirectory: requestedWorkingDirectory,
     commandTimeout,
     continueOnError,
   });
@@ -309,7 +310,7 @@ export async function executeHook(
   contextLogger.debug(`Executing ${hook.commands.length} commands for hook ${hookType}`);
 
   const workingDirectory = resolveHookWorkingDirectory(
-    context.workingDirectory || process.cwd(),
+    requestedWorkingDirectory,
   );
   if (!workingDirectory.directory) {
     contextLogger.warn(workingDirectory.diagnostic ?? 'configured project hook skipped: product surface unavailable');
