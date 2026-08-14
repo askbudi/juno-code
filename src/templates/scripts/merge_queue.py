@@ -629,6 +629,20 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
         and feature_tree.get(row["source"]) is not None
         and feature_tree.get(row["source"]) == feature_tree.get(row["destination"])
     }
+    # Pre-binding task receipts shipped the canonical merge runtime as a
+    # managed asset but omitted it from generated_output_admission. Preserve a
+    # single exact compatibility pair; both the admitted source and byte-exact
+    # feature blobs remain mandatory.
+    legacy_managed_pairs = {
+        "juno-code/src/templates/scripts/merge_queue.py":
+            ".juno_task/scripts/merge_queue.py",
+    }
+    eligible_generated.update(
+        destination for source, destination in legacy_managed_pairs.items()
+        if source in admitted_set
+        and feature_tree.get(source) is not None
+        and feature_tree.get(source) == feature_tree.get(destination)
+    )
     for path in all_paths:
         base_blob, target_blob = base_tree.get(path), target_tree.get(path)
         feature_blob, merged_blob = feature_tree.get(path), prospective_tree.get(path)
