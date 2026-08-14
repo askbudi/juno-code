@@ -337,7 +337,7 @@ export class ScriptInstaller {
    * Slack integration scripts allow fetching tasks from Slack and responding.
    * Hook scripts are stored in the hooks/ subdirectory.
    */
-  private static readonly REQUIRED_SCRIPTS = [
+  private static readonly REQUIRED_SCRIPTS = [...new Set([
     'run_until_completion.sh',
     'kanban.sh',
     'juno-toolchain-policy.sh', // Kanban >=2,<3 runtime identity SOT used by kanban.sh
@@ -366,7 +366,7 @@ export class ScriptInstaller {
     'git-flow.sh', // Configured integration/controller Git-flow entrypoint
     'git_flow.py', // Canonical controller-owned Git-flow engine
     ...MANAGED_SCRIPT_NAMES, // Lifecycle scripts are declared once in managed-assets.json
-  ];
+  ])];
 
   private static readonly ROOT_DELEGATE_MARKER = '# juno-code-managed: root-git-flow.v1';
   private static readonly ROOT_DELEGATE = `#!/usr/bin/env bash

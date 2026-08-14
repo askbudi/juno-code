@@ -100,6 +100,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/install_requirements.sh",
+      "destination": ".juno_task/scripts/install_requirements.sh",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "config/metadata-controller.json",
       "destination": ".juno_task/config/metadata-controller.json",
       "installClass": "project",

@@ -647,6 +647,63 @@ class ManagedRuntimeTests(unittest.TestCase):
                       if item["path"] == ".juno_task/scripts/template-only.py")
         self.assertEqual(action["resolution"], "conflict")
 
+    def test_newly_admitted_historical_script_refreshes_only_exact_history(self) -> None:
+        legacy = b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"\n'
+        destination = self.controller / runtime.INSTALL_REQUIREMENTS_PATH
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(legacy)
+        self.write(runtime.INSTALL_REQUIREMENTS_PATH, legacy.decode())
+        git(self.repo, "add", runtime.INSTALL_REQUIREMENTS_PATH)
+        git(self.repo, "commit", "-m", "historical install requirements")
+        previous = git(self.repo, "rev-parse", "HEAD")
+        manifest = json.loads((self.repo / runtime.MANAGED_MANIFEST_PATH).read_text())
+        manifest["assets"].append({
+            "source": "scripts/install_requirements.sh",
+            "destination": runtime.INSTALL_REQUIREMENTS_PATH,
+            "installClass": "script", "type": "script",
+        })
+        self.write(runtime.MANAGED_MANIFEST_PATH, manifest)
+        self.write(runtime.INSTALL_REQUIREMENTS_PATH, "new external cache\n")
+        self.write("juno-code/src/templates/scripts/install_requirements.sh", "new external cache\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "manage install requirements")
+        target = git(self.repo, "rev-parse", "HEAD")
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target, task_id="legacy-cache-writer")
+
+        row = next(item for item in result["scripts"]
+                   if item["path"] == runtime.INSTALL_REQUIREMENTS_PATH)
+        self.assertEqual(row["outcome"], "updated")
+        self.assertEqual(row["prior_generation_classification"],
+                         "immutable_historical_generation")
+        self.assertEqual(destination.read_text(), "new external cache\n")
+
+    def test_doctor_reports_exact_legacy_writer_and_tracked_cache_without_cleanup(self) -> None:
+        runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="doctor-cache-base")
+        owner = self.root / "legacy-owner"
+        git(self.repo, "worktree", "add", "--detach", str(owner), self.target)
+        script = owner / runtime.INSTALL_REQUIREMENTS_PATH
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"\n')
+        cache = owner / runtime.VERSION_CACHE_PATH
+        cache.write_text("checked_at=1\n")
+        git(owner, "add", runtime.VERSION_CACHE_PATH)
+        git(self.repo, "config", runtime.OWNER_CONFIG, str(owner))
+
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, self.target)
+
+        by_code = {item["code"]: item for item in doctor["findings"]}
+        self.assertEqual(by_code["legacy_checkout_local_version_cache_writer"]["path"],
+                         str(script.resolve()))
+        self.assertEqual(by_code["tracked_worktree_version_cache"]["path"],
+                         str(cache.resolve()))
+        self.assertEqual(by_code["tracked_worktree_version_cache"]["state"], "modified")
+        self.assertEqual(cache.read_text(), "checked_at=1\n")
+        self.assertFalse(doctor["healthy"])
+
     def test_unchanged_source_customization_is_preserved_while_changed_runtime_refreshes(self) -> None:
         customized = self.controller / ".juno_task/scripts/two.py"
         customized.write_text("owner controller registration customization\n")

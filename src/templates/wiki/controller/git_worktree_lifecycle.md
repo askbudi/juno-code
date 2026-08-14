@@ -131,6 +131,15 @@ controller|integration|target|task` for one script-safe path, and `yy doctor
 workspace` for offline health/refusal guidance. Missing, stale, dirty, attached,
 or ambiguous integration ownership fails closed.
 
+Existing admitted workspaces may retain a historical
+`.juno_task/scripts/install_requirements.sh` that writes
+`.juno_task/.version_check_cache` inside the checkout. `yy integration status`
+and `yy integration runtime-doctor` report both exact paths separately. A
+receipt-bound runtime transition may replace the writer only when its bytes
+match immutable target history. A tracked cache is never restored or deleted
+automatically: remove it in a normal product task, validate the protected
+worktrees byte-stable, and deliver that commit through `yy task`/`yy merge`.
+
 ## Integration owner lifecycle
 
 ```text

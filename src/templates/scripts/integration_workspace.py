@@ -35,6 +35,12 @@ MANAGED_BACKUP_ROOT = ".juno_task/runtime/managed-controller/backups"
 MANAGED_REPAIR_SCHEMA = "juno_managed_runtime_repair.v1"
 MANAGED_SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 MANAGED_HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
+VERSION_CACHE_PATH = ".juno_task/.version_check_cache"
+INSTALL_REQUIREMENTS_PATH = ".juno_task/scripts/install_requirements.sh"
+LEGACY_VERSION_CACHE_MARKERS = (
+    b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"',
+    b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$PWD/.juno_task}"',
+)
 
 
 class ManagedRuntimeError(RuntimeError):
@@ -147,6 +153,46 @@ def managed_safe_path(controller: Path, relative: str) -> Path:
         if cursor.is_symlink():
             raise ManagedRuntimeError(f"managed destination contains a symbolic link: {relative}")
     return destination
+
+
+def managed_version_cache_findings(root: Path, workspace: str) -> list[dict[str, str]]:
+    """Report exact legacy cache paths without changing checkout bytes."""
+    root = root.expanduser().resolve()
+    if not root.is_dir():
+        return []
+    findings: list[dict[str, str]] = []
+    script = root / INSTALL_REQUIREMENTS_PATH
+    try:
+        script_bytes = script.read_bytes()
+    except OSError:
+        script_bytes = b""
+    if any(marker in script_bytes for marker in LEGACY_VERSION_CACHE_MARKERS):
+        findings.append({
+            "code": "legacy_checkout_local_version_cache_writer",
+            "severity": "error",
+            "workspace": workspace,
+            "path": str(script),
+            "message": ("legacy install_requirements.sh writes transient version-check state "
+                        "inside the checkout; migrate the exact managed script generation"),
+        })
+    tracked = managed_run(
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", VERSION_CACHE_PATH],
+        root, check=False)
+    if tracked.returncode == 0:
+        cache = root / VERSION_CACHE_PATH
+        status = managed_run(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--", VERSION_CACHE_PATH],
+            root, check=False).stdout.decode(errors="replace").strip()
+        findings.append({
+            "code": "tracked_worktree_version_cache",
+            "severity": "error",
+            "workspace": workspace,
+            "path": str(cache),
+            "state": "modified" if status else "tracked",
+            "message": ("tracked transient version-check cache must be removed by a normal "
+                        "task/merge change; no automatic restore or cleanup was performed"),
+        })
+    return findings
 
 
 def managed_policy_projection(previous: dict[str, Any], target: dict[str, Any], current: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -297,6 +343,27 @@ def managed_obsolete_generation_binding(controller: Path, repository: Path, rela
     return None
 
 
+def managed_historical_source_binding(repository: Path, relative: str, current: bytes,
+                                      previous_sha: str,
+                                      target_assets: dict[str, str]) -> dict[str, str] | None:
+    """Recognize exact immutable history when a script first becomes managed."""
+    source_paths = [relative]
+    target_source = target_assets.get(relative)
+    if target_source and target_source not in source_paths:
+        source_paths.append(target_source)
+    for source_path in source_paths:
+        candidates = git_bytes(
+            repository, "rev-list", previous_sha, "--", source_path).decode().splitlines()
+        for candidate in candidates:
+            try:
+                if managed_source_bytes(repository, candidate, source_path) == current:
+                    return {"classification": "immutable_historical_generation",
+                            "target_sha": candidate, "source_path": source_path}
+            except ManagedRuntimeError:
+                continue
+    return None
+
+
 def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, target_sha: str,
                          approved: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     controller = controller.resolve(); repository = repository.resolve()
@@ -334,6 +401,10 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
         prior_binding = (managed_obsolete_generation_binding(
             controller, repository, relative, current, target_sha)
             if current is not None and new is not None and current != new else None)
+        if (prior_binding is None and current is not None and new is not None
+                and current != new and relative not in previous_assets):
+            prior_binding = managed_historical_source_binding(
+                repository, relative, current, previous_sha, target_assets)
         if new is None:
             if current is not None and current != old:
                 raise ManagedRuntimeError(f"customized retired managed runtime is preserved: {relative}")
@@ -768,6 +839,10 @@ def managed_runtime_inspect(controller: Path, repository: Path, target_sha: str)
                              "classification": classification})
     if not identity_valid:
         findings.append({"code": "managed_generation_identity_drift", "path": MANAGED_GENERATION_PATH})
+    findings.extend(managed_version_cache_findings(controller, "controller"))
+    owner = registered_owner(repository)
+    if owner:
+        findings.extend(managed_version_cache_findings(Path(owner), "integration-owner"))
     return {"schema_version": MANAGED_RUNTIME_SCHEMA, "operation": "doctor", "target_sha": target_sha,
             "package_version": managed_package_version(repository, target_sha),
             "policy_sha256": policy_hash, "scripts": scripts,
@@ -961,6 +1036,7 @@ def status_payload(controller: Path, *, fetch: bool = False) -> dict[str, Any]:
                  "clean": git(root, "status", "--porcelain=v1", "--untracked-files=all") == "",
                  "full_checkout": full, "full_checkout_reasons": reasons,
                  "submodules": submodule_state(root)}
+        findings.extend(managed_version_cache_findings(root, "integration-owner"))
         if candidate["authority"] != policy["owner_role_authority"]:
             findings.append({"code": "integration_owner_wrong_authority", "severity": "error",
                              "message": "integration owner authority is not protected"})
