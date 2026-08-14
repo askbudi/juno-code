@@ -283,7 +283,7 @@ For a tiny fix, the process is intentionally short but still isolated:
 
 ```text
 create/choose task -> yy task start ID -> edit + focused test + commit
-                   -> yy task finish ID -> yy merge next
+                   -> yy task preflight ID -> yy task finish ID -> yy merge next
 ```
 
 There is no size-based exception that permits product edits in the controller or

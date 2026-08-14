@@ -75,6 +75,9 @@ describe('Juno 2 shipped guidance', () => {
     for (const prompt of [newTask, runWorkflow, cleanWorktree]) {
       expect(prompt).toContain('controller');
       expect(prompt).toContain('TASK_ROOT');
+      expect(prompt).toContain('yy task preflight TASK_ID');
+      expect(prompt).toContain('../wiki/controller/task_dependency_hydration.md');
+      expect(prompt).not.toContain('../wiki/task_dependency_hydration.md');
       expect(prompt).toMatch(/never (switches|silently switch)|never clean or switch/i);
     }
     for (const guidance of [cleanWorktree, parallelReview, reviewPrompt, agents]) {
@@ -96,6 +99,24 @@ describe('Juno 2 shipped guidance', () => {
       expect(skill).toContain('explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root');
       expect(skill).toContain('JUNO_WORKSPACE_ENFORCEMENT');
       expect(skill).toContain('product checkout separately as `TASK_ROOT`');
+    }
+
+    for (const name of [
+      'life_cycle',
+      'clean_worktree',
+      'review_commit_parallel_runner',
+      'reflect',
+      'new_task_workflow',
+      'run_workflow',
+      'migrate_controller_wiki_and_hydration',
+      'migrate_juno_code_v1_to_v2',
+      'migrate_juno_code_v2_to_v2_1',
+      'migrate_juno_kanban_v1_to_v2',
+    ]) {
+      expect(
+        await read(`.juno_task/prompts/${name}.md`),
+        `managed prompt drift: ${name}`,
+      ).toBe(await read(`juno-code/src/templates/prompts/${name}.md`));
     }
   });
 });

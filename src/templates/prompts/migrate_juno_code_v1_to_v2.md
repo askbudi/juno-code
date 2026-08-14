@@ -59,13 +59,15 @@ controller read-only until canaries and owner acceptance complete.
 
 Set the exact product target ref, allowed paths, focused validation, worktree
 root/branch prefix, and risk policy. For each canary, immediately after start and
-before editing or testing, follow [task dependency hydration](../wiki/task_dependency_hydration.md)
+before editing or testing, follow [task dependency hydration](../wiki/controller/task_dependency_hydration.md)
 for every configured validation cwd and stop before implementation on failure.
 Validate:
 
 ```text
 yy task start CANARY_X
 yy task start CANARY_Y
+yy task preflight CANARY_X
+yy task preflight CANARY_Y
 yy task finish CANARY_X
 yy task finish CANARY_Y
 yy merge status

@@ -92,6 +92,8 @@ describe('Bolt shipped hard cut', () => {
       join(sourceRoot, 'controller-agent/CLAUDE.md'),
       join(sourceRoot, 'prompts/life_cycle.md'),
       join(sourceRoot, 'prompts/new_task_workflow.md'),
+      join(sourceRoot, 'prompts/clean_worktree.md'),
+      join(sourceRoot, 'prompts/run_workflow.md'),
     ];
     for (const file of surfaces) {
       const text = readFileSync(file, 'utf8');
@@ -99,6 +101,13 @@ describe('Bolt shipped hard cut', () => {
       expect(text, file).toContain('REVIEW_FINDINGS_EXHAUSTED');
       expect(text, file).not.toContain('launch a fresh read-only independent `yy pi` review');
     }
+
+    const migration = readFileSync(
+      join(sourceRoot, 'prompts/migrate_juno_code_v1_to_v2.md'),
+      'utf8',
+    );
+    expect(migration).toContain('yy task preflight CANARY_X');
+    expect(migration).toContain('yy task preflight CANARY_Y');
 
     const skillFiles = textFiles(join(sourceRoot, 'skills')).filter((file) =>
       file.endsWith('SKILL.md'),

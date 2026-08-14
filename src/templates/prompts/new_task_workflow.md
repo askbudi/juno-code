@@ -10,7 +10,7 @@ yy task start TASK_ID
 
 The project-owned task-workspace policy supplies the full product target ref, allowed product paths, focused validation, branch prefix, and worktree root. Start freezes the exact current target SHA, creates one task branch and one product worktree, and writes a compact controller record. It is idempotent only while that worktree is still clean at the exact frozen base; any branch, path, target, or record drift refuses.
 
-Implement and commit only inside the returned product worktree. Immediately after start and before editing or testing, follow the exact-lock, validation-cwd-aware hydration contract in [task dependency hydration](../wiki/task_dependency_hydration.md). Stop before implementation if provisioning or its clean-tree check fails. The controller keeps Kanban and task artifacts; those files are never copied into product worktrees. Other tasks may start from the same target in their own worktrees while this task is active.
+Implement and commit only inside the returned product worktree. Immediately after start and before editing or testing, follow the exact-lock, validation-cwd-aware hydration contract in [task dependency hydration](../wiki/controller/task_dependency_hydration.md). Stop before implementation if provisioning or its clean-tree check fails. The controller keeps Kanban and task artifacts; those files are never copied into product worktrees. Other tasks may start from the same target in their own worktrees while this task is active.
 
 When implementation is clean and committed, run the read-only closure check:
 

@@ -58,6 +58,28 @@ try {
     assert.equal(inventory.has(retired), false, `packed retired asset: ${retired}`);
   }
 
+  const instructionFiles = [
+    'dist/templates/prompts/new_task_workflow.md',
+    'dist/templates/prompts/clean_worktree.md',
+    'dist/templates/prompts/run_workflow.md',
+  ];
+  for (const relative of instructionFiles) {
+    const instruction = readFileSync(path.join(installed, relative), 'utf8');
+    assert.match(instruction, /yy task preflight TASK_ID/u, `missing task preflight: ${relative}`);
+    assert.match(instruction, /\.\.\/wiki\/controller\/task_dependency_hydration\.md/u,
+      `stale controller wiki link: ${relative}`);
+    assert.doesNotMatch(instruction, /\.\.\/wiki\/task_dependency_hydration\.md/u,
+      `legacy controller wiki link: ${relative}`);
+  }
+  const migrationInstruction = readFileSync(
+    path.join(installed, 'dist/templates/prompts/migrate_juno_code_v1_to_v2.md'),
+    'utf8',
+  );
+  assert.match(migrationInstruction, /yy task preflight CANARY_X/u);
+  assert.match(migrationInstruction, /yy task preflight CANARY_Y/u);
+  assert.match(readFileSync(path.join(installed, 'README.md'), 'utf8'),
+    /yy task preflight ID -> yy task finish ID/u);
+
   const selections = {
     task_workspace: [
       'SemVerValidationTests.test_accepts_stable_prerelease_build_and_combined_versions',

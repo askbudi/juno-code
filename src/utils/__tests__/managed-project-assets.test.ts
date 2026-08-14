@@ -68,6 +68,7 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
+    expect(dictionary.clean_worktree).toContain('yy task preflight TASK_ID');
     expect(dictionary.clean_worktree).toContain('Implementation workers never');
     expect(dictionary.clean_worktree).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.clean_worktree).toContain('REVIEW_FINDINGS_EXHAUSTED');
@@ -85,6 +86,7 @@ describe('ManagedProjectAssets', () => {
     expect(dictionary.new_task_workflow).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.new_task_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.run_workflow).toContain('# Run a workflow or Bolt task');
+    expect(dictionary.run_workflow).toContain('yy task preflight TASK_ID');
     expect(dictionary.run_workflow).toContain('read-only doctor support');
     expect(dictionary.run_workflow).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.run_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
@@ -105,6 +107,8 @@ describe('ManagedProjectAssets', () => {
       expect(prompt).toContain('before any canonical board access');
     }
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('absolute integration-owner worktree');
+    expect(dictionary.migrate_juno_code_v1_to_v2).toContain('yy task preflight CANARY_X');
+    expect(dictionary.migrate_juno_code_v1_to_v2).toContain('yy task preflight CANARY_Y');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('screenshots');
     expect(dictionary.migrate_juno_code_v1_to_v2).toContain('separate yes/no authorities');
     expect(dictionary.migrate_juno_code_v2_to_v2_1).toContain(
@@ -298,6 +302,15 @@ describe('ManagedProjectAssets', () => {
       expect(instruction, relative).toContain('task_dependency_hydration.md');
       expect(instruction, relative).toMatch(/before\s+(?:editing|any edit|edits)/i);
       expect(instruction, relative).toMatch(/stop before implementation|stops on provisioning/i);
+    }
+    for (const relative of [
+      'src/templates/prompts/clean_worktree.md',
+      'src/templates/prompts/run_workflow.md',
+      'src/templates/prompts/migrate_juno_code_v1_to_v2.md',
+    ]) {
+      const instruction = await fs.readFile(path.join(process.cwd(), relative), 'utf8');
+      expect(instruction, relative).toContain('../wiki/controller/task_dependency_hydration.md');
+      expect(instruction, relative).not.toContain('../wiki/task_dependency_hydration.md');
     }
   });
 
