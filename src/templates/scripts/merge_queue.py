@@ -609,12 +609,26 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     all_paths = sorted(set(base_tree) | set(target_tree) | set(feature_tree) | set(prospective_tree))
     frozen_allowed = (record.get("creation_receipt") or {}).get("allowed_paths", config["allowed_paths"])
     generated_paths: set[str] = set()
+    generated_bindings: list[dict[str, Any]] = []
     generated = (record.get("creation_receipt") or {}).get("generated_output_admission")
     if isinstance(generated, dict):
         generated_paths.update(path for path in generated.get("destinations", []) if isinstance(path, str))
+        generated_bindings = [row for row in generated.get("bindings", [])
+                              if isinstance(row, dict)]
+        generated_paths.update(row["destination"] for row in generated_bindings
+                               if isinstance(row.get("destination"), str))
     classifications: list[dict[str, Any]] = []
     admitted = sorted(record.get("changed_paths", []))
     admitted_set = set(admitted)
+    eligible_generated = {
+        row["destination"] for row in generated_bindings
+        if row.get("kind") == "managed"
+        and isinstance(row.get("source"), str)
+        and isinstance(row.get("destination"), str)
+        and row["source"] in admitted_set
+        and feature_tree.get(row["source"]) is not None
+        and feature_tree.get(row["source"]) == feature_tree.get(row["destination"])
+    }
     for path in all_paths:
         base_blob, target_blob = base_tree.get(path), target_tree.get(path)
         feature_blob, merged_blob = feature_tree.get(path), prospective_tree.get(path)
@@ -644,10 +658,16 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
                         if "disallowed/controller-private" in row["origins"]
                         and "task-authored" in row["origins"])
     authored = sorted(row["path"] for row in classifications if "task-authored" in row["origins"])
-    if disallowed or (admitted and authored != admitted):
+    missing_admitted = sorted(admitted_set - set(authored))
+    unexpected_authored = sorted(set(authored) - admitted_set - eligible_generated)
+    if disallowed or (admitted and (missing_admitted or unexpected_authored)):
         findings.append(_finding("admission.path_scope", "error", "path_admission",
                                  {"disallowed": disallowed, "authored": authored,
-                                  "admitted": admitted}, f"yy task status {task_id}"))
+                                  "admitted": admitted,
+                                  "eligible_generated": sorted(eligible_generated),
+                                  "missing_admitted": missing_admitted,
+                                  "unexpected_authored": unexpected_authored},
+                                 f"yy task status {task_id}"))
 
     package_paths = sorted(path for path in set(target_tree) | set(feature_tree)
                            if path.endswith(("package.json", "package-lock.json")))

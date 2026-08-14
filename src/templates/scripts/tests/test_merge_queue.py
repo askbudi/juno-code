@@ -1912,6 +1912,43 @@ raise SystemExit(2)
         self.assertEqual(again["outcome"], "AWAITING_RISK")
         self.assertNotEqual(again["candidate_sha"], old_candidate)
 
+    def test_finding_reopen_admits_byte_exact_managed_destination_bound_to_admitted_source(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "bad\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+            merge_runtime, "dispatch_reviewer",
+            side_effect=lambda *args, **kwargs: self.fake_review(
+                *args, **kwargs, findings=True),
+        ):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"]["creation_receipt"]["generated_output_admission"] = {
+            "schema_version": "juno_task_generated_output_admission.v1",
+            "bindings": [{
+                "kind": "managed",
+                "source": "src/security/auth.py",
+                "destination": "docs/generated-auth.py",
+            }],
+        }
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("fixed\n")
+        (worktree / "docs").mkdir(exist_ok=True)
+        (worktree / "docs/generated-auth.py").write_text("fixed\n")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "repair source and managed destination")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_FINDINGS")
+        self.assertEqual(
+            reopened["changed_paths"],
+            ["docs/generated-auth.py", "src/security/auth.py"],
+        )
+
     def test_failed_resolved_validation_descendant_repair_reopens_and_requeues(self) -> None:
         checkout, marker, old_feature = self.prepare_failed_resolved_candidate()
         old_candidate = git(checkout, "rev-parse", "HEAD")
