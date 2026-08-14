@@ -11,6 +11,7 @@ import { execa } from 'execa';
 import {
   executeHook,
   executeHooks,
+  resolveHookWorkingDirectory,
   validateHooksConfig,
   type HookType,
   type HooksConfig,
@@ -556,8 +557,10 @@ describe('hooks', () => {
       );
     });
 
-    it('should use default working directory when not specified in context', async () => {
+    it('should canonicalize the default working directory when not specified in context', async () => {
       const defaultWorkingDirectory = process.cwd();
+      const canonicalWorkingDirectory = resolveHookWorkingDirectory(defaultWorkingDirectory).directory;
+      expect(canonicalWorkingDirectory).toBeTruthy();
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(defaultWorkingDirectory);
       const basicHooks: HooksConfig = {
         START_RUN: {
@@ -578,7 +581,7 @@ describe('hooks', () => {
         'pwd',
         expect.objectContaining({
           shell: true,
-          cwd: defaultWorkingDirectory,
+          cwd: canonicalWorkingDirectory,
         }),
       );
       expect(cwdSpy).toHaveBeenCalledTimes(1);
