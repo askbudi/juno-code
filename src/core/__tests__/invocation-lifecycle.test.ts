@@ -570,13 +570,14 @@ sys.exit(1)
 
     const starts = (await events(root)).filter((event) => event.event_type === 'invocation_started');
     expect(starts).toHaveLength(5);
-    const parent = starts.find((event) => event.launch_surface === 'yy')!;
     const workflow = starts.find((event) => event.launch_surface === 'workflow_runner')!;
+    const parent = starts.find((event) => event.span_id === workflow.parent_span_id)!;
     const managed = starts.find((event) => event.launch_surface === 'managed_agent_runner')!;
     const parallel = starts.find((event) => event.launch_surface === 'parallel_runner')!;
     const roots = starts.filter((event) => event.parent_span_id === null);
     const unrelated = roots.find((event) => event.span_id !== parent.span_id)!;
 
+    expect(parent).toMatchObject({ launch_surface: 'yy', parent_span_id: null });
     expect(workflow).toMatchObject({
       trace_id: parent.trace_id,
       parent_span_id: parent.span_id,
