@@ -7,8 +7,11 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll } from 'vitest';
 
 const execFileAsync = promisify(execFile);
-export const SHARED_RESOURCE_LOCK_HOOK_TIMEOUT_MS = 310_000;
-const DEFAULT_ACQUIRE_TIMEOUT_MS = 300_000;
+// Lifecycle policy allows loaded concurrent worktrees to wait up to 20 minutes.
+// Keep that wait separate from each test's bounded operation budget.
+export const DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS = 1_200_000;
+export const SHARED_RESOURCE_LOCK_HOOK_TIMEOUT_MS = 1_210_000;
+export const MANAGED_INSTALL_OPERATION_TIMEOUT_MS = 900_000;
 const DEFAULT_DIAGNOSTIC_INTERVAL_MS = 5_000;
 const DEFAULT_LOCK_NAME = 'juno-code-real-git-managed-install.lock';
 const PYTHON_PROTOCOL = path.resolve(import.meta.dirname, '../templates/scripts/tests/test_task_workspace.py');
@@ -72,7 +75,7 @@ async function assertNoSymlinkComponents(pathname: string): Promise<void> {
 
 async function python(args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('python3', [PYTHON_PROTOCOL, ...args], {
-    encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024,
+    encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024,
   });
   return stdout.trim();
 }
@@ -99,7 +102,7 @@ function loadDiagnostics(): string {
 
 export async function acquireTestResourceLock(workload: string, options: TestResourceLockOptions = {}): Promise<TestResourceLease> {
   const lockPath = normalizeTestResourceLockPath(options.lockPath ?? process.env.JUNO_TEST_RESOURCE_LOCK_PATH);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS;
   const pollMs = options.pollMs ?? 50;
   const diagnosticIntervalMs = options.diagnosticIntervalMs ?? DEFAULT_DIAGNOSTIC_INTERVAL_MS;
   const onDiagnostic = options.onDiagnostic ?? ((message) => console.error(message));
@@ -135,5 +138,5 @@ export async function acquireTestResourceLock(workload: string, options: TestRes
 export function useSharedHeavyWorkloadLock(workload: string): void {
   let lease: TestResourceLease | undefined;
   beforeAll(async () => { lease = await acquireTestResourceLock(workload); }, SHARED_RESOURCE_LOCK_HOOK_TIMEOUT_MS);
-  afterAll(async () => { await lease?.release(); }, 10_000);
+  afterAll(async () => { await lease?.release(); }, 30_000);
 }

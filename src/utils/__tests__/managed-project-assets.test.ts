@@ -11,11 +11,18 @@ import {
   MANAGED_PROMPT_MACROS,
   ManagedProjectAssets,
 } from '../managed-project-assets.js';
-import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
+import { runBoundedTestProcess } from '../../test-utils/bounded-process.js';
+import {
+  MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
+  useSharedHeavyWorkloadLock,
+} from '../../test-utils/resource-lock.js';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
-describe('ManagedProjectAssets', () => {
+describe('ManagedProjectAssets', {
+  timeout: MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
+  retry: 0,
+}, () => {
   useSharedHeavyWorkloadLock(
     'Vitest ManagedProjectAssets installation and installed-runtime suite',
   );
@@ -463,26 +470,24 @@ describe('ManagedProjectAssets', () => {
       'python3 .juno_task/scripts/tests/test_risk_policy.py',
       'python3 .juno_task/scripts/tests/test_release_gate.py',
     ]) {
-      const result = spawnSync('/bin/bash', ['-c', command], {
+      const result = await runBoundedTestProcess('/bin/bash', ['-c', command], {
         cwd: projectDir,
-        encoding: 'utf8',
         env: {
           ...subprocessEnv,
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPYCACHEPREFIX: '/tmp/juno-managed-assets-pycache',
         },
-        // The metadata-controller fixture is CPU-heavy and runs beside the
-        // rest of Vitest during the canonical full suite.  Preserve a bounded
-        // subprocess timeout without treating normal suite contention as a
-        // killed process (spawnSync reports that as status=null).
-        timeout: 90_000,
+        // The metadata-controller fixture is CPU-heavy on a loaded host. This
+        // bounded operation budget starts after the cross-worktree lease wait.
+        timeoutMs: 300_000,
+        terminationGraceMs: 1_000,
       });
       expect(
         result.status,
-        `${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        `${command}\n${result.diagnostic}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       ).toBe(0);
     }
-  }, 180_000);
+  });
 
   it('detects a mixed lifecycle generation without changing project files', async () => {
     await ManagedProjectAssets.update(projectDir, { silent: true });

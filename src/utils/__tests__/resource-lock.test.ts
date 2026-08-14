@@ -5,8 +5,11 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 import fullConfig, { MANAGED_INSTALL_POOL_MATCH_GLOBS } from '../../../vitest.config.js';
 import fastConfig from '../../../vitest.fast.config.js';
+import { runBoundedTestProcess } from '../../test-utils/bounded-process.js';
 import {
   acquireTestResourceLock,
+  DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS,
+  MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
   normalizeTestResourceLockPath,
   processBirthIdentity,
   type TestResourceLockOwner,
@@ -68,6 +71,31 @@ describe('cross-language heavy test resource lock', () => {
       expect(config.test?.poolOptions?.forks).toMatchObject({ singleFork: true, isolate: true });
       expect(config.test?.poolOptions?.threads).toMatchObject({ singleThread: false });
     }
+  });
+
+  it('keeps loaded-worktree wait policy bounded beyond the legacy five-minute cap', async () => {
+    expect(DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS).toBe(1_200_000);
+    expect(DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS).toBeGreaterThan(300_000);
+    expect(MANAGED_INSTALL_OPERATION_TIMEOUT_MS).toBe(900_000);
+
+    const { lockPath } = await fixture();
+    const holder = await acquireTestResourceLock('loaded holder', { lockPath });
+    const diagnostics: string[] = [];
+    const pending = acquireTestResourceLock('concurrent worktree', {
+      lockPath,
+      // Scaled deterministic contention: wait past the old local cap while the
+      // policy budget remains independently bounded.
+      timeoutMs: 1_000,
+      pollMs: 5,
+      diagnosticIntervalMs: 50,
+      onDiagnostic: (message) => diagnostics.push(message),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    await holder.release();
+    const successor = await pending;
+    expect(successor.waitedMs).toBeGreaterThanOrEqual(150);
+    expect(diagnostics.join('\n')).toMatch(/waiting workload="concurrent worktree".*owner_workload="loaded holder"/);
+    await successor.release();
   });
 
   it('serializes simultaneous acquirers with fully published owner diagnostics', async () => {
@@ -221,6 +249,38 @@ print(json.dumps(out))
     const target = path.join(real, 'target'); await fs.writeFile(target, 'safe'); await fs.symlink(target, guard);
     await expect(acquireTestResourceLock('guard attack', { lockPath })).rejects.toThrow(/symlinked lock path component/);
     expect(await fs.readFile(target, 'utf8')).toBe('safe');
+  });
+
+  it('terminates timed-out and cancelled groups before descendants can mutate later', async () => {
+    const { root } = await fixture();
+    const grandchild = [
+      'import signal,time,pathlib,sys',
+      'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+      'time.sleep(.5)',
+      'pathlib.Path(sys.argv[1]).write_text("escaped")',
+    ].join(';');
+    const parent = [
+      'import subprocess,sys,time',
+      `subprocess.Popen([sys.executable,'-c',${JSON.stringify(grandchild)},sys.argv[1]])`,
+      'time.sleep(30)',
+    ].join(';');
+    for (const reason of ['timeout', 'cancellation'] as const) {
+      const marker = path.join(root, `escaped-${reason}`);
+      const controller = new AbortController();
+      const cancellation = reason === 'cancellation'
+        ? setTimeout(() => controller.abort(), 100)
+        : undefined;
+      const result = await runBoundedTestProcess('python3', ['-c', parent, marker], {
+        timeoutMs: reason === 'timeout' ? 100 : 2_000,
+        terminationGraceMs: 100,
+        signal: controller.signal,
+      });
+      if (cancellation) clearTimeout(cancellation);
+      expect(result[reason === 'timeout' ? 'timedOut' : 'cancelled']).toBe(true);
+      expect(result.diagnostic).toMatch(new RegExp(`reason=${reason}.*pid=\\d+.*pgid=\\d+`));
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      expect(await fs.pathExists(marker)).toBe(false);
+    }
   });
 
   it('interoperates with an actual Python owner and Node successor', async () => {
