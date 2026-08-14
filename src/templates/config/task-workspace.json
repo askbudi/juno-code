@@ -46,9 +46,44 @@
         "npm",
         "test",
         "--",
-        "src/utils/__tests__/task-workspace.test.ts",
-        "src/cli/__tests__/task-command.test.ts"
+        "src/utils/__tests__/task-workspace.test.ts"
+      ],
+      "resource": {
+        "id": "juno-code-real-git-managed-install",
+        "lock_path": "/tmp/juno-code-focused-real-git-managed-install.lock",
+        "wait_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "integration-workspace",
+      "cwd": "juno-code",
+      "timeout_seconds": 900,
+      "max_output_bytes": 32768,
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "src/utils/__tests__/integration-workspace.test.ts",
+        "src/cli/__tests__/task-command.test.ts",
+        "src/cli/__tests__/integration-command.test.ts"
       ]
+    },
+    {
+      "id": "script-installer",
+      "cwd": "juno-code",
+      "timeout_seconds": 900,
+      "max_output_bytes": 32768,
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "src/utils/__tests__/script-installer.test.ts"
+      ],
+      "resource": {
+        "id": "juno-code-real-git-managed-install",
+        "lock_path": "/tmp/juno-code-focused-real-git-managed-install.lock",
+        "wait_timeout_seconds": 1200
+      }
     }
   ],
   "full_suite_validation": {

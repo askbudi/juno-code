@@ -29,7 +29,8 @@ PLAN_PRODUCER_SCHEMA = "juno_bolt_risk_plan_producer.v1"
 PLAN_TOOL_ID = "juno-code.risk-policy"
 EVIDENCE_PRODUCER_SCHEMA = "juno_bolt_candidate_evidence_producer.v1"
 EVIDENCE_TOOL_ID = "juno-code.risk-policy"
-FULL_SUITE_SCHEMA = "juno_merge_queue_full_suite_receipt.v1"
+FULL_SUITE_SCHEMA = "juno_merge_queue_full_suite_receipt.v2"
+VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
 FULL_SUITE_PRODUCER_SCHEMA = "juno_merge_queue_full_suite_producer.v1"
 FULL_SUITE_TOOL_ID = "juno-code.merge-queue"
 FULL_SUITE_CLAIM_SCHEMA = "juno_merge_queue_full_suite_claim.v1"
@@ -402,13 +403,16 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             or not SHA_RE.fullmatch(expected_candidate["candidate_tree"])):
         raise RiskPolicyError("full-suite expected candidate identity is invalid")
     keys = {"schema_version", "producer", "candidate", "policy_identity", "claim",
-            "validation_identity", "command", "started_at", "completed_at", "result"}
+            "validation_identity", "command", "started_at", "completed_at", "timing",
+            "resource", "identity", "result"}
     command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
     result_keys = {"exit_code", "timed_out", "stdout", "stderr"}
     stream_keys = {"sha256", "tail", "truncated_bytes"}
     identity_keys = {"task_workspace_config_sha256", "full_suite_config_sha256",
                      "task_validation_commands_sha256"}
     command, result = receipt.get("command"), receipt.get("result")
+    timing, resource, execution_identity = (receipt.get("timing"), receipt.get("resource"),
+                                             receipt.get("identity"))
     identity = receipt.get("validation_identity")
     claim = receipt.get("claim")
     claim_keys = {"claim_path", "claim_sha256", "token", "attempt_number"}
@@ -430,7 +434,8 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             or any(not isinstance(identity.get(key), str) or not DIGEST_RE.fullmatch(identity[key])
                    for key in identity_keys)
             or (expected_validation_identity is not None and identity != expected_validation_identity)
-            or not isinstance(command, dict) or set(command) != command_keys
+            or not isinstance(command, dict)
+            or set(command) not in (command_keys, command_keys | {"resource"})
             or (expected_command is not None and command != expected_command)
             or not isinstance(command.get("id"), str) or not command["id"]
             or not isinstance(command.get("cwd"), str)
@@ -448,6 +453,35 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
             or not isinstance(result.get("exit_code"), int) or isinstance(result.get("exit_code"), bool)
             or not isinstance(result.get("timed_out"), bool)):
         raise RiskPolicyError("full-suite receipt provenance is invalid")
+    states = timing.get("states") if isinstance(timing, dict) else None
+    phase_names = [item.get("state") for item in states] if isinstance(states, list) else []
+    terminal = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
+    if (not isinstance(timing, dict)
+            or set(timing) != {"schema_version", "states", "wall_duration_ms",
+                               "critical_path_contribution_ms"}
+            or timing.get("schema_version") != VALIDATION_TIMING_SCHEMA
+            or phase_names[:4] != ["WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN"]
+            or len(phase_names) != 5 or phase_names[-1] not in terminal
+            or any(not isinstance(item, dict) or set(item) != {"state", "duration_ms"}
+                   or not isinstance(item.get("duration_ms"), int)
+                   or isinstance(item.get("duration_ms"), bool) or item["duration_ms"] < 0
+                   for item in states)
+            or not isinstance(timing.get("wall_duration_ms"), int)
+            or timing["wall_duration_ms"] < 0
+            or timing.get("critical_path_contribution_ms") != timing["wall_duration_ms"]
+            or not isinstance(resource, dict)
+            or set(resource) != {"id", "lock_identity_sha256", "wait_timeout_seconds",
+                                 "owner_diagnostics"}
+            or (resource["lock_identity_sha256"] is not None
+                and (not isinstance(resource["lock_identity_sha256"], str)
+                     or not DIGEST_RE.fullmatch(resource["lock_identity_sha256"])))
+            or not isinstance(execution_identity, dict)
+            or set(execution_identity) != {"command_sha256", "cwd_sha256", "policy_sha256",
+                                           "candidate_sha", "candidate_tree"}
+            or any(not isinstance(execution_identity[key], str)
+                   or not DIGEST_RE.fullmatch(execution_identity[key])
+                   for key in ("command_sha256", "cwd_sha256", "policy_sha256"))):
+        raise RiskPolicyError("full-suite receipt timing provenance is invalid")
     for name in ("stdout", "stderr"):
         stream = result.get(name)
         if (not isinstance(stream, dict) or set(stream) != stream_keys

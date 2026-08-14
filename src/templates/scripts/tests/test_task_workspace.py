@@ -2979,6 +2979,40 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(Path(evidence["log_path"]).read_bytes()).hexdigest(),
                          evidence["log_sha256"])
 
+    def test_focused_scheduler_serializes_only_shared_resource_in_policy_order(self) -> None:
+        markers = self.root / "focused-schedule.jsonl"
+        lock = self.root / "focused-managed-install.lock"
+        def row(name: str, delay: float, resource: bool = False) -> dict:
+            code = (
+                "import json,time,sys; p=sys.argv[1]; name=sys.argv[2]; delay=float(sys.argv[3]); "
+                "open(p,'a').write(json.dumps({'name':name,'event':'start','at':time.monotonic()})+'\\n'); "
+                "time.sleep(delay); "
+                "open(p,'a').write(json.dumps({'name':name,'event':'end','at':time.monotonic()})+'\\n')"
+            )
+            value = {"id": name, "cwd": "src", "argv": [sys.executable, "-c", code,
+                     str(markers), name, str(delay)], "timeout_seconds": 3,
+                     "max_output_bytes": 1024}
+            if resource:
+                value["resource"] = {"id": "managed-install", "lock_path": str(lock),
+                                     "wait_timeout_seconds": 3}
+            return value
+        rows = [row("task-workspace", .8, True), row("integration-workspace", .25),
+                row("script-installer", .8, True)]
+        evidence = task_runtime.run_focused_validations(rows, self.repository)
+        events = [json.loads(line) for line in markers.read_text().splitlines()]
+        at = {(item["name"], item["event"]): item["at"] for item in events}
+
+        self.assertLessEqual(at[("task-workspace", "end")], at[("script-installer", "start")])
+        self.assertLess(at[("integration-workspace", "start")], at[("task-workspace", "end")])
+        self.assertEqual([item["id"] for item in evidence], [row["id"] for row in rows])
+        self.assertEqual([item["schedule"]["lane_position"] for item in evidence], [0, 0, 1])
+        self.assertTrue(evidence[0]["schedule"]["critical_path"])
+        self.assertFalse(evidence[1]["schedule"]["critical_path"])
+        self.assertTrue(evidence[2]["schedule"]["critical_path"])
+        self.assertEqual(evidence[1]["timing"]["critical_path_contribution_ms"],
+                         evidence[1]["timing"]["wall_duration_ms"])
+        self.assertFalse(any(item["timed_out"] for item in evidence))
+
     def test_validation_can_stream_both_child_channels_without_losing_evidence(self) -> None:
         row = {
             "id": "observable",

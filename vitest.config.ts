@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
+// Keep the suites that share the cross-process real-Git install lease in one
+// file lane. Independent npm processes still contend on the diagnostic lease.
+export const MANAGED_INSTALL_POOL_MATCH_GLOBS: [string, 'forks'][] = [
+  ['src/utils/__tests__/managed-project-assets.test.ts', 'forks'],
+  ['src/utils/__tests__/script-installer.test.ts', 'forks'],
+];
+
 export default defineConfig({
   test: {
     globals: true,
@@ -70,11 +77,18 @@ export default defineConfig({
 
     // Performance
     pool: 'threads',
+    poolMatchGlobs: MANAGED_INSTALL_POOL_MATCH_GLOBS,
     poolOptions: {
       threads: {
         singleThread: false,
         isolate: true,
         useAtomics: true
+      },
+      forks: {
+        // Only the two managed-install suites use this serial lane; ordinary
+        // unit files remain in the concurrent thread pool.
+        singleFork: true,
+        isolate: true
       }
     },
 

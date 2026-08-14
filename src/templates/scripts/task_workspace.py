@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
@@ -62,6 +63,9 @@ TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
 AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
 TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
 PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
+VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
+VALIDATION_PHASES = ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN")
+VALIDATION_TERMINALS = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -69,6 +73,12 @@ class TaskWorkspaceError(RuntimeError):
 
 
 class HydrationFailure(TaskWorkspaceError):
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        super().__init__(message)
+        self.evidence = evidence
+
+
+class ValidationResourceTimeout(TaskWorkspaceError):
     def __init__(self, message: str, evidence: dict[str, Any]):
         super().__init__(message)
         self.evidence = evidence
@@ -286,31 +296,54 @@ def load_config(controller: Path) -> dict[str, Any]:
     validations = value["focused_validation"]
     if not isinstance(validations, list) or not validations:
         raise TaskWorkspaceError("focused_validation must contain at least one command")
+    def validate_row(row: Any, label: str) -> None:
+        required_row = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
+        if not isinstance(row, dict) or not required_row.issubset(row) or set(row) - required_row - {"resource"}:
+            raise TaskWorkspaceError(
+                f"{label} requires id, cwd, argv, timeout_seconds, max_output_bytes, and optional resource")
+        normalized_relative(row["cwd"], f"{label} cwd")
+        if (not isinstance(row["timeout_seconds"], int)
+                or isinstance(row["timeout_seconds"], bool)
+                or not 1 <= row["timeout_seconds"] <= 3600):
+            raise TaskWorkspaceError(
+                f"{label} timeout_seconds must be an integer from 1 through 3600")
+        if (not isinstance(row["id"], str) or not row["id"] or len(row["id"].encode()) > 128
+                or len(row["cwd"].encode()) > 1024
+                or not isinstance(row["argv"], list) or not row["argv"] or len(row["argv"]) > 128
+                or any(not isinstance(part, str) or not part or len(part.encode()) > 4096
+                       for part in row["argv"])
+                or not isinstance(row["max_output_bytes"], int)
+                or isinstance(row["max_output_bytes"], bool)
+                or not 1024 <= row["max_output_bytes"] <= 1048576):
+            raise TaskWorkspaceError(f"{label} bounds or argv are invalid")
+        resource = row.get("resource")
+        if resource is not None:
+            if (not isinstance(resource, dict)
+                    or set(resource) != {"id", "lock_path", "wait_timeout_seconds"}
+                    or not isinstance(resource.get("id"), str) or not resource["id"]
+                    or len(resource["id"].encode()) > 128
+                    or not isinstance(resource.get("lock_path"), str)
+                    or not Path(resource["lock_path"]).is_absolute()
+                    or Path(resource["lock_path"]) == Path("/")
+                    or not isinstance(resource.get("wait_timeout_seconds"), int)
+                    or isinstance(resource.get("wait_timeout_seconds"), bool)
+                    or not 1 <= resource["wait_timeout_seconds"] <= 3600):
+                raise TaskWorkspaceError(f"{label} resource declaration is invalid")
     for row in validations:
-        if not isinstance(row, dict) or set(row) != {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}:
-            raise TaskWorkspaceError("focused validation rows require exactly id, cwd, argv, timeout_seconds, and max_output_bytes")
-        normalized_relative(row["cwd"], "validation cwd")
-        if not isinstance(row["id"], str) or not row["id"] or not isinstance(row["argv"], list) or not row["argv"]:
-            raise TaskWorkspaceError("focused validation id and argv must be non-empty")
-        if any(not isinstance(part, str) or not part for part in row["argv"]):
-            raise TaskWorkspaceError("focused validation argv entries must be non-empty strings")
-        if not isinstance(row["timeout_seconds"], int) or not 1 <= row["timeout_seconds"] <= 3600:
-            raise TaskWorkspaceError("focused validation timeout_seconds must be an integer from 1 through 3600")
-        if not isinstance(row["max_output_bytes"], int) or not 1024 <= row["max_output_bytes"] <= 1048576:
-            raise TaskWorkspaceError("focused validation max_output_bytes must be an integer from 1024 through 1048576")
+        validate_row(row, "focused validation")
+    resource_declarations: dict[str, tuple[str, int]] = {}
+    for row in validations:
+        resource = row.get("resource")
+        if resource is None:
+            continue
+        declaration = (str(lexical_absolute(Path(resource["lock_path"]))),
+                       resource["wait_timeout_seconds"])
+        prior = resource_declarations.setdefault(resource["id"], declaration)
+        if prior != declaration:
+            raise TaskWorkspaceError(
+                f"focused validation resource {resource['id']!r} has conflicting declarations")
     full_suite = value["full_suite_validation"]
-    if not isinstance(full_suite, dict) or set(full_suite) != {
-            "id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}:
-        raise TaskWorkspaceError("full_suite_validation requires exactly id, cwd, argv, timeout_seconds, and max_output_bytes")
-    normalized_relative(full_suite["cwd"], "full-suite validation cwd")
-    if (not isinstance(full_suite["id"], str) or not full_suite["id"]
-            or not isinstance(full_suite["argv"], list) or not full_suite["argv"]
-            or any(not isinstance(part, str) or not part for part in full_suite["argv"])
-            or not isinstance(full_suite["timeout_seconds"], int)
-            or not 1 <= full_suite["timeout_seconds"] <= 3600
-            or not isinstance(full_suite["max_output_bytes"], int)
-            or not 1024 <= full_suite["max_output_bytes"] <= 1048576):
-        raise TaskWorkspaceError("full_suite_validation bounds or argv are invalid")
+    validate_row(full_suite, "full-suite validation")
     return value
 
 
@@ -602,20 +635,149 @@ def _announce_long_run_completion(started: float, exit_code: int,
     return finished, duration_ms
 
 
-def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
-    """Run argv-only validation with stdin closed and bounded output tails."""
+class ValidationTiming:
+    """Monotonic, non-overlapping phase evidence with an injectable clock."""
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self.clock = clock
+        self.started = clock()
+        self.phase_started = self.started
+        self.current = VALIDATION_PHASES[0]
+        self.states: list[dict[str, Any]] = []
+
+    def transition(self, state: str) -> None:
+        if state not in VALIDATION_PHASES or state in {item["state"] for item in self.states}:
+            raise TaskWorkspaceError(f"invalid validation timing transition: {state}")
+        now = self.clock()
+        self.states.append({"state": self.current,
+                            "duration_ms": max(0, int((now - self.phase_started) * 1000))})
+        self.current, self.phase_started = state, now
+
+    def finish(self, outcome: str) -> dict[str, Any]:
+        if outcome not in VALIDATION_TERMINALS:
+            raise TaskWorkspaceError(f"invalid validation terminal outcome: {outcome}")
+        now = self.clock()
+        self.states.append({"state": self.current,
+                            "duration_ms": max(0, int((now - self.phase_started) * 1000))})
+        self.states.append({"state": outcome, "duration_ms": 0})
+        wall_ms = max(0, int((now - self.started) * 1000))
+        return {"schema_version": VALIDATION_TIMING_SCHEMA, "states": self.states,
+                "wall_duration_ms": wall_ms, "critical_path_contribution_ms": wall_ms}
+
+
+def _bounded_lock_owner(handle: Any) -> Optional[dict[str, Any]]:
+    try:
+        handle.seek(0)
+        raw = handle.read(4097)
+        if len(raw) > 4096:
+            return {"diagnostic": "owner metadata exceeded bound"}
+        value = json.loads(raw.decode("utf-8")) if raw else None
+        if not isinstance(value, dict):
+            return None
+        allowed = {"pid", "suite_id", "started_at", "command_sha256"}
+        return {key: value[key] for key in allowed if key in value}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"diagnostic": "owner metadata unreadable"}
+
+
+def _acquire_validation_resource(row: dict[str, Any], clock: Callable[[], float]) -> tuple[Any, dict[str, Any]]:
+    resource = row.get("resource")
+    if resource is None:
+        return None, {"id": None, "lock_identity_sha256": None,
+                      "wait_timeout_seconds": None, "owner_diagnostics": None}
+    path = lexical_absolute(Path(resource["lock_path"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    started = clock()
+    identity = hashlib.sha256(f"{resource['id']}\0{path}".encode()).hexdigest()
+    owner = None
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            owner = _bounded_lock_owner(handle)
+            if clock() - started >= resource["wait_timeout_seconds"]:
+                handle.close()
+                evidence = {"id": resource["id"], "lock_identity_sha256": identity,
+                            "wait_timeout_seconds": resource["wait_timeout_seconds"],
+                            "owner_diagnostics": owner}
+                raise ValidationResourceTimeout(
+                    f"validation resource wait timed out ({resource['id']}): owner={owner}", evidence)
+            time.sleep(0.05)
+    command_sha = stable_sha256(row["argv"])
+    payload = {"pid": os.getpid(), "suite_id": row["id"],
+               "started_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+               "command_sha256": command_sha}
+    handle.seek(0); handle.truncate()
+    handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    handle.flush()
+    return handle, {"id": resource["id"], "lock_identity_sha256": identity,
+                    "wait_timeout_seconds": resource["wait_timeout_seconds"],
+                    "owner_diagnostics": owner}
+
+
+def _validation_subject(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
+    head = git(cwd, "rev-parse", "HEAD", check=False)
+    tree = git(cwd, "rev-parse", "HEAD^{tree}", check=False)
+    return {"command_sha256": stable_sha256(row["argv"]),
+            "cwd_sha256": hashlib.sha256(str(cwd.resolve()).encode()).hexdigest(),
+            "policy_sha256": stable_sha256(row),
+            "candidate_sha": head if SHA_RE.fullmatch(head) else None,
+            "candidate_tree": tree if SHA_RE.fullmatch(tree) else None}
+
+
+def run_validation(row: dict[str, Any], cwd: Path, *,
+                   clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Run argv-only validation with separate resource and operation budgets."""
     limit = row["max_output_bytes"]
-    # Structured command output remains on stdout; producer bytes are always
-    # relayed on stderr so callers never need an opt-in to observe a long run.
-    stream_live = True
-    started = time.monotonic()
+    timing = ValidationTiming(clock)
     started_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     task_label = os.environ.get("JUNO_TASK_ID") or cwd.name
-    log_path, log_handle = allocate_long_run_log(f"validation-{row['id']}", task_label)
-    validation_env = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith("JUNO_CONTROL_")
-    }
+    resource_handle = None
+    resource_evidence: dict[str, Any]
+    try:
+        resource_handle, resource_evidence = _acquire_validation_resource(row, clock)
+    except ValidationResourceTimeout as exc:
+        timing.transition("SETUP"); timing.transition("RUNNING"); timing.transition("TEARDOWN")
+        evidence = timing.finish("TIMED_OUT")
+        message = str(exc).encode()
+        tail = message[-limit:]
+        return {"id": row["id"], "argv": row["argv"], "exit_code": 124, "timed_out": True,
+                "timeout_seconds": row["timeout_seconds"], "duration_ms": evidence["wall_duration_ms"],
+                "started_at": started_at,
+                "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "timing": evidence, "resource": exc.evidence,
+                "identity": _validation_subject(row, cwd),
+                "log_path": None, "log_sha256": hashlib.sha256(message).hexdigest(),
+                "log_write_failed": False, "log_write_error": None, "stdout_tail": "",
+                "stderr_tail": tail.decode(errors="replace"), "stdout_truncated_bytes": 0,
+                "stderr_truncated_bytes": len(message)-len(tail),
+                "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": hashlib.sha256(message).hexdigest()}
+    timing.transition("SETUP")
+    try:
+        log_path, log_handle = allocate_long_run_log(f"validation-{row['id']}", task_label)
+    except TaskWorkspaceError as exc:
+        timing.transition("RUNNING"); timing.transition("TEARDOWN")
+        timed = timing.finish("SETUP_FAILED")
+        if resource_handle is not None:
+            resource_handle.close()
+        message = str(exc).encode("utf-8", errors="replace")
+        tail = message[-limit:]
+        return {"id": row["id"], "argv": row["argv"], "exit_code": 74,
+                "timed_out": False, "timeout_seconds": row["timeout_seconds"],
+                "duration_ms": timed["wall_duration_ms"], "started_at": started_at,
+                "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "timing": timed, "resource": resource_evidence,
+                "identity": _validation_subject(row, cwd), "log_path": None,
+                "log_sha256": hashlib.sha256(message).hexdigest(), "log_write_failed": True,
+                "log_write_error": str(exc), "stdout_tail": "",
+                "stderr_tail": tail.decode("utf-8", errors="replace"),
+                "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail),
+                "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": hashlib.sha256(message).hexdigest()}
+    validation_env = {key: value for key, value in os.environ.items()
+                      if not key.startswith("JUNO_CONTROL_")}
     try:
         process = subprocess.Popen(row["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -623,83 +785,141 @@ def run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
     except OSError as exc:
         message = str(exc).encode("utf-8", errors="replace")
         log_handle.write(message); log_handle.close()
-        completed_at, duration_ms = _announce_long_run_completion(
-            started, 127, False, log_path)
+        timing.transition("RUNNING"); timing.transition("TEARDOWN")
+        timed = timing.finish("SETUP_FAILED")
+        if resource_handle is not None: resource_handle.close()
         tail = message[-limit:]
-        return {"id": row["id"], "argv": row["argv"], "exit_code": 127,
-                "timed_out": False, "timeout_seconds": row["timeout_seconds"], "duration_ms": duration_ms,
-                "started_at": started_at, "completed_at": completed_at,
+        return {"id": row["id"], "argv": row["argv"], "exit_code": 127, "timed_out": False,
+                "timeout_seconds": row["timeout_seconds"], "duration_ms": timed["wall_duration_ms"],
+                "started_at": started_at,
+                "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "timing": timed, "resource": resource_evidence, "identity": _validation_subject(row, cwd),
                 "log_path": str(log_path), "log_sha256": hashlib.sha256(message).hexdigest(),
-                "log_write_failed": False, "log_write_error": None,
-                "stdout_tail": "", "stderr_tail": tail.decode("utf-8", errors="replace"),
-                "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail),
+                "log_write_failed": False, "log_write_error": None, "stdout_tail": "",
+                "stderr_tail": tail.decode("utf-8", errors="replace"), "stdout_truncated_bytes": 0,
+                "stderr_truncated_bytes": len(message)-len(tail),
                 "stdout_sha256": hashlib.sha256(b"").hexdigest(),
                 "stderr_sha256": hashlib.sha256(message).hexdigest()}
+    timing.transition("RUNNING")
     selector = selectors.DefaultSelector()
-    stdout_tail = bytearray()
-    stderr_tail = bytearray()
+    stdout_tail, stderr_tail = bytearray(), bytearray()
     stream_info = {process.stdout: ("stdout", stdout_tail), process.stderr: ("stderr", stderr_tail)}
     totals = {"stdout": 0, "stderr": 0}
     hashes = {"stdout": hashlib.sha256(), "stderr": hashlib.sha256()}
     for stream in stream_info:
-        if stream is not None:
-            selector.register(stream, selectors.EVENT_READ)
-    deadline = started + row["timeout_seconds"]
-    timed_out = False
+        if stream is not None: selector.register(stream, selectors.EVENT_READ)
+    # The operation budget begins only after exclusive-resource acquisition and setup.
+    deadline = clock() + row["timeout_seconds"]
+    timed_out = interrupted = in_teardown = False
     log_write_error: str | None = None
-    while selector.get_map():
-        if time.monotonic() >= deadline and not timed_out:
-            timed_out = True
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        for key, _ in selector.select(0.05 if not timed_out else 0.01):
-            stream = key.fileobj
-            data = os.read(stream.fileno(), 65536)
-            if not data:
-                selector.unregister(stream)
-                continue
-            name, tail = stream_info[stream]
-            totals[name] += len(data)
-            hashes[name].update(data)
-            _append_tail(tail, data, limit)
-            if log_write_error is None:
-                try:
-                    log_handle.write(data)
-                except OSError as exc:
-                    log_write_error = str(exc)
-                    try: os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError: pass
-            if stream_live:
-                # Keep stdout reserved for the command's structured result.
-                # A caller can merge stderr into tee for one observable log.
-                sys.stderr.write(data.decode("utf-8", errors="replace"))
-                sys.stderr.flush()
+    try:
+        while selector.get_map():
+            if process.poll() is not None and not in_teardown:
+                timing.transition("TEARDOWN")
+                in_teardown = True
+            if clock() >= deadline and not timed_out and not in_teardown:
+                timed_out = True
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+            for key, _ in selector.select(0.05 if not timed_out else 0.01):
+                stream = key.fileobj
+                data = os.read(stream.fileno(), 65536)
+                if not data:
+                    selector.unregister(stream); continue
+                name, tail = stream_info[stream]
+                totals[name] += len(data); hashes[name].update(data); _append_tail(tail, data, limit)
+                if log_write_error is None:
+                    try: log_handle.write(data)
+                    except OSError as exc:
+                        log_write_error = str(exc)
+                        try: os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError: pass
+                sys.stderr.write(data.decode("utf-8", errors="replace")); sys.stderr.flush()
+    except KeyboardInterrupt:
+        interrupted = True
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+    if not in_teardown:
+        timing.transition("TEARDOWN")
     exit_code = process.wait()
-    if log_write_error is not None:
-        exit_code = 74
-    log_handle.close()
-    completed_at, duration_ms = _announce_long_run_completion(
-        started, exit_code, timed_out, log_path)
-    selector.close()
-    if process.stdout is not None:
-        process.stdout.close()
-    if process.stderr is not None:
-        process.stderr.close()
-    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
-            "timed_out": timed_out, "timeout_seconds": row["timeout_seconds"],
-            "duration_ms": duration_ms, "started_at": started_at, "completed_at": completed_at,
-            "log_path": str(log_path),
-            "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),
-            "log_write_failed": log_write_error is not None,
-            "log_write_error": log_write_error,
+    if interrupted: exit_code = 130
+    if log_write_error is not None: exit_code = 74
+    log_handle.close(); selector.close()
+    for stream in stream_info:
+        if stream is not None: stream.close()
+    if resource_handle is not None: resource_handle.close()
+    outcome = ("INTERRUPTED" if interrupted else "TIMED_OUT" if timed_out else
+               "PASSED" if exit_code == 0 else "FAILED")
+    timed = timing.finish(outcome)
+    completed_at, _ = _announce_long_run_completion(timing.started, exit_code, timed_out, log_path)
+    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code, "timed_out": timed_out,
+            "timeout_seconds": row["timeout_seconds"], "duration_ms": timed["wall_duration_ms"],
+            "started_at": started_at, "completed_at": completed_at,
+            "timing": timed, "resource": resource_evidence, "identity": _validation_subject(row, cwd),
+            "log_path": str(log_path), "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),
+            "log_write_failed": log_write_error is not None, "log_write_error": log_write_error,
             "stdout_tail": bytes(stdout_tail).decode("utf-8", errors="replace"),
             "stderr_tail": bytes(stderr_tail).decode("utf-8", errors="replace"),
             "stdout_truncated_bytes": totals["stdout"] - len(stdout_tail),
             "stderr_truncated_bytes": totals["stderr"] - len(stderr_tail),
             "stdout_sha256": hashes["stdout"].hexdigest(),
             "stderr_sha256": hashes["stderr"].hexdigest()}
+
+def run_focused_validations(rows: list[dict[str, Any]], worktree: Path) -> list[dict[str, Any]]:
+    """Run independent lanes concurrently and each exclusive-resource lane in policy order."""
+    lanes: dict[str, list[tuple[int, dict[str, Any], Path]]] = {}
+    lane_order: list[str] = []
+    for index, row in enumerate(rows):
+        cwd = (worktree / row["cwd"]).resolve()
+        try:
+            cwd.relative_to(worktree)
+        except ValueError as exc:
+            raise TaskWorkspaceError("focused validation cwd escaped task worktree") from exc
+        resource = row.get("resource")
+        lane = (f"resource:{resource['id']}:{lexical_absolute(Path(resource['lock_path']))}"
+                if resource is not None else f"independent:{index}")
+        if lane not in lanes:
+            lanes[lane] = []
+            lane_order.append(lane)
+        lanes[lane].append((index, row, cwd))
+
+    results: list[Optional[dict[str, Any]]] = [None] * len(rows)
+    lane_totals: dict[str, int] = {}
+
+    def run_lane(lane: str) -> tuple[str, list[tuple[int, dict[str, Any]]], int]:
+        completed: list[tuple[int, dict[str, Any]]] = []
+        total = 0
+        for position, (index, row, cwd) in enumerate(lanes[lane]):
+            evidence = run_validation(row, cwd)
+            evidence["schedule"] = {
+                "lane": "exclusive_resource" if row.get("resource") is not None else "independent",
+                "policy_index": index, "lane_position": position,
+                "resource_id": row.get("resource", {}).get("id"),
+            }
+            completed.append((index, evidence))
+            total += evidence["timing"]["wall_duration_ms"]
+        return lane, completed, total
+
+    # One worker per lane: only rows declaring the same exclusive resource are
+    # serialized. All resource-independent rows retain concurrent execution.
+    with ThreadPoolExecutor(max_workers=len(lane_order),
+                            thread_name_prefix="juno-focused-validation") as pool:
+        futures = [pool.submit(run_lane, lane) for lane in lane_order]
+        for future in futures:
+            lane, completed, total = future.result()
+            lane_totals[lane] = total
+            for index, evidence in completed:
+                results[index] = evidence
+
+    critical_lane = min(lane_order, key=lambda lane: (-lane_totals[lane], lane_order.index(lane)))
+    for lane in lane_order:
+        for index, _row, _cwd in lanes[lane]:
+            evidence = results[index]
+            if evidence is None:  # Defensive: every configured row must produce terminal evidence.
+                raise TaskWorkspaceError("focused validation scheduler lost terminal evidence")
+            on_critical_path = lane == critical_lane
+            evidence["schedule"]["critical_path"] = on_critical_path
+    return [evidence for evidence in results if evidence is not None]
 
 
 def path_within(path: str, roots: list[str]) -> bool:
@@ -2233,18 +2453,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         if frozen_record.get("admission_supersessions")
         else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
     )
-    validations = []
-    for row in config["focused_validation"]:
-        cwd = (worktree / row["cwd"]).resolve()
-        try:
-            cwd.relative_to(worktree)
-        except ValueError as exc:
-            raise TaskWorkspaceError("focused validation cwd escaped task worktree") from exc
-        evidence = run_validation(row, cwd)
-        validations.append(evidence)
+    validations = run_focused_validations(config["focused_validation"], worktree)
+    for row, evidence in zip(config["focused_validation"], validations):
         if evidence["timed_out"] or evidence["exit_code"]:
+            # Persist every terminal result from this one deterministic schedule.
+            # A failed row never causes automatic multiplication of an unchanged run.
             _persist_failed_validation(controller, task_id, frozen_record, validations)
             if evidence["timed_out"]:
+                resource = evidence.get("resource", {})
+                wait_ms = evidence["timing"]["states"][0]["duration_ms"]
+                wait_budget_ms = (resource.get("wait_timeout_seconds") or 0) * 1000
+                if resource.get("id") and wait_ms >= max(0, wait_budget_ms - 100):
+                    raise TaskWorkspaceError(
+                        f"focused validation resource wait timed out ({row['id']}, {resource['id']}): "
+                        f"owner={resource.get('owner_diagnostics')}; unchanged retries are not automatic")
                 raise TaskWorkspaceError(f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
             detail = evidence["stderr_tail"] or evidence["stdout_tail"]
             raise TaskWorkspaceError(f"focused validation failed ({row['id']}, exit {evidence['exit_code']}): {detail}")

@@ -733,6 +733,8 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     focused: list[dict[str, Any]] = []
     for row in config["focused_validation"]:
         item = {key: row[key] for key in ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
+        if "resource" in row:
+            item["resource"] = row["resource"]
         item.update({"phase": "focused", "command": " ".join(item["argv"])})
         focused.append(item)
         cwd = Path(record.get("worktree", "")) / item["cwd"]
@@ -1073,8 +1075,11 @@ def validation_rows(config: dict[str, Any], candidate: Path,
 
 def full_suite_command(config: dict[str, Any]) -> dict[str, Any]:
     row = config["full_suite_validation"]
-    return {key: row[key] for key in
-            ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
+    command = {key: row[key] for key in
+               ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
+    if "resource" in row:
+        command["resource"] = row["resource"]
+    return command
 
 
 def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -1135,6 +1140,8 @@ def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[st
         "validation_identity": identity,
         "command": full_suite_command(config),
         "started_at": started_at, "completed_at": completed_at,
+        "timing": evidence["timing"], "resource": evidence["resource"],
+        "identity": evidence["identity"],
         "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
                    "stdout": {"sha256": evidence["stdout_sha256"],
                               "tail": evidence["stdout_tail"],

@@ -12,9 +12,15 @@ import { createHash } from 'node:crypto';
 import semver from 'semver';
 import { ScriptInstaller } from '../script-installer.js';
 import { ManagedProjectAssets } from '../managed-project-assets.js';
-import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
+import {
+  MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
+  useSharedHeavyWorkloadLock,
+} from '../../test-utils/resource-lock.js';
 
-describe('ScriptInstaller', () => {
+describe('ScriptInstaller', {
+  timeout: MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
+  retry: 0,
+}, () => {
   useSharedHeavyWorkloadLock('Vitest ScriptInstaller managed script installation suite');
   let testDir: string;
   let fixtureController: string;
@@ -846,15 +852,7 @@ describe('ScriptInstaller', () => {
       expect(updated).toBe(false);
     });
 
-    it('should install missing scripts when project is initialized', {
-      // This is a full managed-asset installation, not a unit-speed probe. The
-      // suite-level resource-lock beforeAll has its own 310s budget, so lock
-      // waiting and its owner/load diagnostics finish before this 60s budget
-      // starts. Do not retry a known timeout: timed-out installs keep doing I/O
-      // while a retry starts and multiplied the observed 10s failure threefold.
-      timeout: 60_000,
-      retry: 0,
-    }, async () => {
+    it('should install missing scripts when project is initialized', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
 
       const updated = await ScriptInstaller.autoUpdate(testDir, true);
@@ -1041,12 +1039,7 @@ describe('ScriptInstaller', () => {
       ).toBe(true);
     });
 
-    it('force-updates lifecycle guidance before replacing lifecycle scripts', {
-      // This integration-style canary performs a full managed-asset installation.
-      // Keep its load budget bounded and avoid multiplying timed-out I/O.
-      timeout: 60_000,
-      retry: 0,
-    }, async () => {
+    it('force-updates lifecycle guidance before replacing lifecycle scripts', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
       await ManagedProjectAssets.update(testDir, { silent: true });
       const wikiPath = path.join(testDir, '.juno_task/wiki/git_worktree_lifecycle.md');
@@ -1108,13 +1101,7 @@ describe('ScriptInstaller', () => {
       expect(typeof updated).toBe('boolean');
     });
 
-    it('should preserve the assignment guard when replacing a project kanban wrapper', {
-      // Replacing the wrapper performs a full managed-asset installation. Give
-      // this integration-style canary a bounded load budget without inflating
-      // the global fast-test timeout or multiplying timed-out I/O with retries.
-      timeout: 60_000,
-      retry: 0,
-    }, async () => {
+    it('should preserve the assignment guard when replacing a project kanban wrapper', async () => {
       const scriptsDir = path.join(testDir, '.juno_task', 'scripts');
       await fs.ensureDir(scriptsDir);
       await fs.writeFile(path.join(scriptsDir, 'kanban.sh'), '#!/bin/bash\necho "OLD"\n');
