@@ -17,8 +17,10 @@
 
 `yy benchmark ...` is a thin, fail-closed delegate to the independently
 installed `juno-benchmark` executable. Install compatible release artifacts for
-both packages on the same `PATH`; `yy` requires `juno-benchmark >=0.1.0,<1.0.0`
-and does not embed or discover a checkout-local benchmark implementation.
+both packages on the same `PATH`; this Juno Code release requires exactly
+`juno-benchmark 0.1.0` and does not embed or discover a checkout-local benchmark
+implementation. The local release plan binds both package manifests and verifies
+their packed artifacts together in a fresh prefix for every configured Node runtime.
 
 ```bash
 juno-benchmark --help

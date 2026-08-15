@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFile, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, delimiter, join, resolve } from 'node:path';
@@ -15,20 +15,28 @@ const sourceRoot = join(fixtureRoot, 'source');
 const packDirectory = join(fixtureRoot, 'packs');
 const prefix = join(fixtureRoot, 'prefix');
 
-function run(command, args, options = {}) {
+function runRaw(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repositoryRoot,
     env: options.env ?? process.env,
     encoding: 'utf8',
-    input: '',
+    input: options.input ?? '',
     timeout: options.timeout ?? 300_000,
     killSignal: 'SIGKILL',
     maxBuffer: 16 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0 || result.signal !== null) {
+  if (result.error) {
+    throw new Error(`${command} ${args.join(' ')} failed (${result.error.code ?? 'spawn'}): ${result.error.message}`);
+  }
+  return result;
+}
+
+function run(command, args, options = {}) {
+  const result = runRaw(command, args, options);
+  if (result.status !== 0 || result.signal !== null) {
     throw new Error(
-      `${command} ${args.join(' ')} failed (${result.error?.code === 'ETIMEDOUT' ? 'timeout' : result.status ?? result.signal ?? 'spawn'}):\n` +
-      `${result.stderr || result.stdout || result.error}`,
+      `${command} ${args.join(' ')} failed (${result.status ?? result.signal ?? 'spawn'}):\n` +
+      `${result.stderr || result.stdout}`,
     );
   }
   return result;
@@ -94,6 +102,10 @@ try {
   const benchmark = join(bin, 'juno-benchmark');
   const benchmarkPackage = packageIdentity(stagedBenchmarkRoot);
   const junoPackage = packageIdentity(stagedJunoCodeRoot);
+  const requiredBenchmarkVersion = JSON.parse(await readFile(join(stagedJunoCodeRoot, 'package.json'), 'utf8')).junoBenchmark?.version;
+  if (requiredBenchmarkVersion !== benchmarkPackage.version) {
+    throw new Error(`Juno Code requires benchmark ${requiredBenchmarkVersion ?? '<missing>'}, packed artifact is ${benchmarkPackage.version}`);
+  }
 
   const yyHelp = run(yy, ['--help'], { cwd: fixtureRoot, env });
   if (!/(^|\s)benchmark(\s|$)/m.test(yyHelp.stdout)) {
@@ -109,7 +121,56 @@ try {
         JSON.stringify({ standalone, delegated }, null, 2));
     }
   }
+  if (versionOutput(benchmark, ['--version'], { cwd: fixtureRoot, env }) !== requiredBenchmarkVersion) {
+    throw new Error('Packed standalone version does not satisfy the exact Juno Code contract');
+  }
 
+  // Exercise process fidelity from the clean installed prefix. The probe wraps
+  // the real packed executable for the mandatory version handshake, then gives
+  // standalone and delegated launches one identical observable child process.
+  const probeBin = join(fixtureRoot, 'probe-bin'); await mkdir(probeBin);
+  const probeRecord = join(fixtureRoot, 'probe-record.json');
+  const probe = join(probeBin, 'juno-benchmark');
+  await writeFile(probe, `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const actual = ${JSON.stringify(benchmark)};
+if (process.argv[2] === '--version') {
+  const result = spawnSync(actual, ['--version'], { stdio: 'inherit' });
+  if (result.signal) process.kill(process.pid, result.signal);
+  process.exit(result.status ?? 1);
+}
+const input = fs.readFileSync(0, 'utf8');
+fs.writeFileSync(process.env.JUNO_DISTRIBUTION_RECORD, JSON.stringify({ cwd: process.cwd(), marker: process.env.JUNO_DISTRIBUTION_MARKER, input }));
+if (process.env.JUNO_DISTRIBUTION_SIGNAL) process.kill(process.pid, process.env.JUNO_DISTRIBUTION_SIGNAL);
+process.stdout.write('probe stdout:' + input);
+process.stderr.write('probe stderr:' + process.env.JUNO_DISTRIBUTION_MARKER);
+process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
+`, { mode: 0o755 });
+  const probeEnv = { ...env, PATH: `${probeBin}${delimiter}${env.PATH}`, JUNO_DISTRIBUTION_RECORD: probeRecord,
+    JUNO_DISTRIBUTION_MARKER: 'installed pair environment', JUNO_DISTRIBUTION_EXIT: '43' };
+  const input = 'installed pair stdin\n';
+  const standaloneProbe = runRaw(probe, ['distribution-probe'], { cwd: fixtureRoot, env: probeEnv, input });
+  const standaloneRecord = JSON.parse(await readFile(probeRecord, 'utf8'));
+  const delegatedProbe = runRaw(yy, ['benchmark', 'distribution-probe'], { cwd: fixtureRoot, env: probeEnv, input });
+  const delegatedRecord = JSON.parse(await readFile(probeRecord, 'utf8'));
+  for (const key of ['status', 'signal', 'stdout', 'stderr']) {
+    if (standaloneProbe[key] !== delegatedProbe[key]) throw new Error(`Packed process fidelity differs for ${key}`);
+  }
+  if (standaloneProbe.status !== 43 || JSON.stringify(standaloneRecord) !== JSON.stringify(delegatedRecord) ||
+      delegatedRecord.cwd !== await realpath(fixtureRoot) || delegatedRecord.marker !== probeEnv.JUNO_DISTRIBUTION_MARKER || delegatedRecord.input !== input) {
+    throw new Error('Packed process fidelity lost cwd, environment, stdin, or exit status');
+  }
+  const signalEnv = { ...probeEnv, JUNO_DISTRIBUTION_SIGNAL: 'SIGTERM', JUNO_DISTRIBUTION_EXIT: '0' };
+  const standaloneSignal = runRaw(probe, ['distribution-probe'], { cwd: fixtureRoot, env: signalEnv });
+  const delegatedSignal = runRaw(yy, ['benchmark', 'distribution-probe'], { cwd: fixtureRoot, env: signalEnv });
+  if (standaloneSignal.signal !== 'SIGTERM' || delegatedSignal.signal !== standaloneSignal.signal) {
+    throw new Error('Packed delegate does not mirror standalone signal termination');
+  }
+
+  if (process.argv.includes('--distribution-only')) {
+    process.stdout.write('benchmark installed-pair distribution smoke passed\n');
+  } else {
   const builtBin = join(fixtureRoot, 'built-bin'); await mkdir(builtBin);
   const builtBenchmarkEntry = join(stagedBenchmarkRoot, 'dist/bin.js');
   const builtBenchmark = join(builtBin, 'juno-benchmark');
@@ -208,6 +269,7 @@ try {
     verification_evidence: verificationEvidence,
   }, { forbiddenValues: [fixtureRoot, process.env.HOME ?? '', process.env.XDG_CONFIG_HOME ?? '', process.env.JUNO_BENCHMARK_REGISTRY ?? ''] });
   process.stdout.write(`${JSON.stringify(readiness)}\nbenchmark release artifact smoke passed\n`);
+  }
 } finally {
   await rm(fixtureRoot, { recursive: true, force: true });
 }
