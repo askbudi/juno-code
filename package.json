@@ -59,6 +59,7 @@
     "test:installed-test-fixture-package": "node scripts/verify-installed-test-fixture.mjs",
     "test:config-migration-package": "node scripts/verify-config-migration.mjs",
     "test:bolt-package-canary": "node scripts/verify-bolt-package-canary.mjs",
+    "test:benchmark-release-artifacts": "node scripts/verify-benchmark-release-artifacts.mjs",
     "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",
     "help:test:binary": "bash ./scripts/test-usage.sh binary",
     "test:unit": "vitest run src/__tests__/unit",

@@ -48,6 +48,7 @@ import {
 import type { SubagentType } from '../../types/index.js';
 import type { ExecutionRequest, ExecutionResult } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
+import { buildJunoExecutionEnvelope } from '../../core/execution-envelope.js';
 import type { ProgressEvent } from '../../types/execution.js';
 import {
   CONTINUE_SETTINGS_VERSION,
@@ -87,6 +88,16 @@ function normalizeVerboseLevel(verbose: unknown, quiet: boolean | undefined): nu
   }
 
   return 1;
+}
+
+function resolveJunoCodeVersion(command: Command): string {
+  let current: Command | null = command;
+  while (current) {
+    const configuredVersion = current.version();
+    if (configuredVersion) return configuredVersion;
+    current = current.parent;
+  }
+  throw new ConfigurationError('Juno CLI version is not configured');
 }
 
 interface SessionHistoryEntry {
@@ -1103,7 +1114,7 @@ class MainProgressDisplay {
   private latestSessionId: string | null = null; // most recent session_id seen
   private lastResolvedInstructionByIteration: Map<number, string> = new Map();
 
-  constructor(verboseLevel: number = 1) {
+  constructor(verboseLevel: number = 1, private readonly suppressResult = false) {
     this.verboseLevel = verboseLevel;
   }
 
@@ -1431,6 +1442,7 @@ class MainProgressDisplay {
 
     // Level 0 (quiet): only show final result on STDOUT, nothing else
     if (this.verboseLevel === 0) {
+      if (this.suppressResult) return;
       const lastIteration = result.iterations[result.iterations.length - 1];
       if (lastIteration?.toolResult.content && !this.hasStreamedJsonOutput) {
         const displayContent = this.getDisplayResultContent(lastIteration.toolResult.content);
@@ -1733,9 +1745,9 @@ class MainExecutionCoordinator {
   private feedbackCollector: ConcurrentFeedbackCollector | null = null;
   private enableFeedback: boolean = false;
 
-  constructor(config: any, verboseLevel: number = 1, enableFeedback: boolean = false) {
+  constructor(config: any, verboseLevel: number = 1, enableFeedback: boolean = false, suppressResult = false) {
     this.config = config;
-    this.progressDisplay = new MainProgressDisplay(verboseLevel);
+    this.progressDisplay = new MainProgressDisplay(verboseLevel, suppressResult);
     this.enableFeedback = enableFeedback;
 
     // Initialize feedback collector if enabled
@@ -2010,8 +2022,9 @@ export async function mainCommandHandler(
     // Execute
     const coordinator = new MainExecutionCoordinator(
       config,
-      effectiveVerbose,
+      options.executionEnvelope === true ? 0 : effectiveVerbose,
       options.enableFeedback || false,
+      options.executionEnvelope === true,
     );
 
     const continueScope = resolveContinueScopeContext(process.env, process.ppid, config.workingDirectory);
@@ -2026,6 +2039,9 @@ export async function mainCommandHandler(
       const result = await coordinator.execute(executionRequest, executionBranchName);
       const { observeActiveInvocationProviderResult } = await import('../../core/invocation-lifecycle.js');
       observeActiveInvocationProviderResult(result);
+      if (options.executionEnvelope === true) {
+        process.stdout.write(`${JSON.stringify(buildJunoExecutionEnvelope(result, resolveJunoCodeVersion(_command)))}\n`);
+      }
 
       await persistSessionHistory(result, effectiveVerbose);
       const sessionIds = extractSessionIds(result);

@@ -93,6 +93,11 @@ import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
 import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
 import { configureWikiCommand } from '../cli/commands/wiki.js';
+import {
+  configureBenchmarkCommand,
+  forwardBenchmarkSignal,
+  runBenchmarkDelegate,
+} from '../cli/commands/benchmark.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -258,6 +263,7 @@ function setupGlobalOptions(program: Command): void {
       'Verbosity level: 0=quiet, 1=normal (default), 2=debug+hooks. Use -v 0, -v 1, -v 2, or -v false/true',
     )
     .option('-q, --quiet', 'Quiet mode: suppress agent messages and hook output (alias: --silent)')
+    .option('--execution-envelope', 'Emit the versioned public machine execution envelope as the only stdout payload')
     .option('--silent', 'Alias for --quiet')
     .option('-c, --config <path>', 'Configuration file path (.json, .toml, pyproject.toml)')
     .option('-l, --log-file <path>', 'Log file path (auto-generated if not specified)')
@@ -1990,6 +1996,7 @@ function configureCommandSurface(program: Command): void {
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);
   configureWikiCommand(program);
+  configureBenchmarkCommand(program);
   setupCompletion(program);
   setupAliases(program);
   setupContinueCommand(program);
@@ -2016,6 +2023,16 @@ async function main(): Promise<void> {
     return;
   }
   if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1') return;
+
+  // Benchmark is an independent product. Delegate its untouched argument tail
+  // before Commander can consume --help or the `--` delimiter and before Juno
+  // Code loads configuration, installs assets, or touches session state.
+  const initialArgs = process.argv.slice(2);
+  const initialLeading = classifyLeadingCommand(initialArgs);
+  if (initialArgs[initialLeading.index] === 'benchmark') {
+    await runBenchmarkDelegate(initialArgs.slice(initialLeading.index + 1));
+    return;
+  }
 
   // Configure environment only after explicit input has passed the no-mutation preflight.
   configureEnvironment();
@@ -2371,6 +2388,7 @@ process.on('uncaughtException', async (error) => {
 
 // Handle Ctrl+C gracefully — show session ID so user can resume later
 process.on('SIGINT', () => {
+  if (forwardBenchmarkSignal('SIGINT')) return;
   const sessionId = _getActiveSessionId?.();
   if (sessionId) {
     console.log(chalk.cyan(`\n\n🔑 Session ID: ${sessionId}`));
@@ -2385,14 +2403,22 @@ process.on('SIGINT', () => {
 
 // Handle SIGTERM gracefully
 process.on('SIGTERM', () => {
+  if (forwardBenchmarkSignal('SIGTERM')) return;
   console.log(chalk.yellow('\n\n⚠️  Execution terminated'));
   setTimeout(() => process.exit(143), 400);
 });
 
 // Parent terminal/pipe owners commonly use SIGHUP for cancellation.
 process.on('SIGHUP', () => {
+  if (forwardBenchmarkSignal('SIGHUP')) return;
   console.log(chalk.yellow('\n\n⚠️  Execution parent disconnected'));
   setTimeout(() => process.exit(129), 400);
+});
+
+process.on('SIGQUIT', () => {
+  if (forwardBenchmarkSignal('SIGQUIT')) return;
+  process.removeAllListeners('SIGQUIT');
+  process.kill(process.pid, 'SIGQUIT');
 });
 
 // Export for testing

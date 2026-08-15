@@ -15,6 +15,24 @@
 
 ## Installation
 
+`yy benchmark ...` is a thin, fail-closed delegate to the independently
+installed `juno-benchmark` executable. Install compatible release artifacts for
+both packages on the same `PATH`; `yy` requires `juno-benchmark >=0.1.0,<1.0.0`
+and does not embed or discover a checkout-local benchmark implementation.
+
+```bash
+juno-benchmark --help
+yy benchmark --help
+```
+
+The two help/version surfaces are byte- and exit-equivalent. Release candidates
+verify this from packed npm artifacts with
+`npm run test:benchmark-release-artifacts`. That offline verifier also runs the fixed,
+timeout-bounded benchmark coverage and credential/leak-scan commands with closed stdin.
+Its readiness receipt binds the unchanged source tree, exact commands, exit results,
+measured outputs, log digests, and canonical evidence hashes; absent, failed, duplicate,
+stale, mismatched, or altered evidence fails closed.
+
 ### Isolated Juno 2 source toolchain
 
 From a monorepo checkout containing `juno-code/` and `juno_kanban/`:
@@ -955,6 +973,11 @@ Notes:
 ### Custom Backends
 
 Service scripts live in `~/.juno_code/services/`. Each is a Python script that accepts standard args (`-p/--prompt`, `-m/--model`, `-v/--verbose`) and outputs JSON events to stdout.
+
+For audited automation, `yy pi --execution-envelope --model PROVIDER/MODEL PROMPT`
+emits one `juno_execution_envelope.v1` JSON object as the sole stdout payload. Its
+provider/model/session/version/cost fields come from marked backend terminal evidence,
+not assistant text; missing cost remains unavailable and reported zero remains zero.
 
 ## Hook System
 
