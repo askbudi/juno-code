@@ -200,19 +200,21 @@ class TestBuildPiCommand:
         model_idx = cmd.index("--model")
         assert cmd[model_idx + 1] == "claude-sonnet-4-6"
 
-    def test_explicit_provider_no_split(self):
-        """When explicit --provider is given, model string is NOT split."""
+    def test_matching_explicit_provider_preserves_exact_identity(self):
+        """A confirming provider still dispatches a separate bare model id."""
         self.svc.model_name = "anthropic/claude-sonnet-4-6"
         self.svc.prompt = "test prompt"
-        args = _make_args(provider="openai")
-        cmd, _stdin = self.svc.build_pi_command(args)
+        cmd, _stdin = self.svc.build_pi_command(_make_args(provider="anthropic"))
 
-        provider_idx = cmd.index("--provider")
-        assert cmd[provider_idx + 1] == "openai"
+        assert cmd[cmd.index("--provider") + 1] == "anthropic"
+        assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
 
-        model_idx = cmd.index("--model")
-        # Model should NOT be split since explicit provider is given
-        assert cmd[model_idx + 1] == "anthropic/claude-sonnet-4-6"
+    def test_conflicting_explicit_provider_is_rejected(self):
+        """An explicit provider cannot rewrite an exact provider/model identity."""
+        self.svc.model_name = "anthropic/claude-sonnet-4-6"
+        self.svc.prompt = "test prompt"
+        with pytest.raises(ValueError, match="conflicts with model identity"):
+            self.svc.build_pi_command(_make_args(provider="openai"))
 
     def test_model_without_slash(self):
         """When model has no '/', it's passed as-is with --model."""

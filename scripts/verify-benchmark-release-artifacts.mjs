@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { verifyInstalledExecutionEnvelope } from './verify-benchmark-installed-envelope.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const junoCodeRoot = resolve(scriptDirectory, '..');
@@ -124,6 +125,10 @@ try {
   if (versionOutput(benchmark, ['--version'], { cwd: fixtureRoot, env }) !== requiredBenchmarkVersion) {
     throw new Error('Packed standalone version does not satisfy the exact Juno Code contract');
   }
+  const installedEnvelopeEvidence = await verifyInstalledExecutionEnvelope({
+    fixtureRoot, prefix, cleanEnvironment: env,
+    versions: { benchmark: benchmarkPackage.version, juno: junoPackage.version },
+  });
 
   // Exercise process fidelity from the clean installed prefix. The probe wraps
   // the real packed executable for the mandatory version handshake, then gives
@@ -169,7 +174,7 @@ process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
   }
 
   if (process.argv.includes('--distribution-only')) {
-    process.stdout.write('benchmark installed-pair distribution smoke passed\n');
+    process.stdout.write(`${JSON.stringify(installedEnvelopeEvidence)}\nbenchmark installed-pair distribution smoke passed\n`);
   } else {
   const builtBin = join(fixtureRoot, 'built-bin'); await mkdir(builtBin);
   const builtBenchmarkEntry = join(stagedBenchmarkRoot, 'dist/bin.js');

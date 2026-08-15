@@ -887,7 +887,7 @@ exit 1
       const result = await executeCLI(['--version']);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toMatch(/\d+\.\d+\.\d+/); // Version pattern
+      expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/); // Machine version contract
     });
 
     it('should keep --version read-only in an initialized project', async () => {
