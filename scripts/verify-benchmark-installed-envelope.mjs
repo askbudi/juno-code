@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 
@@ -137,7 +138,7 @@ let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{JS
   if (noGrader.resolved || noGrader.terminal_class !== 'grader_failure') throw new Error('Candidate self-declaration established resolved truth');
 
   // Smoke the installed authenticated-launcher export with an offline synthetic token.
-  const launcher = join(fixtureRoot, 'authenticated-launcher.cjs');
+  const launcher = join(fixtureRoot, 'authenticated-launcher.mjs');
   const launcherSource = `#!/usr/bin/env node
 import fs from 'node:fs';const a=process.argv.slice(2);const get=n=>a[a.indexOf(n)+1];const op=a[0],provider=get('--provider'),exact=get('--model'),version=get('--juno-version');
 if(op==='probe'){console.log(version);process.exit(0)}
@@ -145,6 +146,14 @@ const secret=fs.readFileSync(3,'utf8');fs.closeSync(3);fs.readFileSync(4);fs.clo
 console.log(JSON.stringify({schema_version:'juno_execution_envelope.v1',status:'success',session_id:'authenticated-offline',provider,model:exact.slice(provider.length+1),juno_version:version,cost:{completeness:'complete',usd:0}}));
 `;
   await writeFile(launcher, launcherSource, { mode: 0o500 }); await chmod(launcher, 0o500); const launcherPath = await realpath(launcher);
+  const moduleProbe = spawnSync(process.execPath, [launcherPath, 'probe', '--protocol', 'juno_benchmark_auth_launcher.v1',
+    '--provider', 'openai-codex', '--model', identities[0].exact, '--juno-version', versions.juno], {
+    cwd: fixtureRoot, env: baseEnvironment, encoding: 'utf8', input: '', timeout: 10_000,
+  });
+  if (moduleProbe.error || moduleProbe.status !== 0 || moduleProbe.signal !== null || moduleProbe.stdout.trim() !== versions.juno || moduleProbe.stderr !== '') {
+    throw new Error(`Authenticated launcher module probe failed: ${JSON.stringify({ status: moduleProbe.status, signal: moduleProbe.signal,
+      stdout: moduleProbe.stdout, stderr: moduleProbe.stderr, error: moduleProbe.error?.message })}`);
+  }
   const credentialName = 'OPENAI_CODEX_TOKEN'; const priorCredential = process.env[credentialName]; process.env[credentialName] = 'offline-token-material-1234567890';
   try {
     const authProject = await prepareProject('authenticated');
@@ -164,5 +173,6 @@ console.log(JSON.stringify({schema_version:'juno_execution_envelope.v1',status:'
   }
 
   return { identities: identities.map(({ name, exact }) => ({ name, exact })), genuine_zero: true, missing_cost: true,
-    failure: true, successful_patch: true, grader_receipts: 3, candidate_self_declaration_rejected: true, authenticated_launcher: true };
+    failure: true, successful_patch: true, grader_receipts: 3, candidate_self_declaration_rejected: true,
+    authenticated_launcher_module_probe: true, authenticated_launcher: true };
 }
