@@ -637,6 +637,28 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
         git(self.repo, "commit", "-m", "invalid installed provenance")
         return git(self.repo, "rev-parse", "HEAD")
 
+    def policyless_generations(self) -> tuple[str, str]:
+        git(self.repo, "reset", "--hard", self.previous)
+        (self.repo / runtime.MANAGED_POLICY_PATH).unlink()
+        git(self.repo, "add", "-u")
+        git(self.repo, "commit", "-m", "installed consumer without controller-private policy")
+        previous = git(self.repo, "rev-parse", "HEAD")
+
+        script = self.repo / ".juno_task/scripts/one.py"
+        script.write_text("installed new one\n")
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text())
+        manifest["packageVersion"] = "9.0.0"
+        for record in manifest["assets"].values():
+            record["templateVersion"] = "9.0.0"
+        digest = runtime.managed_sha256(script.read_bytes())
+        manifest["assets"][".juno_task/scripts/one.py"].update(
+            {"sourceSha256": digest, "installedSha256": digest})
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "policyless installed consumer target")
+        return previous, git(self.repo, "rev-parse", "HEAD")
+
     def test_installed_consumer_refresh_doctor_and_retry_use_only_committed_bytes(self) -> None:
         self.assertFalse((self.repo / "juno-code").exists())
         self.assertNotEqual(run(["git", "-C", str(self.repo), "cat-file", "-e",
@@ -656,6 +678,46 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
             task_id="consumer-post-cas-retry")
         self.assertEqual(retried["outcome"], "completed")
         self.assertTrue(retried["doctor"]["healthy"])
+
+    def test_installed_consumer_recovers_when_product_shas_lack_controller_policy(self) -> None:
+        previous, target = self.policyless_generations()
+        before_policy = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target, task_id="consumer-policyless-post-cas")
+
+        self.assertEqual(result["package_version"], "9.0.0")
+        self.assertEqual((self.controller / runtime.MANAGED_POLICY_PATH).read_bytes(), before_policy)
+        self.assertEqual((self.controller / ".juno_task/scripts/one.py").read_text(),
+                         "installed new one\n")
+        self.assertTrue(runtime.managed_runtime_inspect(
+            self.controller, self.repo, target)["healthy"])
+        retried = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target,
+            task_id="consumer-policyless-post-cas-retry")
+        self.assertEqual(retried["outcome"], "completed")
+
+    def test_installed_consumer_policyless_recovery_fails_closed_on_ambiguous_provenance(self) -> None:
+        previous, target = self.policyless_generations()
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+
+        manifest = json.loads(manifest_path.read_text())
+        manifest["assets"][runtime.MANAGED_POLICY_PATH]["sourceSha256"] = "f" * 64
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "changed unavailable policy source")
+        changed = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                    "source generation changed without immutable bytes"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, changed)
+
+        git(self.repo, "reset", "--hard", target)
+        self.write(runtime.MANAGED_POLICY_PATH, self.policy)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "only target contains controller policy")
+        one_sided = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "provenance is ambiguous"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, one_sided)
 
     def test_installed_consumer_provenance_failures_are_closed(self) -> None:
         script = ".juno_task/scripts/one.py"

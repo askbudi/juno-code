@@ -332,13 +332,17 @@ describe('ManagedProjectAssets', {
     try {
       const bin = path.join(root, 'bin');
       const count = path.join(root, 'npm-count');
+      const probeCount = path.join(root, 'npm-probe-count');
       await fs.ensureDir(bin);
       await fs.writeFile(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
-      await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\nbin/\nnpm-count\n');
+      await fs.writeFile(
+        path.join(root, '.gitignore'),
+        'node_modules/\nbin/\nnpm-count\nnpm-probe-count\n',
+      );
       await fs.writeFile(path.join(bin, 'node'), '#!/bin/sh\necho 22.22.3\n');
       await fs.writeFile(
         path.join(bin, 'npm'),
-        '#!/bin/sh\necho run >> "$FAKE_NPM_COUNT"\nmkdir -p node_modules\necho fake npm ci\nexit "${FAKE_NPM_FAIL:-0}"\n',
+        '#!/bin/sh\ncase "$1" in\n  ci) echo run >> "$FAKE_NPM_COUNT"; mkdir -p node_modules; echo fake npm ci; exit "${FAKE_NPM_FAIL:-0}" ;;\n  ls) echo probe >> "$FAKE_NPM_PROBE_COUNT"; echo "{}"; exit "${FAKE_NPM_PROBE_FAIL:-0}" ;;\n  *) exit 2 ;;\nesac\n',
       );
       await fs.chmod(path.join(bin, 'node'), 0o755);
       await fs.chmod(path.join(bin, 'npm'), 0o755);
@@ -365,6 +369,7 @@ describe('ManagedProjectAssets', {
             ...process.env,
             PATH: `${bin}:${process.env.PATH}`,
             FAKE_NPM_COUNT: count,
+            FAKE_NPM_PROBE_COUNT: probeCount,
             ...extra,
           },
         });
@@ -373,9 +378,15 @@ describe('ManagedProjectAssets', {
       expect(fresh.status).toBe(0);
       expect(fresh.stdout).toContain('[dependency-hydration] OK npm ci complete');
       expect((await fs.readFile(count, 'utf8')).trim().split('\n')).toHaveLength(1);
+      expect((await fs.readFile(probeCount, 'utf8')).trim().split('\n')).toHaveLength(1);
       expect(spawnSync('git', ['status', '--short'], { cwd: root, encoding: 'utf8' }).stdout).toBe(
         '',
       );
+
+      const exact = runHydration();
+      expect(exact.status).toBe(0);
+      expect(exact.stdout).toContain('OK exact-lock dependencies already present');
+      expect((await fs.readFile(count, 'utf8')).trim().split('\n')).toHaveLength(1);
 
       await fs.writeFile(
         path.join(root, 'package-lock.json'),
@@ -385,12 +396,21 @@ describe('ManagedProjectAssets', {
       expect(changed.status).toBe(0);
       expect((await fs.readFile(count, 'utf8')).trim().split('\n')).toHaveLength(2);
 
-      await fs.remove(path.join(root, 'node_modules'));
-      const failed = runHydration({ FAKE_NPM_FAIL: '17' });
+      const failed = runHydration({ FAKE_NPM_FAIL: '17', FAKE_NPM_PROBE_FAIL: '1' });
       expect(failed.status).toBe(17);
       expect(failed.stdout).toContain('[dependency-hydration] FAILED npm ci exit=17');
+      expect(await fs.pathExists(path.join(root, 'node_modules/.juno-package-lock.sha256'))).toBe(
+        false,
+      );
       expect(await fs.readFile('/tmp/yy-task-HYDRATIONTEST-npm-ci.log', 'utf8')).toContain(
         'FAILED npm ci exit=17',
+      );
+
+      const failedProbe = runHydration({ FAKE_NPM_PROBE_FAIL: '1' });
+      expect(failedProbe.status).toBe(2);
+      expect(failedProbe.stdout).toContain('FAILED dependency probe after npm ci');
+      expect(await fs.pathExists(path.join(root, 'node_modules/.juno-package-lock.sha256'))).toBe(
+        false,
       );
     } finally {
       await fs.remove(root);

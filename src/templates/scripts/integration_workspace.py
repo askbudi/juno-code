@@ -220,6 +220,42 @@ def managed_package_version(repository: Path, commit: str) -> str:
     return managed_target_provenance(repository, commit)["package_version"]
 
 
+def managed_policy_generations(repository: Path, previous_sha: str, target_sha: str,
+                               current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve policy bytes without assuming controller-private files live in product Git."""
+    previous_exists = managed_source_exists(repository, previous_sha, MANAGED_POLICY_PATH)
+    target_exists = managed_source_exists(repository, target_sha, MANAGED_POLICY_PATH)
+    if previous_exists and target_exists:
+        return (managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH),
+                managed_source_json(repository, target_sha, MANAGED_POLICY_PATH))
+    if previous_exists != target_exists:
+        raise ManagedRuntimeError("task policy generation provenance is ambiguous")
+
+    previous_provenance = managed_target_provenance(repository, previous_sha)
+    target_provenance = managed_target_provenance(repository, target_sha)
+    if previous_provenance["mode"] != "installed" or target_provenance["mode"] != "installed":
+        raise ManagedRuntimeError("task policy generations are absent from product Git")
+
+    records = []
+    for commit, provenance in ((previous_sha, previous_provenance),
+                               (target_sha, target_provenance)):
+        manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
+        record = manifest["assets"].get(MANAGED_POLICY_PATH)
+        if (not isinstance(record, dict) or record.get("type") != "config"
+                or record.get("templateVersion") != provenance["package_version"]
+                or not MANAGED_HASH_RE.fullmatch(record.get("sourceSha256", ""))
+                or not MANAGED_HASH_RE.fullmatch(record.get("installedSha256", ""))):
+            raise ManagedRuntimeError("installed task policy provenance is invalid")
+        records.append(record)
+    if records[0]["sourceSha256"] != records[1]["sourceSha256"]:
+        raise ManagedRuntimeError("installed task policy source generation changed without immutable bytes")
+
+    # The controller policy is tracked and clean (enforced by the caller). An
+    # unchanged installed template hash proves this package transition has no
+    # policy delta, so preserving those authenticated controller bytes is exact.
+    return current, current
+
+
 def managed_safe_path(controller: Path, relative: str) -> Path:
     destination = (controller / relative).resolve()
     try:
@@ -594,14 +630,14 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                     and row.get("prior_generation_classification")
                     != "receipt_bound_obsolete_generation"):
                 raise ManagedRuntimeError(f"existing managed generation drift: {row['path']}")
-    previous_policy = managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH)
-    target_policy = managed_source_json(repository, target_sha, MANAGED_POLICY_PATH)
     policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
     try:
         current_policy_bytes = policy_path.read_bytes()
         current_policy = json.loads(current_policy_bytes)
     except (OSError, json.JSONDecodeError) as exc:
         raise ManagedRuntimeError(f"controller task policy is invalid: {exc}") from exc
+    previous_policy, target_policy = managed_policy_generations(
+        repository, previous_sha, target_sha, current_policy)
     projected, changed_fields = managed_policy_projection(previous_policy, target_policy, current_policy)
     if policy_dirty:
         generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
