@@ -120,12 +120,18 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
         result: dict[str, str] = {}
         seen: set[str] = set()
         for asset in assets:
+            required_asset_keys = {"source", "destination", "installClass", "type"}
             if (not isinstance(asset, dict)
-                    or set(asset) != {"source", "destination", "installClass", "type"}
+                    or set(asset) not in {frozenset(required_asset_keys),
+                                         frozenset(required_asset_keys | {"macro"})}
                     or asset.get("installClass") not in {"project", "script"}
                     or not isinstance(asset.get("source"), str)
                     or not isinstance(asset.get("destination"), str)
-                    or not isinstance(asset.get("type"), str)):
+                    or not isinstance(asset.get("type"), str)
+                    or ("macro" in asset and (asset.get("installClass") != "project"
+                                               or asset.get("type") != "prompt"
+                                               or not isinstance(asset.get("macro"), str)
+                                               or not asset["macro"]))):
                 raise ManagedRuntimeError("target managed asset entry is invalid")
             destination = asset["destination"]
             if destination in seen:

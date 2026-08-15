@@ -757,6 +757,44 @@ class ManagedRuntimeTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text((json.dumps(value) + "\n") if not isinstance(value, str) else value)
 
+    def test_managed_asset_prompt_macro_shape_is_strict(self) -> None:
+        manifest_path = self.repo / runtime.MANAGED_MANIFEST_PATH
+
+        def commit_asset(asset: dict[str, object], label: str) -> str:
+            git(self.repo, "reset", "--hard", self.target)
+            manifest = json.loads(manifest_path.read_text())
+            manifest["assets"].append(asset)
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            git(self.repo, "add", runtime.MANAGED_MANIFEST_PATH)
+            git(self.repo, "commit", "-m", label)
+            return git(self.repo, "rev-parse", "HEAD")
+
+        legacy = runtime.managed_target_provenance(self.repo, self.target)
+        prompt = {
+            "source": "prompts/reflect.md",
+            "destination": ".juno_task/prompts/reflect.md",
+            "installClass": "project",
+            "type": "prompt",
+            "macro": "reflect",
+        }
+        accepted = runtime.managed_target_provenance(
+            self.repo, commit_asset(prompt, "valid prompt macro"))
+        self.assertEqual(accepted["assets"], legacy["assets"])
+
+        invalid_assets = [
+            (dict(prompt, unexpected=True), "unknown key"),
+            (dict(prompt, macro=""), "empty macro"),
+            (dict(prompt, macro=7), "non-string macro"),
+            (dict(prompt, installClass="script"), "non-project macro"),
+            (dict(prompt, type="config"), "non-prompt macro"),
+        ]
+        for asset, label in invalid_assets:
+            with self.subTest(label=label):
+                commit = commit_asset(asset, label)
+                with self.assertRaisesRegex(
+                        runtime.ManagedRuntimeError, "asset entry is invalid"):
+                    runtime.managed_target_provenance(self.repo, commit)
+
     def test_refresh_uses_exact_target_preserves_policy_customization_and_receipts_log(self) -> None:
         result = runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,
                                  task_id="UOsd11")
