@@ -409,7 +409,7 @@ raise SystemExit(2)
             result.append(path)
         return sorted(result)
 
-    def install_policyless_product_generation(self, version: str) -> str:
+    def bootstrap_policyless_product_generation(self, version: str) -> str:
         checkout = self.root / "policyless-installed-product"
         git(self.repository, "worktree", "add", str(checkout), "product")
         script = checkout / ".juno_task/scripts/task_workspace.py"
@@ -424,7 +424,7 @@ raise SystemExit(2)
         (checkout / ".juno_task/managed-assets.json").write_text(json.dumps(manifest) + "\n")
         git(checkout, "rm", "-r", "juno-code", ".juno_task/config/task-workspace.json")
         git(checkout, "add", ".juno_task/managed-assets.json")
-        git(checkout, "commit", "-m", f"install policyless runtime {version}")
+        git(checkout, "commit", "-m", f"supported runtime bootstrap to {version}")
         generation = git(checkout, "rev-parse", "HEAD")
         git(self.repository, "worktree", "remove", str(checkout))
         return generation
@@ -1186,8 +1186,8 @@ raise SystemExit(2)
         self.assertEqual(final_phases["managed_runtime_refresh"]["status"], "complete")
         self.assertEqual(final_phases["kanban_finalization"]["status"], "complete")
 
-    def test_public_next_recovers_policyless_installed_post_cas_and_advances_successor(self) -> None:
-        previous = self.install_policyless_product_generation("2.1.3-rc.0.24")
+    def test_public_next_recovers_rc32_bootstrap_post_cas_idempotently(self) -> None:
+        previous = self.bootstrap_policyless_product_generation("2.1.3-rc.0.32")
         candidate = self.commit_feature("X", "docs/policyless-recovery.md", "recover\n")
         self.runtime_refresh.side_effect = merge_runtime.MergeQueueError(
             "injected post-CAS runtime interruption")
@@ -1201,7 +1201,7 @@ raise SystemExit(2)
         self.assertEqual(failed["queue_attempt"]["expected_target_sha"], previous)
 
         # The script CLI is the public yy merge-next implementation. Its fresh
-        # process uses the real .24 compatibility engine, not this test's mock.
+        # process uses the real compatibility engine, not this test's mock.
         recovered = self.queue_payload("next")
         self.assertEqual((recovered["task_id"], recovered["outcome"]), ("X", "MERGED"))
         board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
@@ -1214,6 +1214,7 @@ raise SystemExit(2)
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), successor)
         board = json.loads(board_path.read_text())
         self.assertEqual((board["Y"]["status"], board["Y"]["mutation_count"]), ("done", 1))
+        self.assertEqual(board["X"]["mutation_count"], 1)
 
     def test_kanban_finalization_is_readback_idempotent_and_preserves_response(self) -> None:
         board = self.controller / ".juno_task/runtime/fake-board.json"

@@ -43,13 +43,6 @@ LEGACY_VERSION_CACHE_MARKERS = (
     b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"',
     b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$PWD/.juno_task}"',
 )
-# These schema-v1 package generations predate a product-manifest capability for
-# the controller-private task policy. Keep this explicit: absence must not turn
-# into an open-ended version or schema downgrade path.
-POLICYLESS_INSTALLED_GENERATIONS = frozenset({
-    (1, "juno-code", "2.1.3-rc.0.22"),
-    (1, "juno-code", "2.1.3-rc.0.24"),
-})
 
 
 class ManagedRuntimeError(RuntimeError):
@@ -256,15 +249,15 @@ def managed_policy_generations(repository: Path, previous_sha: str, target_sha: 
                      for commit in (previous_sha, target_sha)]
         identities = [(manifest.get("schemaVersion"), manifest.get("packageName"),
                        manifest.get("packageVersion")) for manifest in manifests]
-        # Schema-v1 .22 and .24 installed products intentionally omitted this
-        # controller-private asset. Preservation is safe only for one exact,
-        # known package capability whose remaining manifest is unchanged. This
-        # proves there was no hidden package/policy generation transition while
-        # the normal provenance checks above authenticate every installed script.
+        # Some supported bootstraps omit this controller-private asset. Do not
+        # identify that capability by a release number: both commits must carry
+        # the exact same well-formed package identity and manifest payload.
+        # Together with managed_target_provenance() authenticating every declared
+        # installed byte, that admits only a product-only transition and rejects
+        # package, asset, or hidden policy-generation ambiguity.
         compatible = (missing == [True, True]
                       and not policy_dirty
                       and identities[0] == identities[1]
-                      and identities[0] in POLICYLESS_INSTALLED_GENERATIONS
                       and manifests[0] == manifests[1])
         if not compatible:
             raise ManagedRuntimeError("installed task policy provenance is invalid")

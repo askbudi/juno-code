@@ -718,8 +718,8 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
             task_id="consumer-policyless-post-cas-retry")
         self.assertEqual(retried["outcome"], "completed")
 
-    def test_known_policyless_installed_generations_preserve_clean_controller_policy(self) -> None:
-        for version in ("2.1.3-rc.0.22", "2.1.3-rc.0.24"):
+    def test_exact_policyless_package_generations_preserve_clean_controller_policy(self) -> None:
+        for version in ("2.1.3-rc.0.22", "2.1.3-rc.0.24", "2.1.3-rc.0.32"):
             with self.subTest(version=version):
                 previous, target = self.legacy_policyless_generations(version)
                 before = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
@@ -783,11 +783,6 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
                                     "installed task policy provenance is invalid"):
             runtime.managed_runtime_plan(self.controller, self.repo, previous, target)
         git(self.controller, "checkout", "--", runtime.MANAGED_POLICY_PATH)
-
-        previous, target = self.legacy_policyless_generations("9.0.0")
-        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
-                                    "installed task policy provenance is invalid"):
-            runtime.managed_runtime_plan(self.controller, self.repo, previous, target)
 
     def test_installed_consumer_policyless_recovery_fails_closed_on_ambiguous_provenance(self) -> None:
         previous, target = self.policyless_generations()
