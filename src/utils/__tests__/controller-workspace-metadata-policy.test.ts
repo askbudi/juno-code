@@ -25,6 +25,9 @@ describe('metadata-controller sparse policy', () => {
     expect(policy.product_forbidden).toContain('.juno_task/task-scopes');
     expect(policy.tracked_recursive).toContain('.juno_task/task-scopes');
     expect(policy.tracked_exact).not.toContain('.juno_task/task-scopes');
+    expect(policy.copied_metadata).toContain('.juno_task/config/umbrella-admissions');
+    expect(policy.product_forbidden).toContain('.juno_task/config/umbrella-admissions');
+    expect(policy.tracked_recursive).toContain('.juno_task/config/umbrella-admissions');
   });
 
   it('classifies, selects, requires, and materializes the generated .gitignore', async () => {

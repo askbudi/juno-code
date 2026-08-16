@@ -513,6 +513,25 @@ class MetadataControllerTest(unittest.TestCase):
             },
         )
 
+    def test_legacy_operational_metadata_is_narrowly_admitted(self) -> None:
+        self.prepare()
+        legacy = json.loads(json.dumps(self.policy))
+        for root in mc.LEGACY_OPERATIONAL_METADATA:
+            for field in ("copied_metadata", "product_forbidden", "tracked_recursive"):
+                legacy[field] = [value for value in legacy[field] if value != root]
+        write(self.new_controller / ".juno_task/task-scopes/ab/abc123.json", "{}\n")
+        write(self.new_controller / ".juno_task/config/umbrella-admissions/abc123.json", "{}\n")
+        write(self.new_controller / ".juno_task/config/umbrella-other/abc123.json", "{}\n")
+        command("git", "add", "-f", ".juno_task/task-scopes", ".juno_task/config/umbrella-admissions",
+                ".juno_task/config/umbrella-other", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "legacy operational metadata", cwd=self.new_controller)
+        evidence = mc.inspect(self.new_controller, legacy,
+                              expected_branch="refs/heads/juno/controller-metadata-v1",
+                              require_active=False)
+        self.assertEqual(evidence["forbidden_tracked"],
+                         [".juno_task/config/umbrella-other/abc123.json"])
+
     def test_verification_rejects_deletion_of_all_canonical_metadata(self) -> None:
         self.prepare()
         command("git", "rm", "-r", ".juno_task/tasks", ".juno_task/ledger", ".juno_task/specs", cwd=self.new_controller)

@@ -5,6 +5,7 @@
   "spec_copy_mode": "top_level_files_only",
   "copied_metadata": [
     ".juno_task/cutover.json",
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/ledger",
     ".juno_task/wiki",
     ".juno_task/specs",
@@ -32,6 +33,7 @@
   ],
   "product_forbidden": [
     ".juno_task/artifacts",
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/cutover.json",
     ".juno_task/ledger",
     ".juno_task/logs",
@@ -57,6 +59,7 @@
     ".juno_task/tasks.md"
   ],
   "tracked_recursive": [
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/ledger",
     ".juno_task/task-scopes",
     ".juno_task/tasks",

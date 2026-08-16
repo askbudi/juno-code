@@ -38,6 +38,10 @@ TASK_POLICY_PATH = ".juno_task/config/task-workspace.json"
 RISK_POLICY_PATH = ".juno_task/config/risk-policy.json"
 POLICY_MIGRATION_PATHS = (INTEGRATION_POLICY_PATH, POLICY_PATH)
 AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
+LEGACY_OPERATIONAL_METADATA = (
+    ".juno_task/config/umbrella-admissions",
+    ".juno_task/task-scopes",
+)
 CORE_CONTROLLER_WIKI = (
     "git_worktree_lifecycle.md",
     "metadata_controller_boundary.md",
@@ -688,7 +692,10 @@ def policy_path_allowed(name: str, policy: dict[str, Any], *, container: bool = 
 
 
 def tracked_allowed(name: str, policy: dict[str, Any]) -> bool:
-    return policy_path_allowed(name, policy)
+    return policy_path_allowed(name, policy) or any(
+        name == root or name.startswith(root + "/")
+        for root in LEGACY_OPERATIONAL_METADATA
+    )
 
 
 def agent_surface_path(name: str) -> bool:
@@ -709,7 +716,10 @@ def product_boundary(root: Path, product_ref: str, expected_head: str, policy: d
         raise BoundaryError("product ref does not match the reviewed policy")
     head = resolve_commit(root, product_ref, expected_head, "product target")
     names = [name for _, _, name in listed_tree(root, head)]
-    forbidden = [name for name in names if any(name == prefix or name.startswith(prefix + "/") for prefix in policy["product_forbidden"])]
+    forbidden = [name for name in names if any(
+        name == prefix or name.startswith(prefix + "/")
+        for prefix in (*policy["product_forbidden"], *LEGACY_OPERATIONAL_METADATA)
+    )]
     return {"product_ref": product_ref, "product_head": head, "forbidden_controller_paths": forbidden,
             "passed": not forbidden}
 
