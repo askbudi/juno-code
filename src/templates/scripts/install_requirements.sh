@@ -134,8 +134,20 @@ ensure_selected_juno_kanban_runtime() {
 # Keep transient state repository-scoped but outside the tracked worktree. Linked worktrees
 # share one Git-common-dir cache; non-Git initialization falls back to an XDG cache key.
 default_version_check_cache_dir() {
-    local common_dir cache_root cache_key
+    local common_dir cache_root cache_key role resolver controller
     common_dir=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    role=$(git -C "$PWD" config --worktree --get juno.workspace.role 2>/dev/null || true)
+    resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/controller_resolver.py"
+    if [ "$role" = task ] && [ -n "$common_dir" ] && [ -f "$resolver" ]; then
+        controller=$(env -u JUNO_WORKSPACE_ROLE -u JUNO_PROJECT_PATH \
+            python3 "$resolver" --cwd "$PWD" --operation diagnostic --format json 2>/dev/null | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
+        if [ -n "$controller" ] && [ -d "$controller/.juno_task" ]; then
+            cache_key=$(printf '%s' "$common_dir" | cksum | awk '{print $1}')
+            printf '%s\n' "$controller/.juno_task/runtime/managed-controller/version-checks/$cache_key"
+            return
+        fi
+    fi
     if [ -n "$common_dir" ]; then
         printf '%s\n' "$common_dir/juno/version-checks"
         return

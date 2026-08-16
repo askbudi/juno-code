@@ -240,13 +240,24 @@ def managed_policy_generations(repository: Path, previous_sha: str, target_sha: 
     for commit, provenance in ((previous_sha, previous_provenance),
                                (target_sha, target_provenance)):
         manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
-        record = manifest["assets"].get(MANAGED_POLICY_PATH)
+        records.append(manifest["assets"].get(MANAGED_POLICY_PATH))
+
+    missing = [record is None for record in records]
+    if any(missing):
+        # rc.0.22 never installed the controller-private policy into products and
+        # therefore could not record it in either immutable installed manifest.
+        # This is deliberately not a general legacy/manifest compatibility path.
+        versions = (previous_provenance["package_version"], target_provenance["package_version"])
+        if missing != [True, True] or versions != ("2.1.3-rc.0.22", "2.1.3-rc.0.22"):
+            raise ManagedRuntimeError("installed task policy provenance is invalid")
+        return current, current
+
+    for record, provenance in zip(records, (previous_provenance, target_provenance)):
         if (not isinstance(record, dict) or record.get("type") != "config"
                 or record.get("templateVersion") != provenance["package_version"]
                 or not MANAGED_HASH_RE.fullmatch(record.get("sourceSha256", ""))
                 or not MANAGED_HASH_RE.fullmatch(record.get("installedSha256", ""))):
             raise ManagedRuntimeError("installed task policy provenance is invalid")
-        records.append(record)
     if records[0]["sourceSha256"] != records[1]["sourceSha256"]:
         raise ManagedRuntimeError("installed task policy source generation changed without immutable bytes")
 

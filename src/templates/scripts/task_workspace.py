@@ -1804,9 +1804,10 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
     os.chmod(out_dir, 0o700)
     run_dir = out_dir / "run"
     env = dict(os.environ)
-    # Control-plane dispatch runs at the controller, but the workflow runner
-    # must resolve the persisted role of its task-worktree cwd for itself.
+    # Hydration evaluates the already registered task worktree. Controller-side
+    # wrapper assertions describe the parent, not this managed child boundary.
     env.pop("JUNO_WORKSPACE_ROLE", None)
+    env.pop("JUNO_PROJECT_PATH", None)
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     commands = [
         [sys.executable, str(runner), "lint", "--workflow", str(workflow),

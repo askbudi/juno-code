@@ -442,6 +442,7 @@ import json,os,pathlib,sys,time
 prompt=pathlib.Path(sys.argv[sys.argv.index('-f')+1]).read_text()
 print('live stdout',flush=True);print('live stderr',file=sys.stderr,flush=True);time.sleep(.05)
 payload={'session_id':'managed-session','result':'managed response'}
+if 'typed-' in prompt: payload['terminal_outcome']={'schema_version':'juno_managed_agent_terminal_result.v1','state':prompt.split('typed-',1)[1].split()[0]}
 if 'semantic-failure' in prompt: payload['is_error']=True
 pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(payload)+'\\n')
 `); await fs.chmod(fake.executablePath, 0o755);
@@ -453,7 +454,8 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
         id: 'agent', fail_workflow: false, capture_session: false,
         managed_agent: { mode: 'reviewer', controller_root: controller, controller_branch: 'fixture-controller',
           agent_root: '{{ out_dir }}/managed/agent-root', prompt_file: prompt, out_dir: '{{ out_dir }}/managed',
-          candidate_sha: candidateSha, candidate_root: candidate },
+          candidate_sha: candidateSha, candidate_root: candidate,
+          ...(promptText.includes('typed-') ? { require_terminal_result: true } : {}) },
       }] });
       const result = runWorkflow(['--workflow', workflowPath, '--out-dir', runDir, '--print-output', 'none'], undefined,
         { PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}` });
@@ -484,6 +486,9 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     await fs.appendFile(path.join(success.runDir, 'managed', 'response.txt'), 'drift');
     const drifted = runWorkflow(['recover-attempt', success.runDir, '--dry-run']);
     expect(drifted.status).not.toBe(0); expect(drifted.stderr).toContain('managed-agent artifact response drifted');
+    const blocked = await execute('typed-blocked', 'typed-blocked');
+    expect(blocked.result.status).not.toBe(0);
+    expect(blocked.result.stderr).toContain('managed-agent terminal outcome is blocked');
     const failure = await execute('failure', 'semantic-failure');
     expect(failure.result.status).not.toBe(0);
   }, 60_000);
