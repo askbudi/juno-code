@@ -5,6 +5,7 @@ import { constants as osConstants } from 'node:os';
 import type { Command } from 'commander';
 import semver from 'semver';
 import packageMetadata from '../../../package.json';
+import { markTransparentDelegate } from '../../utils/explicit-command.js';
 
 // This is intentionally exact and sourced from release metadata: a Juno Code
 // release is validated with one independently packaged benchmark artifact.
@@ -214,10 +215,13 @@ export async function runBenchmarkDelegate(args: readonly string[]): Promise<voi
 }
 
 export function configureBenchmarkCommand(program: Command): void {
-  program
+  const command = program
     .command('benchmark [args...]')
     .description('Delegate transparently to an independently installed juno-benchmark CLI')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .action(runBenchmarkDelegate);
+  // Help belongs to the standalone product. The explicit-input preflight must
+  // preserve -h/--help in the untouched delegated argument tail too.
+  markTransparentDelegate(command);
 }
