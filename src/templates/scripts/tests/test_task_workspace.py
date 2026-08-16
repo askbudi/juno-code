@@ -346,14 +346,6 @@ def tearDownModule() -> None:
         _RESOURCE_LOCK_TOKEN = None
 
 
-def _timing_diagnostics(elapsed: float, contract_seconds: float) -> str:
-    return (
-        f"product concurrency timing failed elapsed_seconds={elapsed:.3f} "
-        f"contract_seconds={contract_seconds:.3f} lock={RESOURCE_LOCK_PATH} "
-        f"{_owner_diagnostics(_read_lock_owner())} {_load_diagnostics()}"
-    )
-
-
 RUNTIME_TEMPLATE_PARITY = (
     (".juno_task/scripts/workflow_runner.sh", "juno-code/src/templates/scripts/workflow_runner.sh"),
     (".juno_task/scripts/risk_policy.py", "juno-code/src/templates/scripts/risk_policy.py"),
@@ -3064,18 +3056,44 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def test_duplicate_finish_validates_once_but_different_tasks_finish_concurrently(self) -> None:
         counter = self.root / "validation-counter.txt"
-        code = f"from pathlib import Path; import time; time.sleep(1.5); p=Path({str(counter)!r}); p.open('a').write('run\\n')"
+        events = self.root / "validation-events"
+        code = f"""
+from pathlib import Path
+import json, os, time
+events = Path({str(events)!r})
+counter = Path({str(counter)!r})
+events.mkdir(exist_ok=True)
+workspace = Path.cwd().parent.name
+started = time.monotonic()
+(events / f'{{workspace}}-{{os.getpid()}}.ready').touch()
+while len(list(events.glob('*.ready'))) < 2:
+    time.sleep(0.01)
+counter.open('a').write('run\\n')
+finished = time.monotonic()
+(events / f'{{workspace}}-{{os.getpid()}}.json').write_text(json.dumps(
+    {{'workspace': workspace, 'started': started, 'finished': finished}}
+))
+"""
+        # The validation timeout is the independent hang/deadlock budget. The
+        # concurrency contract below is proved by child-process overlap, not by
+        # a loaded host's end-to-end wall-clock duration.
         self.write_policy(validation_code=code, timeout_seconds=5)
         self.payload("start", "X")
         self.payload("start", "Y")
         self.commit_task("X")
         self.commit_task("Y")
-        started = time.monotonic()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            x, y = [future.result() for future in
-                    [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]]
-        elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 2.5, _timing_diagnostics(elapsed, 2.5))
+            futures = [pool.submit(self.payload, "finish", task_id) for task_id in ("X", "Y")]
+            x, y = [future.result(timeout=10) for future in futures]
+        different_task_events = [json.loads(path.read_text()) for path in events.glob("*.json")]
+        self.assertEqual({item["workspace"] for item in different_task_events}, {"X", "Y"})
+        latest_start = max(item["started"] for item in different_task_events)
+        earliest_finish = min(item["finished"] for item in different_task_events)
+        self.assertLess(
+            latest_start, earliest_finish,
+            f"different-task validations did not overlap: {different_task_events!r}; "
+            f"lock={RESOURCE_LOCK_PATH}; {_owner_diagnostics(_read_lock_owner())}; {_load_diagnostics()}",
+        )
         self.assertEqual({x["outcome"], y["outcome"]}, {"queued"})
         self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
 
@@ -3084,10 +3102,11 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.payload("start", "Z")
         self.commit_task("Z")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = [future.result() for future in
+            results = [future.result(timeout=10) for future in
                        [pool.submit(self.payload, "finish", "Z") for _ in range(2)]]
         self.assertEqual({item["outcome"] for item in results}, {"queued", "already_queued"})
         self.assertEqual(counter.read_text().splitlines(), ["run", "run", "run"])
+        self.assertEqual(len(list(events.glob("*.json"))), 3)
 
     def test_validation_argv_is_not_a_shell_and_policy_bounds_refuse(self) -> None:
         marker = self.root / "injected"
