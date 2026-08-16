@@ -1,7 +1,10 @@
 {
   "name": "juno-code",
-  "version": "2.1.3-rc.0.22",
+  "version": "2.1.3-rc.0.26",
   "description": "Ralph Wiggum meet Kanban! Ralph style execution for [Claude Code, Codex, Gemini, Cursor]. One task per iteration, automatic progress tracking, and git commits. Set it and let it run.",
+  "junoBenchmark": {
+    "version": "0.1.0"
+  },
   "keywords": [
     "Ralph",
     "Ralph Wiggum",
@@ -59,6 +62,7 @@
     "test:installed-test-fixture-package": "node scripts/verify-installed-test-fixture.mjs",
     "test:config-migration-package": "node scripts/verify-config-migration.mjs",
     "test:bolt-package-canary": "node scripts/verify-bolt-package-canary.mjs",
+    "test:benchmark-release-artifacts": "node scripts/verify-benchmark-release-artifacts.mjs",
     "test:binary": "vitest run src/cli/__tests__/binary-execution-interactive.test.ts",
     "help:test:binary": "bash ./scripts/test-usage.sh binary",
     "test:unit": "vitest run src/__tests__/unit",

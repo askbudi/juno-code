@@ -13,6 +13,8 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import type { JunoTaskConfig, SubagentType, ProgressEventType, BackendType } from '../types/index';
 import type {
   ProgressEvent,
@@ -718,7 +720,18 @@ export class ExecutionEngine extends EventEmitter {
     const { ShellBackend } = await import('./backends/shell-backend.js');
     const backend = new ShellBackend();
 
-    const controller = resolveController(request.workingDirectory, 'orchestration');
+    const inheritedProjectPath = process.env.JUNO_PROJECT_PATH?.trim();
+    const changedManagedWorktree = inheritedProjectPath !== undefined && inheritedProjectPath !== ''
+      && existsSync(request.workingDirectory)
+      && path.resolve(inheritedProjectPath) !== path.resolve(request.workingDirectory);
+    // A managed parent may cd from its dispatch root into a registered task
+    // worktree. In that case only, derive authority from persisted identity;
+    // same-boundary explicit assertion mismatches remain fail-closed.
+    const controller = changedManagedWorktree
+      ? resolveController(request.workingDirectory, 'orchestration', {
+        ignoreEnvironmentAssertions: true, trustedResolver: true,
+      })
+      : resolveController(request.workingDirectory, 'orchestration');
 
     // Configure
     (backend as any).configure({

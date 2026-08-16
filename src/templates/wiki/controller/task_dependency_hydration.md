@@ -75,9 +75,6 @@ if not lock.is_file():
     footer("FAILED missing package-lock.json")
     raise SystemExit(2)
 identity = hashlib.sha256(lock.read_bytes()).hexdigest()
-if (root / "node_modules").is_dir() and stamp.is_file() and stamp.read_text().strip() == identity:
-    footer("OK exact-lock dependencies already present")
-    raise SystemExit(0)
 try:
     node = subprocess.run(["node", "-p", "process.versions.node"], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -88,6 +85,29 @@ if node.returncode or node.stdout.strip().split(".", 1)[0] != "22":
     with log.open("a", encoding="utf-8") as stream:
         stream.write(node.stdout); stream.flush()
     footer("FAILED Node 22 is required")
+    raise SystemExit(2)
+
+def dependency_probe():
+    remaining = max(1, timeout - int(time.monotonic() - started))
+    try:
+        probe = subprocess.run(["npm", "ls", "--all", "--json"], text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=remaining)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(f"dependency probe failed: {exc}\n"); stream.flush()
+        return False
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(probe.stdout); stream.flush()
+    return probe.returncode == 0
+
+if ((root / "node_modules").is_dir() and stamp.is_file()
+        and stamp.read_text().strip() == identity and dependency_probe()):
+    footer("OK exact-lock dependencies already present")
+    raise SystemExit(0)
+try:
+    stamp.unlink(missing_ok=True)
+except OSError as exc:
+    footer(f"FAILED cannot invalidate stale lock stamp: {exc}")
     raise SystemExit(2)
 with log.open("wb") as stream:
     try:
@@ -123,7 +143,15 @@ with log.open("wb") as stream:
 if process.returncode:
     footer(f"FAILED npm ci exit={process.returncode}")
     raise SystemExit(process.returncode)
-stamp.write_text(identity + "\n")
+if not dependency_probe():
+    footer("FAILED dependency probe after npm ci")
+    raise SystemExit(2)
+temporary_stamp = stamp.with_name(f".{stamp.name}.{os.getpid()}.tmp")
+try:
+    temporary_stamp.write_text(identity + "\n")
+    os.replace(temporary_stamp, stamp)
+finally:
+    temporary_stamp.unlink(missing_ok=True)
 footer("OK npm ci complete")
 PY
 ```

@@ -8,6 +8,7 @@
 export * from './core/config';
 export * from './templates/default-hooks';
 export * from './core/engine';
+export * from './core/execution-envelope';
 export * from './core/session';
 // Utility exports (excluding validateConfig to avoid conflicts)
 export * from './utils/environment';

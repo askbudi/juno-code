@@ -569,6 +569,202 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
 
 
+class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name) / "installed consumer fixture"
+        self.root.mkdir()
+        self.repo = self.root / "product"
+        git(self.root, "init", "-b", "product", str(self.repo))
+        git(self.repo, "config", "user.email", "test@example.com")
+        git(self.repo, "config", "user.name", "Test")
+        self.policy = {"schema_version": "juno_task_workspace_config.v1",
+                       "repository": ".", "workspace_root": "/tmp/default",
+                       "allowed_paths": ["src"]}
+        self.write(runtime.MANAGED_POLICY_PATH, self.policy)
+        self.write(".juno_task/scripts/one.py", "installed old one\n")
+        self.write(".juno_task/scripts/two.py", "installed two\n")
+        self.write_manifest("8.0.0")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "installed consumer old generation")
+        self.previous = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "branch", "controller")
+        self.controller = self.root / "controller"
+        git(self.repo, "worktree", "add", str(self.controller), "controller")
+        controller_policy = dict(self.policy)
+        controller_policy["workspace_root"] = "/private/controller-tasks"
+        (self.controller / runtime.MANAGED_POLICY_PATH).write_text(
+            json.dumps(controller_policy) + "\n")
+        git(self.controller, "commit", "-am", "controller customization")
+
+        self.write(".juno_task/scripts/one.py", "installed new one\n")
+        target_policy = dict(self.policy)
+        target_policy["selectable_paths"] = ["frontend"]
+        self.write(runtime.MANAGED_POLICY_PATH, target_policy)
+        self.write_manifest("9.0.0")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "installed consumer target generation")
+        self.target = git(self.repo, "rev-parse", "HEAD")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write(self, relative: str, value: object) -> None:
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text((json.dumps(value) + "\n") if not isinstance(value, str) else value)
+
+    def write_manifest(self, version: str) -> None:
+        assets = {}
+        for destination, kind in ((".juno_task/scripts/one.py", "script"),
+                                  (".juno_task/scripts/two.py", "script"),
+                                  (runtime.MANAGED_POLICY_PATH, "config")):
+            digest = runtime.managed_sha256((self.repo / destination).read_bytes())
+            assets[destination] = {"type": kind, "templateVersion": version,
+                                   "sourceSha256": digest, "installedSha256": digest}
+        self.write(runtime.MANAGED_INSTALLED_MANIFEST_PATH, {
+            "schemaVersion": 1, "packageName": "juno-code",
+            "packageVersion": version, "assets": assets,
+        })
+
+    def commit_manifest_mutation(self, mutate) -> str:
+        git(self.repo, "reset", "--hard", self.target)
+        path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+        manifest = json.loads(path.read_text())
+        mutate(manifest)
+        path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "invalid installed provenance")
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def policyless_generations(self) -> tuple[str, str]:
+        git(self.repo, "reset", "--hard", self.previous)
+        (self.repo / runtime.MANAGED_POLICY_PATH).unlink()
+        git(self.repo, "add", "-u")
+        git(self.repo, "commit", "-m", "installed consumer without controller-private policy")
+        previous = git(self.repo, "rev-parse", "HEAD")
+
+        script = self.repo / ".juno_task/scripts/one.py"
+        script.write_text("installed new one\n")
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text())
+        manifest["packageVersion"] = "9.0.0"
+        for record in manifest["assets"].values():
+            record["templateVersion"] = "9.0.0"
+        digest = runtime.managed_sha256(script.read_bytes())
+        manifest["assets"][".juno_task/scripts/one.py"].update(
+            {"sourceSha256": digest, "installedSha256": digest})
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "policyless installed consumer target")
+        return previous, git(self.repo, "rev-parse", "HEAD")
+
+    def test_installed_consumer_refresh_doctor_and_retry_use_only_committed_bytes(self) -> None:
+        self.assertFalse((self.repo / "juno-code").exists())
+        self.assertNotEqual(run(["git", "-C", str(self.repo), "cat-file", "-e",
+                                 f"{self.target}:{runtime.MANAGED_MANIFEST_PATH}"],
+                                self.repo, False).returncode, 0)
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target, task_id="consumer-post-cas")
+
+        self.assertEqual(result["package_version"], "9.0.0")
+        self.assertEqual((self.controller / ".juno_task/scripts/one.py").read_text(),
+                         "installed new one\n")
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, self.target)
+        self.assertTrue(doctor["healthy"], doctor)
+        retried = runtime.managed_runtime_refresh(
+            self.controller, self.repo, self.previous, self.target,
+            task_id="consumer-post-cas-retry")
+        self.assertEqual(retried["outcome"], "completed")
+        self.assertTrue(retried["doctor"]["healthy"])
+
+    def test_installed_consumer_recovers_when_product_shas_lack_controller_policy(self) -> None:
+        previous, target = self.policyless_generations()
+        before_policy = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
+
+        result = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target, task_id="consumer-policyless-post-cas")
+
+        self.assertEqual(result["package_version"], "9.0.0")
+        self.assertEqual((self.controller / runtime.MANAGED_POLICY_PATH).read_bytes(), before_policy)
+        self.assertEqual((self.controller / ".juno_task/scripts/one.py").read_text(),
+                         "installed new one\n")
+        self.assertTrue(runtime.managed_runtime_inspect(
+            self.controller, self.repo, target)["healthy"])
+        retried = runtime.managed_runtime_refresh(
+            self.controller, self.repo, previous, target,
+            task_id="consumer-policyless-post-cas-retry")
+        self.assertEqual(retried["outcome"], "completed")
+
+    def test_installed_consumer_policyless_recovery_fails_closed_on_ambiguous_provenance(self) -> None:
+        previous, target = self.policyless_generations()
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+
+        manifest = json.loads(manifest_path.read_text())
+        manifest["assets"][runtime.MANAGED_POLICY_PATH]["sourceSha256"] = "f" * 64
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "changed unavailable policy source")
+        changed = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                    "source generation changed without immutable bytes"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, changed)
+
+        git(self.repo, "reset", "--hard", target)
+        self.write(runtime.MANAGED_POLICY_PATH, self.policy)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "only target contains controller policy")
+        one_sided = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "provenance is ambiguous"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, one_sided)
+
+    def test_installed_consumer_provenance_failures_are_closed(self) -> None:
+        script = ".juno_task/scripts/one.py"
+        cases = [
+            ("malformed manifest shape", lambda value: value.update({"unexpected": True}),
+             "manifest/package identity"),
+            ("wrong package name", lambda value: value.update({"packageName": "other"}),
+             "manifest/package identity"),
+            ("wrong package version", lambda value: value["assets"][script].update(
+                {"templateVersion": "8.0.0"}), "package version mismatch"),
+            ("source installed mismatch", lambda value: value["assets"][script].update(
+                {"sourceSha256": "f" * 64}), "source hash mismatch"),
+            ("undeclared script", lambda value: value["assets"][script].update(
+                {"type": "config"}), "script is undeclared"),
+        ]
+        for label, mutate, message in cases:
+            with self.subTest(label=label):
+                target = self.commit_manifest_mutation(mutate)
+                with self.assertRaisesRegex(runtime.ManagedRuntimeError, message):
+                    runtime.managed_runtime_plan(
+                        self.controller, self.repo, self.previous, target)
+
+    def test_installed_consumer_missing_hash_drift_and_mixed_provenance_fail_closed(self) -> None:
+        git(self.repo, "reset", "--hard", self.target)
+        (self.repo / ".juno_task/scripts/one.py").unlink()
+        git(self.repo, "add", "-u")
+        git(self.repo, "commit", "-m", "missing installed destination")
+        missing = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "destination is missing"):
+            runtime.managed_runtime_plan(self.controller, self.repo, self.previous, missing)
+
+        git(self.repo, "reset", "--hard", self.target)
+        (self.repo / ".juno_task/scripts/one.py").write_text("drift after manifest\n")
+        git(self.repo, "commit", "-am", "installed destination hash drift")
+        drift = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "manifest drift"):
+            runtime.managed_runtime_plan(self.controller, self.repo, self.previous, drift)
+
+        git(self.repo, "reset", "--hard", self.target)
+        self.write(runtime.MANAGED_MANIFEST_PATH, {"schemaVersion": 1, "assets": []})
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "partial source provenance")
+        mixed = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError, "mixed ambiguous"):
+            runtime.managed_runtime_plan(self.controller, self.repo, self.previous, mixed)
+
+
 class ManagedRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -590,7 +786,7 @@ class ManagedRuntimeTests(unittest.TestCase):
                        "repository": ".", "workspace_root": "/tmp/default",
                        "allowed_paths": ["src"]}
         self.write("juno-code/src/templates/managed-assets.json", assets)
-        self.write("juno-code/package.json", {"version": "9.0.0"})
+        self.write("juno-code/package.json", {"name": "juno-code", "version": "9.0.0"})
         self.write(runtime.MANAGED_POLICY_PATH, self.policy)
         self.write(".juno_task/scripts/one.py", "old one\n")
         self.write(".juno_task/scripts/two.py", "old two\n")
@@ -622,6 +818,44 @@ class ManagedRuntimeTests(unittest.TestCase):
         path = self.repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text((json.dumps(value) + "\n") if not isinstance(value, str) else value)
+
+    def test_managed_asset_prompt_macro_shape_is_strict(self) -> None:
+        manifest_path = self.repo / runtime.MANAGED_MANIFEST_PATH
+
+        def commit_asset(asset: dict[str, object], label: str) -> str:
+            git(self.repo, "reset", "--hard", self.target)
+            manifest = json.loads(manifest_path.read_text())
+            manifest["assets"].append(asset)
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            git(self.repo, "add", runtime.MANAGED_MANIFEST_PATH)
+            git(self.repo, "commit", "-m", label)
+            return git(self.repo, "rev-parse", "HEAD")
+
+        legacy = runtime.managed_target_provenance(self.repo, self.target)
+        prompt = {
+            "source": "prompts/reflect.md",
+            "destination": ".juno_task/prompts/reflect.md",
+            "installClass": "project",
+            "type": "prompt",
+            "macro": "reflect",
+        }
+        accepted = runtime.managed_target_provenance(
+            self.repo, commit_asset(prompt, "valid prompt macro"))
+        self.assertEqual(accepted["assets"], legacy["assets"])
+
+        invalid_assets = [
+            (dict(prompt, unexpected=True), "unknown key"),
+            (dict(prompt, macro=""), "empty macro"),
+            (dict(prompt, macro=7), "non-string macro"),
+            (dict(prompt, installClass="script"), "non-project macro"),
+            (dict(prompt, type="config"), "non-prompt macro"),
+        ]
+        for asset, label in invalid_assets:
+            with self.subTest(label=label):
+                commit = commit_asset(asset, label)
+                with self.assertRaisesRegex(
+                        runtime.ManagedRuntimeError, "asset entry is invalid"):
+                    runtime.managed_target_provenance(self.repo, commit)
 
     def test_refresh_uses_exact_target_preserves_policy_customization_and_receipts_log(self) -> None:
         result = runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,

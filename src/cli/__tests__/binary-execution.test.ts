@@ -402,6 +402,25 @@ exit 1
   });
 
   describe('Build-required package acceptance', () => {
+    it('routes a failed hydration lint through public hydrate recovery with durable diagnostics', () => {
+      const tests = path.join(
+        PROJECT_ROOT,
+        'src/templates/scripts/tests/test_task_workspace.py',
+      );
+      const selection =
+        'TaskWorkspaceTests.build_required_public_cli_routes_hydration_retry_with_lint_diagnostics';
+      const output = execFileSync('python3', [tests, selection], {
+        cwd: path.resolve(PROJECT_ROOT, '..'),
+        env: {
+          ...process.env,
+          PYTHONPYCACHEPREFIX: path.join(tempDir, 'pycache-hydration'),
+        },
+        encoding: 'utf8',
+      });
+
+      expect(output).toContain('PUBLIC_CLI_HYDRATION_RETRY_ACCEPTANCE_COMPLETED');
+    }, 30_000);
+
     it('runs the public target-runtime provenance migration canary without skipping', () => {
       const tests = path.join(
         PROJECT_ROOT,
@@ -887,7 +906,7 @@ exit 1
       const result = await executeCLI(['--version']);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toMatch(/\d+\.\d+\.\d+/); // Version pattern
+      expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/); // Machine version contract
     });
 
     it('should keep --version read-only in an initialized project', async () => {

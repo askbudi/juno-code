@@ -568,15 +568,20 @@ Model shorthands:
         if not is_live_mode:
             cmd.extend(["--mode", "json"])
 
-        # Model: if provider/model format, split and pass separately
+        # Model: an exact provider/model identity is always normalized to the
+        # separate Pi arguments. An explicit provider may confirm that identity,
+        # but must never rewrite it or leave the combined value as the model id.
         model = self.model_name
         provider = args.provider.strip() if args.provider else ""
 
-        if "/" in model and not provider:
-            # Split provider/model-id format
-            parts = model.split("/", 1)
-            provider = parts[0]
-            model = parts[1]
+        if "/" in model:
+            model_provider, bare_model = model.split("/", 1)
+            if provider and provider != model_provider:
+                raise ValueError(
+                    f"Explicit provider {provider!r} conflicts with model identity {model!r}"
+                )
+            provider = model_provider
+            model = bare_model
 
         if provider:
             cmd.extend(["--provider", provider])

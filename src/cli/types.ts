@@ -33,6 +33,8 @@ export interface GlobalCLIOptions {
   verbose?: number;
   /** Quiet mode: suppress agent messages and hook output (alias: --silent) */
   quiet?: boolean;
+  /** Emit the versioned public machine execution envelope as the only stdout payload. */
+  executionEnvelope?: boolean;
   /** Alias for --quiet */
   silent?: boolean;
   /** Configuration file path (.json, .toml, pyproject.toml) */

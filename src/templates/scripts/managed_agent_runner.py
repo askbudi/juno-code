@@ -26,6 +26,8 @@ from typing import Any
 SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
 REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
+TERMINAL_RESULT_SCHEMA = "juno_managed_agent_terminal_result.v1"
+TERMINAL_STATES = {"completed", "blocked", "incomplete", "failed"}
 QUEUE_STATE_PATH = ".juno_task/state/tasks.json"
 QUEUE_RECEIPT_ROOT = ".juno_task/state/merge-queue/"
 CAPTURE_LIMIT = 4 * 1024 * 1024
@@ -976,6 +978,22 @@ def run(args: argparse.Namespace) -> int:
                              if binding is not None else None)
         atomic_bytes(response_path, canonical(structured_result) if structured_result is not None
                      else response.encode())
+        declared_terminal = payload.get("terminal_outcome")
+        if declared_terminal is not None and (not isinstance(declared_terminal, dict)
+                or set(declared_terminal) != {"schema_version", "state"}
+                or declared_terminal.get("schema_version") != TERMINAL_RESULT_SCHEMA
+                or declared_terminal.get("state") not in TERMINAL_STATES):
+            raise RunnerError("capture terminal outcome is malformed")
+        if args.require_terminal_result and declared_terminal is None:
+            raise RunnerError("capture lacks required typed terminal outcome")
+        terminal_result = None if declared_terminal is None else {
+            "schema_version": TERMINAL_RESULT_SCHEMA,
+            "state": declared_terminal["state"],
+            "workflow_step_digest": os.environ.get("JUNO_WORKFLOW_STEP_DIGEST", ""),
+            "session_id": session.strip(),
+            "identity_sha256": sha(canonical(identity).rstrip(b"\n")),
+            "response_sha256": sha(response_path.read_bytes()),
+        }
         controller_after = controller_identity(controller_root)
         verify_compatible_config(compatible_config)
         subject_after = fingerprint(Path(identity.get("candidate_root") or args.agent_root))
@@ -998,7 +1016,9 @@ def run(args: argparse.Namespace) -> int:
                     "exit_signal": signal.Signals(-code).name if code < 0 else None,
                     "termination_events": termination_events,
                     "live_log": {"path": str(live_log_path), "sha256": sha(live_log_path.read_bytes())},
-                    "semantic_outcome": "completed", "compatible_config_sha256": compatible_config["sha256"],
+                    "semantic_outcome": (terminal_result or {}).get("state", "completed"),
+                    "terminal_result": terminal_result,
+                    "compatible_config_sha256": compatible_config["sha256"],
                     "capture_source": capture_source,
                     "safe_next_action": "consume_receipt"}
         artifacts = {name: evidence(path) for name, path in (("prompt", prompt), ("launch", out / "launch.json"),
@@ -1009,7 +1029,7 @@ def run(args: argparse.Namespace) -> int:
         receipt = {**terminal, "mode": args.mode, "controller_before": controller_before, "controller_after": controller_after,
                    "tool_id": args.tool_id, "review_binding": binding,
                    "identity": identity, "subject_after": subject_after, "argv": argv, "argv_sha256": launch["argv_sha256"],
-                   "compatible_config": compatible_config,
+                   "compatible_config": compatible_config, "terminal_result": terminal_result,
                    "environment_contract": {**env_contract, "explicitly_set_key_names": env_contract["explicit_key_names"]},
                    "command_sha256": launch["argv_sha256"], "cwd": str(launcher), "artifacts": artifacts}
         atomic_json(out / "receipt.json", receipt); atomic_json(out / "terminal.json", terminal); (out / "active.json").unlink()
@@ -1065,6 +1085,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--verify-receipt"); p.add_argument("--edit-preflight-receipt"); p.add_argument("--authority-map")
     p.add_argument("--candidate-sha"); p.add_argument("--candidate-root")
     p.add_argument("--review-binding")
+    p.add_argument("--require-terminal-result", action="store_true")
     p.add_argument("--timeout-seconds", type=float, default=7200.0)
     return top
 

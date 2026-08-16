@@ -28,6 +28,8 @@ SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 
 MANAGED_RUNTIME_SCHEMA = "juno_managed_controller_runtime.v1"
 MANAGED_MANIFEST_PATH = "juno-code/src/templates/managed-assets.json"
+MANAGED_INSTALLED_MANIFEST_PATH = ".juno_task/managed-assets.json"
+MANAGED_PACKAGE_PATH = "juno-code/package.json"
 MANAGED_POLICY_PATH = ".juno_task/config/task-workspace.json"
 MANAGED_GENERATION_PATH = ".juno_task/runtime/managed-controller/generation.json"
 MANAGED_RECEIPT_ROOT = ".juno_task/runtime/managed-controller/receipts"
@@ -88,29 +90,106 @@ def managed_source_json(repository: Path, commit: str, relative: str) -> Any:
         raise ManagedRuntimeError(f"invalid target JSON at {relative}: {exc}") from exc
 
 
-def managed_script_assets(repository: Path, commit: str) -> dict[str, str]:
-    manifest = managed_source_json(repository, commit, MANAGED_MANIFEST_PATH)
-    assets = manifest.get("assets") if isinstance(manifest, dict) else None
-    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1 or not isinstance(assets, list):
-        raise ManagedRuntimeError("target managed asset definition is invalid")
-    result: dict[str, str] = {}
-    for asset in assets:
-        if not isinstance(asset, dict) or asset.get("installClass") not in {"project", "script"}:
-            raise ManagedRuntimeError("target managed asset entry is invalid")
-        if asset["installClass"] != "script":
-            continue
-        destination = asset.get("destination")
-        source = asset.get("source")
-        expected_source = destination.removeprefix(".juno_task/")
-        if (not isinstance(destination, str) or not destination.startswith(".juno_task/scripts/")
-                or source != expected_source):
-            raise ManagedRuntimeError("managed script source/destination mapping is ambiguous")
-        if destination in result:
-            raise ManagedRuntimeError("target managed script set is empty or duplicated")
-        result[destination] = f"juno-code/src/templates/{source}"
+def managed_source_exists(repository: Path, commit: str, relative: str) -> bool:
+    return managed_run(
+        ["git", "-C", str(repository), "cat-file", "-e", f"{commit}:{relative}"],
+        repository, check=False).returncode == 0
+
+
+def managed_valid_package_version(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]*", value))
+
+
+def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
+    """Resolve one immutable source or checksum-bound installed package generation."""
+    has_source_manifest = managed_source_exists(repository, commit, MANAGED_MANIFEST_PATH)
+    has_source_package = managed_source_exists(repository, commit, MANAGED_PACKAGE_PATH)
+    if has_source_manifest != has_source_package:
+        raise ManagedRuntimeError("target managed runtime has mixed ambiguous source provenance")
+    if has_source_manifest:
+        manifest = managed_source_json(repository, commit, MANAGED_MANIFEST_PATH)
+        assets = manifest.get("assets") if isinstance(manifest, dict) else None
+        if (not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1
+                or not isinstance(assets, list)):
+            raise ManagedRuntimeError("target managed asset definition is invalid")
+        package = managed_source_json(repository, commit, MANAGED_PACKAGE_PATH)
+        version = package.get("version") if isinstance(package, dict) else None
+        if (not isinstance(package, dict) or package.get("name") != "juno-code"
+                or not managed_valid_package_version(version)):
+            raise ManagedRuntimeError("target package name/version is invalid")
+        result: dict[str, str] = {}
+        seen: set[str] = set()
+        for asset in assets:
+            required_asset_keys = {"source", "destination", "installClass", "type"}
+            if (not isinstance(asset, dict)
+                    or set(asset) not in {frozenset(required_asset_keys),
+                                         frozenset(required_asset_keys | {"macro"})}
+                    or asset.get("installClass") not in {"project", "script"}
+                    or not isinstance(asset.get("source"), str)
+                    or not isinstance(asset.get("destination"), str)
+                    or not isinstance(asset.get("type"), str)
+                    or ("macro" in asset and (asset.get("installClass") != "project"
+                                               or asset.get("type") != "prompt"
+                                               or not isinstance(asset.get("macro"), str)
+                                               or not asset["macro"]))):
+                raise ManagedRuntimeError("target managed asset entry is invalid")
+            destination = asset["destination"]
+            if destination in seen:
+                raise ManagedRuntimeError("target managed asset destination is duplicated")
+            seen.add(destination)
+            if asset["installClass"] != "script":
+                continue
+            expected_source = destination.removeprefix(".juno_task/")
+            if (not destination.startswith(".juno_task/scripts/")
+                    or asset["type"] != "script" or asset["source"] != expected_source):
+                raise ManagedRuntimeError("managed script source/destination mapping is ambiguous")
+            result[destination] = f"juno-code/src/templates/{asset['source']}"
+        mode = "source"
+    else:
+        if not managed_source_exists(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH):
+            raise ManagedRuntimeError("target managed runtime provenance is absent")
+        manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
+        if (not isinstance(manifest, dict)
+                or set(manifest) != {"schemaVersion", "packageName", "packageVersion", "assets"}
+                or manifest.get("schemaVersion") != 1 or manifest.get("packageName") != "juno-code"
+                or not managed_valid_package_version(manifest.get("packageVersion"))
+                or not isinstance(manifest.get("assets"), dict)):
+            raise ManagedRuntimeError("installed managed asset manifest/package identity is invalid")
+        version = manifest["packageVersion"]
+        result = {}
+        for destination, record in manifest["assets"].items():
+            if (not isinstance(destination, str) or destination.startswith("/")
+                    or ".." in Path(destination).parts or ".git" in Path(destination).parts
+                    or not destination.startswith(".juno_task/") or not isinstance(record, dict)
+                    or set(record) != {"type", "templateVersion", "sourceSha256", "installedSha256"}
+                    or not isinstance(record.get("type"), str)
+                    or not managed_valid_package_version(record.get("templateVersion"))
+                    or not MANAGED_HASH_RE.fullmatch(record.get("sourceSha256", ""))
+                    or not MANAGED_HASH_RE.fullmatch(record.get("installedSha256", ""))):
+                raise ManagedRuntimeError("installed managed asset entry is invalid")
+            is_script_path = destination.startswith(".juno_task/scripts/")
+            if is_script_path != (record["type"] == "script"):
+                raise ManagedRuntimeError(f"installed managed script is undeclared: {destination}")
+            if not is_script_path:
+                continue
+            if record["templateVersion"] != version:
+                raise ManagedRuntimeError(f"installed managed script package version mismatch: {destination}")
+            if record["sourceSha256"] != record["installedSha256"]:
+                raise ManagedRuntimeError(f"installed managed script source hash mismatch: {destination}")
+            if not managed_source_exists(repository, commit, destination):
+                raise ManagedRuntimeError(f"installed managed script destination is missing: {destination}")
+            data = managed_source_bytes(repository, commit, destination)
+            if managed_sha256(data) != record["installedSha256"]:
+                raise ManagedRuntimeError(f"installed managed script manifest drift: {destination}")
+            result[destination] = destination
+        mode = "installed"
     if not result:
         raise ManagedRuntimeError("target managed script set is empty or duplicated")
-    return result
+    return {"mode": mode, "package_version": version, "assets": result}
+
+
+def managed_script_assets(repository: Path, commit: str) -> dict[str, str]:
+    return managed_target_provenance(repository, commit)["assets"]
 
 
 def managed_script_destinations(repository: Path, commit: str) -> list[str]:
@@ -121,24 +200,71 @@ def managed_script_source_bytes(repository: Path, commit: str,
                                 assets: dict[str, str], destination: str) -> bytes:
     """Read the committed runtime when present, otherwise its packaged template."""
     source = destination
-    direct = managed_run(
-        ["git", "-C", str(repository), "cat-file", "-e", f"{commit}:{destination}"],
-        repository, check=False)
-    if direct.returncode:
+    if not managed_source_exists(repository, commit, destination):
         try:
             source = assets[destination]
         except KeyError as exc:
             raise ManagedRuntimeError(
                 f"managed script destination is absent from its manifest: {destination}") from exc
-    return managed_source_bytes(repository, commit, source)
+    data = managed_source_bytes(repository, commit, source)
+    if source == destination:
+        # Re-resolve the installed manifest here so every caller, including
+        # historical binding and doctor paths, remains checksum-bound.
+        provenance = managed_target_provenance(repository, commit)
+        if provenance["mode"] == "installed" and provenance["assets"].get(destination) != destination:
+            raise ManagedRuntimeError(f"installed managed script is undeclared: {destination}")
+    return data
 
 
 def managed_package_version(repository: Path, commit: str) -> str:
-    package = managed_source_json(repository, commit, "juno-code/package.json")
-    version = package.get("version") if isinstance(package, dict) else None
-    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]*", version):
-        raise ManagedRuntimeError("target package version is invalid")
-    return version
+    return managed_target_provenance(repository, commit)["package_version"]
+
+
+def managed_policy_generations(repository: Path, previous_sha: str, target_sha: str,
+                               current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve policy bytes without assuming controller-private files live in product Git."""
+    previous_exists = managed_source_exists(repository, previous_sha, MANAGED_POLICY_PATH)
+    target_exists = managed_source_exists(repository, target_sha, MANAGED_POLICY_PATH)
+    if previous_exists and target_exists:
+        return (managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH),
+                managed_source_json(repository, target_sha, MANAGED_POLICY_PATH))
+    if previous_exists != target_exists:
+        raise ManagedRuntimeError("task policy generation provenance is ambiguous")
+
+    previous_provenance = managed_target_provenance(repository, previous_sha)
+    target_provenance = managed_target_provenance(repository, target_sha)
+    if previous_provenance["mode"] != "installed" or target_provenance["mode"] != "installed":
+        raise ManagedRuntimeError("task policy generations are absent from product Git")
+
+    records = []
+    for commit, provenance in ((previous_sha, previous_provenance),
+                               (target_sha, target_provenance)):
+        manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
+        records.append(manifest["assets"].get(MANAGED_POLICY_PATH))
+
+    missing = [record is None for record in records]
+    if any(missing):
+        # rc.0.22 never installed the controller-private policy into products and
+        # therefore could not record it in either immutable installed manifest.
+        # This is deliberately not a general legacy/manifest compatibility path.
+        versions = (previous_provenance["package_version"], target_provenance["package_version"])
+        if missing != [True, True] or versions != ("2.1.3-rc.0.22", "2.1.3-rc.0.22"):
+            raise ManagedRuntimeError("installed task policy provenance is invalid")
+        return current, current
+
+    for record, provenance in zip(records, (previous_provenance, target_provenance)):
+        if (not isinstance(record, dict) or record.get("type") != "config"
+                or record.get("templateVersion") != provenance["package_version"]
+                or not MANAGED_HASH_RE.fullmatch(record.get("sourceSha256", ""))
+                or not MANAGED_HASH_RE.fullmatch(record.get("installedSha256", ""))):
+            raise ManagedRuntimeError("installed task policy provenance is invalid")
+    if records[0]["sourceSha256"] != records[1]["sourceSha256"]:
+        raise ManagedRuntimeError("installed task policy source generation changed without immutable bytes")
+
+    # The controller policy is tracked and clean (enforced by the caller). An
+    # unchanged installed template hash proves this package transition has no
+    # policy delta, so preserving those authenticated controller bytes is exact.
+    return current, current
 
 
 def managed_safe_path(controller: Path, relative: str) -> Path:
@@ -515,14 +641,14 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
                     and row.get("prior_generation_classification")
                     != "receipt_bound_obsolete_generation"):
                 raise ManagedRuntimeError(f"existing managed generation drift: {row['path']}")
-    previous_policy = managed_source_json(repository, previous_sha, MANAGED_POLICY_PATH)
-    target_policy = managed_source_json(repository, target_sha, MANAGED_POLICY_PATH)
     policy_path = managed_safe_path(controller, MANAGED_POLICY_PATH)
     try:
         current_policy_bytes = policy_path.read_bytes()
         current_policy = json.loads(current_policy_bytes)
     except (OSError, json.JSONDecodeError) as exc:
         raise ManagedRuntimeError(f"controller task policy is invalid: {exc}") from exc
+    previous_policy, target_policy = managed_policy_generations(
+        repository, previous_sha, target_sha, current_policy)
     projected, changed_fields = managed_policy_projection(previous_policy, target_policy, current_policy)
     if policy_dirty:
         generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)
