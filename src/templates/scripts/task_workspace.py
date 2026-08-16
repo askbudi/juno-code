@@ -1640,7 +1640,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "status", "preflight", "finish",
+            "start", "status", "hydrate", "preflight", "finish",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh"}:
@@ -1742,6 +1742,49 @@ def validation_dependency_evidence(worktree: Path, config: dict[str, Any]) -> li
     return evidence
 
 
+HYDRATION_DIAGNOSTIC_LIMIT = 32 * 1024
+
+
+def _write_hydration_lint_diagnostics(out_dir: Path, runner: Path, argv: list[str],
+                                      cwd: Path, stdout: bytes, stderr: bytes, *,
+                                      exit_code: int, started_at_unix_ns: int,
+                                      timed_out: bool = False,
+                                      error: Optional[str] = None) -> dict[str, Any]:
+    """Persist bounded causal lint evidence before hydration state can fail."""
+    os.chmod(out_dir, 0o700)
+    streams: dict[str, Any] = {}
+    for name, content in (("stdout", stdout), ("stderr", stderr)):
+        tail = content[-HYDRATION_DIAGNOSTIC_LIMIT:]
+        path = out_dir / f"lint.{name}"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(tail); handle.flush(); os.fsync(handle.fileno())
+        streams[name] = {
+            "path": str(path), "sha256": hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content), "persisted_bytes": len(tail),
+            "truncated_bytes": len(content) - len(tail),
+        }
+    diagnostic = {
+        "schema_version": "juno_task_hydration_lint_diagnostic.v1",
+        "stage": "lint", "argv": argv, "cwd": str(cwd.resolve()),
+        "runner": {"path": str(runner),
+                   "sha256": hashlib.sha256(runner.read_bytes()).hexdigest()},
+        "python_executable": sys.executable, "exit_code": exit_code,
+        "timed_out": timed_out, "error": error, "streams": streams,
+        "started_at_unix_ns": started_at_unix_ns,
+        "completed_at_unix_ns": time.time_ns(),
+    }
+    data = (json.dumps(diagnostic, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path = out_dir / "lint-diagnostic.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data); handle.flush(); os.fsync(handle.fileno())
+    directory_fd = os.open(out_dir, os.O_RDONLY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+    return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+
+
 def run_task_hydration(controller: Path, worktree: Path, task_id: str,
                        frozen: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if not frozen.get("configured"):
@@ -1757,33 +1800,58 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
     runner = Path(__file__).resolve().with_name("workflow_runner.sh")
     attempt = f"{time.time_ns()}-{secrets.token_hex(6)}"
     out_dir = controller / ".juno_task/runtime/task-hydration" / task_id / attempt
+    out_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+    os.chmod(out_dir, 0o700)
+    run_dir = out_dir / "run"
     env = dict(os.environ)
+    # Control-plane dispatch runs at the controller, but the workflow runner
+    # must resolve the persisted role of its task-worktree cwd for itself.
+    env.pop("JUNO_WORKSPACE_ROLE", None)
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     commands = [
         [sys.executable, str(runner), "lint", "--workflow", str(workflow),
          "--project-root", str(worktree)],
         [sys.executable, str(runner), "--workflow", str(workflow),
-         "--project-root", str(worktree), "--out-dir", str(out_dir),
+         "--project-root", str(worktree), "--out-dir", str(run_dir),
          "--no-print-step-stdout", "--print-output", "none"],
     ]
     started = time.monotonic()
+    lint_diagnostic: Optional[dict[str, Any]] = None
     for stage, argv in zip(("lint", "run"), commands):
+        stage_started_at_unix_ns = time.time_ns()
         try:
             completed = subprocess.run(
                 argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3700, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
+            if stage == "lint":
+                stdout = exc.stdout if isinstance(getattr(exc, "stdout", None), bytes) else b""
+                stderr = exc.stderr if isinstance(getattr(exc, "stderr", None), bytes) else b""
+                timed_out = isinstance(exc, subprocess.TimeoutExpired)
+                lint_diagnostic = _write_hydration_lint_diagnostics(
+                    out_dir, runner, argv, worktree, stdout, stderr,
+                    exit_code=124 if timed_out else 127,
+                    started_at_unix_ns=stage_started_at_unix_ns,
+                    timed_out=timed_out, error=str(exc))
             raise HydrationFailure(f"task hydration {stage} could not complete", {
                 "status": "failed", "workflow": frozen, "failed_stage": stage,
+                "exit_code": 124 if isinstance(exc, subprocess.TimeoutExpired) else 127,
                 "duration_ms": round((time.monotonic() - started) * 1000),
-                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+                "artifact_dir": str(out_dir), "lint_diagnostic": lint_diagnostic,
+                "recovery_command": f"yy task hydrate {task_id}",
             }) from exc
+        if stage == "lint":
+            lint_diagnostic = _write_hydration_lint_diagnostics(
+                out_dir, runner, argv, worktree, completed.stdout, completed.stderr,
+                exit_code=completed.returncode,
+                started_at_unix_ns=stage_started_at_unix_ns)
         if completed.returncode:
             raise HydrationFailure(f"task hydration {stage} failed; inspect {out_dir}", {
                 "status": "failed", "workflow": frozen, "failed_stage": stage,
                 "exit_code": completed.returncode,
                 "duration_ms": round((time.monotonic() - started) * 1000),
-                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+                "artifact_dir": str(out_dir), "lint_diagnostic": lint_diagnostic,
+                "recovery_command": f"yy task hydrate {task_id}",
             })
     drift = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False)
     if drift:
@@ -1792,7 +1860,7 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
         })
-    manifest = out_dir / "manifest.json"
+    manifest = run_dir / "manifest.json"
     try:
         dependencies = validation_dependency_evidence(worktree, config)
     except TaskWorkspaceError as exc:
