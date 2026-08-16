@@ -213,7 +213,7 @@ route_registered_product_control() {
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
         kanban:*) effective_operation=kanban ;;
         task:status|task:preflight|task:|task:-h|task:--help) effective_operation=kanban ;;
-        task:start|task:finish|task:runtime-bootstrap) effective_operation=orchestration ;;
+        task:start|task:hydrate|task:finish|task:runtime-bootstrap) effective_operation=orchestration ;;
         merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
         merge:next|merge:resolve|merge:review|merge:reopen|merge:reconcile|merge:refresh) effective_operation=orchestration ;;
         integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
