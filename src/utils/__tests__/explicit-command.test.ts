@@ -10,6 +10,7 @@ function surface(): Command {
   const integration = program.command('integration');
   integration.command('sync').option('--dry-run');
   integration.command('status');
+  integration.command('runtime').command('refresh').requiredOption('--previous-sha <sha>');
   program.command('pi').argument('[prompt...]');
   return program;
 }
@@ -18,10 +19,12 @@ describe('explicit command preflight', () => {
   it.each([
     [['integration', 'sync'], 'supported-command'],
     [['--quiet', 'integration', 'sync'], 'supported-command'],
-    [['--help'], 'supported-command'],
-    [['-h'], 'supported-command'],
-    [['integration', '--help'], 'supported-command'],
-    [['integration', '-h'], 'supported-command'],
+    [['--help'], 'help'],
+    [['-h'], 'help'],
+    [['integration', '--help'], 'help'],
+    [['integration', '-h'], 'help'],
+    [['integration', 'runtime', 'refresh', '--help'], 'help'],
+    [['integration', 'runtime', 'refresh', '-h'], 'help'],
     [['pi', 'fix', 'tests'], 'supported-command'],
     [['a quoted free-form prompt'], 'prompt'],
     [['fix', 'tests'], 'prompt'],
@@ -35,6 +38,7 @@ describe('explicit command preflight', () => {
     [['--', 'integration', 'sync'], 'prompt'],
     [['-p', 'integration sync'], 'prompt'],
     [['--prompt-file', 'prompt.md'], 'prompt'],
+    [['--prompt-file', '--help'], 'prompt'],
   ] as const)('classifies %j as %s', (argv, kind) => {
     expect(classifyExplicitInvocation(argv, surface()).kind).toBe(kind);
   });

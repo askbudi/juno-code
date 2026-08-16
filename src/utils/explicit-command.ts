@@ -2,6 +2,7 @@ import type { Command, Option } from 'commander';
 
 export type ExplicitInvocation =
   | { kind: 'prompt' | 'supported-command' }
+  | { kind: 'help'; command: Command }
   | { kind: 'unknown-option' | 'unknown-command'; token: string };
 
 const PROMPT_BOUNDARY_OPTIONS = new Set(['-p', '--prompt', '-f', '--prompt-file']);
@@ -43,7 +44,7 @@ function validateKnownCommand(
 
     if (token.startsWith('-')) {
       if (isRegisteredHelpOption(command, token) || isRegisteredHelpOption(root, token)) {
-        return { kind: 'supported-command' };
+        return { kind: 'help', command };
       }
       const option = optionForToken([...command.options, ...root.options], token);
       if (!option) {
@@ -84,7 +85,7 @@ export function classifyExplicitInvocation(
     if (token === '--') return { kind: 'prompt' };
 
     if (token.startsWith('-')) {
-      if (isRegisteredHelpOption(program, token)) return { kind: 'supported-command' };
+      if (isRegisteredHelpOption(program, token)) return { kind: 'help', command: program };
       const option = optionForToken(program.options, token);
       if (!option) return { kind: 'unknown-option', token };
       const optionName = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;

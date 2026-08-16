@@ -483,6 +483,47 @@ exit 1
       expect(result.all).not.toContain('refusing to reinterpret it as an agent prompt');
     });
 
+    it.each([
+      { level: 'root', args: ['--help'], usage: 'Usage: juno-code' },
+      { level: 'namespace', args: ['task', '-h'], usage: 'Usage: task' },
+      { level: 'subcommand', args: ['scripts', 'update', '--help'], usage: 'Usage: update' },
+      { level: 'nested', args: ['integration', 'runtime-refresh', '--help'], usage: 'Usage: runtime-refresh' },
+      { level: 'deep', args: ['migrate', 'target-runtime-provenance', 'plan', '-h'], usage: 'Usage: plan' },
+    ])('makes $level help terminal and mutation-free', async ({ args, usage }) => {
+      const sandbox = await fs.mkdtemp(path.join(tempDir, 'terminal-help-'));
+      const metadata = path.join(sandbox, 'invocations');
+      const bootstrapMarker = path.join(sandbox, 'bootstrap-ran');
+      await fs.outputFile(
+        path.join(sandbox, '.juno_task', 'scripts', 'bootstrap.sh'),
+        `#!/usr/bin/env bash\ntouch ${JSON.stringify(bootstrapMarker)}\nexec "$@"\n`,
+      );
+      const before = await fs.readdir(sandbox);
+
+      const result = await executeCLI(args, {
+        cwd: sandbox,
+        env: { JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain(usage);
+      expect(result.stdout.match(/Usage:/g)).toHaveLength(1);
+      expect(await fs.pathExists(metadata)).toBe(false);
+      expect(await fs.pathExists(bootstrapMarker)).toBe(false);
+      expect(await fs.readdir(sandbox)).toEqual(before);
+    });
+
+    it.each([
+      ['task', '--unknown-help-control'],
+      ['scripts', 'update', '--unknown-help-control'],
+      ['integration', 'runtime-refresh', '--unknown-help-control'],
+      ['migrate', 'target-runtime-provenance', 'plan', '--unknown-help-control'],
+    ])('keeps unknown option controls typed and nonzero: %s %s %s', async (...args) => {
+      const result = await executeCLI(args, { expectError: true });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain("unknown explicit option '--unknown-help-control'");
+    });
+
     it('keeps every retired lifecycle operation as an explicit refusal', async () => {
       const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-lifecycle-cli-'));
       try {

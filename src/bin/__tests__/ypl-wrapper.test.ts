@@ -56,6 +56,45 @@ describe('ypl wrapper', () => {
     }
   });
 
+  it.each([
+    ['--help'],
+    ['task', '-h'],
+    ['scripts', 'update', '--help'],
+    ['integration', 'runtime-refresh', '-h'],
+    ['migrate', 'target-runtime-provenance', 'plan', '--help'],
+  ])('keeps terminal help out of wrapper lifecycle, routing, and bootstrap: %s', async (...args) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-help-wrapper-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
+      const bootstrapMarker = path.join(tempDir, 'bootstrap-ran');
+      const lifecycleMarker = path.join(tempDir, 'lifecycle-ran');
+      await fs.ensureDir(binDir);
+      await fs.ensureDir(scriptsDir);
+      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
+      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.writeFile(path.join(binDir, 'cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))\n');
+      await fs.writeFile(
+        path.join(binDir, 'invocation-boundary.mjs'),
+        `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(lifecycleMarker)}, 'ran');\n`,
+      );
+      await fs.writeFile(
+        path.join(scriptsDir, 'bootstrap.sh'),
+        `#!/usr/bin/env bash\ntouch "${bootstrapMarker}"\nexit 91\n`,
+        { mode: 0o755 },
+      );
+
+      const result = await execa(path.join(binDir, 'juno-code.sh'), args, { cwd: tempDir, reject: false });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+      expect(await fs.pathExists(bootstrapMarker)).toBe(false);
+      expect(await fs.pathExists(lifecycleMarker)).toBe(false);
+    } finally {
+      await fs.remove(tempDir);
+    }
+  });
+
   it.each([['kanban', 'list'], ['task', 'status', 'T1'], ['merge', 'status'], ['integration', 'status'], ['info'], ['where', 'controller'], ['doctor', 'workspace']])(
     'classifies %s before checkout bootstrap',
     async (...args) => {

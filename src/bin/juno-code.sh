@@ -65,6 +65,15 @@ PACKAGED_CONTROLLER_RESOLVER="${SCRIPT_DIR}/../templates/scripts/controller_reso
 # Path to bootstrap.sh (should be in .juno_task/scripts after init)
 BOOTSTRAP_SCRIPT=".juno_task/scripts/bootstrap.sh"
 
+requests_help() {
+    local token
+    for token in "$@"; do
+        [ "$token" = "--" ] && return 1
+        case "$token" in -h|--help) return 0 ;; esac
+    done
+    return 1
+}
+
 classify_prebootstrap_command() {
     PREBOOTSTRAP_COMMAND=""
     PREBOOTSTRAP_SUBCOMMAND=""
@@ -336,6 +345,24 @@ finalize_bootstrap_failure() {
 }
 
 main() {
+    # Help is terminal discovery. Hand it directly to the packaged Commander
+    # surface before lifecycle recording, routing, or project bootstrap.
+    if requests_help "$@"; then
+        require_compatible_node || return $?
+        if grep -q 'JUNO_CODE_HELP_PREFLIGHT_ONLY' "$CLI_ENTRYPOINT" 2>/dev/null; then
+            local help_status=0
+            JUNO_CODE_HELP_PREFLIGHT_ONLY=1 "$JUNO_CODE_NODE_EXECUTABLE" "$CLI_ENTRYPOINT" "$@" || help_status=$?
+            case "$help_status" in
+                80) exec_current_runtime "$@" ;;
+                0) ;;
+                *) return "$help_status" ;;
+            esac
+        else
+            # Capability-unknown legacy runtimes retain the safe broad bypass.
+            exec_current_runtime "$@"
+        fi
+    fi
+
     # Record the user-visible attempt before preflight, runtime routing, or
     # bootstrap. Current runtimes continue it in the same process; this wrapper
     # finalizes preflight/bootstrap failures and capability-unknown runtimes.

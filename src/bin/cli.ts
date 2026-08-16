@@ -2017,9 +2017,22 @@ async function main(): Promise<void> {
   // This check deliberately precedes environment/config/bootstrap installers.
   // The wrapper also invokes it in preflight-only mode before project bootstrap.
   const explicitInvocation = classifyExplicitInvocation(process.argv.slice(2), program);
+  if (process.env.JUNO_CODE_HELP_PREFLIGHT_ONLY === '1') {
+    // Private wrapper protocol: 80 means a semantic help option (not an option
+    // value or post-`--` payload); zero means normal execution should continue.
+    process.exitCode = explicitInvocation.kind === 'help' ? 80 : 0;
+    return;
+  }
   if (explicitInvocation.kind === 'unknown-command' || explicitInvocation.kind === 'unknown-option') {
     console.error(formatExplicitInvocationError(explicitInvocation, process.argv[1] ?? __filename, VERSION));
     process.exitCode = 2;
+    return;
+  }
+  // Help is terminal discovery. Resolve its exact command from the configured
+  // tree and print it before environment, controller, lifecycle, or installer
+  // bootstrap can observe or mutate the workspace.
+  if (explicitInvocation.kind === 'help') {
+    explicitInvocation.command.outputHelp();
     return;
   }
   if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1') return;
@@ -2448,17 +2461,25 @@ if (versionOnly) {
     invocationLifecycle,
     async () => { process.stdout.write(`${VERSION}\n`); },
   ).catch(reportFatalError);
-} else if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' || process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
+} else if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' ||
+  process.env.JUNO_CODE_HELP_PREFLIGHT_ONLY === '1' ||
+  process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
   void main().catch(reportFatalError);
 } else {
   const observationProgram = new Command();
   configureCommandSurface(observationProgram);
-  const requestObservation = observeCommanderRequest(observationProgram);
-  const invocationLifecycle = new InvocationLifecycle({
-    workingDirectory: process.cwd(),
-    junoCodeVersion: VERSION,
-    launchSurface: executableLaunchSurface ?? 'juno-code',
-    ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
-  });
-  void runWithInvocationLifecycle(invocationLifecycle, main, requestObservation).catch(reportFatalError);
+  const initialInvocation = classifyExplicitInvocation(process.argv.slice(2), observationProgram);
+  if (initialInvocation.kind === 'help') {
+    // Do not create even the durable invocation-attempt record for help.
+    void main().catch(reportFatalError);
+  } else {
+    const requestObservation = observeCommanderRequest(observationProgram);
+    const invocationLifecycle = new InvocationLifecycle({
+      workingDirectory: process.cwd(),
+      junoCodeVersion: VERSION,
+      launchSurface: executableLaunchSurface ?? 'juno-code',
+      ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
+    });
+    void runWithInvocationLifecycle(invocationLifecycle, main, requestObservation).catch(reportFatalError);
+  }
 }
