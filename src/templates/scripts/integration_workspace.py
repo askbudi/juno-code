@@ -43,6 +43,13 @@ LEGACY_VERSION_CACHE_MARKERS = (
     b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"',
     b'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$PWD/.juno_task}"',
 )
+# These schema-v1 package generations predate a product-manifest capability for
+# the controller-private task policy. Keep this explicit: absence must not turn
+# into an open-ended version or schema downgrade path.
+POLICYLESS_INSTALLED_GENERATIONS = frozenset({
+    (1, "juno-code", "2.1.3-rc.0.22"),
+    (1, "juno-code", "2.1.3-rc.0.24"),
+})
 
 
 class ManagedRuntimeError(RuntimeError):
@@ -221,7 +228,8 @@ def managed_package_version(repository: Path, commit: str) -> str:
 
 
 def managed_policy_generations(repository: Path, previous_sha: str, target_sha: str,
-                               current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+                               current: dict[str, Any], *, policy_dirty: bool
+                               ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve policy bytes without assuming controller-private files live in product Git."""
     previous_exists = managed_source_exists(repository, previous_sha, MANAGED_POLICY_PATH)
     target_exists = managed_source_exists(repository, target_sha, MANAGED_POLICY_PATH)
@@ -244,15 +252,21 @@ def managed_policy_generations(repository: Path, previous_sha: str, target_sha: 
 
     missing = [record is None for record in records]
     if any(missing):
-        # rc.0.22 never installed the controller-private policy into products and
-        # therefore could not record it in either immutable installed manifest.
-        # A guarded task-runtime bootstrap can legitimately advance the target
-        # manifest to the invoked package before this controller refresh runs.
-        # Keep the exception anchored to an authenticated rc.0.22 predecessor;
-        # both generations have already passed installed-manifest/runtime hash
-        # validation in managed_target_provenance().
-        versions = (previous_provenance["package_version"], target_provenance["package_version"])
-        if missing != [True, True] or versions[0] != "2.1.3-rc.0.22":
+        manifests = [managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
+                     for commit in (previous_sha, target_sha)]
+        identities = [(manifest.get("schemaVersion"), manifest.get("packageName"),
+                       manifest.get("packageVersion")) for manifest in manifests]
+        # Schema-v1 .22 and .24 installed products intentionally omitted this
+        # controller-private asset. Preservation is safe only for one exact,
+        # known package capability whose remaining manifest is unchanged. This
+        # proves there was no hidden package/policy generation transition while
+        # the normal provenance checks above authenticate every installed script.
+        compatible = (missing == [True, True]
+                      and not policy_dirty
+                      and identities[0] == identities[1]
+                      and identities[0] in POLICYLESS_INSTALLED_GENERATIONS
+                      and manifests[0] == manifests[1])
+        if not compatible:
             raise ManagedRuntimeError("installed task policy provenance is invalid")
         return current, current
 
@@ -652,7 +666,7 @@ def managed_runtime_plan(controller: Path, repository: Path, previous_sha: str, 
     except (OSError, json.JSONDecodeError) as exc:
         raise ManagedRuntimeError(f"controller task policy is invalid: {exc}") from exc
     previous_policy, target_policy = managed_policy_generations(
-        repository, previous_sha, target_sha, current_policy)
+        repository, previous_sha, target_sha, current_policy, policy_dirty=policy_dirty)
     projected, changed_fields = managed_policy_projection(previous_policy, target_policy, current_policy)
     if policy_dirty:
         generation_path = managed_safe_path(controller, MANAGED_GENERATION_PATH)

@@ -660,6 +660,26 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
         git(self.repo, "commit", "-m", "policyless installed consumer target")
         return previous, git(self.repo, "rev-parse", "HEAD")
 
+    def legacy_policyless_generations(self, version: str) -> tuple[str, str]:
+        """Commit two real installed generations with the private asset wholly absent."""
+        git(self.repo, "reset", "--hard", self.previous)
+        (self.repo / runtime.MANAGED_POLICY_PATH).unlink()
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text())
+        manifest["packageVersion"] = version
+        manifest["assets"].pop(runtime.MANAGED_POLICY_PATH)
+        for record in manifest["assets"].values():
+            record["templateVersion"] = version
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", f"installed {version} policyless generation")
+        previous = git(self.repo, "rev-parse", "HEAD")
+
+        self.write("src/product-only.txt", f"feature on {version}\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "product change keeps installed package generation")
+        return previous, git(self.repo, "rev-parse", "HEAD")
+
     def test_installed_consumer_refresh_doctor_and_retry_use_only_committed_bytes(self) -> None:
         self.assertFalse((self.repo / "juno-code").exists())
         self.assertNotEqual(run(["git", "-C", str(self.repo), "cat-file", "-e",
@@ -697,6 +717,77 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
             self.controller, self.repo, previous, target,
             task_id="consumer-policyless-post-cas-retry")
         self.assertEqual(retried["outcome"], "completed")
+
+    def test_known_policyless_installed_generations_preserve_clean_controller_policy(self) -> None:
+        for version in ("2.1.3-rc.0.22", "2.1.3-rc.0.24"):
+            with self.subTest(version=version):
+                previous, target = self.legacy_policyless_generations(version)
+                before = (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes()
+
+                result = runtime.managed_runtime_refresh(
+                    self.controller, self.repo, previous, target,
+                    task_id=f"legacy-{version}-post-cas")
+                retry = runtime.managed_runtime_refresh(
+                    self.controller, self.repo, previous, target,
+                    task_id=f"legacy-{version}-post-cas-retry")
+
+                self.assertEqual(result["package_version"], version)
+                self.assertEqual(retry["outcome"], "completed")
+                self.assertEqual((self.controller / runtime.MANAGED_POLICY_PATH).read_bytes(), before)
+                self.assertTrue(runtime.managed_runtime_inspect(
+                    self.controller, self.repo, target)["healthy"])
+
+    def test_policyless_compatibility_fails_closed_on_identity_dirt_and_delta(self) -> None:
+        previous, target = self.legacy_policyless_generations("2.1.3-rc.0.24")
+        manifest_path = self.repo / runtime.MANAGED_INSTALLED_MANIFEST_PATH
+
+        cases = []
+        manifest = json.loads(manifest_path.read_text())
+        manifest["assets"][runtime.MANAGED_POLICY_PATH] = {
+            "type": "config", "templateVersion": "2.1.3-rc.0.24",
+            "sourceSha256": "a" * 64, "installedSha256": "a" * 64,
+        }
+        cases.append(("mixed policy record", manifest))
+
+        manifest = json.loads(manifest_path.read_text())
+        manifest["packageVersion"] = "2.1.3-rc.0.25"
+        for record in manifest["assets"].values():
+            record["templateVersion"] = "2.1.3-rc.0.25"
+        cases.append(("package identity transition", manifest))
+
+        manifest = json.loads(manifest_path.read_text())
+        script = self.repo / ".juno_task/scripts/one.py"
+        script.write_text("same-version policy capability ambiguity\n")
+        digest = runtime.managed_sha256(script.read_bytes())
+        manifest["assets"][".juno_task/scripts/one.py"].update(
+            {"sourceSha256": digest, "installedSha256": digest})
+        cases.append(("same-version manifest delta", manifest))
+
+        for label, changed_manifest in cases:
+            with self.subTest(label=label):
+                git(self.repo, "reset", "--hard", target)
+                if label == "same-version manifest delta":
+                    script.write_text("same-version policy capability ambiguity\n")
+                manifest_path.write_text(json.dumps(changed_manifest) + "\n")
+                git(self.repo, "add", ".")
+                git(self.repo, "commit", "-m", label)
+                changed = git(self.repo, "rev-parse", "HEAD")
+                with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                            "installed task policy provenance is invalid"):
+                    runtime.managed_runtime_plan(self.controller, self.repo, previous, changed)
+
+        git(self.repo, "reset", "--hard", target)
+        policy = self.controller / runtime.MANAGED_POLICY_PATH
+        policy.write_text(policy.read_text() + " ")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                    "installed task policy provenance is invalid"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, target)
+        git(self.controller, "checkout", "--", runtime.MANAGED_POLICY_PATH)
+
+        previous, target = self.legacy_policyless_generations("9.0.0")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                    "installed task policy provenance is invalid"):
+            runtime.managed_runtime_plan(self.controller, self.repo, previous, target)
 
     def test_installed_consumer_policyless_recovery_fails_closed_on_ambiguous_provenance(self) -> None:
         previous, target = self.policyless_generations()
