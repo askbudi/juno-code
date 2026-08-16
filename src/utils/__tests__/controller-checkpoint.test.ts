@@ -115,14 +115,93 @@ describe('controller_checkpoint.py template script', () => {
     expect(git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('.juno_task/state/tasks.json');
   });
 
-  it('refuses metadata checkpoint/default drift before selecting dirt', async () => {
+  it('preserves an admitted legacy broad include list and replays a successful checkpoint as a no-op', async () => {
     await configureMetadataController();
+    const legacyInclude = [
+      '.gitignore', '.agents', '.claude', '.juno_task/USER_FEEDBACK.md', '.juno_task/config',
+      '.juno_task/config.json', '.juno_task/ledger', '.juno_task/managed-assets.json',
+      '.juno_task/prompts', '.juno_task/receipts', '.juno_task/specs', '.juno_task/state',
+      '.juno_task/tasks', '.juno_task/tasks.md', '.juno_task/wiki', '.juno_task/workflows',
+      '.pi', 'AGENTS.md', 'CLAUDE.md',
+    ];
     const config = await fs.readJson(path.join(repo, '.juno_task', 'config.json'));
-    config.gitCheckpoint = { include: ['.juno_task/tasks'] };
+    config.gitCheckpoint = { include: legacyInclude };
     await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), config);
+    await fs.outputJson(path.join(repo, '.juno_task', 'state', 'tasks.json'), {
+      schema_version: 1, tasks: { A: { state: 'QUEUED' } },
+    });
+    await fs.outputFile(path.join(repo, '.juno_task', 'prompts', 'managed.md'), 'initial\n');
+    await fs.outputFile(path.join(repo, '.juno_task', 'workflows', 'managed.json'), '{}\n');
+    await fs.outputFile(path.join(repo, '.juno_task', 'wiki', 'legacy.md'), 'initial\n');
+    await fs.outputJson(path.join(repo, '.juno_task', 'managed-assets.json'), { schema_version: 1 });
+    await fs.outputJson(path.join(repo, '.juno_task', 'config', 'controller-workspace.json'), {
+      schema_version: 'retired-policy-that-must-not-be-reloaded',
+    });
+    await fs.outputFile(path.join(repo, '.agents', 'managed.md'), 'initial\n');
+    git(repo, 'add', '-f', '.');
+    git(repo, 'commit', '-m', 'legacy broad metadata controller');
+
+    await fs.outputJson(path.join(repo, '.juno_task', 'state', 'tasks.json'), {
+      schema_version: 1, tasks: { A: { state: 'MERGED' } },
+    });
+    const lifecycle = run(repo, '--task-id', 'A', 'commit', '--message', 'checkpoint task lifecycle', '--json');
+    expect(lifecycle.status, lifecycle.stderr).toBe(0);
+    expect(JSON.parse(lifecycle.stdout).selected).toEqual(['.juno_task/state/tasks.json']);
+    const replay = run(repo, '--task-id', 'A', 'commit', '--message', 'checkpoint replay', '--json');
+    expect(replay.status, replay.stderr).toBe(0);
+    expect(JSON.parse(replay.stdout).outcome).toBe('noop');
+
+    await fs.writeFile(path.join(repo, '.juno_task', 'prompts', 'managed.md'), 'updated\n');
+    await fs.writeFile(path.join(repo, '.juno_task', 'wiki', 'legacy.md'), 'updated\n');
+    await fs.writeFile(path.join(repo, '.agents', 'managed.md'), 'updated\n');
+    const result = run(repo, 'commit', '--message', 'checkpoint legacy surfaces', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).selected).toEqual([
+      '.agents/managed.md', '.juno_task/prompts/managed.md', '.juno_task/wiki/legacy.md',
+    ]);
+  });
+
+  it('reports deterministic read-only recovery for a missing canonical include', async () => {
+    await configureMetadataController();
+    const configPath = path.join(repo, '.juno_task', 'config.json');
+    const config = await fs.readJson(configPath);
+    config.gitCheckpoint = { include: ['.juno_task/tasks', '.juno_task/ledger'] };
+    await fs.writeJson(configPath, config);
+    git(repo, 'add', '.juno_task/config.json');
+    git(repo, 'commit', '-m', 'legacy incomplete checkpoint selection');
+    const before = await fs.readFile(configPath);
+    const head = git(repo, 'rev-parse', 'HEAD');
+
     const result = run(repo, 'plan');
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('include drift from authoritative metadata-controller tracked policy');
+    expect(result.stderr).toContain("missing required canonical roots: ['.juno_task/state/tasks.json']");
+    expect(result.stderr).toContain('safe_next_action=add ".juno_task/state/tasks.json"');
+    expect(await fs.readFile(configPath)).toEqual(before);
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('rejects configured product, unknown, and symlink roots before selection with policy diagnostics', async () => {
+    await configureMetadataController();
+    const configPath = path.join(repo, '.juno_task', 'config.json');
+    const required = ['.juno_task/tasks', '.juno_task/ledger', '.juno_task/state/tasks.json'];
+    for (const invalid of ['product.txt', '.juno_task/unknown']) {
+      const config = await fs.readJson(configPath);
+      config.gitCheckpoint = { include: [...required, invalid] };
+      await fs.writeJson(configPath, config);
+      const result = run(repo, 'plan');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`${invalid} (reason=outside_controller_boundary, rule=metadata_controller:tracked_path_classes)`);
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    }
+    await fs.ensureDir(path.join(repo, '.juno_task', 'links'));
+    await fs.symlink(testDir, path.join(repo, '.juno_task', 'links', 'escape'));
+    const config = await fs.readJson(configPath);
+    config.gitCheckpoint = { include: [...required, '.juno_task/links/escape'] };
+    await fs.writeJson(configPath, config);
+    const symlink = run(repo, 'plan');
+    expect(symlink.status).toBe(2);
+    expect(symlink.stderr).toContain('unsafe symlink path: .juno_task/links/escape');
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
   });
 

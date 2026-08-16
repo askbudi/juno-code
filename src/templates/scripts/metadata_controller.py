@@ -43,6 +43,14 @@ LEGACY_OPERATIONAL_METADATA = (
     ".juno_task/config/umbrella-admissions",
     ".juno_task/task-scopes",
 )
+LEGACY_MANAGED_CONTROLLER_METADATA = (
+    ".juno_task/USER_FEEDBACK.md",
+    ".juno_task/managed-assets.json",
+    ".juno_task/plan.md",
+    ".juno_task/prompts",
+    ".juno_task/wiki",
+    ".juno_task/workflows",
+)
 CORE_CONTROLLER_WIKI = (
     "git_worktree_lifecycle.md",
     "metadata_controller_boundary.md",
@@ -684,6 +692,21 @@ def policy_path_decision(name: str, policy: dict[str, Any], *, container: bool =
     """Authoritative controller/product classifier used by every policy consumer."""
     if name in policy["tracked_exact"]:
         return {"allowed": True, "reason": "tracked_exact", "rule": f"tracked_exact:{name}"}
+    for root in AGENT_SURFACE_ROOTS:
+        if root in policy["runtime"]["ignored_roots"] and (name == root or name.startswith(root + "/")):
+            return {"allowed": True, "reason": "managed_agent_surface",
+                    "rule": f"runtime:ignored_managed_agent_surface:{root}"}
+    for root in LEGACY_MANAGED_CONTROLLER_METADATA:
+        if name == root or name.startswith(root + "/"):
+            return {"allowed": True, "reason": "legacy_managed_controller_metadata",
+                    "rule": f"compatibility:legacy_managed_controller_metadata:{root}"}
+    if container:
+        tracked_roots = (policy["tracked_exact"] + policy["tracked_recursive"]
+                         + policy["tracked_top_level_files"])
+        descendants = sorted(root for root in tracked_roots if root.startswith(name + "/"))
+        if descendants:
+            return {"allowed": True, "reason": "tracked_container",
+                    "rule": f"metadata_controller:tracked_descendant_container:{descendants[0]}"}
     for root in policy["tracked_recursive"]:
         if name == root or name.startswith(root + "/"):
             return {"allowed": True, "reason": "tracked_recursive", "rule": f"tracked_recursive:{root}"}

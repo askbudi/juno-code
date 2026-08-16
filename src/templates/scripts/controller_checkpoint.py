@@ -60,6 +60,11 @@ DEFAULT_INCLUDE = (
     ".juno_task/tasks.md",
     ".juno_task/managed-assets.json",
 )
+REQUIRED_METADATA_INCLUDE = (
+    ".juno_task/tasks",
+    ".juno_task/ledger",
+    ".juno_task/state/tasks.json",
+)
 
 
 class CheckpointError(Exception):
@@ -177,13 +182,36 @@ def normalize_entry(value: Any) -> str:
 
 
 def policy_checkpoint_includes(policy: dict[str, Any]) -> tuple[str, ...]:
-    """Derive checkpoint selection from the metadata boundary's tracked authority."""
+    """Default selection for metadata controllers without persisted checkpoint choices."""
     entries = (
         list(policy["tracked_exact"])
         + list(policy["tracked_recursive"])
         + list(policy["tracked_top_level_files"])
     )
     return tuple(sorted(dict.fromkeys(normalize_entry(item) for item in entries)))
+
+
+def validate_metadata_includes(root: Path, include: tuple[str, ...], policy: dict[str, Any]) -> None:
+    """Admit configured selectors through the shared ownership classifier."""
+    refused: list[dict[str, str]] = []
+    for entry in include:
+        inspect_boundary(root, entry)
+        decision = metadata_boundary.policy_path_decision(entry, policy, container=True)
+        if not decision["allowed"]:
+            refused.append({"path": entry, "reason": decision["reason"], "rule": decision["rule"]})
+    if refused:
+        raise CheckpointError(
+            "checkpoint include roots refused by metadata-controller policy: " + format_refusals(refused))
+
+
+def require_metadata_includes(include: tuple[str, ...]) -> None:
+    missing = [required for required in REQUIRED_METADATA_INCLUDE if not selected(required, include)]
+    if missing:
+        additions = ", ".join(json.dumps(item) for item in missing)
+        raise CheckpointError(
+            "checkpoint include is missing required canonical roots: "
+            f"{missing}; safe_next_action=add {additions} to "
+            ".juno_task/config.json gitCheckpoint.include, then rerun `controller_checkpoint.py plan`")
 
 
 def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
@@ -196,19 +224,18 @@ def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
     if not isinstance(checkpoint, dict):
         raise CheckpointError("invalid checkpoint configuration: gitCheckpoint must be an object")
     policy = metadata_controller_policy(root)
-    authoritative = policy_checkpoint_includes(policy) if policy is not None else DEFAULT_INCLUDE
-    raw_include = checkpoint.get("include", list(authoritative))
+    defaults = policy_checkpoint_includes(policy) if policy is not None else DEFAULT_INCLUDE
+    raw_include = checkpoint.get("include", list(defaults))
     if not isinstance(raw_include, list):
         raise CheckpointError("invalid checkpoint configuration: include must be an array")
     include = tuple(dict.fromkeys(normalize_entry(item) for item in raw_include))
-    if policy is not None and "include" in checkpoint and set(include) != set(authoritative):
-        raise CheckpointError(
-            "checkpoint include drift from authoritative metadata-controller tracked policy: "
-            f"expected={list(authoritative)} actual={list(include)}")
+    if policy is not None:
+        validate_metadata_includes(root, include, policy)
+        require_metadata_includes(include)
     agent = checkpoint.get("agent", {})
     if not isinstance(agent, dict):
         raise CheckpointError("invalid checkpoint configuration: agent must be an object")
-    return authoritative if policy is not None else include, agent
+    return include, agent
 
 
 def metadata_controller_policy(root: Path) -> dict[str, Any] | None:
@@ -306,9 +333,9 @@ def scoped_includes(includes: tuple[str, ...], task_id: str | None) -> tuple[str
         ".juno_task/ledger": f".juno_task/ledger/{prefix}/{task_id}",
         ".juno_task/task-scopes": f".juno_task/task-scopes/{prefix}/{task_id}.json",
     }
-    scoped = [replacements[item] for item in includes if item in replacements]
+    scoped = [replacement for root, replacement in replacements.items() if selected(root, includes)]
     queue_state = ".juno_task/state/tasks.json"
-    if queue_state in includes:
+    if selected(queue_state, includes):
         scoped.append(queue_state)
     return tuple(scoped)
 
@@ -349,6 +376,11 @@ def require_attributable_queue_state(root: Path, chosen: list[str], task_id: str
 
 
 def workspace_policy(root: Path) -> dict[str, Any] | None:
+    # The sparse controller policy is a retired pre-cutover authority.  Once
+    # the canonical metadata-controller pointer exists, re-reading that stale
+    # policy can strand checkpoint recovery on rules the cutover replaced.
+    if metadata_controller_policy(root) is not None:
+        return None
     pointer = root / ".juno_task/config/controller-workspace.json"
     if not pointer.is_file():
         return None

@@ -1014,7 +1014,8 @@ class MetadataControllerTest(unittest.TestCase):
         result = subprocess.run(["python3", str(checkpoint), "--root", str(root), "plan"],
                                 text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("checkpoint include drift from authoritative metadata-controller tracked policy", result.stderr)
+        self.assertIn("checkpoint include is missing required canonical roots", result.stderr)
+        self.assertIn("safe_next_action=add", result.stderr)
 
     def test_metadata_policy_holds_real_index_lock_and_rejects_concurrent_staging_before_commit(self) -> None:
         root, _ = self.legacy_policy_controller()
