@@ -1,6 +1,10 @@
 import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
-import { classifyExplicitInvocation, formatExplicitInvocationError } from '../explicit-command.js';
+import {
+  classifyExplicitInvocation,
+  formatExplicitInvocationError,
+  markTransparentDelegate,
+} from '../explicit-command.js';
 
 function surface(): Command {
   const program = new Command('juno-code');
@@ -11,6 +15,7 @@ function surface(): Command {
   integration.command('sync').option('--dry-run');
   integration.command('status');
   integration.command('runtime').command('refresh').requiredOption('--previous-sha <sha>');
+  markTransparentDelegate(program.command('benchmark [args...]').allowUnknownOption(true));
   program.command('pi').argument('[prompt...]');
   return program;
 }
@@ -25,6 +30,9 @@ describe('explicit command preflight', () => {
     [['integration', '-h'], 'help'],
     [['integration', 'runtime', 'refresh', '--help'], 'help'],
     [['integration', 'runtime', 'refresh', '-h'], 'help'],
+    [['benchmark', '--help'], 'supported-command'],
+    [['benchmark', '-h'], 'supported-command'],
+    [['benchmark', 'run', '--help'], 'supported-command'],
     [['pi', 'fix', 'tests'], 'supported-command'],
     [['a quoted free-form prompt'], 'prompt'],
     [['fix', 'tests'], 'prompt'],

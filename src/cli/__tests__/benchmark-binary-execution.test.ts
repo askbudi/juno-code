@@ -72,6 +72,13 @@ describe('built yy benchmark delegate', () => {
     expect(help.exitCode).toBe(0);
     expect(JSON.parse(await readFile(helpFixture.record, 'utf8')).argv).toEqual(['--help']);
 
+    const nestedHelpFixture = await makeFixture();
+    const nestedHelp = await execa(wrapper, ['benchmark', 'run', '--help'], {
+      cwd: nestedHelpFixture.root, env: nestedHelpFixture.env, reject: false,
+    });
+    expect(nestedHelp.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(nestedHelpFixture.record, 'utf8')).argv).toEqual(['run', '--help']);
+
     const delimiterFixture = await makeFixture();
     const delimiter = await execa(wrapper, ['benchmark', '--', '--help'], {
       cwd: delimiterFixture.root, env: delimiterFixture.env, reject: false,

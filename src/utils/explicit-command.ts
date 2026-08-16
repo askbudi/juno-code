@@ -6,6 +6,19 @@ export type ExplicitInvocation =
   | { kind: 'unknown-option' | 'unknown-command'; token: string };
 
 const PROMPT_BOUNDARY_OPTIONS = new Set(['-p', '--prompt', '-f', '--prompt-file']);
+const TRANSPARENT_DELEGATE = '_junoTransparentDelegate';
+
+type TransparentCommand = Command & { [TRANSPARENT_DELEGATE]?: boolean };
+
+export function markTransparentDelegate(command: Command): Command {
+  (command as TransparentCommand)[TRANSPARENT_DELEGATE] = true;
+  command.helpOption(false);
+  return command;
+}
+
+function isTransparentDelegate(command: Command): boolean {
+  return (command as TransparentCommand)[TRANSPARENT_DELEGATE] === true;
+}
 
 function optionForToken(options: readonly Option[], token: string): Option | undefined {
   const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
@@ -43,7 +56,8 @@ function validateKnownCommand(
     if (!token || token === '--') return { kind: 'supported-command' };
 
     if (token.startsWith('-')) {
-      if (isRegisteredHelpOption(command, token) || isRegisteredHelpOption(root, token)) {
+      if (!isTransparentDelegate(command) &&
+        (isRegisteredHelpOption(command, token) || isRegisteredHelpOption(root, token))) {
         return { kind: 'help', command };
       }
       const option = optionForToken([...command.options, ...root.options], token);
