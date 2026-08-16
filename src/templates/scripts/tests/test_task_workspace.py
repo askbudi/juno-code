@@ -2560,7 +2560,21 @@ raise SystemExit(17)
 
         workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
         workflow.parent.mkdir(parents=True, exist_ok=True)
-        workflow.write_text("schema_version: juno_workflow.v1\nworkflow_class: task_hydration\nsteps: []\n")
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-recovery-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
         git(self.repository, "add", str(workflow.relative_to(self.repository)))
         git(self.repository, "commit", "-m", "fixture hydration workflow")
         self.base = git(self.repository, "rev-parse", "HEAD")
@@ -2608,17 +2622,42 @@ out.mkdir(parents=True)
         self.assertEqual((artifact / "lint.stdout").stat().st_size, 32768)
         self.assertIn(b"causal lint failure", (artifact / "lint.stderr").read_bytes())
         frozen = failed_record["creation_receipt"]["hydration_workflow"]
+        creation_identity = failed_record["workspace_identity"]["create_receipt_sha256"]
+        workspace = Path(failed_record["worktree"])
 
-        recovered = run([str(PUBLIC_YY), "task", "hydrate", "X"], self.workspaces / "X")
+        # Simulate the selected managed runtime from the dogfood report: it can
+        # be invoked, but its dispatcher/audit protocol predates task hydrate.
+        stale_runtime = self.controller / task_runtime.RUNTIME_PATH
+        stale_runtime.write_text("""#!/usr/bin/env python3
+import sys
+print('task workspace: error: unsupported task audit operation: hydrate', file=sys.stderr)
+raise SystemExit(2)
+""")
+        stale = run(["python3", str(stale_runtime), "hydrate", "--task", "X"],
+                    self.controller, False)
+        self.assertEqual(stale.returncode, 2)
+        self.assertIn("unsupported task audit operation: hydrate", stale.stderr)
+
+        recovered = run([str(PUBLIC_YY), "task", "hydrate", "X"], workspace)
         payload = json.loads(recovered.stdout)
         self.assertEqual((payload["outcome"], payload["state"]), ("hydrated", "WORKING"))
         self.assertEqual(payload["creation_receipt"]["hydration_workflow"], frozen)
+        self.assertEqual(payload["workspace_identity"]["create_receipt_sha256"], creation_identity)
+        self.assertEqual(Path(payload["worktree"]), workspace)
         audit = json.loads(Path(payload["control_audit"]["path"]).read_text())
         self.assertEqual((audit["operation"], audit["routing"]["invocation_role"]),
                          ("hydrate", "task"))
         self.assertEqual(payload["hydration"]["status"], "passed")
         self.assertTrue(Path(payload["hydration"]["manifest_path"]).is_file())
-        self.assertEqual(git(self.workspaces / "X", "status", "--porcelain=v1"), "")
+
+        repeated = json.loads(run(
+            [str(PUBLIC_YY), "task", "hydrate", "X"], workspace).stdout)
+        self.assertEqual((repeated["outcome"], repeated["state"]), ("hydrated", "WORKING"))
+        self.assertEqual(repeated["workspace_identity"]["create_receipt_sha256"], creation_identity)
+        self.assertEqual(Path(repeated["worktree"]), workspace)
+        registrations = git(self.repository, "worktree", "list", "--porcelain")
+        self.assertEqual(registrations.count(f"worktree {workspace}\n"), 1)
+        self.assertEqual(git(workspace, "status", "--porcelain=v1"), "")
         print("PUBLIC_CLI_HYDRATION_RETRY_ACCEPTANCE_COMPLETED")
 
     def build_required_public_cli_recovers_missing_target_runtime_then_starts_task(self) -> None:

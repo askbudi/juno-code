@@ -46,6 +46,7 @@ SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
 RUNTIME_PATH = ".juno_task/scripts/task_workspace.py"
+TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"
 RUNTIME_BOOTSTRAP_SCHEMA = "juno_target_task_runtime_bootstrap.v1"
 RUNTIME_BOOTSTRAP_ROOT = ".juno_task/runtime/task-runtime-bootstrap"
 MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"

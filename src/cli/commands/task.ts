@@ -39,6 +39,39 @@ export function packagedTaskRuntimeCandidates(): string[] {
   ];
 }
 
+export async function selectTaskWorkspaceRuntime(
+  controllerRoot: string,
+  operation: TaskWorkspaceOperation,
+  packagedCandidates = packagedTaskRuntimeCandidates(),
+): Promise<string> {
+  const canonical = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
+  if (operation !== 'hydrate') {
+    if (!(await fs.pathExists(canonical))) {
+      throw new Error('Missing managed task workspace runtime. Run `yy scripts update` and retry.');
+    }
+    return canonical;
+  }
+  const packaged = packagedCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!packaged) {
+    throw new Error('Packaged task-hydrate recovery engine is missing; refusing stale controller fallback.');
+  }
+  const runner = path.join(path.dirname(packaged), 'workflow_runner.sh');
+  if (!(await fs.pathExists(runner))) {
+    throw new Error('Packaged task-hydrate recovery engine is incomplete; refusing stale controller fallback.');
+  }
+  const source = await fs.readFile(packaged, 'utf8');
+  const protocol = [
+    'TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"',
+    'def hydrate(controller:',
+    '"start", "status", "hydrate", "preflight", "finish"',
+    '"start", "status", "hydrate", "preflight", "finish",',
+  ];
+  if (!protocol.every((marker) => source.includes(marker))) {
+    throw new Error('Packaged task-hydrate recovery engine is incompatible; refusing stale controller fallback.');
+  }
+  return packaged;
+}
+
 export async function invokeTaskRuntimeBootstrap(
   options: TaskRuntimeBootstrapOptions,
   packagedCandidates = packagedTaskRuntimeCandidates(),
@@ -99,10 +132,7 @@ export async function invokeTaskWorkspace(
 ): Promise<void> {
   const route = routeControlPlane(process.cwd(), taskWorkspaceControlOperation(operation));
   const controllerRoot = route.controllerRoot;
-  const script = path.join(controllerRoot, '.juno_task', 'scripts', 'task_workspace.py');
-  if (!(await fs.pathExists(script))) {
-    throw new Error('Missing managed task workspace runtime. Run `yy scripts update` and retry.');
-  }
+  const script = await selectTaskWorkspaceRuntime(controllerRoot, operation);
   const taskEnv = route.env;
   const exitCode = await new Promise<number>((resolve, reject) => {
     const pathArgs = requiredPaths.flatMap((requiredPath) => ['--path', requiredPath]);

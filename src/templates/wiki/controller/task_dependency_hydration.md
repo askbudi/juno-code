@@ -31,8 +31,11 @@ helper copies without echoing content and enforces mode `0600`.
 
 On failure the worktree and bounded Workflow Runner artifacts are preserved in a
 non-agent-ready `HYDRATION_FAILED` state. Repair the stated prerequisite and rerun
-`yy task hydrate TASK_ID`; successful probes skip already satisfied steps. Preflight
-and finish never install or copy files—they verify frozen workflow and lock evidence.
+`yy task hydrate TASK_ID`; successful probes skip already satisfied steps. This public
+recovery command uses the package-bound, protocol-checked hydration engine even when
+the controller's selected runtime predates `hydrate`; controller routing, creation
+receipt, and worktree authority remain mandatory. Preflight and finish never install
+or copy files—they verify frozen workflow and lock evidence.
 
 Immediately after `yy task start TASK_ID` and entering its returned worktree,
 before the first edit or test, read `.juno_task/config/task-workspace.json` from
