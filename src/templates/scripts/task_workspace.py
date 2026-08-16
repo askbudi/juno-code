@@ -3056,7 +3056,9 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
     target_tree = git(repository, "rev-parse", f"{target_sha}^{{tree}}")
     prior = _runtime_prior_state(
         controller, repository, target_sha, running, package_version)
-    if prior["sha256"] == running_sha:
+    if (prior["sha256"] == running_sha
+            and (prior.get("classification") != "exact_managed_inventory_consumer_generation"
+                 or prior.get("mode") != "100755")):
         raise TaskWorkspaceError("target task runtime already matches the package")
     proposed_inventory = _proposed_inventory(prior, package_version, running_sha)
     plan = {
@@ -3254,14 +3256,18 @@ def _validate_intent_holder(repository: Path, intent_holder: Any,
 
 def _bootstrap_path_bytes(prior: dict[str, Any], proposed: bytes,
                           proposed_inventory: bytes | None) -> dict[str, tuple[bytes | None, bytes]]:
-    paths = {RUNTIME_PATH: (
-        base64.b64decode(prior["bytes_base64"], validate=True)
-        if prior.get("bytes_base64") is not None else None, proposed)}
+    prior_runtime = (base64.b64decode(prior["bytes_base64"], validate=True)
+                     if prior.get("bytes_base64") is not None else None)
+    paths = {}
+    if prior_runtime != proposed or prior.get("mode") != "100755":
+        paths[RUNTIME_PATH] = (prior_runtime, proposed)
     if proposed_inventory is not None:
-        paths[MANAGED_INVENTORY_PATH] = (
-            base64.b64decode(prior["inventory_bytes_base64"], validate=True)
-            if prior.get("inventory_bytes_base64") is not None else None,
-            proposed_inventory)
+        prior_inventory = (base64.b64decode(prior["inventory_bytes_base64"], validate=True)
+                           if prior.get("inventory_bytes_base64") is not None else None)
+        if prior_inventory != proposed_inventory:
+            paths[MANAGED_INVENTORY_PATH] = (prior_inventory, proposed_inventory)
+    if not paths:
+        raise TaskWorkspaceError("task-runtime bootstrap has no exact path transition")
     return paths
 
 
@@ -3299,9 +3305,17 @@ def _holder_is_prepared_for_cas(holder: Path, previous_sha: str,
                                 proposed_inventory: bytes | None = None) -> bool:
     if git(holder, "rev-parse", "HEAD^{commit}", check=False) != previous_sha:
         return False
-    paths = {RUNTIME_PATH: proposed}
-    if proposed_inventory is not None:
-        paths[MANAGED_INVENTORY_PATH] = proposed_inventory
+    prior = {
+        "mode": (git(holder, "ls-tree", previous_sha, "--", RUNTIME_PATH,
+                     check=False).split(None, 1) or [""])[0],
+        "bytes_base64": base64.b64encode(
+            target_blob(holder, previous_sha, RUNTIME_PATH) or b"").decode(),
+        "inventory_bytes_base64": (base64.b64encode(
+            target_blob(holder, previous_sha, MANAGED_INVENTORY_PATH) or b"").decode()
+            if target_blob(holder, previous_sha, MANAGED_INVENTORY_PATH) is not None else None),
+    }
+    paths = {path: after for path, (_, after) in _bootstrap_path_bytes(
+        prior, proposed, proposed_inventory).items()}
     expected_status = []
     for path in sorted(paths):
         prior = run(["git", "-C", str(holder), "cat-file", "-e",
@@ -3371,10 +3385,10 @@ def _validate_runtime_bootstrap_commit(repository: Path, plan: dict[str, Any],
     committed_row = git(repository, "ls-tree", commit_sha, "--", RUNTIME_PATH, check=False)
     changed = git(repository, "diff-tree", "--no-commit-id", "--name-only", "-r",
                   commit_sha, check=False).splitlines()
-    expected_paths = [RUNTIME_PATH]
+    expected_paths = list(_bootstrap_path_bytes(
+        plan["prior"], proposed, proposed_inventory))
     inventory_valid = True
     if proposed_inventory is not None:
-        expected_paths.append(MANAGED_INVENTORY_PATH)
         inventory_row = git(repository, "ls-tree", commit_sha, "--", MANAGED_INVENTORY_PATH,
                             check=False)
         inventory_valid = (
@@ -3457,15 +3471,16 @@ def _apply_runtime_bootstrap(controller: Path, package_version: str,
             added = True
             if git(temporary, "status", "--porcelain=v1", "--untracked-files=all"):
                 raise TaskWorkspaceError("isolated target worktree is not clean")
-            destination = temporary / RUNTIME_PATH
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(proposed); destination.chmod(0o755)
-            changed_paths = [RUNTIME_PATH]
-            if proposed_inventory is not None:
+            changed_paths = list(_bootstrap_path_bytes(
+                plan["prior"], proposed, proposed_inventory))
+            if RUNTIME_PATH in changed_paths:
+                destination = temporary / RUNTIME_PATH
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(proposed); destination.chmod(0o755)
+            if MANAGED_INVENTORY_PATH in changed_paths:
                 inventory_destination = temporary / MANAGED_INVENTORY_PATH
                 inventory_destination.write_bytes(proposed_inventory)
                 inventory_destination.chmod(int(inventory_plan["mode"], 8) & 0o777)
-                changed_paths.append(MANAGED_INVENTORY_PATH)
             run(["git", "-C", str(temporary), "add", "--", *changed_paths], temporary)
             if (git(temporary, "diff", "--cached", "--name-only").splitlines()
                     != sorted(changed_paths)):
