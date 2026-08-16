@@ -137,16 +137,28 @@ default_version_check_cache_dir() {
     local common_dir cache_root cache_key role resolver controller
     common_dir=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
     role=$(git -C "$PWD" config --worktree --get juno.workspace.role 2>/dev/null || true)
-    resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/controller_resolver.py"
-    if [ "$role" = task ] && [ -n "$common_dir" ] && [ -f "$resolver" ]; then
-        controller=$(env -u JUNO_WORKSPACE_ROLE -u JUNO_PROJECT_PATH \
-            python3 "$resolver" --cwd "$PWD" --operation diagnostic --format json 2>/dev/null | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
-        if [ -n "$controller" ] && [ -d "$controller/.juno_task" ]; then
-            cache_key=$(printf '%s' "$common_dir" | cksum | awk '{print $1}')
-            printf '%s\n' "$controller/.juno_task/runtime/managed-controller/version-checks/$cache_key"
-            return
+    if [ "$role" = task ]; then
+        resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/controller_resolver.py"
+        if [ -z "$common_dir" ] || [ ! -f "$resolver" ]; then
+            echo "[ERROR] Registered task version state requires the controller resolver" >&2
+            return 2
         fi
+        if ! controller=$(env -u JUNO_WORKSPACE_ROLE -u JUNO_PROJECT_PATH \
+            python3 "$resolver" --cwd "$PWD" --operation diagnostic --format root 2>/dev/null); then
+            echo "[ERROR] Registered task version state could not resolve its controller" >&2
+            return 2
+        fi
+        if [ ! -d "$controller/.juno_task" ]; then
+            echo "[ERROR] Registered task version state resolved an unavailable controller" >&2
+            return 2
+        fi
+        cache_key=$(printf '%s' "$common_dir" | cksum | awk '{print $1}')
+        printf '%s\n' "$controller/.juno_task/runtime/managed-controller/version-checks/$cache_key"
+        return
+    fi
+    if [ -n "${VERSION_CHECK_CACHE_DIR:-}" ]; then
+        printf '%s\n' "$VERSION_CHECK_CACHE_DIR"
+        return
     fi
     if [ -n "$common_dir" ]; then
         printf '%s\n' "$common_dir/juno/version-checks"
@@ -156,7 +168,9 @@ default_version_check_cache_dir() {
     cache_key=$(printf '%s' "$PWD" | cksum | awk '{print $1}')
     printf '%s\n' "$cache_root/$cache_key"
 }
-VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-$(default_version_check_cache_dir)}"
+# A registered task's persisted identity is authoritative: inherited overrides
+# must never route controller diagnostics back into the product worktree.
+VERSION_CHECK_CACHE_DIR="$(default_version_check_cache_dir)"
 VERSION_CHECK_CACHE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_cache"
 VERSION_CHECK_FAILURE_FILE="${VERSION_CHECK_CACHE_DIR}/.version_check_failure"
 VERSION_CHECK_LOCK_DIR="${VERSION_CHECK_CACHE_DIR}/.version_check_lock"
@@ -1048,8 +1062,8 @@ main() {
         exit 0
     fi
     if [ "$requirements_status" -eq 2 ]; then
-        log_warning "Requirements do not match fresh cached versions; continuing without false success"
-        exit 0
+        log_error "Requirements do not match fresh cached versions and repair failed"
+        exit 2
     fi
 
     log_info "Some packages need to be installed."

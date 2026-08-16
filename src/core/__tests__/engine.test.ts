@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   onProgress: vi.fn().mockReturnValue(() => {}),
   resolvePromptCommandSubstitutions: vi.fn(),
   resolvePromptMacros: vi.fn(),
+  executeHook: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../backends/shell-backend.js', () => ({
@@ -50,7 +51,7 @@ vi.mock('../../cli/utils/advanced-logger.js', () => ({
 }));
 
 vi.mock('../../utils/hooks.js', () => ({
-  executeHook: vi.fn().mockResolvedValue(undefined),
+  executeHook: mocks.executeHook,
 }));
 
 vi.mock('../prompt-command-substitution.js', () => ({
@@ -154,6 +155,7 @@ describe('ExecutionEngine', () => {
       resolvedPrompt: instruction,
       warnings: [],
     }));
+    mocks.executeHook.mockResolvedValue(undefined);
 
     // Re-set ShellBackend constructor (mockReset clears its mockImplementation)
     const { ShellBackend } = await import('../backends/shell-backend.js');
@@ -282,6 +284,34 @@ describe('ExecutionEngine', () => {
       expect(result.request).toEqual(request);
       expect(result.iterations).toHaveLength(1);
       expect(mocks.execute).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed before dispatch when dependency version repair fails', async () => {
+      engineConfig.config.skipHooks = false;
+      engineConfig.config.hooks = {
+        START_RUN: { commands: ['./.juno_task/scripts/install_requirements.sh'] },
+      } as any;
+      mocks.executeHook.mockResolvedValue({
+        hookType: 'START_RUN',
+        totalDuration: 5,
+        commandResults: [{
+          command: './.juno_task/scripts/install_requirements.sh',
+          exitCode: 2,
+          stdout: 'known version mismatch',
+          stderr: 'repair failed',
+          duration: 5,
+          success: false,
+        }],
+        success: false,
+        commandsExecuted: 1,
+        commandsFailed: 1,
+      });
+      engine = new ExecutionEngine(engineConfig);
+
+      await expect(engine.execute(makeRequest())).rejects.toThrow(
+        'Dependency preflight failed (exit 2)',
+      );
+      expect(mocks.execute).not.toHaveBeenCalled();
     });
 
     it('should handle multiple iterations', async () => {

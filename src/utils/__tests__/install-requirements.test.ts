@@ -27,6 +27,9 @@ describe('install_requirements.sh cached dependency flow', { timeout: 120_000 },
     await writeExecutable(
       path.join(binDir, 'python3'),
       `#!/usr/bin/env bash
+if [[ "$1" == */controller_resolver.py ]]; then
+  exec "${'${REAL_PYTHON:?}'}" "$@"
+fi
 if [[ "$1" == "--version" ]]; then
   echo "Python 3.12.8"
   exit 0
@@ -155,6 +158,7 @@ export PATH
     PYTHON_METADATA_LOG_FILE: metadataLogPath,
     INSTALLED_VERSION_DIR: installedDir,
     LATEST_VERSION_DIR: latestDir,
+    REAL_PYTHON: spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim(),
     VERSION_CHECK_INTERVAL_HOURS: '24',
     VERSION_CHECK_CACHE_DIR: path.join(tempDir, '.juno_task'),
     VIRTUAL_ENV: '',
@@ -326,6 +330,137 @@ export PATH
     expect(await fs.pathExists(path.join(candidate, '.juno_task', '.version_check_cache'))).toBe(false);
   });
 
+  it('routes matching and failed task-worktree version checks to controller-private state', async () => {
+    const controller = path.join(tempDir, 'controller');
+    const task = path.join(tempDir, 'task');
+    const scripts = path.join(controller, '.juno_task', 'scripts');
+    await fs.ensureDir(scripts);
+    await fs.copyFile(scriptPath, path.join(scripts, 'install_requirements.sh'));
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
+      path.join(scripts, 'controller_resolver.py'),
+    );
+    await fs.copyFile(
+      path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh'),
+      path.join(scripts, 'workflow_runner.sh'),
+    );
+    for (const dependency of ['workflow_run_evidence.py', 'invocation_correlation.py']) {
+      await fs.copyFile(
+        path.resolve(process.cwd(), 'src/templates/scripts', dependency),
+        path.join(scripts, dependency),
+      );
+    }
+    await fs.writeFile(path.join(controller, '.gitignore'), '.venv_juno/\n.juno_task/runtime/\n');
+    await fs.writeFile(path.join(controller, 'product.txt'), 'unchanged\n');
+    expect(spawnSync('git', ['init', '-q', '-b', 'controller'], { cwd: controller }).status).toBe(0);
+    expect(spawnSync('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: controller }).status).toBe(0);
+    expect(spawnSync('git', ['add', '.'], { cwd: controller }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], {
+      cwd: controller,
+    }).status).toBe(0);
+    expect(spawnSync('git', ['worktree', 'add', '-q', '-b', 'task-version-routing', task], {
+      cwd: controller,
+    }).status).toBe(0);
+    const configure = (scope: '--local' | '--worktree', key: string, value: string) =>
+      expect(spawnSync('git', ['config', scope, key, value], { cwd: task }).status).toBe(0);
+    configure('--local', 'juno.controller.path', controller);
+    configure('--local', 'juno.controller.branch', 'controller');
+    configure('--worktree', 'juno.workspace.role', 'task');
+    configure('--worktree', 'juno.workspace.taskId', 'VERSION1');
+    configure('--worktree', 'juno.workspace.manifestIdentity', 'fixture-manifest');
+    configure('--worktree', 'juno.workspace.createReceiptSha256', 'a'.repeat(64));
+    configure('--worktree', 'juno.workspace.expectedPathsSha256', 'b'.repeat(64));
+
+    const taskVenvBin = path.join(task, '.venv_juno', 'bin');
+    await fs.ensureDir(taskVenvBin);
+    await writeExecutable(path.join(taskVenvBin, 'activate'), `#!/usr/bin/env bash
+VIRTUAL_ENV=${JSON.stringify(path.join(task, '.venv_juno'))}
+export VIRTUAL_ENV
+PATH=${JSON.stringify(binDir)}:$PATH
+export PATH
+`);
+    const taskScript = path.join(task, '.juno_task', 'scripts', 'install_requirements.sh');
+    const workflowRunner = path.join(task, '.juno_task', 'scripts', 'workflow_runner.sh');
+    const workflow = path.join(tempDir, 'nested-version-check.yaml');
+    const nestedCommand = path.join(tempDir, 'nested-version-check');
+    await writeExecutable(path.join(binDir, 'yy'), `#!/usr/bin/env bash
+[[ "$1" == pi ]] || { echo "expected nested yy pi" >&2; exit 64; }
+source "${'${TASK_WORKTREE:?}'}/.venv_juno/bin/activate"
+exec bash "${'${TASK_VERSION_SCRIPT:?}'}"
+`);
+    await writeExecutable(nestedCommand, '#!/usr/bin/env bash\nexec yy pi\n');
+    await fs.writeFile(workflow, `schema_version: 1
+workflow_id: nested_version_check
+fail_workflow: true
+steps:
+  - id: nested_pi
+    command: ${JSON.stringify(nestedCommand)}
+    fail_workflow: true
+`);
+    const realPython = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    const controllerVenv = path.join(controller, '.venv_juno');
+    const createControllerVenv = spawnSync(realPython, ['-m', 'venv', '--system-site-packages', controllerVenv], {
+      encoding: 'utf8',
+    });
+    expect(createControllerVenv.status, createControllerVenv.stderr).toBe(0);
+    const hostileTaskCache = path.join(task, '.juno_task');
+    const nestedEnv = testEnv({
+      TASK_VERSION_SCRIPT: taskScript,
+      TASK_WORKTREE: task,
+      VERSION_CHECK_CACHE_DIR: hostileTaskCache,
+      JUNO_TASK_ROOT: controller,
+      JUNO_PROJECT_PATH: controller,
+      JUNO_WORKSPACE_ROLE: 'controller',
+    });
+    const gitStatus = () => spawnSync(
+      'git', ['-C', task, 'status', '--porcelain=v2', '-z', '--untracked-files=all'],
+      { encoding: 'buffer' },
+    ).stdout;
+    const before = gitStatus();
+    expect(before.byteLength).toBe(0);
+
+    const runNestedWorkflow = (label: string, extraEnv: NodeJS.ProcessEnv = {}) => spawnSync(
+      realPython,
+      [workflowRunner, '--workflow', workflow, '--out-dir', path.join(tempDir, `run-${label}`),
+        '--print-output', 'none', '--no-print-step-stdout'],
+      { cwd: task, env: { ...nestedEnv, ...extraEnv }, encoding: 'utf8', timeout: 60_000 },
+    );
+    const matching = runNestedWorkflow('matching');
+    expect(await fs.pathExists(path.join(tempDir, 'run-matching', 'manifest.json')), `${matching.stdout}\n${matching.stderr}`).toBe(true);
+    const matchingReport = await fs.readJson(path.join(tempDir, 'run-matching', 'manifest.json'));
+    expect(matching.status, `${matching.stdout}\n${matching.stderr}\n${JSON.stringify(matchingReport)}`).toBe(0);
+    const matchingStep = matchingReport.steps.find((step: { id: string }) => step.id === 'nested_pi');
+    expect(matchingStep?.status).toBe('success');
+    const matchingLog = [
+      await fs.readFile(matchingStep.stdout_path, 'utf8'),
+      await fs.readFile(matchingStep.stderr_path, 'utf8'),
+    ].join('\n');
+    expect(matchingLog).toContain('install_requirements.sh is being executed');
+    expect(matchingLog).toContain(`executed from: ${await fs.realpath(task)}`);
+    const privateRoot = path.join(controller, '.juno_task', 'runtime', 'managed-controller', 'version-checks');
+    const privateEntries = await fs.readdir(privateRoot);
+    expect(privateEntries).toHaveLength(1);
+    const privateCache = path.join(privateRoot, privateEntries[0]!, '.version_check_cache');
+    expect(await fs.pathExists(privateCache)).toBe(true);
+    expect(await fs.pathExists(path.join(hostileTaskCache, '.version_check_cache'))).toBe(false);
+    expect(gitStatus()).toEqual(before);
+
+    await fs.writeFile(path.join(installedDir, 'juno-kanban'), '0.5.0');
+    const mismatch = runNestedWorkflow('mismatch', { UV_FAIL: '1', PIP_FAIL: '1' });
+    expect(mismatch.status).not.toBe(0);
+    const mismatchManifest = await fs.readJson(path.join(tempDir, 'run-mismatch', 'manifest.json'));
+    const mismatchStep = mismatchManifest.steps.find((step: { id: string }) => step.id === 'nested_pi');
+    const mismatchLog = [
+      await fs.readFile(mismatchStep.stdout_path, 'utf8'),
+      await fs.readFile(mismatchStep.stderr_path, 'utf8'),
+    ].join('\n');
+    expect(mismatchLog).toContain('repair failed');
+    expect(mismatchLog.length).toBeLessThan(10_000);
+    expect(await fs.pathExists(path.join(path.dirname(privateCache), '.version_check_failure'))).toBe(true);
+    expect(await fs.pathExists(path.join(hostileTaskCache, '.version_check_failure'))).toBe(false);
+    expect(gitStatus()).toEqual(before);
+  });
+
   it('uses one metadata process and no network on a fresh complete cache', async () => {
     await createVenv();
     await writeSuccessCache();
@@ -418,7 +553,7 @@ exit 2
 
     const first = runScript([], { UV_FAIL: '1', PIP_FAIL: '1' });
     const firstOutput = `${first.stdout ?? ''}\n${first.stderr ?? ''}`;
-    expect(first.status).toBe(0);
+    expect(first.status).toBe(2);
     expect(firstOutput).toContain('Cached dependency repair failed');
     expect(firstOutput).not.toContain('All requirements already satisfied');
     expect(await fs.readFile(cachePath, 'utf-8')).toBe(originalCache);
@@ -427,7 +562,7 @@ exit 2
     expect(await lineCount(uvLogPath)).toBe(1);
 
     const second = runScript([], { UV_FAIL: '1', PIP_FAIL: '1' });
-    expect(second.status).toBe(0);
+    expect(second.status).toBe(2);
     expect(`${second.stdout}\n${second.stderr}`).toContain('retry suppressed for one hour');
     expect(await lineCount(uvLogPath)).toBe(1);
     expect(await lineCount(curlLogPath)).toBe(0);

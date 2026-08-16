@@ -485,6 +485,13 @@ export const DEFAULT_PROGRESS_CONFIG: ProgressTrackingConfig = {
  * const result = await engine.execute(request);
  * ```
  */
+class DependencyPreflightError extends Error {
+  constructor(command: string, exitCode: number) {
+    super(`Dependency preflight failed (exit ${exitCode}): ${command.slice(0, 500)}`);
+    this.name = 'DependencyPreflightError';
+  }
+}
+
 export class ExecutionEngine extends EventEmitter {
   private readonly engineConfig: ExecutionEngineConfig;
   private readonly activeExecutions = new Map<string, ExecutionContext>();
@@ -949,10 +956,21 @@ export class ExecutionEngine extends EventEmitter {
           },
         );
         this.displayHookOutput(hookResult);
+        const failedDependencyPreflight = hookResult.commandResults.find((result) =>
+          !result.success && /(?:^|[\s/])install_requirements\.sh(?:\s|$)/.test(result.command),
+        );
+        if (failedDependencyPreflight) {
+          throw new DependencyPreflightError(
+            failedDependencyPreflight.command,
+            failedDependencyPreflight.exitCode,
+          );
+        }
       }
     } catch (error) {
       engineLogger.warn('Hook START_RUN failed', { error });
-      // Continue execution despite hook failure
+      // Dependency/version repair is an agent-dispatch prerequisite. Other
+      // owner-defined hook failures retain the historical best-effort behavior.
+      if (error instanceof DependencyPreflightError) throw error;
     }
 
     try {

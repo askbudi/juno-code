@@ -26,6 +26,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+# Package-managed runners execute from product worktrees; importing their local
+# support modules must not create product output.
+sys.dont_write_bytecode = True
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
