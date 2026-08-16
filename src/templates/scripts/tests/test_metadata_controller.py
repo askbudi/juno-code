@@ -512,6 +512,52 @@ class MetadataControllerTest(unittest.TestCase):
                 ".juno_task/receipts/nested/arbitrary.json",
             },
         )
+        details = {item["path"]: item for item in committed["forbidden_tracked_details"]}
+        self.assertEqual(details[".juno_task/specs/workflows/run.json"], {
+            "path": ".juno_task/specs/workflows/run.json",
+            "reason": "unattributed_nested_path",
+            "rule": "tracked_top_level_files:.juno_task/specs:direct_children_only",
+        })
+        self.assertEqual(details[".juno_task/state/arbitrary.json"]["rule"],
+                         "metadata_controller:tracked_path_classes")
+
+    def test_historical_attribution_requires_an_exact_text_reference(self) -> None:
+        path = ".juno_task/specs/backend/artifacts/E2E/observation.md"
+        self.assertTrue(mc.exact_text_reference(f"Artifact: `{path}`.", path))
+        self.assertFalse(mc.exact_text_reference(f"Artifact: `{path}.bak`.", path))
+        self.assertFalse(mc.exact_text_reference(f"Artifact: `old/{path}`.", path))
+
+    def test_historical_reference_bound_nested_artifacts_are_immutable_and_attributed(self) -> None:
+        self.prepare()
+        root = self.new_controller
+        artifact = ".juno_task/specs/backend/artifacts/E2E/observation.md"
+        aggregate = ".juno_task/specs/backend/artifacts/E2E/observation.aggregate.json"
+        write(root / artifact, "Aggregate: `observation.aggregate.json`.\n")
+        write(root / aggregate, "{}\n")
+        task = root / ".juno_task/tasks/TASK.md"
+        task.write_text(task.read_text() + f"Artifact: `{artifact}`.\n")
+        command("git", "add", artifact, aggregate, ".juno_task/tasks/TASK.md", cwd=root)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "checkpoint attributed evidence", cwd=root)
+        admitted = mc.inspect(root, self.policy,
+                              expected_branch="refs/heads/juno/controller-metadata-v1",
+                              require_active=False)
+        self.assertTrue(admitted["checks"]["tracked_boundary"])
+        self.assertNotIn(artifact, admitted["forbidden_tracked"])
+        self.assertNotIn(aggregate, admitted["forbidden_tracked"])
+
+        (root / aggregate).write_text('{"changed":true}\n')
+        command("git", "add", aggregate, cwd=root)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "unattributed artifact rewrite", cwd=root)
+        refused = mc.inspect(root, self.policy,
+                             expected_branch="refs/heads/juno/controller-metadata-v1",
+                             require_active=False)
+        detail = next(item for item in refused["forbidden_tracked_details"]
+                      if item["path"] == aggregate)
+        self.assertEqual(detail["reason"], "unattributed_nested_path")
+        self.assertEqual(detail["rule"],
+                         "tracked_top_level_files:.juno_task/specs:direct_children_only")
 
     def test_legacy_operational_metadata_is_narrowly_admitted(self) -> None:
         self.prepare()

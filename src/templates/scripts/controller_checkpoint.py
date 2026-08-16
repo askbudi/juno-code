@@ -25,6 +25,12 @@ if str(SCRIPT_DIR) not in sys.path:
 from git_index_lock import IndexLockError, diagnose_index_lock, require_index_unlocked
 import controller_resolver
 try:
+    import metadata_controller as metadata_boundary
+    METADATA_BOUNDARY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # legacy non-metadata installations retain fallback includes
+    metadata_boundary = None
+    METADATA_BOUNDARY_IMPORT_ERROR = exc
+try:
     import controller_workspace
 except ImportError:  # installed generations before sparse-controller support
     controller_workspace = None
@@ -187,6 +193,47 @@ def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
     if not isinstance(agent, dict):
         raise CheckpointError("invalid checkpoint configuration: agent must be an object")
     return include, agent
+
+
+def metadata_controller_policy(root: Path) -> dict[str, Any] | None:
+    """Load the same reviewed policy consumed by runtime-bootstrap."""
+    config_path = root / ".juno_task/config.json"
+    if not config_path.is_file():
+        return None
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CheckpointError(f"invalid controller configuration: {exc}") from exc
+    workspace = config.get("controllerWorkspace") if isinstance(config, dict) else None
+    if not isinstance(workspace, dict) or workspace.get("mode") != "metadata-only":
+        return None
+    if metadata_boundary is None:
+        raise CheckpointError(
+            f"metadata controller boundary authority is unavailable: {METADATA_BOUNDARY_IMPORT_ERROR}")
+    if workspace.get("policy") != ".juno_task/config/metadata-controller.json":
+        raise CheckpointError("metadata controller policy must use the canonical tracked path")
+    try:
+        return metadata_boundary.load_policy(root / workspace["policy"])
+    except metadata_boundary.BoundaryError as exc:
+        raise CheckpointError(f"metadata controller policy refused: {exc}") from exc
+
+
+def controller_path_refusals(root: Path, paths: list[str]) -> list[dict[str, str]]:
+    policy = metadata_controller_policy(root)
+    if policy is None:
+        return []
+    refused = []
+    for path in sorted(set(paths)):
+        decision = metadata_boundary.policy_path_decision(path, policy)
+        if not decision["allowed"]:
+            refused.append({"path": path, "reason": decision["reason"], "rule": decision["rule"]})
+    return refused
+
+
+def format_refusals(refused: list[dict[str, str]]) -> str:
+    return ", ".join(
+        f"{item['path']} (reason={item['reason']}, rule={item['rule']})" for item in refused
+    )
 
 
 def parse_status(root: Path) -> list[Dirty]:
@@ -356,8 +403,13 @@ def inspect(
     for item in dirt:
         for name in status_names(item):
             inspect_boundary(root, name)
-    chosen = sorted({name for item in dirt for name in status_names(item) if selected(name, includes)})
-    blocked = sorted({name for item in dirt for name in status_names(item)
+    all_names = sorted({name for item in dirt for name in status_names(item)})
+    policy_refused = controller_path_refusals(root, all_names)
+    if policy_refused:
+        raise CheckpointError("blocked non-controller paths under metadata-controller policy: "
+                              + format_refusals(policy_refused))
+    chosen = sorted({name for name in all_names if selected(name, includes)})
+    blocked = sorted({name for name in all_names
                       if not selected(name, includes) and not unrelated_task_residue(name, includes)})
     if blocked:
         raise CheckpointError(f"blocked non-controller paths: {blocked}")
@@ -412,6 +464,9 @@ def classify_paths(
         elif role == "controller" and not selected(path, includes):
             reason = "product_path"
         if role == "controller":
+            metadata_refused = controller_path_refusals(root, [path])
+            if metadata_refused:
+                reason = metadata_refused[0]["reason"] + ":" + metadata_refused[0]["rule"]
             policy = workspace_policy(root)
             if policy is not None:
                 try:

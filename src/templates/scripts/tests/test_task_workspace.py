@@ -1467,6 +1467,55 @@ class TaskWorkspaceTests(unittest.TestCase):
                                  "--quiet", "refs/heads/task-X"], self.repository, False).returncode, 0)
         self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
 
+    def test_checkpoint_and_runtime_bootstrap_agree_on_historical_reference_bound_nested_specs(self) -> None:
+        artifact_dir = (self.controller / ".juno_task/specs/backend/artifacts"
+                        / "ENDPOINT_PHASE_MAGIC_W2_E2E_post_deploy")
+        artifact_dir.mkdir(parents=True)
+        report = artifact_dir / "observation_20260816T000348Z.md"
+        aggregate = artifact_dir / "observation_20260816T000348Z.aggregate.json"
+        relative_report = report.relative_to(self.controller).as_posix()
+        report.write_text("Aggregate evidence: `observation_20260816T000348Z.aggregate.json`.\n")
+        aggregate.write_text('{"count": 98}\n')
+        task = self.controller / ".juno_task/tasks/x/X.md"
+        task.write_text(task.read_text() + f"Artifact: `{relative_report}`.\n")
+        git(self.controller, "add", relative_report, aggregate.relative_to(self.controller).as_posix(),
+            ".juno_task/tasks/x/X.md")
+        git(self.controller, "commit", "-m", "checkpoint receipt-bound endpoint evidence")
+
+        checkpoint = SCRIPT.with_name("controller_checkpoint.py")
+        checkpoint_result = run([sys.executable, str(checkpoint), "--root", str(self.controller),
+                                 "plan", "--json"], self.controller, False)
+        self.assertEqual(checkpoint_result.returncode, 0, checkpoint_result.stderr)
+        self.assertEqual(json.loads(checkpoint_result.stdout)["selected"], [])
+
+        self.remove_runtime_for_consumer()
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(self.controller, "2.1.3", package_hash, None)
+        controller_class = plan["controller_identity"]["controller_class"]
+        self.assertEqual(controller_class["checks"],
+                         ["branch_exact", "product_absent", "role", "tracked_boundary"])
+        self.assertEqual(
+            [item["path"] for item in controller_class["historical_tracked_attributions"]],
+            sorted([relative_report, aggregate.relative_to(self.controller).as_posix()]))
+        self.assertTrue(all(item["attribution_commit"] == git(self.controller, "rev-parse", "HEAD")
+                            for item in controller_class["historical_tracked_attributions"]))
+
+    def test_runtime_bootstrap_reports_every_nested_policy_refusal(self) -> None:
+        for name in ("one.json", "two.md"):
+            path = self.controller / ".juno_task/specs/backend/artifacts/unattributed" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("unattributed\n")
+        git(self.controller, "add", ".juno_task/specs/backend/artifacts/unattributed")
+        git(self.controller, "commit", "-m", "legacy inconsistent nested evidence")
+        self.remove_runtime_for_consumer()
+        with self.assertRaises(task_runtime.TaskWorkspaceError) as raised:
+            task_runtime.runtime_bootstrap(
+                self.controller, "2.1.3", hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), None)
+        message = str(raised.exception)
+        for name in ("one.json", "two.md"):
+            self.assertIn(f".juno_task/specs/backend/artifacts/unattributed/{name}", message)
+        self.assertIn("tracked_top_level_files:.juno_task/specs:direct_children_only", message)
+
     def test_sparse_metadata_controller_runtime_bootstrap_plan_apply_and_full_task_start(self) -> None:
         self.assertEqual(git(self.controller, "config", "--bool", "core.sparseCheckout"), "true")
         self.remove_runtime_for_consumer()

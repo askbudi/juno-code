@@ -101,6 +101,32 @@ describe('controller_checkpoint.py template script', () => {
     expect(git(repo, 'status', '--porcelain')).toContain('.juno_task/tasks/t2/');
   });
 
+  it('uses metadata-controller direct-child rules and reports every refused nested path', async () => {
+    const policy = await fs.readJson(path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'));
+    policy.controller_branch = 'refs/heads/task';
+    policy.product_ref = 'refs/heads/product';
+    await fs.ensureDir(path.join(repo, '.juno_task', 'config'));
+    await fs.writeJson(path.join(repo, '.juno_task', 'config', 'metadata-controller.json'), policy);
+    await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), {
+      controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
+    });
+    git(repo, 'add', '.juno_task/config.json', '.juno_task/config/metadata-controller.json');
+    git(repo, 'commit', '-m', 'configure metadata boundary');
+    for (const name of ['one.json', 'two.md']) {
+      await fs.outputFile(path.join(repo, '.juno_task', 'specs', 'backend', 'artifacts', name), 'evidence\n');
+    }
+    const before = git(repo, 'rev-parse', 'HEAD');
+    const result = run(repo, 'commit', '--message', 'must refuse nested evidence');
+    expect(result.status).toBe(2);
+    for (const name of ['one.json', 'two.md']) {
+      expect(result.stderr).toContain(`.juno_task/specs/backend/artifacts/${name}`);
+    }
+    expect(result.stderr).toContain('reason=unattributed_nested_path');
+    expect(result.stderr).toContain('rule=tracked_top_level_files:.juno_task/specs:direct_children_only');
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
   it('blocks dirty product paths and leaves both worktree and index untouched', async () => {
     await fs.writeFile(path.join(repo, '.juno_task', 'tasks', 'one.md'), 'controller\n');
     await fs.writeFile(path.join(repo, 'product.txt'), 'product\n');

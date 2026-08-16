@@ -678,24 +678,104 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def policy_path_allowed(name: str, policy: dict[str, Any], *, container: bool = False) -> bool:
+def policy_path_decision(name: str, policy: dict[str, Any], *, container: bool = False,
+                         historical_attribution: dict[str, str] | None = None) -> dict[str, Any]:
+    """Authoritative controller/product classifier used by every policy consumer."""
     if name in policy["tracked_exact"]:
-        return True
-    if any(name == root or name.startswith(root + "/") for root in policy["tracked_recursive"]):
-        return True
+        return {"allowed": True, "reason": "tracked_exact", "rule": f"tracked_exact:{name}"}
+    for root in policy["tracked_recursive"]:
+        if name == root or name.startswith(root + "/"):
+            return {"allowed": True, "reason": "tracked_recursive", "rule": f"tracked_recursive:{root}"}
     for root in policy["tracked_top_level_files"]:
         if name == root:
-            return container
+            return {"allowed": container, "reason": "container" if container else "container_not_file",
+                    "rule": f"tracked_top_level_files:{root}:direct_children_only"}
         if name.startswith(root + "/"):
-            return "/" not in name.removeprefix(root + "/")
-    return False
+            nested = "/" in name.removeprefix(root + "/")
+            if not nested:
+                return {"allowed": True, "reason": "tracked_top_level_file",
+                        "rule": f"tracked_top_level_files:{root}:direct_children_only"}
+            if historical_attribution is not None:
+                return {"allowed": True, "reason": "historical_reference_bound_artifact",
+                        "rule": f"tracked_top_level_files:{root}:historical_reference_bound_artifact",
+                        **historical_attribution}
+            return {"allowed": False, "reason": "unattributed_nested_path",
+                    "rule": f"tracked_top_level_files:{root}:direct_children_only"}
+    for root in LEGACY_OPERATIONAL_METADATA:
+        if name == root or name.startswith(root + "/"):
+            return {"allowed": True, "reason": "legacy_operational_metadata",
+                    "rule": f"legacy_operational_metadata:{root}"}
+    return {"allowed": False, "reason": "outside_controller_boundary",
+            "rule": "metadata_controller:tracked_path_classes"}
+
+
+def policy_path_allowed(name: str, policy: dict[str, Any], *, container: bool = False) -> bool:
+    return bool(policy_path_decision(name, policy, container=container)["allowed"])
 
 
 def tracked_allowed(name: str, policy: dict[str, Any]) -> bool:
-    return policy_path_allowed(name, policy) or any(
-        name == root or name.startswith(root + "/")
-        for root in LEGACY_OPERATIONAL_METADATA
-    )
+    return bool(policy_path_decision(name, policy)["allowed"])
+
+
+def exact_text_reference(text: str, value: str) -> bool:
+    path_character = r"A-Za-z0-9._/-"
+    return re.search(rf"(?<![{path_character}]){re.escape(value)}(?![{path_character}])", text) is not None
+
+
+def historical_nested_attributions(root: Path, head: str,
+                                   entries: list[tuple[str, str, str]],
+                                   policy: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Authenticate legacy nested evidence without moving or rewriting it.
+
+    A nested specs artifact is grandfathered only when its current blob was
+    committed atomically with a canonical task/ledger reference. A sibling
+    report may bind another same-directory artifact by exact filename. This is
+    intentionally history-only: dirty nested files cannot self-attest.
+    """
+    candidates = {(mode, oid, name) for mode, oid, name in entries
+                  if name.startswith(".juno_task/specs/")
+                  and "/artifacts/" in name
+                  and not policy_path_allowed(name, policy)
+                  and mode in {"100644", "100755"}}
+    by_commit: dict[str, list[tuple[str, str, str]]] = {}
+    for entry in candidates:
+        commit = git(root, "log", "-1", "--format=%H", head, "--", entry[2], check=False)
+        if commit and git(root, "rev-parse", f"{commit}:{entry[2]}", check=False) == entry[1]:
+            by_commit.setdefault(commit, []).append(entry)
+    attributed: dict[str, dict[str, str]] = {}
+    for commit, group in by_commit.items():
+        changed = set(filter(None, git(root, "diff-tree", "--root", "--no-commit-id",
+                                      "--name-only", "-r", commit, check=False).splitlines()))
+        if any(name not in changed for _, _, name in group):
+            continue
+        canonical = sorted(name for name in changed
+                           if name.startswith((".juno_task/tasks/", ".juno_task/ledger/")))
+        canonical_text: dict[str, str] = {
+            name: run(["git", "-C", str(root), "show", f"{commit}:{name}"], root, False).stdout
+            for name in canonical
+        }
+        pending = {name: (mode, oid) for mode, oid, name in group}
+        references: dict[str, str] = {}
+        for name in sorted(pending):
+            owner = next((path for path, text in canonical_text.items()
+                          if exact_text_reference(text, name)), None)
+            if owner:
+                references[name] = owner
+        progress = True
+        while progress:
+            progress = False
+            for name in sorted(set(pending) - set(references)):
+                owner = next((other for other in sorted(references)
+                              if PurePosixPath(other).parent == PurePosixPath(name).parent
+                              and exact_text_reference(run(
+                                  ["git", "-C", str(root), "show", f"{commit}:{other}"],
+                                  root, False).stdout, PurePosixPath(name).name)), None)
+                if owner:
+                    references[name] = owner
+                    progress = True
+        for name, reference in references.items():
+            attributed[name] = {"attribution_commit": commit, "attribution_reference": reference}
+    return attributed
 
 
 def agent_surface_path(name: str) -> bool:
@@ -732,9 +812,22 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     current_entries = listed_tree(root, head)
     names = [name for _, _, name in current_entries]
     unsafe_modes = [name for mode, _, name in current_entries if mode not in {"100644", "100755"}]
-    forbidden = [name for name in names if not tracked_allowed(name, policy)]
-    root_names = [name for _, _, name in listed_tree(root, ancestry_roots[0])] if len(ancestry_roots) == 1 else []
-    forbidden_root = [name for name in root_names if not tracked_allowed(name, policy)]
+    historical = historical_nested_attributions(root, head, current_entries, policy)
+    path_decisions = {name: policy_path_decision(name, policy,
+                                                 historical_attribution=historical.get(name))
+                      for name in names}
+    forbidden_details = [{"path": name, "reason": decision["reason"], "rule": decision["rule"]}
+                         for name, decision in path_decisions.items() if not decision["allowed"]]
+    forbidden = [item["path"] for item in forbidden_details]
+    root_entries = listed_tree(root, ancestry_roots[0]) if len(ancestry_roots) == 1 else []
+    root_names = [name for _, _, name in root_entries]
+    root_historical = historical_nested_attributions(root, ancestry_roots[0], root_entries, policy) if len(ancestry_roots) == 1 else {}
+    forbidden_root_details = []
+    for name in root_names:
+        decision = policy_path_decision(name, policy, historical_attribution=root_historical.get(name))
+        if not decision["allowed"]:
+            forbidden_root_details.append({"path": name, "reason": decision["reason"], "rule": decision["rule"]})
+    forbidden_root = [item["path"] for item in forbidden_root_details]
     root_entry_map = {name: {"mode": mode, "oid": oid} for mode, oid, name in listed_tree(root, ancestry_roots[0])} if len(ancestry_roots) == 1 else {}
     boundary_path = ".juno_task/receipts/controller-boundary.json"
     root_boundary_text = run(["git", "-C", str(root), "show", f"{ancestry_roots[0]}:{boundary_path}"], root, False).stdout if len(ancestry_roots) == 1 else ""
@@ -831,7 +924,14 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
               "clean": git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False) == ""}
     return {"root": str(root), "branch_ref": branch, "head": head, "root_commit": ancestry_roots[0] if len(ancestry_roots) == 1 else None,
             "tracked_paths": names, "forbidden_tracked": forbidden,
-            "forbidden_root_tracked": forbidden_root, "product_markers": product_markers,
+            "forbidden_tracked_details": forbidden_details,
+            "historical_tracked_attributions": [
+                {"path": name, "rule": policy_path_decision(
+                    name, policy, historical_attribution=attribution)["rule"], **attribution}
+                for name, attribution in sorted(historical.items())
+            ],
+            "forbidden_root_tracked": forbidden_root,
+            "forbidden_root_tracked_details": forbidden_root_details, "product_markers": product_markers,
             "unsafe_tracked_modes": unsafe_modes,
             "missing_preserved_root_paths": preservation_missing, "missing_canonical_prefixes": missing_canonical,
             "missing_required_generated": missing_generated,

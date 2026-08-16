@@ -2711,11 +2711,19 @@ def require_metadata_only_controller(controller: Path,
     required_checks = {"branch_exact", "tracked_boundary", "product_absent", "role"}
     failed = sorted(name for name in required_checks if inspection.get("checks", {}).get(name) is not True)
     if failed:
+        forbidden = inspection.get("forbidden_tracked_details", [])
+        details = "; ".join(
+            f"{item['path']} (reason={item['reason']}, rule={item['rule']})"
+            for item in forbidden
+        )
+        suffix = f"; forbidden paths: {details}" if details else ""
         raise TaskWorkspaceError(
-            "runtime bootstrap metadata-controller boundary failed: " + ", ".join(failed))
+            "runtime bootstrap metadata-controller boundary failed: " + ", ".join(failed) + suffix)
     return {"policy_sha256": _file_sha256(metadata_path),
             "controller_branch": policy["controller_branch"],
-            "product_ref": policy["product_ref"], "checks": sorted(required_checks)}
+            "product_ref": policy["product_ref"], "checks": sorted(required_checks),
+            "historical_tracked_attributions": inspection.get(
+                "historical_tracked_attributions", [])}
 
 
 def _file_sha256(path: Path) -> str:
