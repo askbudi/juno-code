@@ -1425,6 +1425,12 @@ raise SystemExit(2)
         self.assertTrue(all(row["id"] != "full-suite" for row in ready["validation"]))
         complete = ready["risk"]["review_progress"]["full_suite_admission"]
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
+        receipt = json.loads(Path(complete["receipt"]["receipt_path"]).read_text())
+        self.assertEqual(receipt["timing"]["schema_version"], "juno_validation_timing.v1")
+        self.assertEqual([item["state"] for item in receipt["timing"]["states"]],
+                         ["WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED"])
+        self.assertEqual(set(receipt["identity"]), {"command_sha256", "cwd_sha256",
+                                                   "policy_sha256", "candidate_sha", "candidate_tree"})
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
 
     def test_failed_suite_new_tip_reopens_and_requeues_the_repair(self) -> None:
