@@ -300,6 +300,21 @@ class WorkflowError(Exception):
     pass
 
 
+class StepLaunchOwnership:
+    """Process-group ownership scoped to one rendered workflow step."""
+
+    launched: bool
+    process_group_id: int
+
+    def __init__(self) -> None:
+        self.launched = False
+        self.process_group_id = 0
+
+    def record(self, process_group_id: int) -> None:
+        self.launched = True
+        self.process_group_id = process_group_id
+
+
 LOCAL_INTEGRATION_HARD_CUT = (
     "legacy local_integration execution is read-only; "
     "use `yy task start TASK_ID` and `yy merge next`, or inspect historical artifacts with workflow_runner.sh doctor"
@@ -2059,6 +2074,7 @@ def execute_rendered_command(
     activity: dict[str, Any] | None = None,
     active_marker: Path | None = None,
     timeout_seconds: int | None = None,
+    launch_ownership: StepLaunchOwnership | None = None,
 ) -> subprocess.CompletedProcess[str]:
     argv: Any = [str(part) for part in command] if isinstance(command, list) else str(command)
     shell = not isinstance(command, list)
@@ -2073,6 +2089,8 @@ def execute_rendered_command(
         bufsize=1,
         start_new_session=True,
     )
+    if launch_ownership is not None:
+        launch_ownership.record(proc.pid)
     if activity is not None and active_marker is not None:
         activity.update({"child_pid": proc.pid, "process_group_id": proc.pid})
         write_text(active_marker, json.dumps(activity, indent=2, sort_keys=True) + "\n")
@@ -3056,6 +3074,7 @@ def run_workflow(args: argparse.Namespace) -> int:
         stderr = ""
         exit_code = 0
         probe_satisfied = False
+        launch_ownership = StepLaunchOwnership()
         dispatch_root = project_root
         dispatch_root_error = ""
         if not args.dry_run:
@@ -3172,7 +3191,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                 else:
                     proc = execute_rendered_command(
                         command, dispatch_root, env, live_log_path, activity, active_marker,
-                        timeout_seconds=timeout_seconds)
+                        timeout_seconds=timeout_seconds, launch_ownership=launch_ownership)
                     stdout = proc.stdout or ""
                     stderr = proc.stderr or ""
                     exit_code = int(proc.returncode)
@@ -3353,7 +3372,9 @@ def run_workflow(args: argparse.Namespace) -> int:
         write_text(legacy_step_dir / "response.txt", str(result.get("response", "")))
         if status == "success" and not args.dry_run:
             try:
-                if 'activity' in locals() and process_group_is_active(int(activity.get("process_group_id") or 0)):
+                if (launch_ownership.launched
+                        and launch_ownership.process_group_id > 0
+                        and process_group_is_active(launch_ownership.process_group_id)):
                     raise WorkflowError(f"step[{step_id}]: command process group remains active after command exit")
                 produced_receipts: dict[str, Any] = {}
                 for contract in receipts_by_producer.get(step_id, []):

@@ -1785,6 +1785,14 @@ def _write_hydration_lint_diagnostics(out_dir: Path, runner: Path, argv: list[st
     return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def _hydration_manifest_evidence(run_dir: Path) -> dict[str, Optional[str]]:
+    manifest = run_dir / "manifest.json"
+    return {
+        "manifest_path": str(manifest) if manifest.is_file() else None,
+        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.is_file() else None,
+    }
+
+
 def run_task_hydration(controller: Path, worktree: Path, task_id: str,
                        frozen: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if not frozen.get("configured"):
@@ -1839,6 +1847,7 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
                 "exit_code": 124 if isinstance(exc, subprocess.TimeoutExpired) else 127,
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "artifact_dir": str(out_dir), "lint_diagnostic": lint_diagnostic,
+                **(_hydration_manifest_evidence(run_dir) if stage == "run" else {}),
                 "recovery_command": f"yy task hydrate {task_id}",
             }) from exc
         if stage == "lint":
@@ -1852,6 +1861,7 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
                 "exit_code": completed.returncode,
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "artifact_dir": str(out_dir), "lint_diagnostic": lint_diagnostic,
+                **(_hydration_manifest_evidence(run_dir) if stage == "run" else {}),
                 "recovery_command": f"yy task hydrate {task_id}",
             })
     drift = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False)
@@ -1861,7 +1871,6 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
         })
-    manifest = run_dir / "manifest.json"
     try:
         dependencies = validation_dependency_evidence(worktree, config)
     except TaskWorkspaceError as exc:
@@ -1873,8 +1882,7 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
     return {"status": "passed", "workflow": frozen,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "artifact_dir": str(out_dir),
-            "manifest_path": str(manifest) if manifest.is_file() else None,
-            "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.is_file() else None,
+            **_hydration_manifest_evidence(run_dir),
             "dependency_locks": dependencies,
             "recovery_command": f"yy task hydrate {task_id}"}
 

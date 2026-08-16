@@ -2008,6 +2008,49 @@ steps:
       .toContain('command timed out after 1s');
   });
 
+  it('does not reuse prior-step process-group ownership for a probe-satisfied step', async () => {
+    const workflowPath = path.join(testDir, 'probe-after-launch.json');
+    const outDir = path.join(testDir, 'probe-after-launch-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'probe_after_launch',
+      steps: [
+        { id: 'launched', command: ['python3', '-c', "print('launched')"] },
+        {
+          id: 'probe_satisfied',
+          probe: ['python3', '-c', 'raise SystemExit(0)'],
+          command: ['python3', '-c', "raise SystemExit('must not run')"],
+        },
+      ],
+    });
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.status).toBe('success');
+    expect(manifest.steps.map((step: { status: string }) => step.status)).toEqual(['success', 'success']);
+    expect(manifest.steps[1].probe_satisfied).toBe(true);
+  });
+
+  it('fails closed when a launched command leaves a live process-group descendant', async () => {
+    const workflowPath = path.join(testDir, 'live-descendant.json');
+    const outDir = path.join(testDir, 'live-descendant-out');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'live_descendant',
+      steps: [{
+        id: 'leaks',
+        command: ['bash', '-c', 'sleep 30 </dev/null >/dev/null 2>&1 &'],
+        fail_workflow: true,
+      }],
+    });
+    const result = runWorkflow(['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none']);
+    expect(result.status).toBe(1);
+    const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
+    expect(manifest.steps[0].failure_reason).toContain('command process group remains active');
+    const active = await fs.readJson(path.join(outDir, 'active_step.json'));
+    try { process.kill(-active.process_group_id, 'SIGKILL'); } catch {}
+  });
+
   it('does not exit non-zero for a failed step by default but reports the failure', async () => {
     const workflowPath = path.join(testDir, 'fail-default.yml');
     const outDir = path.join(testDir, 'fail-default-out');

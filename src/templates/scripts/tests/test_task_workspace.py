@@ -2485,6 +2485,57 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "HEAD^{tree}"), moved_tree)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
+    def test_hydration_runtime_failure_preserves_manifest_and_retry_is_idempotent(self) -> None:
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("schema_version: v1\nworkflow_class: task_hydration\nsteps: []\n")
+        git(self.repository, "add", str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow")
+        config = task_runtime.load_config(self.controller)
+        frozen = task_runtime.hydration_identity(
+            self.repository, git(self.repository, "rev-parse", "HEAD"), config)
+
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir()
+        fake_runtime.write_text("# fixture module identity\n")
+        marker = self.root / "hydration-installed.marker"
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(f"""#!/usr/bin/env python3
+import json, pathlib, sys
+marker = pathlib.Path({str(marker)!r})
+if len(sys.argv) > 1 and sys.argv[1] == 'lint':
+    raise SystemExit(0)
+out = pathlib.Path(sys.argv[sys.argv.index('--out-dir') + 1])
+out.mkdir(parents=True)
+if marker.exists():
+    (out / 'manifest.json').write_text(json.dumps({{'status': 'success', 'failed_steps': []}}) + '\\n')
+    raise SystemExit(0)
+marker.write_text('installed\\n')
+(out / 'manifest.json').write_text(json.dumps({{'status': 'failed', 'failed_steps': ['install_once']}}) + '\\n')
+raise SystemExit(17)
+""")
+        runner.chmod(0o755)
+
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            with self.assertRaises(task_runtime.HydrationFailure) as raised:
+                task_runtime.run_task_hydration(
+                    self.controller, self.repository, "X", frozen, config)
+        evidence = raised.exception.evidence
+        self.assertEqual(evidence["failed_stage"], "run")
+        self.assertEqual(evidence["exit_code"], 17)
+        manifest = Path(evidence["manifest_path"])
+        self.assertTrue(manifest.is_file())
+        self.assertEqual(
+            evidence["manifest_sha256"], hashlib.sha256(manifest.read_bytes()).hexdigest())
+        self.assertEqual(json.loads(manifest.read_text())["failed_steps"], ["install_once"])
+
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            recovered = task_runtime.run_task_hydration(
+                self.controller, self.repository, "X", frozen, config)
+        self.assertEqual(recovered["status"], "passed")
+        self.assertEqual(json.loads(Path(recovered["manifest_path"]).read_text())["status"], "success")
+        self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
+
     # These acceptance flows require the built package binary and are selected
     # explicitly by binary-execution.test.ts. Keeping them out of unittest's
     # default discovery lets ordinary source/runtime validation run in a fresh
