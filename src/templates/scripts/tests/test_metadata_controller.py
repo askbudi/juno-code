@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +32,20 @@ def command(*argv: str, cwd: Path) -> str:
 def write(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value)
+
+
+def npm_pack(path: Path, version: str, name: str = "juno-code") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = json.dumps({"name": name, "version": version}).encode()
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("package/package.json")
+        info.size = len(manifest)
+        archive.addfile(info, io.BytesIO(manifest))
+        cli = b"fixture"
+        info = tarfile.TarInfo("package/dist/bin/cli.mjs")
+        info.size = len(cli)
+        info.mode = 0o755
+        archive.addfile(info, io.BytesIO(cli))
 
 
 class MetadataControllerTest(unittest.TestCase):
@@ -802,6 +818,151 @@ class MetadataControllerTest(unittest.TestCase):
             self.assertTrue(failure["rollback"]["fresh_prefix_removed"])
         finally:
             mc.shutil.which = original_which
+        self.assertFalse(prefix.exists())
+        self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+
+    def test_local_runtime_artifact_success_replay_and_receipt_provenance(self) -> None:
+        self.prepare()
+        version = "2.0.33-rc.0.33"
+        artifact = self.temp / f"release/juno-code-{version}.tgz"
+        npm_pack(artifact, version)
+        prefix = self.temp / "local-runtime"
+        receipt_path = self.temp / "local-runtime.json"
+        fake_npm = self.temp / "bin/local-npm"
+        write(fake_npm, "#!/bin/sh\nexit 98\n")
+        fake_npm.chmod(0o755)
+        original_which, original_run = mc.shutil.which, mc.run
+        install_argv: list[str] = []
+
+        def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if argv and argv[0] == str(fake_npm):
+                install_argv.extend(argv)
+                installed = prefix / "node_modules/juno-code"
+                write(installed / "package.json", json.dumps({"name": "juno-code", "version": version}) + "\n")
+                executable = installed / "dist/bin/cli.mjs"
+                write(executable, f"#!/bin/sh\nprintf 'juno-code {version}\\n'\n")
+                executable.chmod(0o755)
+                return subprocess.CompletedProcess(argv, 0, "installed\n", "")
+            return original_run(argv, cwd, check, **kwargs)
+
+        try:
+            mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
+            mc.run = install_fixture
+            args = argparse.Namespace(root=self.new_controller,
+                                      branch="refs/heads/juno/controller-metadata-v1",
+                                      runtime_version=version, install_prefix=prefix,
+                                      artifact=artifact, output=receipt_path)
+            receipt = mc.runtime_install_rebind(args, self.policy)
+            replay = mc.runtime_install_rebind(args, self.policy)
+        finally:
+            mc.shutil.which, mc.run = original_which, original_run
+
+        self.assertEqual(replay, receipt)
+        self.assertEqual(receipt["artifact"]["source"], "local")
+        self.assertEqual(receipt["artifact"]["path"], str(artifact.resolve()))
+        self.assertEqual(receipt["artifact"]["sha256"], mc.file_digest(artifact))
+        self.assertEqual(receipt["artifact"]["size_bytes"], artifact.stat().st_size)
+        self.assertEqual(receipt["installation"]["package"], "juno-code")
+        self.assertEqual(receipt["runtime"]["executable_sha256"], mc.file_digest(Path(receipt["runtime"]["executable"])))
+        self.assertIn("--offline", install_argv)
+        self.assertNotIn(str(artifact.resolve()), install_argv)
+        self.assertFalse(receipt["rollback"]["attempted"])
+        self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+
+    def test_local_runtime_artifact_rejects_unsafe_identity_and_hash_drift_before_install(self) -> None:
+        self.prepare()
+        version = "2.0.33-rc.0.33"
+        directory = self.temp / "artifact-directory"
+        directory.mkdir()
+        with self.assertRaisesRegex(mc.BoundaryError, "regular non-symlink"):
+            mc.authenticate_local_runtime_artifact(directory, version, self.new_controller)
+        wrong = self.temp / "wrong.tgz"
+        npm_pack(wrong, version, "other-package")
+        with self.assertRaisesRegex(mc.BoundaryError, "name/version"):
+            mc.authenticate_local_runtime_artifact(wrong, version, self.new_controller)
+        symlink = self.temp / "artifact-link.tgz"
+        symlink.symlink_to(wrong)
+        with self.assertRaisesRegex(mc.BoundaryError, "symlink"):
+            mc.authenticate_local_runtime_artifact(symlink, version, self.new_controller)
+        malformed = self.temp / "malformed.tgz"; malformed.write_bytes(b"not a tarball")
+        with self.assertRaisesRegex(mc.BoundaryError, "valid npm pack tarball"):
+            mc.authenticate_local_runtime_artifact(malformed, version, self.new_controller)
+        inside_git = self.repo / "runtime.tgz"; npm_pack(inside_git, version)
+        with self.assertRaisesRegex(mc.BoundaryError, "outside every Git worktree"):
+            mc.authenticate_local_runtime_artifact(inside_git, version, self.new_controller)
+        inside_git.unlink()
+
+        artifact = self.temp / "drift.tgz"
+        npm_pack(artifact, version)
+        prefix = self.temp / "drift-prefix"
+        output = self.temp / "drift.json"
+        original_verify = mc.verify_local_runtime_artifact
+        original_which = mc.shutil.which
+        fake_npm = self.temp / "bin/drift-npm"
+        write(fake_npm, "#!/bin/sh\nexit 97\n"); fake_npm.chmod(0o755)
+
+        def drift(evidence: dict[str, object], repository: Path) -> bytes:
+            artifact.write_bytes(artifact.read_bytes() + b"drift")
+            return original_verify(evidence, repository)
+
+        try:
+            mc.verify_local_runtime_artifact = drift
+            mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
+            with self.assertRaisesRegex(mc.BoundaryError, "changed after authentication"):
+                mc.runtime_install_rebind(argparse.Namespace(
+                    root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+                    runtime_version=version, install_prefix=prefix, artifact=artifact, output=output), self.policy)
+        finally:
+            mc.verify_local_runtime_artifact = original_verify
+            mc.shutil.which = original_which
+        failure = json.loads(output.read_text())
+        self.assertTrue(failure["rollback"]["complete"])
+        self.assertFalse(prefix.exists())
+
+        clean_artifact = self.temp / "dirty-controller.tgz"; npm_pack(clean_artifact, version)
+        tracked = self.new_controller / ".juno_task/config.json"
+        tracked.write_text(tracked.read_text() + " ")
+        dirty_prefix = self.temp / "dirty-prefix"; dirty_output = self.temp / "dirty-output.json"
+        try:
+            with self.assertRaisesRegex(mc.BoundaryError, "clean metadata controller"):
+                mc.runtime_install_rebind(argparse.Namespace(
+                    root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+                    runtime_version=version, install_prefix=dirty_prefix,
+                    artifact=clean_artifact, output=dirty_output), self.policy)
+        finally:
+            command("git", "checkout", "--", ".juno_task/config.json", cwd=self.new_controller)
+        self.assertFalse(dirty_prefix.exists())
+        self.assertFalse(dirty_output.exists())
+
+    def test_local_runtime_artifact_rebind_failure_restores_controller_and_prefix(self) -> None:
+        self.prepare()
+        version = "2.0.33-rc.0.33"
+        artifact = self.temp / "rollback.tgz"; npm_pack(artifact, version)
+        prefix = self.temp / "rollback-prefix"; output = self.temp / "rollback.json"
+        fake_npm = self.temp / "bin/rollback-npm"; write(fake_npm, "#!/bin/sh\nexit 96\n"); fake_npm.chmod(0o755)
+        original_which, original_run = mc.shutil.which, mc.run
+
+        def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if argv and argv[0] == str(fake_npm):
+                package = prefix / "node_modules/juno-code"
+                write(package / "package.json", json.dumps({"name": "juno-code", "version": version}))
+                executable = package / "dist/bin/cli.mjs"
+                write(executable, f"#!/bin/sh\nprintf 'juno-code {version}\\n'\n"); executable.chmod(0o755)
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return original_run(argv, cwd, check, **kwargs)
+        try:
+            mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
+            mc.run = install_fixture
+            os.environ["JUNO_RUNTIME_REBIND_TEST_FAIL_AFTER_CONFIG"] = "1"
+            with self.assertRaisesRegex(mc.BoundaryError, "injected runtime rebind failure"):
+                mc.runtime_install_rebind(argparse.Namespace(
+                    root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+                    runtime_version=version, install_prefix=prefix, artifact=artifact, output=output), self.policy)
+        finally:
+            os.environ.pop("JUNO_RUNTIME_REBIND_TEST_FAIL_AFTER_CONFIG", None)
+            mc.shutil.which, mc.run = original_which, original_run
+        failure = json.loads(output.read_text())
+        self.assertTrue(failure["rollback"]["complete"])
         self.assertFalse(prefix.exists())
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
 

@@ -14,6 +14,7 @@ import ctypes
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -69,6 +71,10 @@ RETIRED_CONTROLLER_WORKSPACE = {
 CANONICAL_CONTROLLER_CONFIG = {"controllerWorkspace": CANONICAL_CONTROLLER_WORKSPACE}
 CONFIG_PATH = ".juno_task/config.json"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+MAX_LOCAL_RUNTIME_ARTIFACT_BYTES = 256 * 1024 * 1024
+MAX_RUNTIME_ARCHIVE_MEMBERS = 100_000
+MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
+MAX_RUNTIME_MANIFEST_BYTES = 1024 * 1024
 
 
 class BoundaryError(RuntimeError):
@@ -2267,9 +2273,107 @@ def resolved_registry_artifact(npm: str, package_spec: str, version: str,
         raise BoundaryError("registry artifact integrity evidence is malformed") from exc
     if hashlib.sha512(data).digest() != expected or hashlib.sha1(data).hexdigest() != row["shasum"]:
         raise BoundaryError("downloaded exact runtime artifact failed integrity verification")
-    return {"package_spec": package_spec, "version": version,
-            "integrity": row["integrity"], "shasum": row["shasum"],
-            "tarball_sha256": hashlib.sha256(data).hexdigest(), "tarball": str(tarball)}
+    return {"source": "registry", "package": "juno-code", "package_spec": package_spec,
+            "version": version, "integrity": row["integrity"], "shasum": row["shasum"],
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "tarball_sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data),
+            "tarball": str(tarball)}
+
+
+def _outside_git_artifact_path(supplied: Path, repository: Path) -> Path:
+    lexical = supplied.expanduser()
+    if not lexical.is_absolute():
+        lexical = Path.cwd() / lexical
+    lexical = Path(os.path.abspath(lexical))
+    try:
+        mode = os.lstat(lexical).st_mode
+    except OSError as exc:
+        raise BoundaryError(f"local runtime artifact is unavailable: {exc}") from exc
+    if not stat.S_ISREG(mode):
+        raise BoundaryError("local runtime artifact must be one regular non-symlink npm pack tarball")
+    artifact = lexical.resolve(strict=True)
+    repo = repository.resolve()
+    prohibited = {repo, Path(common_dir(repo)).resolve()}
+    listing = run(["git", "-C", str(repo), "worktree", "list", "--porcelain", "-z"], repo)
+    prohibited.update(Path(record.removeprefix("worktree ")).resolve()
+                      for record in listing.stdout.split("\0") if record.startswith("worktree "))
+    for protected in prohibited:
+        try:
+            artifact.relative_to(protected)
+        except ValueError:
+            continue
+        raise BoundaryError("local runtime artifact must be outside every Git worktree and administration directory")
+    if git(artifact.parent, "rev-parse", "--show-toplevel", check=False):
+        raise BoundaryError("local runtime artifact must be outside every mutable Git worktree or Git ancestor")
+    return artifact
+
+
+def _authenticate_npm_pack(data: bytes, version: str) -> None:
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            manifest_member: tarfile.TarInfo | None = None
+            count = 0
+            expanded = 0
+            for member in archive:
+                count += 1
+                expanded += max(member.size, 0)
+                if count > MAX_RUNTIME_ARCHIVE_MEMBERS or expanded > MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES:
+                    raise BoundaryError("local runtime artifact archive exceeds bounded package limits")
+                path = PurePosixPath(member.name)
+                if (path.is_absolute() or ".." in path.parts or not path.parts
+                        or path.parts[0] != "package" or "\\" in member.name
+                        or member.issym() or member.islnk()):
+                    raise BoundaryError("local runtime artifact contains an unsafe npm package entry")
+                if path == PurePosixPath("package/package.json"):
+                    if manifest_member is not None or not member.isfile() or member.size > MAX_RUNTIME_MANIFEST_BYTES:
+                        raise BoundaryError("local runtime artifact has an invalid package manifest entry")
+                    manifest_member = member
+            if manifest_member is None:
+                raise BoundaryError("local runtime artifact is missing package/package.json")
+            stream = archive.extractfile(manifest_member)
+            manifest_data = stream.read(MAX_RUNTIME_MANIFEST_BYTES + 1) if stream else b""
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        raise BoundaryError(f"local runtime artifact is not a valid npm pack tarball: {exc}") from exc
+    try:
+        manifest = json.loads(manifest_data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BoundaryError("local runtime artifact package manifest is malformed") from exc
+    if (not isinstance(manifest, dict) or manifest.get("name") != "juno-code"
+            or manifest.get("version") != version or not valid_semver(manifest.get("version"))):
+        raise BoundaryError("local runtime artifact package name/version does not match requested juno-code release")
+
+
+def authenticate_local_runtime_artifact(supplied: Path, version: str,
+                                        repository: Path) -> tuple[dict[str, Any], bytes]:
+    artifact = _outside_git_artifact_path(supplied, repository)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(artifact, flags)
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_size <= 0
+                    or before.st_size > MAX_LOCAL_RUNTIME_ARTIFACT_BYTES):
+                raise BoundaryError("local runtime artifact size is outside bounded package limits")
+            data = stream.read(MAX_LOCAL_RUNTIME_ARTIFACT_BYTES + 1)
+            after = os.fstat(stream.fileno())
+    except OSError as exc:
+        raise BoundaryError(f"local runtime artifact could not be read safely: {exc}") from exc
+    if (len(data) != before.st_size or len(data) > MAX_LOCAL_RUNTIME_ARTIFACT_BYTES
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise BoundaryError("local runtime artifact changed while it was being authenticated")
+    _authenticate_npm_pack(data, version)
+    evidence = {"source": "local", "path": str(artifact), "package": "juno-code",
+                "version": version, "sha256": hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data)}
+    return evidence, data
+
+
+def verify_local_runtime_artifact(evidence: dict[str, Any], repository: Path) -> bytes:
+    current, data = authenticate_local_runtime_artifact(Path(evidence["path"]), evidence["version"], repository)
+    if current != evidence:
+        raise BoundaryError("local runtime artifact bytes or identity changed after authentication")
+    return data
 
 
 def bounded_runtime_error(exc: BaseException) -> str:
@@ -2279,27 +2383,30 @@ def bounded_runtime_error(exc: BaseException) -> str:
 
 
 def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
-    """Install one exact registry release into a fresh non-Git prefix, then bind it.
-
-    This is the supported escape from package managers (notably NVM) whose
-    otherwise immutable global package directory has an unrelated Git ancestor.
-    The destination is deliberately fresh: this command never upgrades or
-    repairs an existing installation in place.
-    """
+    """Install one authenticated release tarball into a fresh prefix, then bind it."""
     if not valid_semver(args.runtime_version):
         raise BoundaryError("runtime version must be an exact released semantic version")
     prefix = args.install_prefix.expanduser().resolve()
     root = exact_worktree(args.root)
-    output = external_config_repair_receipt(
-        args.output, root, Path(common_dir(root)))
+    expected_branch = safe_ref(args.branch, "branch")
+    local_artifact = getattr(args, "artifact", None)
+    output = external_config_repair_receipt(args.output, root, Path(common_dir(root)))
     if output.is_file() and not output.is_symlink():
         prior = read_json(output, "runtime install/rebind receipt")
         if (prior.get("schema_version") == RECEIPT_SCHEMA
                 and prior.get("operation") == "runtime-install-rebind"
                 and prior.get("outcome") == "exact_runtime_installed_and_rebound"
                 and prior.get("root") == str(root)
-                and prior.get("branch") == args.branch
-                and prior.get("runtime", {}).get("version") == args.runtime_version):
+                and prior.get("branch") == expected_branch
+                and prior.get("runtime", {}).get("version") == args.runtime_version
+                and prior.get("install_prefix") in (None, str(prefix))):
+            prior_artifact = prior.get("artifact", {})
+            if local_artifact is not None:
+                supplied, _ = authenticate_local_runtime_artifact(local_artifact, args.runtime_version, root)
+                if supplied != prior_artifact:
+                    raise BoundaryError("completed receipt does not match the supplied local runtime artifact")
+            elif prior_artifact.get("source") == "local":
+                raise BoundaryError("completed local-artifact receipt requires the same --artifact input for replay")
             executable = Path(prior["runtime"]["executable"])
             expected_root = prefix / "node_modules/juno-code"
             try:
@@ -2307,8 +2414,16 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
             except ValueError as exc:
                 raise BoundaryError("completed runtime receipt is outside its exact install prefix") from exc
             identity = runtime_identity(executable, args.runtime_version, root)
-            if identity != prior["runtime"]:
-                raise BoundaryError("completed runtime receipt identity has drifted")
+            manifest_path = expected_root / "package.json"
+            installation = prior.get("installation", {})
+            manifest = read_json(manifest_path, "installed juno-code package")
+            manifest_matches = (manifest.get("name") == "juno-code"
+                                and manifest.get("version") == args.runtime_version)
+            if installation:
+                manifest_matches = (manifest_matches
+                                    and file_digest(manifest_path) == installation.get("package_manifest_sha256"))
+            if identity != prior["runtime"] or not manifest_matches:
+                raise BoundaryError("completed runtime receipt installed identity has drifted")
             if (git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion") != args.runtime_version
                     or git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable") != str(executable.resolve())):
                 raise BoundaryError("completed runtime receipt no longer matches controller registration")
@@ -2324,47 +2439,79 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
         raise BoundaryError(f"runtime install prefix must be outside the {label}: {prefix}")
     if output.exists() or output.is_symlink():
         raise BoundaryError(f"immutable receipt collision: {output}")
+    if git(root, "symbolic-ref", "-q", "HEAD", check=False) != expected_branch:
+        raise BoundaryError("runtime install/rebind refused for wrong controller branch")
+    if git(root, "config", "--worktree", "--get", "juno.controller.mode", check=False) != "metadata-only":
+        raise BoundaryError("runtime install/rebind refused for non-metadata controller")
+    if git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False):
+        raise BoundaryError("runtime install/rebind requires a clean metadata controller")
     npm = shutil.which("npm")
     if not npm:
         raise BoundaryError("npm is required to install the exact juno-code release")
+    before = {"head": git(root, "rev-parse", "HEAD"), "tree": git(root, "write-tree"),
+              "runtime_version": git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion", check=False),
+              "runtime_executable": git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable", check=False)}
+    runtime_file = root / policy["runtime"]["identity_file"]
+    before_identity = runtime_file.read_bytes() if runtime_file.exists() else None
     package_spec = f"juno-code@{args.runtime_version}"
     artifact: dict[str, Any] | None = None
+    installation: dict[str, Any] | None = None
+    installed_runtime: dict[str, str] | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="juno-runtime-artifact-") as temporary:
-            artifact = resolved_registry_artifact(
-                npm, package_spec, args.runtime_version, Path(temporary), root)
-            result = run([
-                npm, "install", "--prefix", str(prefix), "--ignore-scripts", "--no-audit",
-                "--no-fund", "--package-lock=false", "--save=false", "--exact",
-                artifact["tarball"],
-            ], root, False)
+            temporary_root = Path(temporary)
+            if local_artifact is not None:
+                artifact, authenticated = authenticate_local_runtime_artifact(local_artifact, args.runtime_version, root)
+                snapshot = temporary_root / "juno-code-authenticated.tgz"
+                snapshot.write_bytes(authenticated)
+                # Reauthenticate the owner-visible file immediately before any prefix mutation.
+                verify_local_runtime_artifact(artifact, root)
+                tarball = snapshot
+            else:
+                resolved = resolved_registry_artifact(npm, package_spec, args.runtime_version, temporary_root, root)
+                artifact = {key: value for key, value in resolved.items() if key != "tarball"}
+                tarball = Path(resolved["tarball"])
+            install_args = [npm, "install", "--prefix", str(prefix), "--ignore-scripts", "--no-audit",
+                            "--no-fund", "--package-lock=false", "--save=false", "--exact"]
+            if local_artifact is not None:
+                install_args.append("--offline")
+            install_args.append(str(tarball))
+            result = run(install_args, root, False)
             if result.returncode:
                 raise BoundaryError(
                     f"exact runtime installation failed for verified {package_spec}: "
                     f"{result.stderr.strip() or result.stdout.strip() or 'npm failed'}")
             package_root = prefix / "node_modules/juno-code"
-            manifest = read_json(package_root / "package.json", "installed juno-code package")
+            manifest_path = package_root / "package.json"
+            manifest = read_json(manifest_path, "installed juno-code package")
             if manifest.get("name") != "juno-code" or manifest.get("version") != args.runtime_version:
                 raise BoundaryError("installed package identity does not match the requested exact juno-code release")
             executable = package_root / "dist/bin/cli.mjs"
-            public_artifact = {key: value for key, value in artifact.items() if key != "tarball"}
+            installation = {"prefix": str(prefix), "package_root": str(package_root.resolve()),
+                            "package": "juno-code", "version": args.runtime_version,
+                            "package_manifest_sha256": file_digest(manifest_path)}
+            installed_runtime = runtime_identity(executable, args.runtime_version, root)
             return runtime_rebind(argparse.Namespace(
-                root=root, branch=args.branch, runtime=executable,
+                root=root, branch=expected_branch, runtime=executable,
                 runtime_version=args.runtime_version, output=output,
-                artifact=public_artifact,
+                artifact=artifact, installation=installation, install_prefix=str(prefix),
             ), policy)
     except BaseException as exc:
-        # The prefix was required absent, so removing it cannot destroy user
-        # state. Persist failure evidence after rollback; retry uses a fresh
-        # output path and prefix rather than pretending this attempt succeeded.
         shutil.rmtree(prefix, ignore_errors=True)
+        after_identity = runtime_file.read_bytes() if runtime_file.exists() else None
+        rollback = {"fresh_prefix_removed": not prefix.exists(),
+                    "controller_head_restored": git(root, "rev-parse", "HEAD") == before["head"],
+                    "controller_tree_restored": git(root, "write-tree") == before["tree"],
+                    "controller_clean": not bool(git(root, "status", "--porcelain=v2", "--untracked-files=all", check=False)),
+                    "runtime_version_restored": git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion", check=False) == before["runtime_version"],
+                    "runtime_executable_restored": git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable", check=False) == before["runtime_executable"],
+                    "runtime_identity_restored": after_identity == before_identity}
+        rollback["complete"] = all(rollback.values())
         failure = {"schema_version": RECEIPT_SCHEMA, "operation": "runtime-install-rebind",
-                   "outcome": "failed_rolled_back", "root": str(root),
-                   "branch": args.branch, "runtime_version": args.runtime_version,
-                   "install_prefix": str(prefix), "artifact": (
-                       {key: value for key, value in artifact.items() if key != "tarball"}
-                       if artifact else None), "error": bounded_runtime_error(exc),
-                   "rollback": {"fresh_prefix_removed": not prefix.exists()},
+                   "outcome": "failed_rolled_back", "root": str(root), "branch": expected_branch,
+                   "runtime_version": args.runtime_version, "install_prefix": str(prefix),
+                   "artifact": artifact, "installation": installation, "runtime": installed_runtime,
+                   "error": bounded_runtime_error(exc), "rollback": rollback,
                    "tracked_changes": False, "product_ref_mutation": False}
         atomic_receipt(output, failure)
         raise
@@ -2397,7 +2544,10 @@ def _runtime_rebind_locked(args: argparse.Namespace, policy: dict[str, Any]) -> 
                "operation": "runtime-install-rebind" if artifact else "runtime-rebind",
                "outcome": "exact_runtime_installed_and_rebound" if artifact else "local_runtime_rebound",
                "root": str(root), "branch": expected_branch, "head": before_head, "tree": before_tree,
-               "runtime": identity, "artifact": artifact,
+               "runtime_version": args.runtime_version, "runtime": identity, "artifact": artifact,
+               "install_prefix": getattr(args, "install_prefix", None),
+               "installation": getattr(args, "installation", None),
+               "rollback": {"attempted": False, "fresh_prefix_removed": False} if artifact else None,
                "tracked_changes": False, "product_ref_mutation": False}
     preflight_receipt(output, payload)
     old_version_result = run(["git", "-C", str(root), "config", "--worktree", "--get", "juno.controller.runtimeVersion"], root, False)
@@ -2521,6 +2671,8 @@ def main() -> None:
     install_rebind = sub.add_parser("runtime-install-rebind")
     install_rebind.add_argument("--root", type=Path, required=True); install_rebind.add_argument("--branch", required=True)
     install_rebind.add_argument("--runtime-version", required=True); install_rebind.add_argument("--install-prefix", type=Path, required=True)
+    install_rebind.add_argument("--artifact", type=Path,
+                                help="exact local npm pack .tgz outside every Git worktree (otherwise use registry)")
     install_rebind.add_argument("--output", type=Path, required=True)
     for name in ("cutover-plan", "rollback-plan"):
         item = sub.add_parser(name); item.add_argument("--plan", type=Path, required=True); item.add_argument("--output", type=Path, required=True)

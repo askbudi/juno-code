@@ -58,6 +58,23 @@ describe('migration CLI', () => {
       '--output', '/tmp/runtime-install-rebind.json']);
   });
 
+  it('exposes and forwards an exact local npm artifact without changing registry compatibility', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureMigrationCommand(program, invoke);
+    const migrate = program.commands.find((command) => command.name() === 'migrate');
+    const install = migrate?.commands.find((command) => command.name() === 'runtime-install-rebind');
+    expect(install?.helpInformation()).toContain('--artifact <path>');
+    await program.parseAsync(['node', 'yy', 'migrate', 'runtime-install-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime-version', '2.1.3-rc.0.33', '--install-prefix', '/runtimes/rc33',
+      '--artifact', '/releases/juno-code-2.1.3-rc.0.33.tgz', '--output', '/receipts/rebind.json']);
+    expect(invoke).toHaveBeenCalledWith(['runtime-install-rebind',
+      '--root', '/controller', '--branch', 'refs/heads/controller',
+      '--runtime-version', '2.1.3-rc.0.33', '--install-prefix', '/runtimes/rc33',
+      '--output', '/receipts/rebind.json', '--artifact', '/releases/juno-code-2.1.3-rc.0.33.tgz']);
+  });
+
   it('routes receipt-bound metadata-policy plan and explicitly authorized apply', async () => {
     const invoke = vi.fn(async () => undefined);
     const planProgram = new Command().exitOverride(); configureMigrationCommand(planProgram, invoke);

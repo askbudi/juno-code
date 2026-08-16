@@ -117,12 +117,17 @@ export function configureMigrationCommand(
     .requiredOption('--branch <ref>', 'Exact controller branch ref')
     .requiredOption('--runtime-version <version>', 'Exact released juno-code version to install')
     .requiredOption('--install-prefix <path>', 'Fresh absent prefix outside every Git worktree/ancestor')
+    .option('--artifact <path>', 'Exact local npm pack .tgz outside every Git worktree (bypasses registry lookup)')
     .requiredOption('--output <path>', 'New local receipt outside the controller worktree')
-    .action((options) => invoke([
-      'runtime-install-rebind', '--root', options.root, '--branch', options.branch,
-      '--runtime-version', options.runtimeVersion, '--install-prefix', options.installPrefix,
-      '--output', options.output,
-    ]));
+    .action((options) => {
+      const args = [
+        'runtime-install-rebind', '--root', options.root, '--branch', options.branch,
+        '--runtime-version', options.runtimeVersion, '--install-prefix', options.installPrefix,
+        '--output', options.output,
+      ];
+      if (options.artifact) args.push('--artifact', options.artifact);
+      return invoke(args);
+    });
   const metadataPolicy = migrate
     .command('metadata-policy')
     .description('Plan or apply the narrow legacy integration-workspace policy classification');

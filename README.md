@@ -253,11 +253,19 @@ yy migrate runtime-install-rebind \
   --output /tmp/yy-runtime-install-rebind.json
 ```
 
-This runs an exact `juno-code@X.Y.Z` npm install with lifecycle scripts disabled,
-validates the installed package name/version and executable, then performs the
-same clean-controller transactional rebind. A failed install or rebind removes
-only the newly created prefix. Existing prefixes and mutable source builds are
-never accepted or modified.
+By default this resolves the exact `juno-code@X.Y.Z` registry tarball. For an
+unpublished local RC, pass one previously created npm pack tarball with
+`--artifact /absolute/external/juno-code-X.Y.Z.tgz`. The artifact must be a
+regular non-symlink file outside every Git worktree/ancestor. Juno authenticates
+its bounded bytes, SHA-256, package name, and exact version before mutation,
+installs an authenticated private snapshot in offline mode, and records the
+canonical artifact path/hash/size in the receipt.
+
+Both channels install with lifecycle scripts disabled, validate the installed
+package name/version and executable, then perform the same clean-controller
+transactional rebind. A failed install or rebind removes only the newly created
+prefix and records complete rollback checks. Existing prefixes, hash-drifted
+artifacts, and mutable source builds are never accepted or modified.
 
 If the installed controller launcher is itself an obsolete generation, use the
 runtime in the clean, detached, exact-target integration owner rather than editing
