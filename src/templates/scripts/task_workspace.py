@@ -2757,8 +2757,8 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
 
 def cli_version_output_valid(result: subprocess.CompletedProcess[str],
                              version: str, cwd: Path) -> bool:
-    """Accept only the prefixed machine or canonical human --version contract."""
-    if result.stdout == f"juno-code {version}\n" and result.stderr == "":
+    """Accept only the current or compatible canonical --version contracts."""
+    if result.stdout in {f"{version}\n", f"juno-code {version}\n"} and result.stderr == "":
         return True
     if result.stdout != f"{version}\n":
         return False
