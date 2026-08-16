@@ -2476,10 +2476,91 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.repository, "rev-parse", "HEAD^{tree}"), moved_tree)
         self.assertEqual(git(self.repository, "status", "--porcelain=v1"), "")
 
-    # This acceptance flow requires the built package binary and is selected
-    # explicitly by binary-execution.test.ts. Keeping it out of unittest's
+    # These acceptance flows require the built package binary and are selected
+    # explicitly by binary-execution.test.ts. Keeping them out of unittest's
     # default discovery lets ordinary source/runtime validation run in a fresh
     # merge candidate whose ignored dist/ tree is intentionally absent.
+    def build_required_public_cli_routes_hydration_retry_with_lint_diagnostics(self) -> None:
+        package = json.loads((PACKAGE_ROOT / "package.json").read_text())
+        self.assertTrue(PUBLIC_YY.is_file(), f"public yy binary is missing: {PUBLIC_YY}")
+        run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
+        packaged_executable = PACKAGE_ROOT / "dist/bin/cli.mjs"
+        identity = self.controller / ".juno_task/runtime/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text(json.dumps({
+            "package": "juno-code", "version": package["version"],
+            "executable": str(packaged_executable),
+            "executable_sha256": hashlib.sha256(packaged_executable.read_bytes()).hexdigest(),
+            "source": "installed-release", "tracked": False,
+        }) + "\n")
+        git(self.controller, "config", "--worktree", "juno.controller.runtimeExecutable",
+            str(packaged_executable))
+        git(self.controller, "config", "--worktree", "juno.controller.runtimeVersion",
+            package["version"])
+
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("schema_version: juno_workflow.v1\nworkflow_class: task_hydration\nsteps: []\n")
+        git(self.repository, "add", str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+
+        runner = self.controller / ".juno_task/scripts/workflow_runner.sh"
+        runner.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+if os.environ.get('JUNO_WORKSPACE_ROLE'):
+    print('unexpected inherited role=' + os.environ['JUNO_WORKSPACE_ROLE'], file=sys.stderr)
+    raise SystemExit(23)
+root = pathlib.Path(os.environ['JUNO_TASK_ROOT'])
+marker = root / '.juno_task/runtime/hydration-transient-lint'
+if len(sys.argv) > 1 and sys.argv[1] == 'lint':
+    if not marker.exists():
+        marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text('failed once\\n')
+        sys.stdout.buffer.write(b'O' * 40000)
+        sys.stderr.buffer.write(b'E' * 40000 + b'\\ncausal lint failure\\n')
+        raise SystemExit(9)
+    print('Workflow lint / OK: no issues found')
+    raise SystemExit(0)
+out = pathlib.Path(sys.argv[sys.argv.index('--out-dir') + 1])
+out.mkdir(parents=True)
+(out / 'manifest.json').write_text(json.dumps({'outcome': 'passed'}) + '\\n')
+""")
+        runner.chmod(0o755)
+
+        failed = run([str(PUBLIC_YY), "task", "start", "X"], self.controller, False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("task hydration lint failed", failed.stderr)
+        failed_record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(failed_record["state"], "HYDRATION_FAILED")
+        artifact = Path(failed_record["hydration"]["artifact_dir"])
+        diagnostic_path = artifact / "lint-diagnostic.json"
+        self.assertTrue(diagnostic_path.is_file())
+        diagnostic = json.loads(diagnostic_path.read_text())
+        self.assertEqual(diagnostic["exit_code"], 9)
+        self.assertEqual(diagnostic["cwd"], str((self.workspaces / "X").resolve()))
+        self.assertEqual(diagnostic["runner"]["path"], str(runner.resolve()))
+        self.assertEqual(diagnostic["runner"]["sha256"], hashlib.sha256(runner.read_bytes()).hexdigest())
+        self.assertLessEqual(diagnostic["started_at_unix_ns"], diagnostic["completed_at_unix_ns"])
+        self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(diagnostic_path.stat().st_mode), 0o600)
+        self.assertEqual(diagnostic["streams"]["stdout"]["persisted_bytes"], 32768)
+        self.assertGreater(diagnostic["streams"]["stderr"]["truncated_bytes"], 0)
+        self.assertEqual((artifact / "lint.stdout").stat().st_size, 32768)
+        self.assertIn(b"causal lint failure", (artifact / "lint.stderr").read_bytes())
+        frozen = failed_record["creation_receipt"]["hydration_workflow"]
+
+        recovered = run([str(PUBLIC_YY), "task", "hydrate", "X"], self.workspaces / "X")
+        payload = json.loads(recovered.stdout)
+        self.assertEqual((payload["outcome"], payload["state"]), ("hydrated", "WORKING"))
+        self.assertEqual(payload["creation_receipt"]["hydration_workflow"], frozen)
+        audit = json.loads(Path(payload["control_audit"]["path"]).read_text())
+        self.assertEqual((audit["operation"], audit["routing"]["invocation_role"]),
+                         ("hydrate", "task"))
+        self.assertEqual(payload["hydration"]["status"], "passed")
+        self.assertTrue(Path(payload["hydration"]["manifest_path"]).is_file())
+        self.assertEqual(git(self.workspaces / "X", "status", "--porcelain=v1"), "")
+        print("PUBLIC_CLI_HYDRATION_RETRY_ACCEPTANCE_COMPLETED")
+
     def build_required_public_cli_recovers_missing_target_runtime_then_starts_task(self) -> None:
         package = json.loads((PACKAGE_ROOT / "package.json").read_text())
         self.assertEqual(package.get("name"), "juno-code")

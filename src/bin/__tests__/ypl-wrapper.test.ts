@@ -374,6 +374,7 @@ describe('ypl wrapper', () => {
     { args: ['merge', 'status'], operation: 'kanban' },
     { args: ['merge', 'plan', 'T1'], operation: 'kanban' },
     { args: ['task', 'start', 'T1'], operation: 'orchestration' },
+    { args: ['task', 'hydrate', 'T1'], operation: 'orchestration' },
     { args: ['task', 'finish', 'T1'], operation: 'orchestration' },
     { args: ['merge', 'next'], operation: 'orchestration' },
     { args: ['merge', 'resolve', 'T1'], operation: 'orchestration' },
