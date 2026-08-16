@@ -870,6 +870,16 @@ def pump(proc: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path,
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.external_side_effects != "forbidden" or args.lifecycle_hooks != "disabled":
+        raise RunnerError(
+            "managed launch requires external-side-effects=forbidden and lifecycle-hooks=disabled"
+        )
+    effective_hook_policy = {
+        "schema_version": "juno_managed_hook_policy.v1",
+        "external_side_effects": "forbidden",
+        "lifecycle_hooks": "disabled",
+        "enforcement": "yy_pi_no_hooks",
+    }
     out = safe_out_dir(Path(args.out_dir)); metadata = out / "session_metadata"; metadata.mkdir(exist_ok=True)
     controller_root = Path(args.controller_root).resolve()
     controller_before = controller_identity(controller_root)
@@ -918,6 +928,7 @@ def run(args: argparse.Namespace) -> int:
               "launcher_config": evidence(launcher_config),
               "tool_id": args.tool_id, "review_binding": binding,
               "prompt": prompt_evidence, "compatible_config": compatible_config, "argv": argv,
+              "effective_hook_policy": effective_hook_policy,
               "argv_sha256": sha(shlex.join(argv).encode()), "environment_contract": env_contract}
     atomic_json(out / "launch.json", launch)
     active = {"schema_version": SCHEMA, "state": "active", "mode": args.mode, "run_root": str(out), "started_at": launch["started_at"]}
@@ -1030,6 +1041,7 @@ def run(args: argparse.Namespace) -> int:
                    "tool_id": args.tool_id, "review_binding": binding,
                    "identity": identity, "subject_after": subject_after, "argv": argv, "argv_sha256": launch["argv_sha256"],
                    "compatible_config": compatible_config, "terminal_result": terminal_result,
+                   "effective_hook_policy": effective_hook_policy,
                    "environment_contract": {**env_contract, "explicitly_set_key_names": env_contract["explicit_key_names"]},
                    "command_sha256": launch["argv_sha256"], "cwd": str(launcher), "artifacts": artifacts}
         atomic_json(out / "receipt.json", receipt); atomic_json(out / "terminal.json", terminal); (out / "active.json").unlink()
@@ -1067,7 +1079,11 @@ def run(args: argparse.Namespace) -> int:
                     "failure_type": type(cleanup_error or exc).__name__,
                     "failure": str(cleanup_error or exc)[:512],
                     "safe_next_action": "inspect_terminal_and_start_fresh_output_directory"}
-        atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {**terminal, "mode": args.mode, "identity": identity, "tool_id": args.tool_id, "review_binding": binding, "launch": evidence(out / "launch.json")})
+        atomic_json(out / "terminal.json", terminal); atomic_json(out / "receipt.json", {
+            **terminal, "mode": args.mode, "identity": identity, "tool_id": args.tool_id,
+            "review_binding": binding, "effective_hook_policy": effective_hook_policy,
+            "launch": evidence(out / "launch.json"),
+        })
         (out / "active.json").unlink(missing_ok=True)
         raise
     finally:
@@ -1086,6 +1102,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--candidate-sha"); p.add_argument("--candidate-root")
     p.add_argument("--review-binding")
     p.add_argument("--require-terminal-result", action="store_true")
+    p.add_argument("--external-side-effects", choices=("forbidden",), default="forbidden")
+    p.add_argument("--lifecycle-hooks", choices=("disabled",), default="disabled")
     p.add_argument("--timeout-seconds", type=float, default=7200.0)
     return top
 

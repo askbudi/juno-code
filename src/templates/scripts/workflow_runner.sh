@@ -738,6 +738,17 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
     if "summary" in workflow and not isinstance(workflow["summary"], (str, dict, type(None))):
         raise WorkflowError("summary must be a string, mapping, or null")
     continue_from_step = str(workflow.get("continue_from_step") or "").strip()
+    managed_policy = workflow.get("managed_agent_policy")
+    managed_steps_present = any(isinstance(step, dict) and step.get("managed_agent") is not None for step in steps)
+    if managed_steps_present:
+        expected_policy = {"external_side_effects": "forbidden", "lifecycle_hooks": "disabled"}
+        if managed_policy != expected_policy:
+            raise WorkflowError(
+                "managed-agent workflows require exact managed_agent_policy: "
+                "{external_side_effects: forbidden, lifecycle_hooks: disabled}"
+            )
+    elif managed_policy is not None:
+        raise WorkflowError("managed_agent_policy is valid only when managed-agent steps are present")
     seen: set[str] = set()
     step_names: set[str] = set()
     step_indexes: dict[str, int] = {}
@@ -769,6 +780,28 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
                 raise WorkflowError(f"step {step_id} managed_agent outer capture must be disabled")
             if "command" in step:
                 raise WorkflowError(f"step {step_id} managed_agent cannot also declare command")
+            boundary = step.get("stage_boundary")
+            if not isinstance(boundary, dict) or set(boundary) != {"root", "admitted_paths"}:
+                raise WorkflowError(
+                    f"step {step_id} managed_agent requires exact stage_boundary root/admitted_paths"
+                )
+            if not isinstance(boundary.get("root"), str) or not boundary["root"].strip():
+                raise WorkflowError(f"step {step_id} stage_boundary.root must be a non-empty path")
+            admitted = boundary.get("admitted_paths")
+            if (not isinstance(admitted, list) or not admitted
+                    or not all(isinstance(item, str) and item.strip() for item in admitted)):
+                raise WorkflowError(f"step {step_id} stage_boundary.admitted_paths must be a non-empty path list")
+            normalized: list[str] = []
+            for item in admitted:
+                candidate = Path(item)
+                if candidate.is_absolute() or item != candidate.as_posix() or ".." in candidate.parts or ".git" in candidate.parts:
+                    raise WorkflowError(f"step {step_id} stage_boundary admitted path is unsafe: {item}")
+                clean = item.rstrip("/")
+                if clean in {"", "."}:
+                    raise WorkflowError(f"step {step_id} stage_boundary cannot admit the whole worktree")
+                normalized.append(clean)
+            if len(set(normalized)) != len(normalized):
+                raise WorkflowError(f"step {step_id} stage_boundary admitted paths must be unique")
         elif "command" not in step:
             raise WorkflowError(f"step {step_id} is missing required command")
         requires_receipts = step.get("requires_receipts") or []
@@ -1937,6 +1970,88 @@ def candidate_identity_changes(before: dict[str, Any], after: dict[str, Any]) ->
     return [field for field in fields if before.get(field) != after.get(field)]
 
 
+def canonical_stage_root(declared_path: str) -> Path:
+    candidate = Path(declared_path).expanduser()
+    if not candidate.is_absolute():
+        raise WorkflowError(f"stage_boundary.root must be absolute after rendering: {declared_path}")
+    try:
+        canonical = candidate.resolve(strict=True)
+        top = Path(_candidate_git(canonical, "rev-parse", "--path-format=absolute", "--show-toplevel").decode().strip()).resolve(strict=True)
+    except OSError as exc:
+        raise WorkflowError(f"stage_boundary.root is unavailable: {declared_path}") from exc
+    if canonical != top:
+        raise WorkflowError(f"stage_boundary.root must equal the exact Git worktree top-level: {declared_path}")
+    return canonical
+
+
+def normalize_stage_admitted_paths(step_id: str, values: Any) -> list[str]:
+    if not isinstance(values, list) or not values:
+        raise WorkflowError(f"step {step_id} stage_boundary.admitted_paths must be a non-empty path list")
+    normalized: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise WorkflowError(f"step {step_id} stage_boundary admitted paths must be strings")
+        candidate = Path(item)
+        clean = item.rstrip("/")
+        if (not clean or clean == "." or candidate.is_absolute() or item != candidate.as_posix()
+                or ".." in candidate.parts or ".git" in candidate.parts):
+            raise WorkflowError(f"step {step_id} stage_boundary admitted path is unsafe: {item}")
+        normalized.append(clean)
+    if len(set(normalized)) != len(normalized):
+        raise WorkflowError(f"step {step_id} stage_boundary admitted paths must be unique")
+    return normalized
+
+
+def stage_content_snapshot(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
+    names = _candidate_git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    paths = sorted({item.decode("utf-8") for item in names.split(b"\0") if item})
+    content: dict[str, str] = {}
+    for relative in paths:
+        path = root / relative
+        if path.is_symlink():
+            content[relative] = "symlink:" + hashlib.sha256(os.readlink(path).encode()).hexdigest()
+        elif path.is_file():
+            content[relative] = f"file:{path.stat().st_mode:o}:" + file_sha256(path)
+        elif path.exists():
+            content[relative] = "other"
+        else:
+            content[relative] = "missing"
+    status = _candidate_git(root, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+    evidence = {
+        "root": str(root),
+        "head": _candidate_git(root, "rev-parse", "HEAD").decode().strip(),
+        "branch_ref": _candidate_git(root, "rev-parse", "--abbrev-ref", "HEAD").decode().strip(),
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+        "content_sha256": canonical_sha256(content),
+        "path_count": len(content),
+    }
+    return evidence, content
+
+
+def stage_boundary_evidence(
+    root: Path, admitted_paths: list[str], before: tuple[dict[str, Any], dict[str, str]]
+) -> dict[str, Any]:
+    after = stage_content_snapshot(root)
+    changed = sorted(
+        path for path in set(before[1]) | set(after[1]) if before[1].get(path) != after[1].get(path)
+    )
+    admitted = [item.rstrip("/") for item in admitted_paths]
+    unexpected = [
+        path for path in changed
+        if not any(path == allowed or path.startswith(allowed + "/") for allowed in admitted)
+    ]
+    return {
+        "schema_version": "juno_workflow_stage_boundary.v1",
+        "root": str(root),
+        "admitted_paths": admitted,
+        "before": before[0],
+        "after": after[0],
+        "changed_paths": changed,
+        "unexpected_paths": unexpected,
+        "passed": not unexpected,
+    }
+
+
 def verify_candidate_guard_evidence(
     evidence: dict[str, Any], expected_sha256: str, *, orchestration_cwd: Path,
 ) -> dict[str, Any]:
@@ -2464,6 +2579,14 @@ def build_run_contract(
             str(step["id"]): {
                 "template_sha256": canonical_sha256(step.get("managed_agent", step.get("command"))),
                 "initial_rendered_sha256": canonical_sha256(render(step.get("managed_agent", step.get("command")), context)),
+                "stage_boundary_template_sha256": (
+                    canonical_sha256(step["stage_boundary"])
+                    if step.get("stage_boundary") is not None else None
+                ),
+                "stage_boundary_rendered_sha256": (
+                    canonical_sha256(render(step["stage_boundary"], context))
+                    if step.get("stage_boundary") is not None else None
+                ),
                 "candidate_read_only_template_sha256": (
                     canonical_sha256(step["candidate_read_only"])
                     if step.get("candidate_read_only") is not None else None
@@ -2493,6 +2616,8 @@ def build_run_contract(
         "terminal_gate": str(workflow.get("terminal_gate") or ""),
         "validation_ownership": workflow.get("validation_ownership") or {},
         "workflow_class": str(workflow.get("workflow_class") or ""),
+        "managed_agent_policy": workflow.get("managed_agent_policy"),
+        "managed_agent_policy_sha256": canonical_sha256(workflow.get("managed_agent_policy")),
         "integration_step": str(workflow.get("integration_step") or ""),
         "controller_disposition": str(workflow.get("controller_disposition") or ""),
         "completed_steps": {},
@@ -2819,16 +2944,26 @@ def archive_attempt(out_dir: Path, manifest: dict[str, Any]) -> None:
             shutil.copy2(source, attempt_dir / name)
 
 
+def validate_print_output(print_output: str, workflow: dict[str, Any]) -> None:
+    if print_output in {"summary", "none", "all"}:
+        return
+    selected = print_output.split(":", 1)[1] if print_output.startswith("step:") else print_output
+    known = {str(step["id"]) for step in workflow["steps"]}
+    if not selected or selected not in known:
+        raise WorkflowError(f"unknown --print-output step: {selected}")
+
+
 def selected_final_output(print_output: str, context: dict[str, Any], summary: str) -> str:
     if print_output == "summary":
         return summary
     if print_output == "none":
         return ""
+    if print_output == "all":
+        outputs = [str(result.get("response", result.get("stdout", ""))) for result in context["steps"].values()]
+        return "\n".join(output.rstrip("\n") for output in outputs if output)
     selected = print_output.split(":", 1)[1] if print_output.startswith("step:") else print_output
     result = context["steps"].get(selected)
-    if result is None:
-        raise WorkflowError(f"unknown --print-output step: {selected}")
-    return str(result.get("response", result.get("stdout", "")))
+    return str(result.get("response", result.get("stdout", ""))) if result is not None else ""
 
 
 def run_workflow(args: argparse.Namespace) -> int:
@@ -2852,6 +2987,7 @@ def run_workflow(args: argparse.Namespace) -> int:
     workflow = parse_yaml_like(workflow_text)
     model_policy = load_workflow_model_policy(project_root)
     validate_workflow(workflow, model_policy)
+    validate_print_output(args.print_output, workflow)
 
     now = _dt.datetime.now(_dt.timezone.utc)
     run_id = now.strftime("%Y%m%d_%H%M%S_%fZ")
@@ -3141,6 +3277,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                     command.append("--require-terminal-result")
                 elif value is not None and str(value) != "":
                     command.extend(["--" + key.replace("_", "-"), str(value)])
+            command.extend(["--external-side-effects", "forbidden", "--lifecycle-hooks", "disabled"])
             model_selection = {"managed_agent": True, "configured_defaults": True}
         else:
             command = render(step["command"], context)
@@ -3152,6 +3289,12 @@ def run_workflow(args: argparse.Namespace) -> int:
         is_juno_command = detect_juno_command(command)
         capture_enabled = step_capture_enabled(step, command)
         is_managed_agent = managed_spec is not None
+        rendered_stage_boundary = render(step["stage_boundary"], context) if is_managed_agent else None
+        stage_root = canonical_stage_root(str(rendered_stage_boundary["root"])) if rendered_stage_boundary else None
+        stage_admitted_paths = (
+            normalize_stage_admitted_paths(step_id, rendered_stage_boundary["admitted_paths"])
+            if rendered_stage_boundary else []
+        )
         step_slug = safe_id(step_id, f"step-{index}")
         stdout_path = out_dir / f"{index:03d}_{step_slug}.stdout.txt"
         stderr_path = out_dir / f"{index:03d}_{step_slug}.stderr.txt"
@@ -3205,6 +3348,9 @@ def run_workflow(args: argparse.Namespace) -> int:
         precondition_error = dispatch_root_error
         candidate_guard: dict[str, Any] | None = None
         candidate_guard_path = legacy_step_dir / "candidate_read_only.json"
+        stage_before: tuple[dict[str, Any], dict[str, str]] | None = None
+        stage_evidence: dict[str, Any] | None = None
+        stage_evidence_path = legacy_step_dir / "stage_boundary.json"
         if not args.dry_run:
             try:
                 for receipt_id in step.get("requires_receipts") or []:
@@ -3220,6 +3366,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                         str(evidence["command_sha256"]),
                         str(receipt_evidence["sha256"]),
                     )
+                if stage_root is not None:
+                    stage_before = stage_content_snapshot(stage_root)
                 if step.get("candidate_read_only") is not None:
                     rendered_identity = render(step["candidate_read_only"], context)
                     candidate_path = canonical_candidate_root(str(rendered_identity["path"]))
@@ -3298,6 +3446,26 @@ def run_workflow(args: argparse.Namespace) -> int:
                 stderr = f"command dispatch failed: {exc}\n"
                 exit_code = 1
                 status = "failed"
+            if stage_root is not None and stage_before is not None:
+                try:
+                    stage_evidence = stage_boundary_evidence(stage_root, stage_admitted_paths, stage_before)
+                except (WorkflowError, OSError, UnicodeError) as exc:
+                    stage_evidence = {
+                        "schema_version": "juno_workflow_stage_boundary.v1",
+                        "root": str(stage_root), "admitted_paths": stage_admitted_paths,
+                        "passed": False, "snapshot_error": str(exc)[:512],
+                    }
+                write_text(stage_evidence_path, json.dumps(stage_evidence, indent=2, sort_keys=True) + "\n")
+                if stage_evidence.get("passed") is not True:
+                    mutation_error = (
+                        "managed-agent stage boundary violation; no cleanup performed; "
+                        f"unexpected={','.join(stage_evidence.get('unexpected_paths') or ['snapshot_unavailable'])}; "
+                        f"evidence={stage_evidence_path}"
+                    )
+                    stderr = stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + mutation_error + "\n"
+                    exit_code = 1
+                    status = "failed"
+                    final_exit = 1
             if candidate_guard is not None:
                 try:
                     after_identity = snapshot_candidate_identity(
@@ -3356,6 +3524,12 @@ def run_workflow(args: argparse.Namespace) -> int:
             "workflow_model_selection": model_selection,
             "probe_satisfied": probe_satisfied,
         }
+        if stage_evidence_path.is_file():
+            result["stage_boundary_evidence"] = {
+                "path": str(stage_evidence_path.resolve()),
+                "sha256": file_sha256(stage_evidence_path),
+                "passed": bool(stage_evidence and stage_evidence.get("passed") is True),
+            }
         if step.get("candidate_read_only") is not None and candidate_guard_path.is_file():
             result["candidate_read_only_evidence"] = {
                 "path": str(candidate_guard_path.resolve()),
@@ -3398,6 +3572,14 @@ def run_workflow(args: argparse.Namespace) -> int:
                 managed_receipt = load_json_object(managed_receipt_path, f"step[{step_id}] managed-agent receipt")
                 if managed_receipt.get("state") != "succeeded" or managed_receipt.get("exit_code") != 0:
                     raise WorkflowError(f"step[{step_id}]: managed-agent receipt is not successful")
+                expected_hook_policy = {
+                    "schema_version": "juno_managed_hook_policy.v1",
+                    "external_side_effects": "forbidden",
+                    "lifecycle_hooks": "disabled",
+                    "enforcement": "yy_pi_no_hooks",
+                }
+                if managed_receipt.get("effective_hook_policy") != expected_hook_policy:
+                    raise WorkflowError(f"step[{step_id}]: managed-agent effective hook policy is missing or incompatible")
                 artifact_map = managed_receipt.get("artifacts")
                 if not isinstance(artifact_map, dict):
                     raise WorkflowError(f"step[{step_id}]: managed-agent artifacts are missing")
@@ -3480,6 +3662,12 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "stderr": {"path": str(stderr_path.resolve()), "sha256": file_sha256(stderr_path)},
                     "response": {"path": str(response_path.resolve()), "sha256": file_sha256(response_path)},
                 }
+                if stage_evidence_path.is_file():
+                    if stage_evidence is None or stage_evidence.get("passed") is not True:
+                        raise WorkflowError(f"step[{step_id}]: successful managed-agent step lacks passing stage boundary")
+                    artifacts["stage_boundary"] = {
+                        "path": str(stage_evidence_path.resolve()), "sha256": file_sha256(stage_evidence_path)
+                    }
                 if composition_evidence is not None:
                     composition_path = legacy_step_dir / "candidate_composition.json"
                     write_text(composition_path, json.dumps(composition_evidence, indent=2, ensure_ascii=False) + "\n")
@@ -3511,7 +3699,8 @@ def run_workflow(args: argparse.Namespace) -> int:
                         raise WorkflowError(f"step[{step_id}]: successful managed-agent step lacks receipt")
                     managed_anchor = {"path": str(managed_receipt_path), "sha256": file_sha256(managed_receipt_path),
                                       "run_root": str(managed_receipt_path.parent), "artifacts": managed_receipt["artifacts"],
-                                      "session_id": managed_receipt["session_id"]}
+                                      "session_id": managed_receipt["session_id"],
+                                      "effective_hook_policy": managed_receipt["effective_hook_policy"]}
                     artifacts["managed_agent_receipt"] = {"path": str(managed_receipt_path), "sha256": managed_anchor["sha256"]}
                 checkpoint = {
                     "checkpoint_schema": "juno_workflow_step_checkpoint.v1",
@@ -3535,6 +3724,10 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "child_steps": child_steps,
                     "candidate_read_only": candidate_anchor,
                     "managed_agent": managed_anchor,
+                    "stage_boundary": (
+                        {"path": str(stage_evidence_path.resolve()), "sha256": file_sha256(stage_evidence_path)}
+                        if stage_evidence_path.is_file() else None
+                    ),
                     "receipt_contracts_sha256": run_contract["receipt_contracts_sha256"],
                     "workflow_model_policy_sha256": model_policy["workflow_models_sha256"],
                     "workflow_model_selection": model_selection,
@@ -4152,7 +4345,7 @@ def verify_checkpoint(
     if step_contract.get("candidate_composition_template_sha256") is not None:
         required_artifact_ids.append("candidate_composition")
     if checkpoint.get("managed_agent") is not None:
-        required_artifact_ids.append("managed_agent_receipt")
+        required_artifact_ids.extend(["managed_agent_receipt", "stage_boundary"])
     for artifact_id in required_artifact_ids:
         evidence = artifacts.get(artifact_id)
         if not isinstance(evidence, dict):
@@ -4177,6 +4370,20 @@ def verify_checkpoint(
         managed_receipt = load_json_object(receipt_path, f"recovery checkpoint[{step_id}] managed-agent receipt")
         if managed_receipt.get("state") != "succeeded" or managed_receipt.get("session_id") != managed_anchor.get("session_id"):
             raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent terminal/session evidence invalid")
+        expected_hook_policy = {
+            "schema_version": "juno_managed_hook_policy.v1",
+            "external_side_effects": "forbidden", "lifecycle_hooks": "disabled",
+            "enforcement": "yy_pi_no_hooks",
+        }
+        if (managed_receipt.get("effective_hook_policy") != expected_hook_policy
+                or managed_anchor.get("effective_hook_policy") != expected_hook_policy):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent hook policy evidence invalid")
+        stage_anchor = checkpoint.get("stage_boundary")
+        if not isinstance(stage_anchor, dict) or stage_anchor != artifacts.get("stage_boundary"):
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: stage boundary anchor is missing or inconsistent")
+        stage_receipt = load_json_object(Path(str(stage_anchor.get("path") or "")), f"recovery checkpoint[{step_id}] stage boundary")
+        if stage_receipt.get("schema_version") != "juno_workflow_stage_boundary.v1" or stage_receipt.get("passed") is not True:
+            raise WorkflowError(f"recovery checkpoint[{step_id}]: stage boundary evidence is not successful")
         if (managed_root / "active.json").exists():
             raise WorkflowError(f"recovery checkpoint[{step_id}]: managed-agent child remains active")
         if managed_receipt.get("artifacts") != managed_anchor.get("artifacts"):
@@ -4507,7 +4714,7 @@ Example boilerplates (written only when explicitly requested):
         "--final-output",
         dest="print_output",
         default="summary",
-        help="Final console output: summary, none, <step_id>, or step:<step_id>",
+        help="Final console output: summary, none, all, <step_id>, or step:<step_id>",
     )
     parser.add_argument(
         "--init-example",

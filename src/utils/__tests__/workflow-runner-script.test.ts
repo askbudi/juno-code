@@ -444,19 +444,26 @@ print('live stdout',flush=True);print('live stderr',file=sys.stderr,flush=True);
 payload={'session_id':'managed-session','result':'managed response'}
 if 'typed-' in prompt: payload['terminal_outcome']={'schema_version':'juno_managed_agent_terminal_result.v1','state':prompt.split('typed-',1)[1].split()[0]}
 if 'semantic-failure' in prompt: payload['is_error']=True
+if 'stage-mutation' in prompt: pathlib.Path(${JSON.stringify(path.join(candidate, 'future-child.txt'))}).write_text('early mutation\\n')
 pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(payload)+'\\n')
 `); await fs.chmod(fake.executablePath, 0o755);
     const execute = async (name: string, promptText: string) => {
       const prompt = path.join(testDir, `${name}.md`); await fs.writeFile(prompt, promptText);
       const runDir = path.join(testDir, name);
       const workflowPath = path.join(testDir, `${name}.json`);
-      await fs.writeJson(workflowPath, { schema_version: 1, workflow_id: `managed_${name}`, steps: [{
-        id: 'agent', fail_workflow: false, capture_session: false,
-        managed_agent: { mode: 'reviewer', controller_root: controller, controller_branch: 'fixture-controller',
-          agent_root: '{{ out_dir }}/managed/agent-root', prompt_file: prompt, out_dir: '{{ out_dir }}/managed',
-          candidate_sha: candidateSha, candidate_root: candidate,
-          ...(promptText.includes('typed-') ? { require_terminal_result: true } : {}) },
-      }] });
+      await fs.writeJson(workflowPath, {
+        schema_version: 1,
+        workflow_id: `managed_${name}`,
+        managed_agent_policy: { external_side_effects: 'forbidden', lifecycle_hooks: 'disabled' },
+        steps: [{
+          id: 'agent', fail_workflow: false, capture_session: false,
+          stage_boundary: { root: candidate, admitted_paths: ['tracked.txt'] },
+          managed_agent: { mode: 'reviewer', controller_root: controller, controller_branch: 'fixture-controller',
+            agent_root: '{{ out_dir }}/managed/agent-root', prompt_file: prompt, out_dir: '{{ out_dir }}/managed',
+            candidate_sha: candidateSha, candidate_root: candidate,
+            ...(promptText.includes('typed-') ? { require_terminal_result: true } : {}) },
+        }],
+      });
       const result = runWorkflow(['--workflow', workflowPath, '--out-dir', runDir, '--print-output', 'none'], undefined,
         { PATH: `${fake.binDir}${path.delimiter}${process.env.PATH}` });
       return { result, runDir, workflowPath };
@@ -471,14 +478,37 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
 
     const success = await execute('success', 'review');
     expect(success.result.status, success.result.stderr).toBe(0);
+    const dryDir = path.join(testDir, 'managed-dry-run');
+    const dryRun = runWorkflow([
+      '--workflow', success.workflowPath, '--out-dir', dryDir, '--dry-run', '--print-output', 'none',
+    ]);
+    expect(dryRun.status, dryRun.stderr).toBe(0);
+    expect((await fs.readJson(path.join(dryDir, 'run_contract.json'))).managed_agent_policy).toEqual({
+      external_side_effects: 'forbidden', lifecycle_hooks: 'disabled',
+    });
+    const invalidWorkflow = await fs.readJson(success.workflowPath);
+    delete invalidWorkflow.managed_agent_policy;
+    const invalidWorkflowPath = path.join(testDir, 'managed-policy-missing.json');
+    await fs.writeJson(invalidWorkflowPath, invalidWorkflow);
+    const linted = runWorkflow(['lint', '--workflow', invalidWorkflowPath]);
+    expect(linted.status).not.toBe(0);
+    expect(linted.stderr).toContain('managed-agent workflows require exact managed_agent_policy');
     const receipt = await fs.readJson(path.join(success.runDir, 'managed', 'receipt.json'));
     expect(receipt.session_id).toBe('managed-session');
+    expect(receipt.effective_hook_policy).toMatchObject({
+      external_side_effects: 'forbidden', lifecycle_hooks: 'disabled', enforcement: 'yy_pi_no_hooks',
+    });
     expect(await fs.readFile(path.join(success.runDir, 'managed', 'stdout.log'), 'utf8')).toContain('live stdout');
     expect(await fs.readFile(path.join(success.runDir, 'managed', 'stderr.log'), 'utf8')).toContain('live stderr');
     expect(await fs.readFile(path.join(success.runDir, 'managed', 'combined.log'), 'utf8')).toContain('[stdout] live stdout');
     const contractPath = path.join(success.runDir, 'run_contract.json');
     const contract = await fs.readJson(contractPath);
     expect(contract.completed_steps.agent.managed_agent.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(contract.completed_steps.agent.stage_boundary.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fs.readJson(contract.completed_steps.agent.stage_boundary.path))).toMatchObject({
+      schema_version: 'juno_workflow_stage_boundary.v1', passed: true,
+      admitted_paths: ['tracked.txt'], changed_paths: [], unexpected_paths: [],
+    });
     contract.attempts[contract.attempts.length - 1].status = 'interrupted';
     await fs.writeJson(contractPath, contract);
     const recovered = runWorkflow(['recover-attempt', success.runDir, '--dry-run']);
@@ -486,6 +516,13 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     await fs.appendFile(path.join(success.runDir, 'managed', 'response.txt'), 'drift');
     const drifted = runWorkflow(['recover-attempt', success.runDir, '--dry-run']);
     expect(drifted.status).not.toBe(0); expect(drifted.stderr).toContain('managed-agent artifact response drifted');
+    const mutation = await execute('stage-mutation', 'stage-mutation');
+    expect(mutation.result.status).not.toBe(0);
+    expect(mutation.result.stderr).toContain('managed-agent stage boundary violation');
+    expect(await fs.readJson(path.join(mutation.runDir, 'steps', 'agent', 'stage_boundary.json'))).toMatchObject({
+      passed: false, unexpected_paths: ['future-child.txt'],
+    });
+    await fs.remove(path.join(candidate, 'future-child.txt'));
     const blocked = await execute('typed-blocked', 'typed-blocked');
     expect(blocked.result.status).not.toBe(0);
     expect(blocked.result.stderr).toContain('managed-agent terminal outcome is blocked');
@@ -1602,7 +1639,7 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     expect(result.stdout).toContain('--var NAME=VALUE');
     expect(result.stdout).toContain('--run-root');
     expect(result.stdout).toContain('--print-output');
-    expect(result.stdout).toContain('summary, none, <step_id>, or');
+    expect(result.stdout).toContain('summary, none, all, <step_id>');
     expect(result.stdout).toContain('step:<step_id>');
     expect(result.stdout).toContain('--print-step-stdout');
     expect(result.stdout).toContain('--no-print-step-stdout');
@@ -2846,6 +2883,34 @@ exec "$(dirname "$0")/yy" pi --live "$@"
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("continue_from_step 'plain' selected step 2 [plain], but it did not produce a session_id");
+  });
+
+  it('validates print-output all once and preserves primary failure output', async () => {
+    const workflowPath = path.join(testDir, 'print-all.json');
+    const outDir = path.join(testDir, 'print-all-out');
+    await fs.writeJson(workflowPath, {
+      name: 'print-all',
+      steps: [
+        { id: 'first', command: "printf 'first-output'" },
+        { id: 'failed', fail_workflow: true, command: "printf 'failure-output'; exit 7" },
+      ],
+    });
+
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', outDir,
+      '--print-output', 'all', '--no-print-step-stdout',
+    ]);
+
+    expect(result.status).toBe(7);
+    expect(result.stdout).toContain('first-output\nfailure-output');
+    expect(result.stderr).not.toContain('unknown --print-output step: all');
+    const invalid = runWorkflow([
+      '--workflow', workflowPath, '--out-dir', path.join(testDir, 'invalid-print'),
+      '--print-output', 'missing',
+    ]);
+    expect(invalid.status).not.toBe(0);
+    expect(invalid.stderr).toContain('unknown --print-output step: missing');
+    expect(await fs.pathExists(path.join(testDir, 'invalid-print'))).toBe(false);
   });
 
   it('auto-detects argv juno commands, reads capture JSON, and exposes session templates', async () => {

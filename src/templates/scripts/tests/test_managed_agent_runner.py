@@ -339,7 +339,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         return [sys.executable, str(RUNNER), "run", "--mode", "reviewer", "--controller-root", str(self.controller),
                 "--controller-branch", branch_ref, "--agent-root", str(out / "agent-root"),
                 "--prompt-file", str(prompt or self.prompt), "--out-dir", str(out), "--candidate-sha", git(self.candidate, "rev-parse", "HEAD"),
-                "--candidate-root", str(self.candidate)]
+                "--candidate-root", str(self.candidate), "--external-side-effects", "forbidden", "--lifecycle-hooks", "disabled"]
 
     def env(self):
         canonical_node = shutil.which("node", path=os.environ["PATH"])
@@ -356,6 +356,11 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                                 env=self.env(), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads((blocked / "receipt.json").read_text())
+        self.assertEqual(receipt["effective_hook_policy"], {
+            "schema_version": "juno_managed_hook_policy.v1",
+            "external_side_effects": "forbidden", "lifecycle_hooks": "disabled",
+            "enforcement": "yy_pi_no_hooks",
+        })
         terminal = receipt["terminal_result"]
         self.assertEqual(terminal["state"], "blocked")
         self.assertEqual(terminal["session_id"], receipt["session_id"])
@@ -761,7 +766,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         paths=[]
         for name, value in (("create", create), ("verify", {"passed":True,"task_id":"T1"}), ("edit", {"passed":True,"task_id":"T1"})):
             p=self.tmp/f"{name}.json"; p.write_text(json.dumps(value)); paths.append(p)
-        out=self.tmp/"worker"; cmd=[sys.executable,str(RUNNER),"run","--mode","worker","--controller-root",str(self.controller),"--controller-branch","controller",
+        out=self.tmp/"worker"; cmd=[sys.executable,str(RUNNER),"run","--external-side-effects","forbidden","--lifecycle-hooks","disabled","--mode","worker","--controller-root",str(self.controller),"--controller-branch","controller",
              "--agent-root",str(self.candidate),"--prompt-file",str(self.prompt),"--out-dir",str(out),"--task-id","T1",
              "--create-receipt",str(paths[0]),"--verify-receipt",str(paths[1]),"--edit-preflight-receipt",str(paths[2])]
         result=subprocess.run(cmd,env=self.env(),capture_output=True,text=True); self.assertEqual(result.returncode,0,result.stderr)
