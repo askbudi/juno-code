@@ -62,6 +62,18 @@ def child_process_environment(base: dict[str, str]) -> dict[str, str]:
 
 def sanitize_current_process_environment() -> None:
     environment = child_process_environment(dict(os.environ))
+    # JUNO_PROJECT_PATH is a managed dispatch value. If a parent agent changed
+    # cwd into another registered worktree, its role assertion describes the
+    # parent boundary and must not override this worktree's persisted identity.
+    dispatched = environment.get("JUNO_PROJECT_PATH", "").strip()
+    if dispatched:
+        try:
+            stale_dispatch = Path(dispatched).expanduser().resolve() != Path.cwd().resolve()
+        except OSError:
+            stale_dispatch = True
+        if stale_dispatch:
+            environment.pop("JUNO_PROJECT_PATH", None)
+            environment.pop("JUNO_WORKSPACE_ROLE", None)
     os.environ.clear()
     os.environ.update(environment)
 
