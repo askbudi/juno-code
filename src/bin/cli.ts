@@ -2433,7 +2433,22 @@ const reportFatalError = (error: unknown) => {
   process.exit(EXIT_CODES.UNEXPECTED_ERROR);
 };
 
-if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' || process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
+const versionOnly = process.argv.length === 3 && ['--version', '-V'].includes(process.argv[2]!);
+if (versionOnly) {
+  // Public execution adapters require a bounded, machine-parseable handshake.
+  // Keep the exact version probe inside the normal durable invocation boundary,
+  // but bypass Commander and all of its human-oriented output.
+  const invocationLifecycle = new InvocationLifecycle({
+    workingDirectory: process.cwd(),
+    junoCodeVersion: VERSION,
+    launchSurface: executableLaunchSurface ?? 'juno-code',
+    ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
+  });
+  void runWithInvocationLifecycle(
+    invocationLifecycle,
+    async () => { process.stdout.write(`${VERSION}\n`); },
+  ).catch(reportFatalError);
+} else if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' || process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
   void main().catch(reportFatalError);
 } else {
   const observationProgram = new Command();

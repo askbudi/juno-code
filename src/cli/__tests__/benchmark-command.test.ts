@@ -165,7 +165,7 @@ describe('benchmark delegate', () => {
     }
   });
 
-  it.each(['juno-benchmark 1.0.0', 'juno-benchmark 0.1.0-alpha.1'])(
+  it.each(['juno-benchmark 0.1.1', 'juno-benchmark 1.0.0', 'juno-benchmark 0.1.0-alpha.1'])(
     'refuses incompatible version %s before forwarding user arguments',
     async (reportedVersion) => {
       const { root, bin, record } = await fixture();

@@ -4,9 +4,12 @@ import path from 'node:path';
 import { constants as osConstants } from 'node:os';
 import type { Command } from 'commander';
 import semver from 'semver';
+import packageMetadata from '../../../package.json';
 
-export const BENCHMARK_VERSION_RANGE = '>=0.1.0,<1.0.0';
-const BENCHMARK_SEMVER_RANGE = '>=0.1.0 <1.0.0';
+// This is intentionally exact and sourced from release metadata: a Juno Code
+// release is validated with one independently packaged benchmark artifact.
+export const BENCHMARK_VERSION_RANGE = packageMetadata.junoBenchmark.version;
+const BENCHMARK_SEMVER_RANGE = BENCHMARK_VERSION_RANGE;
 const VERSION_HANDSHAKE_TIMEOUT_MS = 10_000;
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const;
 type ForwardedSignal = (typeof SIGNALS)[number];

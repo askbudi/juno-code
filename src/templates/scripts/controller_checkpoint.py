@@ -39,6 +39,8 @@ MAX_COMMIT_SUBJECT_CHARS = 120
 RELEASE_PATHS = (
     "juno-code/package.json",
     "juno-code/package-lock.json",
+    "juno-benchmark/package.json",
+    "juno-benchmark/package-lock.json",
     "frontend/generated/package-facts.json",
     "scripts/release-juno-code.sh",
 )

@@ -97,7 +97,7 @@ describe('built yy benchmark delegate', () => {
     expect(missing.exitCode).toBe(127);
     expect(missing.stderr).toContain('independently installed');
 
-    const incompatible = await makeFixture('juno-benchmark 1.0.0');
+    const incompatible = await makeFixture('juno-benchmark 0.1.1');
     const rejected = await execa(wrapper, ['benchmark', 'plan'], {
       cwd: incompatible.root, env: incompatible.env, reject: false,
     });
