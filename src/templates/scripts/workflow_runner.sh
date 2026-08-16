@@ -432,6 +432,25 @@ def validate_receipt_payload(
             )
 
 
+def normalize_candidate_composition(step: dict[str, Any]) -> dict[str, str] | None:
+    raw = step.get("candidate_composition")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"manifest_path", "receipt_path_field", "changed_paths_field"}:
+        raise WorkflowError(
+            f"step {step.get('id')} candidate_composition must contain exactly manifest_path, "
+            "receipt_path_field, and changed_paths_field"
+        )
+    if not all(isinstance(raw.get(key), str) and raw[key].strip() for key in raw):
+        raise WorkflowError(f"step {step.get('id')} candidate_composition fields must be non-empty strings")
+    normalized = {key: raw[key].strip() for key in raw}
+    if normalized["changed_paths_field"] != "changed_paths":
+        raise WorkflowError(
+            f"step {step.get('id')} candidate_composition changed_paths_field must be changed_paths"
+        )
+    return normalized
+
+
 def load_json_object(path: Path, description: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -755,6 +774,7 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         requires_receipts = step.get("requires_receipts") or []
         if not isinstance(requires_receipts, list) or not all(isinstance(item, str) for item in requires_receipts):
             raise WorkflowError(f"step {step_id} requires_receipts must be a list of receipt ids")
+        normalize_candidate_composition(step)
         expected_outcomes = step.get("expected_outcomes")
         if expected_outcomes is not None and (
             not isinstance(expected_outcomes, list)
@@ -2452,6 +2472,14 @@ def build_run_contract(
                     canonical_sha256(render(step["candidate_read_only"], context))
                     if step.get("candidate_read_only") is not None else None
                 ),
+                "candidate_composition_template_sha256": (
+                    canonical_sha256(step["candidate_composition"])
+                    if step.get("candidate_composition") is not None else None
+                ),
+                "candidate_composition_rendered_sha256": (
+                    canonical_sha256(render(step["candidate_composition"], context))
+                    if step.get("candidate_composition") is not None else None
+                ),
             }
             for step in workflow["steps"]
         },
@@ -2495,6 +2523,67 @@ def verify_run_contract(frozen: dict[str, Any], current: dict[str, Any]) -> None
     for name, (expected, actual) in checks.items():
         if expected != actual:
             raise WorkflowError(f"resume_contract[{name}]: expected={expected!r} actual={actual!r}")
+
+
+def reconcile_candidate_composition(
+    step: dict[str, Any], context: dict[str, Any], project_root: Path
+) -> dict[str, Any] | None:
+    """Replace a composed receipt's changed_paths after the receipt exists.
+
+    Git is the source of truth, so an in-worktree receipt necessarily includes
+    its own path and cannot be omitted by a pre-write child-path union.
+    """
+    contract = normalize_candidate_composition(step)
+    if contract is None:
+        return None
+    rendered = render(contract, context)
+    manifest_path = Path(str(rendered["manifest_path"])).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = project_root / manifest_path
+    manifest = load_json_object(manifest_path, f"step[{step['id']}] candidate composition manifest")
+    present, receipt_path_value = dotted_get(manifest, str(rendered["receipt_path_field"]))
+    if not present or not isinstance(receipt_path_value, str) or not receipt_path_value.strip():
+        raise WorkflowError(
+            f"step[{step['id']}].candidate_composition receipt path field "
+            f"{rendered['receipt_path_field']!r} is missing or invalid"
+        )
+    candidate_path = Path(receipt_path_value).expanduser()
+    if not candidate_path.is_absolute():
+        candidate_path = project_root / candidate_path
+    payload = load_json_object(candidate_path, f"step[{step['id']}] candidate receipt")
+    tracked = subprocess.run(
+        ["git", "-C", str(project_root), "diff", "--name-only", "--relative", "HEAD", "--"],
+        text=True, capture_output=True, check=False,
+    )
+    untracked = subprocess.run(
+        ["git", "-C", str(project_root), "ls-files", "--others", "--exclude-standard"],
+        text=True, capture_output=True, check=False,
+    )
+    if tracked.returncode != 0 or untracked.returncode != 0:
+        detail = (tracked.stderr or untracked.stderr or "git changed-path discovery failed").strip()
+        raise WorkflowError(f"step[{step['id']}].candidate_composition: {detail}")
+    changed = sorted(set(tracked.stdout.splitlines() + untracked.stdout.splitlines()))
+    previous = payload.get("changed_paths")
+    payload["changed_paths"] = changed
+    write_text(candidate_path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    try:
+        relative_receipt = candidate_path.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        relative_receipt = None
+    if relative_receipt is not None and relative_receipt not in changed:
+        raise WorkflowError(
+            f"step[{step['id']}].candidate_composition: in-worktree receipt was absent from Git changed paths: "
+            f"{relative_receipt}"
+        )
+    return {
+        "schema_version": "juno_candidate_composition.v1",
+        "manifest_path": str(manifest_path.resolve()),
+        "receipt_path": str(candidate_path.resolve()),
+        "receipt_worktree_path": relative_receipt,
+        "receipt_included": relative_receipt is None or relative_receipt in changed,
+        "changed_paths": changed,
+        "replaced_changed_paths": previous,
+    }
 
 
 def receipt_path(contract: dict[str, Any], context: dict[str, Any], project_root: Path) -> Path:
@@ -3380,6 +3469,7 @@ def run_workflow(args: argparse.Namespace) -> int:
                         and launch_ownership.process_group_id > 0
                         and process_group_is_active(launch_ownership.process_group_id)):
                     raise WorkflowError(f"step[{step_id}]: command process group remains active after command exit")
+                composition_evidence = reconcile_candidate_composition(step, context, project_root)
                 produced_receipts: dict[str, Any] = {}
                 for contract in receipts_by_producer.get(step_id, []):
                     produced_receipts[contract["id"]] = validate_receipt_file(
@@ -3390,6 +3480,13 @@ def run_workflow(args: argparse.Namespace) -> int:
                     "stderr": {"path": str(stderr_path.resolve()), "sha256": file_sha256(stderr_path)},
                     "response": {"path": str(response_path.resolve()), "sha256": file_sha256(response_path)},
                 }
+                if composition_evidence is not None:
+                    composition_path = legacy_step_dir / "candidate_composition.json"
+                    write_text(composition_path, json.dumps(composition_evidence, indent=2, ensure_ascii=False) + "\n")
+                    artifacts["candidate_composition"] = {
+                        "path": str(composition_path.resolve()), "sha256": file_sha256(composition_path)
+                    }
+                    result["candidate_composition"] = composition_evidence
                 candidate_anchor: dict[str, Any] | None = None
                 if step.get("candidate_read_only") is not None:
                     if candidate_guard is None or candidate_guard.get("passed") is not True:
@@ -4051,6 +4148,9 @@ def verify_checkpoint(
     if not isinstance(artifacts, dict):
         raise WorkflowError(f"recovery checkpoint[{step_id}]: artifact evidence missing")
     required_artifact_ids = ["stdout", "stderr", "response"]
+    step_contract = (contract.get("steps") or {}).get(step_id) or {}
+    if step_contract.get("candidate_composition_template_sha256") is not None:
+        required_artifact_ids.append("candidate_composition")
     if checkpoint.get("managed_agent") is not None:
         required_artifact_ids.append("managed_agent_receipt")
     for artifact_id in required_artifact_ids:

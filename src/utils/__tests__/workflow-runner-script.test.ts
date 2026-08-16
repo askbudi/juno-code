@@ -2931,6 +2931,88 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(manifest.steps[0].session_id).toBe('');
   });
 
+  it('reconciles candidate changed paths after writing an in-worktree receipt', async () => {
+    const worktree = path.join(testDir, 'composition-worktree');
+    const workflowPath = path.join(testDir, 'candidate-composition.json');
+    const outDir = path.join(testDir, 'candidate-composition-out');
+    await fs.ensureDir(worktree);
+    for (const args of [
+      ['init'], ['config', 'user.email', 'fixture@example.com'], ['config', 'user.name', 'Fixture'],
+    ]) {
+      expect(spawnSync('git', args, { cwd: worktree }).status).toBe(0);
+    }
+    await fs.writeFile(path.join(worktree, 'baseline.txt'), 'baseline\n');
+    expect(spawnSync('git', ['add', 'baseline.txt'], { cwd: worktree }).status).toBe(0);
+    expect(spawnSync('git', ['commit', '-m', 'baseline'], { cwd: worktree }).status).toBe(0);
+
+    const manifestPath = path.join(testDir, 'composition-manifest.json');
+    await fs.writeJson(manifestPath, { candidate_receipt_path: 'receipts/candidate.json' });
+    const producer = [
+      'import json, pathlib',
+      "pathlib.Path('product.txt').write_text('product\\n')",
+      "p=pathlib.Path('receipts/candidate.json')",
+      'p.parent.mkdir(parents=True, exist_ok=True)',
+      "p.write_text(json.dumps({'schema_version':'fixture.v1','changed_paths':['product.txt']}))",
+    ].join('; ');
+    const gate = [
+      'import json, pathlib, subprocess',
+      "p=pathlib.Path('receipts/candidate.json')",
+      'payload=json.loads(p.read_text())',
+      "tracked=subprocess.run(['git','diff','--name-only','--relative','HEAD','--'],check=True,text=True,capture_output=True).stdout.splitlines()",
+      "untracked=subprocess.run(['git','ls-files','--others','--exclude-standard'],check=True,text=True,capture_output=True).stdout.splitlines()",
+      "assert payload['changed_paths'] == sorted(set(tracked + untracked))",
+      "assert 'receipts/candidate.json' in payload['changed_paths']",
+    ].join('; ');
+    await fs.writeJson(workflowPath, {
+      schema_version: 1,
+      workflow_id: 'candidate-composition',
+      vars: { route_manifest: manifestPath },
+      steps: [
+        {
+          id: 'compose_candidate', capture_session: false, fail_workflow: true,
+          command: ['python3', '-c', producer],
+          candidate_composition: {
+            manifest_path: '{{ route_manifest }}',
+            receipt_path_field: 'candidate_receipt_path',
+            changed_paths_field: 'changed_paths',
+          },
+        },
+        { id: 'verify_bounded_outputs', capture_session: false, fail_workflow: true, command: ['python3', '-c', gate] },
+      ],
+    });
+
+    const result = runWorkflow([
+      '--workflow', workflowPath, '--project-root', worktree,
+      '--out-dir', outDir, '--print-output', 'none',
+    ]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const candidate = await fs.readJson(path.join(worktree, 'receipts', 'candidate.json'));
+    expect(candidate.changed_paths).toEqual(['product.txt', 'receipts/candidate.json']);
+    const evidence = await fs.readJson(path.join(outDir, 'steps', 'compose_candidate', 'candidate_composition.json'));
+    expect(evidence.receipt_included).toBe(true);
+    expect(evidence.replaced_changed_paths).toEqual(['product.txt']);
+
+    const resumed = runWorkflow([
+      '--workflow', workflowPath, '--project-root', worktree,
+      '--out-dir', outDir, '--from-step', 'verify_bounded_outputs', '--print-output', 'none',
+    ]);
+    expect(resumed.status, `${resumed.stdout}\n${resumed.stderr}`).toBe(0);
+  });
+
+  it('rejects incomplete candidate composition contracts during lint', async () => {
+    const workflowPath = path.join(testDir, 'bad-candidate-composition.json');
+    await fs.writeJson(workflowPath, {
+      workflow_id: 'bad-candidate-composition',
+      steps: [{
+        id: 'compose', command: ['true'],
+        candidate_composition: { manifest_path: 'manifest.json', receipt_path_field: 'candidate_receipt_path' },
+      }],
+    });
+    const result = runWorkflow(['lint', '--workflow', workflowPath, '--json']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('candidate_composition must contain exactly');
+  });
+
   it('resumes only from immutable workflow and receipt evidence', async () => {
     const workflowPath = path.join(testDir, 'receipt-resume.json');
     const outDir = path.join(testDir, 'receipt-resume-out');
