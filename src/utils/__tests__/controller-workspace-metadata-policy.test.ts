@@ -19,6 +19,14 @@ describe('metadata-controller sparse policy', () => {
     if (temporary) await fs.remove(temporary);
   });
 
+  it('classifies canonical task scopes as recursive controller metadata', async () => {
+    const policy = await fs.readJson(path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'));
+    expect(policy.copied_metadata).toContain('.juno_task/task-scopes');
+    expect(policy.product_forbidden).toContain('.juno_task/task-scopes');
+    expect(policy.tracked_recursive).toContain('.juno_task/task-scopes');
+    expect(policy.tracked_exact).not.toContain('.juno_task/task-scopes');
+  });
+
   it('classifies, selects, requires, and materializes the generated .gitignore', async () => {
     temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-controller-sparse-policy-'));
     const repository = path.join(temporary, 'repository');
@@ -70,5 +78,65 @@ describe('metadata-controller sparse policy', () => {
     const invalid = run(repository, '--policy', invalidPath, 'classify', '.gitignore');
     expect(invalid.status).toBe(2);
     expect(invalid.stderr).toContain('.gitignore must be controller_canonical');
+  });
+
+  it('admits legacy task-scope records without admitting unknown controller paths', async () => {
+    temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-controller-task-scopes-'));
+    const repository = path.join(temporary, 'repository');
+    await fs.ensureDir(repository);
+    expect(git(repository, 'init', '-q', '-b', 'controller').status).toBe(0);
+    git(repository, 'config', 'user.name', 'Test');
+    git(repository, 'config', 'user.email', 'test@example.invalid');
+    await fs.writeFile(path.join(repository, '.gitignore'), `${rootIgnores.join('\n')}\n`);
+    await fs.outputFile(path.join(repository, '.juno_task/config.json'), '{"revision":1}\n');
+    const scope = '.juno_task/task-scopes/ab/abc123.json';
+    await fs.outputFile(path.join(repository, scope), '{"task_id":"abc123"}\n');
+    git(repository, 'add', '.'); git(repository, 'commit', '-qm', 'legacy controller tree');
+    const head = git(repository, 'rev-parse', 'HEAD').stdout.trim();
+    // Leave the controller branch available for the sparse linked worktree.
+    expect(git(repository, 'switch', '-qc', 'product').status).toBe(0);
+    const policy = {
+      schema_version: 'juno_controller_workspace.v1',
+      controller_branch: 'refs/heads/controller',
+      ownership: {
+        schema_version: 'juno_workspace_ownership.v1',
+        controller_canonical: ['.gitignore', '.juno_task/config.json'],
+        shared_managed_distribution: ['shared'],
+        product_canonical: ['product'],
+        local_ignored: ['.agents', '.claude', '.pi', 'AGENTS.md', 'CLAUDE.md'],
+      },
+      sparse_policy: {
+        style: 'non-cone', index_sparse: false,
+        selected_paths: ['.gitignore', '.juno_task/config.json'],
+        required_paths: ['.gitignore', '.juno_task/config.json'],
+      },
+      generation: { package_name: 'juno-code', package_version: '2.1.3', managed_assets_schema: 1 },
+    };
+    const policyPath = path.join(temporary, 'policy.json');
+    await fs.writeJson(policyPath, policy);
+    const controller = path.join(temporary, 'sparse-controller');
+    const created = run(repository, '--policy', policyPath, 'create', '--repository', repository,
+      '--path', controller, '--controller-ref', 'refs/heads/controller', '--expected-head', head,
+      '--registration-source', 'test', '--rollback-controller', repository,
+      '--output', path.join(temporary, 'create.json'));
+    expect(created.status, created.stderr).toBe(0);
+    expect(git(controller, 'switch', 'controller').status).toBe(0);
+
+    // Reproduce a previously tracked scope becoming materialized while a new
+    // task-state mutation is committed by the controller checkpoint.
+    await fs.outputFile(path.join(controller, scope), '{"task_id":"abc123"}\n');
+    await fs.writeFile(path.join(controller, '.juno_task/config.json'), '{"revision":2}\n');
+    expect(git(controller, 'add', '--sparse', scope, '.juno_task/config.json').status).toBe(0);
+    expect(git(controller, 'commit', '-qm', 'checkpoint task state').status).toBe(0);
+    const verified = run(controller, '--policy', policyPath, 'verify', '--root', controller,
+      '--output', path.join(temporary, 'verify.json'));
+    const verification = await fs.readJson(path.join(temporary, 'verify.json'));
+    expect(verified.status, `${verified.stderr}\n${JSON.stringify(verification, null, 2)}`).toBe(0);
+    const classified = run(controller, '--policy', policyPath, 'classify', scope);
+    expect(classified.status, classified.stderr).toBe(0);
+    expect(JSON.parse(classified.stdout)[scope]).toBe('controller_canonical');
+    const unknown = run(controller, '--policy', policyPath, 'classify', '.juno_task/unknown/value.json');
+    expect(unknown.status).toBe(2);
+    expect(unknown.stderr).toContain('exactly one ownership class');
   });
 });

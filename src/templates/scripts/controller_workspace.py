@@ -27,6 +27,11 @@ RECEIPT_SCHEMA = "juno_controller_workspace_receipt.v1"
 OWNERSHIP_SCHEMA = "juno_workspace_ownership.v1"
 PATTERN_HEADER = "# juno-controller-workspace sparse-v1"
 CLASSES = ("controller_canonical", "shared_managed_distribution", "product_canonical", "local_ignored")
+# Task-scope records predate the metadata-only controller cutover. Retired sparse
+# policies omitted this controller-private root even though task_workspace.py
+# persisted records there. Keep this fallback exact and narrow: unknown sibling
+# paths remain unclassified, and an explicit policy classification wins.
+LEGACY_CONTROLLER_PREFIXES = (".juno_task/task-scopes",)
 AGENT_SURFACE_ROOTS = ("AGENTS.md", "CLAUDE.md", ".agents", ".claude", ".pi")
 REQUIRED_ROOT_IGNORES = ("/AGENTS.md", "/CLAUDE.md", "/.agents/", "/.claude/", "/.pi/")
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
@@ -142,12 +147,24 @@ def load_policy(path: Path) -> dict[str, Any]:
     return {**value, "ownership": {"schema_version": OWNERSHIP_SCHEMA, **normalized},
             "sparse_policy": {**sparse, "selected_paths": selected, "required_paths": required}}
 
+def under(value: str, prefixes: list[str] | tuple[str, ...]) -> bool:
+    return any(value == prefix or value.startswith(prefix + "/") for prefix in prefixes)
+
+
 def classify(policy: dict[str, Any], relative: str) -> str:
     value = concrete_path(relative)
     matches = [name for name in CLASSES for prefix in policy["ownership"][name]
                if value == prefix or value.startswith(prefix + "/")]
+    if not matches and under(value, LEGACY_CONTROLLER_PREFIXES):
+        matches = ["controller_canonical"]
     if len(matches) != 1: raise WorkspaceError(f"path must have exactly one ownership class: {relative} ({matches})")
     return matches[0]
+
+
+def selected(policy: dict[str, Any], relative: str) -> bool:
+    value = concrete_path(relative)
+    return under(value, policy["sparse_policy"]["selected_paths"]) or under(value, LEGACY_CONTROLLER_PREFIXES)
+
 
 def patterns(selected: list[str]) -> list[str]:
     output = [PATTERN_HEADER]
@@ -196,7 +213,7 @@ def inspect(root: Path, policy: dict[str, Any], *, require_branch: bool = True) 
     actual_bytes = sparse_file(root).read_bytes() if actual_root == root and sparse_file(root).is_file() else b""
     materialized = [item for item in tracked(root) if os.path.lexists(root / item)] if actual_root == root else []
     product_materialized = [item for item in materialized if classify(policy, item) == "product_canonical"]
-    unexpected = [item for item in materialized if not any(item == p or item.startswith(p + "/") for p in policy["sparse_policy"]["selected_paths"])]
+    unexpected = [item for item in materialized if not selected(policy, item)]
     required_missing = [item for item in policy["sparse_policy"]["required_paths"] if not (root / item).exists()]
     classifications: dict[str, int] = {name: 0 for name in CLASSES}
     unclassified: list[str] = []

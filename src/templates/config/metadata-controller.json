@@ -8,6 +8,7 @@
     ".juno_task/ledger",
     ".juno_task/wiki",
     ".juno_task/specs",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/tasks.md"
   ],
@@ -37,6 +38,7 @@
     ".juno_task/receipts",
     ".juno_task/specs",
     ".juno_task/state",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/tasks.md",
     ".juno_task/workflows",
@@ -56,6 +58,7 @@
   ],
   "tracked_recursive": [
     ".juno_task/ledger",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/wiki"
   ],
