@@ -1640,7 +1640,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "status", "preflight", "finish",
+            "start", "status", "hydrate", "preflight", "finish",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh"}:
@@ -1758,6 +1758,10 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
     attempt = f"{time.time_ns()}-{secrets.token_hex(6)}"
     out_dir = controller / ".juno_task/runtime/task-hydration" / task_id / attempt
     env = dict(os.environ)
+    # Hydration evaluates the already registered task worktree. Controller-side
+    # wrapper assertions describe the parent, not this managed child boundary.
+    env.pop("JUNO_WORKSPACE_ROLE", None)
+    env.pop("JUNO_PROJECT_PATH", None)
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     commands = [
         [sys.executable, str(runner), "lint", "--workflow", str(workflow),
@@ -1767,23 +1771,51 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
          "--no-print-step-stdout", "--print-output", "none"],
     ]
     started = time.monotonic()
+    out_dir.mkdir(parents=True, exist_ok=False)
+    evidence_limit = 1024 * 1024
+    runner_identity = {"path": str(runner.resolve()),
+                       "sha256": hashlib.sha256(runner.read_bytes()).hexdigest()}
     for stage, argv in zip(("lint", "run"), commands):
+        completed = None
+        failure: Optional[BaseException] = None
         try:
             completed = subprocess.run(
                 argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3700, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise HydrationFailure(f"task hydration {stage} could not complete", {
+            failure = exc
+        stdout = (completed.stdout if completed is not None else
+                  getattr(failure, "stdout", b"") or b"")
+        stderr = (completed.stderr if completed is not None else
+                  getattr(failure, "stderr", b"") or b"")
+        stdout = stdout[-evidence_limit:]
+        stderr = stderr[-evidence_limit:]
+        (out_dir / f"{stage}.stdout.bin").write_bytes(stdout)
+        (out_dir / f"{stage}.stderr.bin").write_bytes(stderr)
+        stage_evidence = {
+            "schema_version": "juno_task_hydration_stage.v1", "stage": stage,
+            "argv": argv, "cwd": str(worktree.resolve()), "runner": runner_identity,
+            "exit_code": completed.returncode if completed is not None else None,
+            "timed_out": isinstance(failure, subprocess.TimeoutExpired),
+            "stdout_bytes_retained": len(stdout), "stderr_bytes_retained": len(stderr),
+            "output_limit_bytes": evidence_limit,
+        }
+        (out_dir / f"{stage}.json").write_text(
+            json.dumps(stage_evidence, sort_keys=True, separators=(",", ":")) + "\n")
+        if failure is not None:
+            raise HydrationFailure(f"task hydration {stage} could not complete; inspect {out_dir}", {
                 "status": "failed", "workflow": frozen, "failed_stage": stage,
                 "duration_ms": round((time.monotonic() - started) * 1000),
-                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
-            }) from exc
+                "artifact_dir": str(out_dir), "stage_evidence": str(out_dir / f"{stage}.json"),
+                "recovery_command": f"yy task hydrate {task_id}",
+            }) from failure
         if completed.returncode:
             raise HydrationFailure(f"task hydration {stage} failed; inspect {out_dir}", {
                 "status": "failed", "workflow": frozen, "failed_stage": stage,
                 "exit_code": completed.returncode,
                 "duration_ms": round((time.monotonic() - started) * 1000),
-                "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
+                "artifact_dir": str(out_dir), "stage_evidence": str(out_dir / f"{stage}.json"),
+                "recovery_command": f"yy task hydrate {task_id}",
             })
     drift = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", check=False)
     if drift:
