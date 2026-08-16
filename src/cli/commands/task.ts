@@ -119,9 +119,11 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   controllerRoot: string,
   exitCode: number,
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
+  taskId?: string,
 ): Promise<void> {
   if (['status', 'preflight', 'recovery-plan'].includes(operation)) return;
-  await checkpoint(controllerRoot, exitCode);
+  if (taskId) await checkpoint(controllerRoot, exitCode, taskId);
+  else await checkpoint(controllerRoot, exitCode);
 }
 
 export async function invokeTaskWorkspace(
@@ -147,7 +149,8 @@ export async function invokeTaskWorkspace(
       else resolve(code ?? 1);
     });
   });
-  await checkpointTaskWorkspaceAfterFinalization(operation, controllerRoot, exitCode);
+  await checkpointTaskWorkspaceAfterFinalization(operation, controllerRoot, exitCode,
+    checkpointControllerAfterFinalization, taskId);
   if (exitCode !== 0) process.exitCode = exitCode;
 }
 

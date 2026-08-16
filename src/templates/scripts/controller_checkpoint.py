@@ -176,6 +176,16 @@ def normalize_entry(value: Any) -> str:
     return path.as_posix()
 
 
+def policy_checkpoint_includes(policy: dict[str, Any]) -> tuple[str, ...]:
+    """Derive checkpoint selection from the metadata boundary's tracked authority."""
+    entries = (
+        list(policy["tracked_exact"])
+        + list(policy["tracked_recursive"])
+        + list(policy["tracked_top_level_files"])
+    )
+    return tuple(sorted(dict.fromkeys(normalize_entry(item) for item in entries)))
+
+
 def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
     path = root / ".juno_task/config.json"
     try:
@@ -185,14 +195,20 @@ def load_config(root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
     checkpoint = payload.get("gitCheckpoint", {})
     if not isinstance(checkpoint, dict):
         raise CheckpointError("invalid checkpoint configuration: gitCheckpoint must be an object")
-    raw_include = checkpoint.get("include", list(DEFAULT_INCLUDE))
+    policy = metadata_controller_policy(root)
+    authoritative = policy_checkpoint_includes(policy) if policy is not None else DEFAULT_INCLUDE
+    raw_include = checkpoint.get("include", list(authoritative))
     if not isinstance(raw_include, list):
         raise CheckpointError("invalid checkpoint configuration: include must be an array")
     include = tuple(dict.fromkeys(normalize_entry(item) for item in raw_include))
+    if policy is not None and "include" in checkpoint and set(include) != set(authoritative):
+        raise CheckpointError(
+            "checkpoint include drift from authoritative metadata-controller tracked policy: "
+            f"expected={list(authoritative)} actual={list(include)}")
     agent = checkpoint.get("agent", {})
     if not isinstance(agent, dict):
         raise CheckpointError("invalid checkpoint configuration: agent must be an object")
-    return include, agent
+    return authoritative if policy is not None else include, agent
 
 
 def metadata_controller_policy(root: Path) -> dict[str, Any] | None:
@@ -279,7 +295,7 @@ def selected(path: str, includes: tuple[str, ...]) -> bool:
 
 
 def scoped_includes(includes: tuple[str, ...], task_id: str | None) -> tuple[str, ...]:
-    """Narrow broad task/ledger roots to one canonical task namespace."""
+    """Select only state attributable to one lifecycle task operation."""
     if task_id is None:
         return includes
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
@@ -288,8 +304,48 @@ def scoped_includes(includes: tuple[str, ...], task_id: str | None) -> tuple[str
     replacements = {
         ".juno_task/tasks": f".juno_task/tasks/{prefix}/{task_id}.md",
         ".juno_task/ledger": f".juno_task/ledger/{prefix}/{task_id}",
+        ".juno_task/task-scopes": f".juno_task/task-scopes/{prefix}/{task_id}.json",
     }
-    return tuple(replacements.get(item, item) for item in includes)
+    scoped = [replacements[item] for item in includes if item in replacements]
+    queue_state = ".juno_task/state/tasks.json"
+    if queue_state in includes:
+        scoped.append(queue_state)
+    return tuple(scoped)
+
+
+def require_attributable_queue_state(root: Path, chosen: list[str], task_id: str | None) -> None:
+    """Prove a shared queue document changed only the named task record."""
+    queue_path = ".juno_task/state/tasks.json"
+    if task_id is None or queue_path not in chosen:
+        return
+    before_result = subprocess.run(
+        ["git", "-C", str(root), "show", f"HEAD:{queue_path}"],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+    if before_result.returncode:
+        raise CheckpointError("task-scoped queue state must already be canonical tracked state")
+    try:
+        before = json.loads(before_result.stdout)
+        after = json.loads((root / queue_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CheckpointError(f"task-scoped queue state is invalid: {exc}") from exc
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise CheckpointError("task-scoped queue state must be a JSON object")
+    before_tasks = before.get("tasks")
+    after_tasks = after.get("tasks")
+    if not isinstance(before_tasks, dict) or not isinstance(after_tasks, dict):
+        raise CheckpointError("task-scoped queue state must contain a tasks object")
+    before_shared = {key: value for key, value in before.items() if key != "tasks"}
+    after_shared = {key: value for key, value in after.items() if key != "tasks"}
+    missing = object()
+    changed_tasks = sorted(
+        key for key in set(before_tasks) | set(after_tasks)
+        if before_tasks.get(key, missing) != after_tasks.get(key, missing)
+    )
+    if before_shared != after_shared or changed_tasks != [task_id]:
+        raise CheckpointError(
+            "task-scoped queue attribution refused: "
+            f"task_id={task_id} changed_tasks={changed_tasks} shared_fields_changed={before_shared != after_shared}")
 
 
 def workspace_policy(root: Path) -> dict[str, Any] | None:
@@ -374,7 +430,8 @@ def fingerprint(root: Path, path: str) -> str:
 
 
 def inspect(
-    root: Path, includes: tuple[str, ...], *, recover_stale_lock: bool = True
+    root: Path, includes: tuple[str, ...], *, recover_stale_lock: bool = True,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     if os.environ.get("GIT_INDEX_FILE"):
         raise CheckpointError("alternate GIT_INDEX_FILE is not allowed for controller checkpoints")
@@ -409,6 +466,7 @@ def inspect(
         raise CheckpointError("blocked non-controller paths under metadata-controller policy: "
                               + format_refusals(policy_refused))
     chosen = sorted({name for name in all_names if selected(name, includes)})
+    require_attributable_queue_state(root, chosen, task_id)
     blocked = sorted({name for name in all_names
                       if not selected(name, includes) and not unrelated_task_residue(name, includes)})
     if blocked:
@@ -422,8 +480,9 @@ def inspect(
     }
 
 
-def assert_frozen(root: Path, includes: tuple[str, ...], frozen: dict[str, Any], remaining: list[str]) -> None:
-    current = inspect(root, includes)
+def assert_frozen(root: Path, includes: tuple[str, ...], frozen: dict[str, Any], remaining: list[str],
+                  task_id: str | None = None) -> None:
+    current = inspect(root, includes, task_id=task_id)
     if current["branch"] != frozen["branch"] or current["head"] != frozen["head"]:
         raise CheckpointError("repository HEAD/ref changed during checkpoint")
     if current["selected"] != sorted(remaining):
@@ -646,11 +705,12 @@ def agent_groups(root: Path, frozen: dict[str, Any], config: dict[str, Any]) -> 
     return output
 
 
-def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, Any], groups: list[tuple[list[str], str]]) -> list[str]:
+def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, Any], groups: list[tuple[list[str], str]],
+                     task_id: str | None = None) -> list[str]:
     remaining = list(frozen["selected"])
     commits: list[str] = []
     for paths, message in groups:
-        assert_frozen(root, includes, frozen, remaining)
+        assert_frozen(root, includes, frozen, remaining, task_id)
         staged_by_checkpoint = False
         try:
             git(root, "add", "--", *paths)
@@ -674,7 +734,7 @@ def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, An
         commits.append(git(root, "rev-parse", "HEAD").strip())
         frozen["head"] = commits[-1]
         remaining = [path for path in remaining if path not in paths]
-    post = inspect(root, includes)
+    post = inspect(root, includes, task_id=task_id)
     if post["selected"]:
         raise CheckpointError(f"checkpoint postcondition failed; selected dirt remains: {post['selected']}")
     return commits
@@ -1078,7 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
     lease = acquire_lease(root); channel = None
     try:
         if should_commit: channel = acquire_target_channel(root)
-        frozen = inspect(root, includes, recover_stale_lock=should_commit)
+        frozen = inspect(root, includes, recover_stale_lock=should_commit, task_id=args.task_id)
         payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "root": str(root),
@@ -1094,8 +1154,8 @@ def main(argv: list[str] | None = None) -> int:
         elif should_commit:
             groups = agent_groups(root, frozen, agent_config) if getattr(args, "agent", False) else [(frozen["selected"], validate_message(args.message))]
             # Agent is read-only: reject any repository mutation before staging.
-            assert_frozen(root, includes, frozen, frozen["selected"])
-            payload["commits"] = stage_and_commit(root, includes, frozen, groups)
+            assert_frozen(root, includes, frozen, frozen["selected"], args.task_id)
+            payload["commits"] = stage_and_commit(root, includes, frozen, groups, args.task_id)
             payload["outcome"] = "committed"
             payload["head"] = payload["commits"][-1]
             if persisted_role == "controller":

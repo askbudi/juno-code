@@ -87,6 +87,69 @@ describe('controller_checkpoint.py template script', () => {
     expect(JSON.parse(explicit.stdout).selected).toEqual(expected);
   });
 
+  async function configureMetadataController(): Promise<void> {
+    const policy = await fs.readJson(path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'));
+    policy.controller_branch = 'refs/heads/task';
+    policy.product_ref = 'refs/heads/product';
+    await fs.ensureDir(path.join(repo, '.juno_task', 'config'));
+    await fs.writeJson(path.join(repo, '.juno_task', 'config', 'metadata-controller.json'), policy);
+    await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), {
+      controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
+    });
+    git(repo, 'add', '.juno_task/config.json', '.juno_task/config/metadata-controller.json');
+    git(repo, 'commit', '-m', 'configure metadata boundary');
+  }
+
+  it('derives metadata checkpoint paths from policy and commits canonical queue state', async () => {
+    await configureMetadataController();
+    await fs.outputJson(path.join(repo, '.juno_task', 'state', 'tasks.json'), {
+      schema_version: 1, tasks: { A: { state: 'QUEUED' } },
+    });
+    git(repo, 'add', '.juno_task/state/tasks.json');
+    git(repo, 'commit', '-m', 'canonical queue state');
+    await fs.outputJson(path.join(repo, '.juno_task', 'state', 'tasks.json'), {
+      schema_version: 1, tasks: { A: { state: 'MERGED' } },
+    });
+    const result = run(repo, 'commit', '--message', 'checkpoint queue state');
+    expect(result.status, result.stderr).toBe(0);
+    expect(git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('.juno_task/state/tasks.json');
+  });
+
+  it('refuses metadata checkpoint/default drift before selecting dirt', async () => {
+    await configureMetadataController();
+    const config = await fs.readJson(path.join(repo, '.juno_task', 'config.json'));
+    config.gitCheckpoint = { include: ['.juno_task/tasks'] };
+    await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), config);
+    const result = run(repo, 'plan');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('include drift from authoritative metadata-controller tracked policy');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('task-scoped queue attribution excludes task B and refuses shared dirt', async () => {
+    await configureMetadataController();
+    const queue = path.join(repo, '.juno_task', 'state', 'tasks.json');
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'QUEUED' }, B: { state: 'QUEUED' },
+    } });
+    git(repo, 'add', '.juno_task/state/tasks.json');
+    git(repo, 'commit', '-m', 'canonical queue state');
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'MERGED' }, B: { state: 'QUEUED' },
+    } });
+    let result = run(repo, '--task-id', 'A', 'commit', '--message', 'checkpoint task A');
+    expect(result.status, result.stderr).toBe(0);
+
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'MERGED' }, B: { state: 'MERGED' },
+    } });
+    await fs.outputFile(path.join(repo, '.juno_task', 'specs', 'unrelated.md'), 'shared dirt\n');
+    result = run(repo, '--task-id', 'A', 'plan');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/queue attribution refused|blocked non-controller paths/);
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
   it('task-scoped checkpoints exclude another task namespace residue', async () => {
     await fs.ensureDir(path.join(repo, '.juno_task', 'tasks', 't1'));
     await fs.ensureDir(path.join(repo, '.juno_task', 'ledger', 't1', 'T1'));
@@ -102,16 +165,7 @@ describe('controller_checkpoint.py template script', () => {
   });
 
   it('uses metadata-controller direct-child rules and reports every refused nested path', async () => {
-    const policy = await fs.readJson(path.resolve(process.cwd(), 'src/templates/config/metadata-controller.json'));
-    policy.controller_branch = 'refs/heads/task';
-    policy.product_ref = 'refs/heads/product';
-    await fs.ensureDir(path.join(repo, '.juno_task', 'config'));
-    await fs.writeJson(path.join(repo, '.juno_task', 'config', 'metadata-controller.json'), policy);
-    await fs.writeJson(path.join(repo, '.juno_task', 'config.json'), {
-      controllerWorkspace: { mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json' },
-    });
-    git(repo, 'add', '.juno_task/config.json', '.juno_task/config/metadata-controller.json');
-    git(repo, 'commit', '-m', 'configure metadata boundary');
+    await configureMetadataController();
     for (const name of ['one.json', 'two.md']) {
       await fs.outputFile(path.join(repo, '.juno_task', 'specs', 'backend', 'artifacts', name), 'evidence\n');
     }

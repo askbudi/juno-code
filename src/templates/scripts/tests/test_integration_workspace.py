@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -818,6 +819,48 @@ class ManagedRuntimeTests(unittest.TestCase):
         path = self.repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text((json.dumps(value) + "\n") if not isinstance(value, str) else value)
+
+    def test_doctor_consumes_installed_release_manifest_without_source_templates(self) -> None:
+        shutil.rmtree(self.repo / "juno-code")
+        assets = {}
+        for relative, kind in ((".juno_task/scripts/one.py", "script"),
+                               (".juno_task/scripts/two.py", "script"),
+                               (runtime.MANAGED_POLICY_PATH, "config")):
+            data = (self.repo / relative).read_bytes()
+            digest = runtime.managed_sha256(data)
+            assets[relative] = {"type": kind, "templateVersion": "9.1.0",
+                                "sourceSha256": digest, "installedSha256": digest}
+        self.write(runtime.MANAGED_INSTALLED_MANIFEST_PATH, {
+            "schemaVersion": 1, "packageName": "juno-code",
+            "packageVersion": "9.1.0", "assets": assets,
+        })
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-m", "consumer installed release generation")
+        consumer_target = git(self.repo, "rev-parse", "HEAD")
+
+        generation_scripts = {}
+        for relative in (".juno_task/scripts/one.py", ".juno_task/scripts/two.py"):
+            source = (self.repo / relative).read_bytes()
+            destination = self.controller / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source)
+            digest = runtime.managed_sha256(source)
+            generation_scripts[relative] = {"classification": "exact",
+                                            "source_sha256": digest,
+                                            "actual_sha256": digest}
+        policy_hash = runtime.managed_sha256(
+            (self.controller / runtime.MANAGED_POLICY_PATH).read_bytes())
+        generation = {"schema_version": runtime.MANAGED_RUNTIME_SCHEMA,
+                      "target_sha": consumer_target, "package_version": "9.1.0",
+                      "scripts": generation_scripts, "policy_sha256": policy_hash}
+        generation_path = self.controller / runtime.MANAGED_GENERATION_PATH
+        generation_path.parent.mkdir(parents=True, exist_ok=True)
+        generation_path.write_text(json.dumps(generation) + "\n")
+
+        doctor = runtime.managed_runtime_inspect(self.controller, self.repo, consumer_target)
+        self.assertTrue(doctor["healthy"], doctor)
+        self.assertEqual(doctor["package_version"], "9.1.0")
+        self.assertFalse((self.repo / runtime.MANAGED_MANIFEST_PATH).exists())
 
     def test_managed_asset_prompt_macro_shape_is_strict(self) -> None:
         manifest_path = self.repo / runtime.MANAGED_MANIFEST_PATH

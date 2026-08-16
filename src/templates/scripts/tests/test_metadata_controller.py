@@ -440,7 +440,7 @@ class MetadataControllerTest(unittest.TestCase):
         reviewed = planned["reviewed_policies"]
         self.assertEqual(reviewed["source"]["kind"], "explicit_paths")
         self.assertEqual(reviewed["task_workspace"]["sha256"],
-                         mc.digest(json.loads(self.task_policy.read_text())))
+                         mc.digest(mc.validate_task_policy(json.loads(self.task_policy.read_text()))))
         task = json.loads(self.task_policy.read_text())
         task["workspace_root"] = str(self.temp / "different-task-worktrees")
         self.task_policy.write_text(json.dumps(task))
@@ -731,6 +731,15 @@ class MetadataControllerTest(unittest.TestCase):
         original_run = mc.run
 
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if argv and argv[0] == str(fake_npm) and "pack" in argv:
+                destination = Path(argv[argv.index("--pack-destination") + 1])
+                tarball = destination / "juno-code-2.0.33-rc.0.10.tgz"
+                tarball.write_bytes(b"exact fixture artifact")
+                data = tarball.read_bytes()
+                evidence = [{"version": "2.0.33-rc.0.10", "filename": tarball.name,
+                             "integrity": "sha512-" + mc.base64.b64encode(mc.hashlib.sha512(data).digest()).decode(),
+                             "shasum": mc.hashlib.sha1(data).hexdigest()}]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(evidence), "")
             if argv and argv[0] == str(fake_npm):
                 installed = prefix / "node_modules/juno-code"
                 write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33-rc.0.10"}) + "\n")
@@ -756,6 +765,16 @@ class MetadataControllerTest(unittest.TestCase):
 
         expected_runtime = (prefix / "node_modules/juno-code/dist/bin/cli.mjs").resolve()
         self.assertEqual(receipt["runtime"]["executable"], str(expected_runtime))
+        self.assertEqual(receipt["operation"], "runtime-install-rebind")
+        self.assertRegex(receipt["artifact"]["integrity"], r"^sha512-")
+        replay = mc.runtime_install_rebind(argparse.Namespace(
+            root=self.new_controller,
+            branch="refs/heads/juno/controller-metadata-v1",
+            runtime_version="2.0.33-rc.0.10",
+            install_prefix=prefix,
+            output=receipt_path,
+        ), self.policy)
+        self.assertEqual(replay, receipt)
         self.assertTrue(receipt_path.is_file())
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), str(expected_runtime))
@@ -769,14 +788,18 @@ class MetadataControllerTest(unittest.TestCase):
         original_which = mc.shutil.which
         try:
             mc.shutil.which = lambda name: str(fake_npm) if name == "npm" else original_which(name)
-            with self.assertRaisesRegex(mc.BoundaryError, "exact runtime installation failed"):
+            failure_receipt = self.temp / "failed-runtime.json"
+            with self.assertRaisesRegex(mc.BoundaryError, "exact runtime artifact is unavailable"):
                 mc.runtime_install_rebind(argparse.Namespace(
                     root=self.new_controller,
                     branch="refs/heads/juno/controller-metadata-v1",
                     runtime_version="2.0.33",
                     install_prefix=prefix,
-                    output=self.temp / "failed-runtime.json",
+                    output=failure_receipt,
                 ), self.policy)
+            failure = json.loads(failure_receipt.read_text())
+            self.assertEqual(failure["outcome"], "failed_rolled_back")
+            self.assertTrue(failure["rollback"]["fresh_prefix_removed"])
         finally:
             mc.shutil.which = original_which
         self.assertFalse(prefix.exists())
@@ -991,7 +1014,7 @@ class MetadataControllerTest(unittest.TestCase):
         result = subprocess.run(["python3", str(checkpoint), "--root", str(root), "plan"],
                                 text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("blocked non-controller paths", result.stderr)
+        self.assertIn("checkpoint include drift from authoritative metadata-controller tracked policy", result.stderr)
 
     def test_metadata_policy_holds_real_index_lock_and_rejects_concurrent_staging_before_commit(self) -> None:
         root, _ = self.legacy_policy_controller()
@@ -1276,6 +1299,15 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertFalse(receipt["tracked_changes"])
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.new_controller), before_head)
         self.assertEqual(command("git", "write-tree", cwd=self.new_controller), before_tree)
+        replay = mc.runtime_rebind(
+            argparse.Namespace(
+                root=self.new_controller,
+                branch="refs/heads/juno/controller-metadata-v1",
+                runtime=newer,
+                runtime_version="2.0.33",
+                output=self.temp / "runtime-rebind.json",
+            ), self.policy)
+        self.assertEqual(replay, receipt)
 
         cutover = mc.transition_plan(
             argparse.Namespace(plan=self.plan_path, output=self.temp / "cutover.json"),
@@ -1351,6 +1383,17 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller), old_version)
         self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), old_executable)
         self.assertEqual(command("git", "status", "--porcelain", cwd=self.new_controller), "")
+
+        injected_args = argparse.Namespace(**{**vars(args), "output": self.temp / "rebind-injected-failure.json"})
+        os.environ["JUNO_RUNTIME_REBIND_TEST_FAIL_AFTER_CONFIG"] = "1"
+        try:
+            with self.assertRaisesRegex(mc.BoundaryError, "injected runtime rebind failure"):
+                mc.runtime_rebind(injected_args, self.policy)
+        finally:
+            os.environ.pop("JUNO_RUNTIME_REBIND_TEST_FAIL_AFTER_CONFIG", None)
+        self.assertEqual(runtime_file.read_bytes(), old_identity)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller), old_version)
+        self.assertEqual(command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller), old_executable)
 
 
 if __name__ == "__main__":

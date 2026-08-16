@@ -4478,9 +4478,14 @@ def checkpoint_after_finalization(exit_code: int, owner: str) -> None:
             detail = detail[-2000:]
             raise WorkflowError(f"checkpoint exit {completed.returncode}: {detail}")
     except (OSError, subprocess.SubprocessError, WorkflowError) as exc:
+        detail = str(exc)
+        retryable = bool(re.search(r"lease busy|lock timeout|changed during checkpoint", detail, re.I))
+        blocker = "retryable_lock_or_race" if retryable else "deterministic_or_unsafe_state"
+        action = ("wait for the owning writer, then rerun the owning command" if retryable else
+                  "preserve bytes and run `yy doctor workspace` for exact recovery")
         print(
             f"workflow_runner.sh: WARNING: controller checkpoint failed after finalization; "
-            f"run {script} --root {root} commit manually: {exc}", file=sys.stderr,
+            f"blocker={blocker}; safe_next_action={action}; detail={detail}", file=sys.stderr,
         )
 
 

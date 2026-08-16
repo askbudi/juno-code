@@ -107,6 +107,12 @@ describe('task workspace CLI', () => {
     },
   );
 
+  it('passes the lifecycle task identity to task-scoped checkpoint attribution', async () => {
+    const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
+    await checkpointTaskWorkspaceAfterFinalization('finish', '/controller', 0, checkpoint, 'TaskA');
+    expect(checkpoint).toHaveBeenCalledWith('/controller', 0, 'TaskA');
+  });
+
   it('preserves a failed task outcome while the best-effort checkpointer reports recovery', async () => {
     const checkpoint = vi.fn(async () => ({
       attempted: true,

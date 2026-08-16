@@ -79,7 +79,9 @@ export async function checkpointMergeQueueAfterFinalization(
   // MERGED is persisted only after the terminal Kanban mutation and readback.
   if (!['next', 'resolve'].includes(operation) || exitCode !== 0
       || payload?.outcome !== 'MERGED' || kanbanPhase?.status !== 'complete') return;
-  await checkpoint(controllerRoot, exitCode);
+  const checkpointTaskId = typeof payload?.task_id === 'string' ? payload.task_id : undefined;
+  if (checkpointTaskId) await checkpoint(controllerRoot, exitCode, checkpointTaskId);
+  else await checkpoint(controllerRoot, exitCode);
 }
 
 export async function invokeMergeQueueAtController(

@@ -225,6 +225,8 @@ describe('merge queue CLI', () => {
     expect(git(root, 'rev-parse', 'HEAD')).toBe(before);
     expect(git(root, 'status', '--porcelain')).toContain('.juno_task/tasks/T123.md');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('WARNING: Controller checkpoint failed after finalization'));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('commit manually'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocker=unknown'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('yy doctor workspace'));
+    expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('commit manually'));
   }, 30_000);
 });
