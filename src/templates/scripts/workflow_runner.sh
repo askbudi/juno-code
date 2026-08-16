@@ -849,6 +849,13 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
     terminal_gate = str(workflow.get("terminal_gate") or "").strip()
     if terminal_gate and terminal_gate not in step_indexes:
         raise WorkflowError(f"terminal_gate references unknown step: {terminal_gate}")
+    final_worktree = workflow.get("final_worktree")
+    if final_worktree is not None:
+        if (not isinstance(final_worktree, dict) or set(final_worktree) != {"path", "head"}
+                or not isinstance(final_worktree.get("path"), str)
+                or not Path(final_worktree["path"]).is_absolute()
+                or not re.fullmatch(r"[0-9a-f]{40}", str(final_worktree.get("head") or ""))):
+            raise WorkflowError("final_worktree must bind an absolute path and exact 40-hex head")
     validation_ownership = workflow.get("validation_ownership")
     if validation_ownership is not None and not isinstance(validation_ownership, dict):
         raise WorkflowError("validation_ownership must be a mapping")
@@ -3011,13 +3018,17 @@ def run_workflow(args: argparse.Namespace) -> int:
                 raise WorkflowError(f"step[{step_id}]: canonical managed-agent runner is missing")
             allowed = {"mode", "controller_root", "controller_branch", "agent_root", "prompt_file", "out_dir", "tool_id",
                        "task_id", "create_receipt", "task_root_receipt", "verify_receipt", "edit_preflight_receipt",
-                       "authority_map", "candidate_sha", "candidate_root"}
+                       "authority_map", "candidate_sha", "candidate_root", "require_terminal_result"}
             unknown = sorted(set(managed_spec) - allowed)
             if unknown:
                 raise WorkflowError(f"step[{step_id}]: unsupported managed_agent fields: {unknown}")
             command = [sys.executable, str(runner), "run"]
             for key, value in managed_spec.items():
-                if value is not None and str(value) != "":
+                if key == "require_terminal_result":
+                    if value is not True:
+                        raise WorkflowError(f"step[{step_id}]: require_terminal_result must be true when declared")
+                    command.append("--require-terminal-result")
+                elif value is not None and str(value) != "":
                     command.extend(["--" + key.replace("_", "-"), str(value)])
             model_selection = {"managed_agent": True, "configured_defaults": True}
         else:
@@ -3288,6 +3299,27 @@ def run_workflow(args: argparse.Namespace) -> int:
                 result["session_id"] = str(managed_receipt.get("session_id") or "")
                 if not result["session_id"] or not str(result["response"]).strip():
                     raise WorkflowError(f"step[{step_id}]: managed-agent session/response is empty")
+                terminal_result = managed_receipt.get("terminal_result")
+                if managed_spec.get("require_terminal_result") is True:
+                    expected_terminal = {
+                        "schema_version": "juno_managed_agent_terminal_result.v1",
+                        "workflow_step_digest": command_digest,
+                        "session_id": result["session_id"],
+                        "identity_sha256": canonical_sha256(managed_receipt.get("identity")),
+                        "response_sha256": artifact_map["response"]["sha256"],
+                    }
+                    if (not isinstance(terminal_result, dict)
+                            or set(terminal_result) != {*expected_terminal, "state"}
+                            or any(terminal_result.get(key) != value for key, value in expected_terminal.items())
+                            or terminal_result.get("state") not in {"completed", "blocked", "incomplete", "failed"}):
+                        raise WorkflowError(
+                            f"step[{step_id}]: managed-agent terminal result is missing or unbound: "
+                            f"expected={expected_terminal!r} observed={terminal_result!r}")
+                    result["semantic_outcome"] = terminal_result["state"]
+                    result["terminal_result"] = terminal_result
+                    if terminal_result["state"] != "completed":
+                        raise WorkflowError(
+                            f"step[{step_id}]: managed-agent terminal outcome is {terminal_result['state']}")
                 result["managed_agent"] = {"receipt": str(managed_receipt_path), "sha256": file_sha256(managed_receipt_path)}
             except (WorkflowError, OSError, ValueError, KeyError) as exc:
                 result["status"] = "failed"; result["failure_reason"] = str(exc)
@@ -3418,6 +3450,29 @@ def run_workflow(args: argparse.Namespace) -> int:
             if step_should_fail_process(step):
                 final_exit = exit_code or 1
                 break
+
+    final_worktree_evidence = None
+    final_worktree = workflow.get("final_worktree")
+    if final_worktree is not None and not args.dry_run:
+        final_root = Path(str(final_worktree["path"])).resolve()
+        top = subprocess.run(["git", "-C", str(final_root), "rev-parse", "--show-toplevel"],
+                             text=True, capture_output=True, check=False)
+        head = subprocess.run(["git", "-C", str(final_root), "rev-parse", "HEAD^{commit}"],
+                              text=True, capture_output=True, check=False)
+        status_check = subprocess.run(
+            ["git", "-C", str(final_root), "status", "--porcelain=v1", "--untracked-files=all"],
+            text=True, capture_output=True, check=False)
+        passed = (top.returncode == 0 and head.returncode == 0 and status_check.returncode == 0
+                  and Path(top.stdout.strip()).resolve() == final_root
+                  and head.stdout.strip() == final_worktree["head"] and not status_check.stdout)
+        final_worktree_evidence = {"path": str(final_root), "expected_head": final_worktree["head"],
+                                   "observed_head": head.stdout.strip(), "clean": not status_check.stdout,
+                                   "passed": passed}
+        manifest["final_worktree"] = final_worktree_evidence
+        if not passed:
+            manifest["status"] = "failed"
+            manifest["failed_steps"].append("final_worktree")
+            final_exit = final_exit or 1
 
     terminal_gate = str(workflow.get("terminal_gate") or "").strip()
     terminal_result = context["steps"].get(terminal_gate) if terminal_gate else None

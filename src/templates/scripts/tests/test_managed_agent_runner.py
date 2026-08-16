@@ -93,6 +93,8 @@ if binding:
  raw=json.dumps(review_result,sort_keys=True,separators=(',',':'))
  review_result=(raw+'\\r\\n \\t' if 'fixture-crlf' in prompt else raw+'\\n')
 payload={'session_id':'session-one' if tool_id=='managed_agent_runner' else 'session-'+tool_id,'result':review_result}
+if 'typed-' in prompt:
+ payload['terminal_outcome']={'schema_version':'juno_managed_agent_terminal_result.v1','state':prompt.split('typed-',1)[1].split()[0]}
 if 'semantic-fail' in prompt: payload['is_error']=True
 if 'empty' in prompt: payload['result']=''
 pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(payload)+'\\n')
@@ -346,6 +348,25 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                 "PATH": os.pathsep.join((str(self.stale_bin), str(self.bin), os.environ["PATH"])),
                 "JUNO_CODE_NODE_EXECUTABLE": canonical_node,
                 "PI_MODEL": "forbidden", "JUNO_MODEL": "forbidden"}
+
+    def test_required_terminal_result_is_receipt_bound_and_typed(self):
+        prompt = self.tmp / "typed.md"; prompt.write_text("typed-blocked\n")
+        blocked = self.tmp / "typed-blocked"
+        result = subprocess.run(self.command(blocked, prompt) + ["--require-terminal-result"],
+                                env=self.env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((blocked / "receipt.json").read_text())
+        terminal = receipt["terminal_result"]
+        self.assertEqual(terminal["state"], "blocked")
+        self.assertEqual(terminal["session_id"], receipt["session_id"])
+        self.assertEqual(terminal["response_sha256"], receipt["artifacts"]["response"]["sha256"])
+        self.assertEqual(terminal["identity_sha256"], runner.sha(runner.canonical(receipt["identity"]).rstrip(b"\n")))
+
+        missing = self.tmp / "typed-missing"
+        refused = subprocess.run(self.command(missing) + ["--require-terminal-result"],
+                                 env=self.env(), capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("lacks required typed terminal outcome", refused.stderr)
 
     def test_conflicting_parent_and_venv_path_use_canonical_yy_node_runtime(self):
         out = self.tmp / "node-contract"
