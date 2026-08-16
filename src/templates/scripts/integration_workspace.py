@@ -246,9 +246,13 @@ def managed_policy_generations(repository: Path, previous_sha: str, target_sha: 
     if any(missing):
         # rc.0.22 never installed the controller-private policy into products and
         # therefore could not record it in either immutable installed manifest.
-        # This is deliberately not a general legacy/manifest compatibility path.
+        # A guarded task-runtime bootstrap can legitimately advance the target
+        # manifest to the invoked package before this controller refresh runs.
+        # Keep the exception anchored to an authenticated rc.0.22 predecessor;
+        # both generations have already passed installed-manifest/runtime hash
+        # validation in managed_target_provenance().
         versions = (previous_provenance["package_version"], target_provenance["package_version"])
-        if missing != [True, True] or versions != ("2.1.3-rc.0.22", "2.1.3-rc.0.22"):
+        if missing != [True, True] or versions[0] != "2.1.3-rc.0.22":
             raise ManagedRuntimeError("installed task policy provenance is invalid")
         return current, current
 

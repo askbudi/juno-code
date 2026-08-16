@@ -34,11 +34,11 @@ export function packagedIntegrationRuntimeCandidates(): string[] {
 export async function selectIntegrationRuntime(
   controllerRoot: string,
   operation: IntegrationOperation,
-  options: IntegrationOptions,
+  _options: IntegrationOptions,
   packagedCandidates = packagedIntegrationRuntimeCandidates(),
 ): Promise<string> {
   const canonical = path.join(controllerRoot, '.juno_task', 'scripts', 'integration_workspace.py');
-  const bootstrapRecovery = operation === 'runtime-refresh' && Boolean(options.dryRun || options.apply);
+  const bootstrapRecovery = operation === 'runtime-refresh';
   if (!bootstrapRecovery) {
     if (!(await fs.pathExists(canonical))) {
       throw new Error('Missing managed integration runtime. Run `yy scripts update` and retry.');

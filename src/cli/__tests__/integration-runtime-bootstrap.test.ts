@@ -72,11 +72,11 @@ describe('integration runtime-refresh bootstrap routing', () => {
     expect(await fs.pathExists(path.join(controller, '.juno_task', 'runtime'))).toBe(false);
   });
 
-  it('keeps ordinary commands on the canonical controller engine', async () => {
+  it('uses the packaged recovery engine for no-overlap runtime refreshes too', async () => {
     const { controller, canonical, packaged } = await fixture();
     await expect(selectIntegrationRuntime(
       controller, 'runtime-refresh', { previousSha: 'a'.repeat(40) }, [packaged],
-    )).resolves.toBe(canonical);
+    )).resolves.toBe(packaged);
     await expect(selectIntegrationRuntime(controller, 'runtime-doctor', {}, [packaged]))
       .resolves.toBe(canonical);
     await expect(selectIntegrationRuntime(controller, 'status', {}, [packaged]))
