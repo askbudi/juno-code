@@ -602,6 +602,8 @@ class TaskWorkspaceTests(unittest.TestCase):
             )
         elif output_shape == "release":
             stdout, stderr = f"juno-code {version}\n", ""
+        elif output_shape == "machine":
+            stdout, stderr = f"{version}\n", ""
         else:
             raise ValueError(f"unknown legacy version output shape: {output_shape}")
         executable.write_text(
@@ -2349,6 +2351,13 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def test_runtime_bootstrap_retains_exact_prefixed_legacy_version_output(self) -> None:
         self.install_legacy_consumer_runtime(output_shape="release")
+        package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        plan = task_runtime.runtime_bootstrap(
+            self.controller, "2.1.3-rc.0.10", package_hash, None)
+        self.assertEqual(plan["prior"]["package_version"], "2.1.2")
+
+    def test_runtime_bootstrap_accepts_current_bare_machine_version_output(self) -> None:
+        self.install_legacy_consumer_runtime(output_shape="machine")
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
         plan = task_runtime.runtime_bootstrap(
             self.controller, "2.1.3-rc.0.10", package_hash, None)

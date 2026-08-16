@@ -600,9 +600,10 @@ class MetadataControllerTest(unittest.TestCase):
             f"   Working directory: {self.runtime.parent.resolve()}\n\n"
         )
 
-    def test_runtime_identity_accepts_canonical_human_and_prefixed_machine_output(self) -> None:
+    def test_runtime_identity_accepts_current_and_compatible_version_output(self) -> None:
         version = "2.1.3-rc.0.11"
         accepted = {
+            "bare machine": (f"{version}\n", ""),
             "canonical human": (f"{version}\n", self.canonical_runtime_banner(version)),
             "prefixed machine": (f"juno-code {version}\n", ""),
         }
@@ -623,7 +624,6 @@ class MetadataControllerTest(unittest.TestCase):
             ),
             "malformed banner": (f"{version}\n", banner.replace("Node.js", "Node")),
             "ambiguous stdout": (f"{version}\njuno-code {version}\n", banner),
-            "missing banner": (f"{version}\n", ""),
             "unexpected stderr": (f"{version}\n", banner + "unexpected\n"),
         }
         for label, (stdout, stderr) in cases.items():
