@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Stable planning and validation guidance for runtime, API, UI, and data-source replacements."
   failure_mode_prevented: "Agents preserve visible behavior while missing access, ownership, limit provenance, backing-data feasibility, stale callers, or efficient validation ownership."
   runtime_contract_enforced: "Replacement work inventories old and new ownership, decides every invariant explicitly, removes obsolete paths, and assigns targeted/full validation to named roles."
-  validation_gate: "./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md && git diff --check -- .juno_task/wiki/runtime_migration_and_replacement_contract.md"
+  validation_gate: "wiki_root=$(yy wiki --path 2>/dev/null || true); wiki_file=$wiki_root/controller/runtime_migration_and_replacement_contract.md; test -f \"$wiki_file\" || wiki_file=.juno_task/wiki/runtime_migration_and_replacement_contract.md; ./.juno_task/scripts/wiki_lint.sh --file \"$wiki_file\""
   related_sots:
     - "parallel_runner_and_spec_review.md"
   owns:
@@ -112,6 +112,8 @@ Runtime contract enforced: replacements have explicit old/new ownership, invaria
 Exact validation gate:
 
 ```bash
-./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/runtime_migration_and_replacement_contract.md
-git diff --check -- .juno_task/wiki/runtime_migration_and_replacement_contract.md
+wiki_root=$(yy wiki --path 2>/dev/null || true)
+wiki_file=$wiki_root/controller/runtime_migration_and_replacement_contract.md
+test -f "$wiki_file" || wiki_file=.juno_task/wiki/runtime_migration_and_replacement_contract.md
+./.juno_task/scripts/wiki_lint.sh --file "$wiki_file"
 ```

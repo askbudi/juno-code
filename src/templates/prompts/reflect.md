@@ -11,7 +11,7 @@ For each meaningful issue:
 3. Search existing guidance/helpers first, then choose one home: existing wiki, new wiki only if none owns it, `AGENTS.md` only for short stable contracts, helper/script, automated guard, task/spec evidence, or no action.
 4. Check recurrence evidence, overfit risk, maintenance/context cost, exclusions, and the smallest useful intervention. Do not institutionalize one-offs without strong impact.
 
-Wiki proposals must follow `.juno_task/wiki/wiki_maintenance.md` and name the path, concise instruction, failure prevented, runtime contract, validation gate, and why it belongs there. Helper proposals must name the path/interface, behavior, adoption point, replaced work, and tests.
+Wiki proposals must resolve the canonical root with `yy wiki --path`, then follow its project `wiki_maintenance.md` specialization when present or `controller/wiki_maintenance.md` otherwise. Name the path, concise instruction, failure prevented, runtime contract, validation gate, and why it belongs there. Helper proposals must name the path/interface, behavior, adoption point, replaced work, and tests.
 
 ## Output and durable Kanban follow-up
 

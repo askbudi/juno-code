@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Stable post-run review contract for parallel-runner/subagent work, spec-invariant review, submodule commits, and write-capable CLI acceptance."
   failure_mode_prevented: "Root agents marking mixed, partial, dirty, or semantically mismatched subagent work as done."
   runtime_contract_enforced: "Kanban task status, git commits, task MUST/MUST NOT requirements, tests, and dangerous-path evidence agree before root work is closed."
-  validation_gate: "./.juno_task/scripts/wiki_lint.sh --file .juno_task/wiki/parallel_runner_and_spec_review.md && git diff --check -- .juno_task/wiki/parallel_runner_and_spec_review.md"
+  validation_gate: "wiki_root=$(yy wiki --path 2>/dev/null || true); wiki_file=$wiki_root/controller/parallel_runner_and_spec_review.md; test -f \"$wiki_file\" || wiki_file=.juno_task/wiki/parallel_runner_and_spec_review.md; ./.juno_task/scripts/wiki_lint.sh --file \"$wiki_file\""
   related_sots:
     - "git_worktree_lifecycle.md"
     - "runtime_migration_and_replacement_contract.md"

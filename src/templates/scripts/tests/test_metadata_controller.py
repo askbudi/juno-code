@@ -69,6 +69,8 @@ class MetadataControllerTest(unittest.TestCase):
         write(self.repo / ".juno_task/specs/workflows/run/attempt.json", "{}\n")
         write(self.repo / ".juno_task/tasks.md", "index\n")
         write(self.repo / ".juno_task/cutover.json", "{}\n")
+        write(self.repo / ".juno_task/wiki/project_runbook.md", "# Project runbook\n")
+        write(self.repo / ".juno_task/wiki/domain/operator.md", "# Domain operator\n")
         write(self.repo / "juno-code/package.json", "{}\n")
         command("git", "add", ".", cwd=self.repo)
         command("git", "commit", "-m", "legacy full controller", cwd=self.repo)
@@ -137,6 +139,14 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(payload["controller_wiki"]["file_count"], len(mc.CORE_CONTROLLER_WIKI))
         for name in mc.CORE_CONTROLLER_WIKI:
             self.assertTrue((self.new_controller / ".juno_task/wiki/controller" / name).is_file())
+        self.assertEqual(
+            (self.new_controller / ".juno_task/wiki/project_runbook.md").read_text(),
+            "# Project runbook\n",
+        )
+        self.assertEqual(
+            (self.new_controller / ".juno_task/wiki/domain/operator.md").read_text(),
+            "# Domain operator\n",
+        )
         self.assertTrue((self.new_controller / ".gitignore").is_file())
         self.assertTrue((self.new_controller / ".juno_task/state/tasks.json").is_file())
         self.assertTrue((self.new_controller / ".juno_task/receipts/controller-boundary.json").is_file())
@@ -199,6 +209,43 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertNotEqual(descendant["root_commit"], descendant["head"])
         self.assertEqual(command("git", "status", "--porcelain", cwd=product_worktree), "")
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=product_worktree), self.product_head)
+
+    def test_plan_rejects_unsafe_or_package_colliding_legacy_wiki_entries(self) -> None:
+        cases = [
+            (".juno_task/wiki/private.txt", "not Markdown\n", "Markdown files only"),
+            (
+                ".juno_task/wiki/controller/git_worktree_lifecycle.md",
+                "# stale package copy\n",
+                "package-owned controller namespace",
+            ),
+        ]
+        for index, (relative, content, message) in enumerate(cases):
+            with self.subTest(relative=relative):
+                write(self.repo / relative, content)
+                command("git", "add", relative, cwd=self.repo)
+                command("git", "commit", "-m", f"unsafe wiki {index}", cwd=self.repo)
+                head = command("git", "rev-parse", "HEAD", cwd=self.repo)
+                with self.assertRaisesRegex(mc.BoundaryError, message):
+                    mc.migration_plan(
+                        self.migration_args(
+                            expected_old_head=head,
+                            output=self.temp / f"unsafe-{index}.json",
+                        ),
+                        self.policy,
+                    )
+                command("git", "reset", "--hard", self.old_head, cwd=self.repo)
+
+    def test_plan_rejects_legacy_wiki_symlink(self) -> None:
+        link = self.repo / ".juno_task/wiki/domain-link.md"
+        link.symlink_to("project_runbook.md")
+        command("git", "add", str(link.relative_to(self.repo)), cwd=self.repo)
+        command("git", "commit", "-m", "unsafe wiki symlink", cwd=self.repo)
+        head = command("git", "rev-parse", "HEAD", cwd=self.repo)
+        with self.assertRaisesRegex(mc.BoundaryError, "symlinks or gitlinks"):
+            mc.migration_plan(
+                self.migration_args(expected_old_head=head, output=self.temp / "symlink.json"),
+                self.policy,
+            )
 
     def test_sparse_materialization_and_root_ignore_contract_fail_before_admission(self) -> None:
         self.prepare()
