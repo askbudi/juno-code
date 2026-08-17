@@ -698,6 +698,52 @@ raise SystemExit(2)
                          ("TARGET_REFRESH_APPLIED", refreshed))
         self.assertEqual(set(applied["changed_paths"]),
                          {"src/package.json", "src/package-lock.json"})
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        self.assertNotIn("package.lock_diverged",
+                         {row["code"] for row in report["findings"]})
+
+    def test_next_rejects_tampered_package_refresh_receipt(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_package_pair_base()
+        self.task("start", "X")
+        self.write_feature_package_pair("X")
+        self.task("finish", "X")
+        self.advance_target("src/target.txt", "target\n")
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        receipt = Path(planned["receipt"]["path"])
+        receipt.write_bytes(receipt.read_bytes() + b" ")
+
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+
+        finding = next(row for row in report["findings"]
+                       if row["code"] == "package.lock_diverged")
+        self.assertEqual(finding["evidence"]["target_refresh_receipt"]["reason"],
+                         "receipt_hash_mismatch")
+
+    def test_next_rejects_package_refresh_receipt_after_target_moves(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_package_pair_base()
+        self.task("start", "X")
+        self.write_feature_package_pair("X")
+        self.task("finish", "X")
+        self.advance_target("src/target.txt", "target\n")
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        self.advance_target("src/later.txt", "later\n")
+
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+
+        finding = next(row for row in report["findings"]
+                       if row["code"] == "package.lock_diverged")
+        self.assertEqual(finding["evidence"]["target_refresh_receipt"]["reason"],
+                         "current_reference_missing")
 
     def test_target_refresh_rejects_malformed_task_authored_package_lock(self) -> None:
         self.install_merge_planner_runtime()

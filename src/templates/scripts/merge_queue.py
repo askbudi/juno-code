@@ -479,6 +479,50 @@ def _target_refresh_package_pair(repository: Path, feature_sha: str, lock_path: 
             "lockfile_version": lockfile_version}
 
 
+def _current_target_refresh_receipt(controller: Path, task_id: str, record: dict[str, Any],
+                                    feature_sha: str, target_sha: str) -> dict[str, Any]:
+    """Verify the immutable refresh receipt binding the frozen tip to this target."""
+    evidence: dict[str, Any] = {"feature_sha": feature_sha, "target_sha": target_sha}
+    references = record.get("target_refreshes")
+    if not isinstance(references, list):
+        return {**evidence, "valid": False, "reason": "reference_missing"}
+    reference = next((row for row in reversed(references) if isinstance(row, dict)
+                      and row.get("schema_version") ==
+                          "juno_merge_target_refresh_reference.v1"
+                      and row.get("refreshed_tip") == feature_sha
+                      and row.get("target_sha") == target_sha), None)
+    if reference is None:
+        return {**evidence, "valid": False, "reason": "current_reference_missing"}
+    plan_id = reference.get("plan_id")
+    receipt_sha256 = reference.get("receipt_sha256")
+    receipt_path = reference.get("receipt_path")
+    if not all(isinstance(value, str) for value in
+               (plan_id, receipt_sha256, receipt_path)):
+        return {**evidence, "valid": False, "reason": "reference_malformed"}
+    root = _refresh_receipt_root(controller)
+    path = Path(receipt_path).expanduser().resolve()
+    try:
+        path.relative_to(root)
+        if path != root / task_id / f"{plan_id}.json":
+            raise ValueError("receipt path mismatch")
+        raw = path.read_bytes()
+        plan = json.loads(raw)
+    except (ValueError, OSError, json.JSONDecodeError):
+        return {**evidence, "valid": False, "reason": "receipt_absent_or_unauthorized"}
+    if hashlib.sha256(raw).hexdigest() != receipt_sha256:
+        return {**evidence, "valid": False, "reason": "receipt_hash_mismatch"}
+    if (not isinstance(plan, dict) or plan.get("schema_version") != REFRESH_SCHEMA
+            or plan.get("task_id") != task_id or plan.get("plan_id") != plan_id
+            or plan.get("target_sha") != target_sha
+            or plan.get("refreshed_tip") != feature_sha
+            or plan_id != digest({"schema_version": REFRESH_ID_SCHEMA,
+                                  "plan": {key: value for key, value in plan.items()
+                                           if key != "plan_id"}})):
+        return {**evidence, "valid": False, "reason": "receipt_identity_mismatch"}
+    return {**evidence, "valid": True, "reason": "current_receipt_bound_refresh",
+            "plan_id": plan_id, "receipt_sha256": receipt_sha256}
+
+
 def _runtime_identities(controller: Path, repository: Path, feature_sha: str,
                         findings: list[dict[str, Any]]) -> dict[str, Any]:
     runtime_path = controller / ".juno_task/scripts/merge_queue.py"
@@ -746,11 +790,16 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
             if target_item["present"] and feature_item["present"] and target_item["sha256"] != feature_item["sha256"]:
                 pair = _target_refresh_package_pair(
                     repository, feature_sha, path, set(authored))
-                if operation != "target-refresh" or not pair["valid"]:
+                refresh = ({"valid": True, "reason": "target_refresh_planning"}
+                           if operation == "target-refresh" else
+                           _current_target_refresh_receipt(
+                               controller, task_id, record, feature_sha, target_sha))
+                if not pair["valid"] or not refresh["valid"]:
                     findings.append(_finding("package.lock_diverged", "error", "package_lock_version",
                                              {"path": path, "target_sha256": target_item["sha256"],
                                               "feature_sha256": feature_item["sha256"],
-                                              "target_refresh_pair": pair},
+                                              "target_refresh_pair": pair,
+                                              "target_refresh_receipt": refresh},
                                              f"yy task refresh {task_id}"))
     versions = {row["path"]: row.get("version") for row in packages["feature"]
                 if row["path"].endswith("package.json") and isinstance(row.get("version"), str)}
