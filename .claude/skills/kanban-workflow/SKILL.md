@@ -1,63 +1,63 @@
 ---
 name: kanban-workflow
-description: Comprehensive guide for using juno-kanban task management. Covers all commands (create, list, search, get, mark, update, archive, deps, ready, order, merge), dependency management, best practices, and workflow patterns. Use when you need to interact with the kanban board.
+description: Comprehensive guide for using Juno Ledger task management. Covers all commands (create, list, search, get, mark, update, archive, deps, ready, order, merge), dependency management, best practices, and workflow patterns. Use when you need to interact with the Juno Ledger board.
 argument-hint: "[command or workflow question]"
 ---
 
-## Kanban CLI Reference
+## Juno Ledger CLI Reference
 
-All commands use `./.juno_task/scripts/kanban.sh` (wrapper around juno-kanban Python CLI).
+Use `yy ledger` for all commands. It delegates to the canonical controller `kanban.sh` compatibility wrapper and the `juno-kanban` Python distribution. `yy kanban` remains a fully supported alias.
 
 ### Opt-in cross-project routing
 
-Cross-project access is disabled by default. The source `.juno_task/config.json` must set `kanbanRegistry.enabled: true` and explicitly list `allowedProjects`; environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`. Register with `juno-kanban project add ALIAS --path /absolute/project`, then route any command with `--project ALIAS`. The destination wrapper/runtime remains authoritative, and routing failures never fall back to the source board.
+Cross-project access is disabled by default. The source `.juno_task/config.json` must set `kanbanRegistry.enabled: true` and explicitly list `allowedProjects`; environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`. Register with `yy ledger project add ALIAS --path /absolute/project`, then route any command with `--project ALIAS`. The destination wrapper/runtime remains authoritative, and routing failures never fall back to the source board.
 
 ### Core Commands
 
 **CREATE** — Add a new task
 ```bash
-./.juno_task/scripts/kanban.sh create "Task description here" --status backlog --tags feature,backend
+yy ledger create "Task description here" --status backlog --tags feature,backend
 ```
 Options: `--status` (backlog|todo|in_progress|done), `--tags` (comma/space-separated), `--blocked-by` (task IDs), `--related-tasks` (task IDs)
 
 **LIST** — Browse tasks with summary stats
 ```bash
-./.juno_task/scripts/kanban.sh list --limit 5 --sort asc
-./.juno_task/scripts/kanban.sh list --status todo --sort asc
-./.juno_task/scripts/kanban.sh list --status todo,in_progress --limit 10
+yy ledger list --limit 5 --sort asc
+yy ledger list --status todo --sort asc
+yy ledger list --status todo,in_progress --limit 10
 ```
 
 **SEARCH** — Find tasks by criteria
 ```bash
-./.juno_task/scripts/kanban.sh search --status todo --tag backend --limit 10
-./.juno_task/scripts/kanban.sh search --body "OAuth" --open
-./.juno_task/scripts/kanban.sh search --commit abc123
+yy ledger search --status todo --tag backend --limit 10
+yy ledger search --body "OAuth" --open
+yy ledger search --commit abc123
 ```
 Filters: `--status`, `--tag`, `--body`, `--response`, `--commit`, `--open` (no agent_response), `--recent`, `--exclude` (exclude tags)
 
 **GET** — Full task details (including dependency info and related task details)
 ```bash
-./.juno_task/scripts/kanban.sh get TASK_ID
+yy ledger get TASK_ID
 ```
 
 **MARK** — Update status with required response message
 ```bash
-./.juno_task/scripts/kanban.sh mark in_progress --id TASK_ID --response "Starting work on this"
-./.juno_task/scripts/kanban.sh mark done --id TASK_ID --response "Completed: implemented X, tested Y" --commit abc123def
-./.juno_task/scripts/kanban.sh mark todo --id TASK_ID --response "Reopening: found regression"
+yy ledger mark in_progress --id TASK_ID --response "Starting work on this"
+yy ledger mark done --id TASK_ID --response "Completed: implemented X, tested Y" --commit abc123def
+yy ledger mark todo --id TASK_ID --response "Reopening: found regression"
 ```
 Required: `--id` and `--response`. Optional: `--commit` (recommended for done).
 
 **UPDATE** — Modify task fields
 ```bash
-./.juno_task/scripts/kanban.sh update TASK_ID --status todo --tags backend,urgent
-./.juno_task/scripts/kanban.sh update TASK_ID --commit abc123def
-./.juno_task/scripts/kanban.sh update TASK_ID --response "Additional context"
+yy ledger update TASK_ID --status todo --tags backend,urgent
+yy ledger update TASK_ID --commit abc123def
+yy ledger update TASK_ID --response "Additional context"
 ```
 
 **ARCHIVE** — Soft delete (preserves data, sets status to archive)
 ```bash
-./.juno_task/scripts/kanban.sh archive TASK_ID
+yy ledger archive TASK_ID
 ```
 
 ### Immutable cold archive packs
@@ -65,18 +65,18 @@ Required: `--id` and `--response`. Optional: `--commit` (recommended for done).
 Normal `list`, `search`, `ready`, and `order` are deliberately hot-only. Exact `get TASK_ID` transparently resolves a hot task or a read-only archived task; use `history TASK_ID` explicitly for its ledger. Discover cold tasks only with bounded, projected `archive-search` output:
 
 ```bash
-./.juno_task/scripts/kanban.sh archive-search --tag backend --before 2026-01-01 --limit 20 --projection metadata
+yy ledger archive-search --tag backend --before 2026-01-01 --limit 20 --projection metadata
 ```
 
 Before archive maintenance, preflight the installed version/help and obtain explicit owner authorization. The repository and index must be clean, and reports must be durable new paths outside the repository:
 
 ```bash
-./.juno_task/scripts/kanban.sh --version
-./.juno_task/scripts/kanban.sh archive-pack plan --status done,archive --older-than 90d --max-tasks 1000 --target-bytes 26214400 --hard-max-bytes 47185920 --report /external/receipts/archive-plan.json
+yy ledger --version
+yy ledger archive-pack plan --status done,archive --older-than 90d --max-tasks 1000 --target-bytes 26214400 --hard-max-bytes 47185920 --report /external/receipts/archive-plan.json
 # Independently inspect selected IDs, revisions, source HEAD, policy, and plan hash.
-./.juno_task/scripts/kanban.sh archive-pack create --plan /external/receipts/archive-plan.json --report /external/receipts/archive-create.json
-./.juno_task/scripts/kanban.sh archive-pack doctor
-./.juno_task/scripts/kanban.sh doctor
+yy ledger archive-pack create --plan /external/receipts/archive-plan.json --report /external/receipts/archive-create.json
+yy ledger archive-pack doctor
+yy ledger doctor
 ```
 
 A stale plan or selected-task/worktree conflict must fail closed: discard the plan, resolve the conflict, and plan again. Never automate archival, edit/append packs or manifests, restore/reopen an archived ID, use force/lossy controls, or enumerate archive files directly. Create follow-up work as a new hot task related to the archived ID. Production archival, push/deploy, and post-deploy E2E each require separate authorization; agents must not infer it from implementation approval.
@@ -86,27 +86,27 @@ A stale plan or selected-task/worktree conflict must fail closed: discard the pl
 **DEPS** — View, add, or remove task dependencies
 ```bash
 # View dependency info (blockers, dependents, priority score)
-./.juno_task/scripts/kanban.sh deps TASK_ID
+yy ledger deps TASK_ID
 
 # Add blockers (TASK_ID cannot start until BLOCKER1 and BLOCKER2 are done)
-./.juno_task/scripts/kanban.sh deps add --id TASK_ID --blocked-by BLOCKER1 BLOCKER2
+yy ledger deps add --id TASK_ID --blocked-by BLOCKER1 BLOCKER2
 
 # Remove a blocker
-./.juno_task/scripts/kanban.sh deps remove --id TASK_ID --blocked-by BLOCKER1
+yy ledger deps remove --id TASK_ID --blocked-by BLOCKER1
 ```
 Cycle detection prevents circular dependencies automatically.
 
 **READY** — Tasks with all blockers satisfied (safe to work on)
 ```bash
-./.juno_task/scripts/kanban.sh ready
-./.juno_task/scripts/kanban.sh ready --tag backend --limit 5
+yy ledger ready
+yy ledger ready --tag backend --limit 5
 ```
 Returns tasks where status is backlog/todo/in_progress AND all `blocked_by` tasks are done/archive.
 
 **ORDER** — Topological sort of open tasks respecting dependencies
 ```bash
-./.juno_task/scripts/kanban.sh order
-./.juno_task/scripts/kanban.sh order --scores
+yy ledger order
+yy ledger order --scores
 ```
 Use for determining safe parallel execution order.
 
@@ -128,10 +128,10 @@ These are parsed automatically when the task is created/updated.
 When tasks get scattered across subdirectories:
 ```bash
 # Auto-discover and merge all .juno_task dirs
-./.juno_task/scripts/kanban.sh merge --find-all --into ./.juno_task --dry-run
+yy ledger merge --find-all --into ./.juno_task --dry-run
 
 # Merge specific sources
-./.juno_task/scripts/kanban.sh merge ./sub1/.juno_task ./sub2/.juno_task --into ./.juno_task
+yy ledger merge ./sub1/.juno_task ./sub2/.juno_task --into ./.juno_task
 ```
 Strategy: `--strategy keep-newer` (default) or `--strategy keep-both`.
 
@@ -155,9 +155,9 @@ Add `--raw` for compact output. Add `-p` for pretty print.
 
 ### Canonical Controller Routing
 
-Kanban mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—Kanban never switches Git branches or falls back silently.
+Juno Ledger mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—Juno Ledger never switches Git branches or falls back silently.
 
-Run Kanban and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
+Run Juno Ledger and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
 
 ### Environment Variables
 

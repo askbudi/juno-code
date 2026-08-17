@@ -302,7 +302,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
     .option(
       '--til-completion',
-      'Run juno-code in a loop until all kanban tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
+      'Run juno-code in a loop until all Juno Ledger tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
     )
     .option('--until-completion', 'Alias for --til-completion')
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
@@ -2063,7 +2063,7 @@ async function main(): Promise<void> {
   const isReadOnlyTaskStatus = isTaskWorkspaceCommand && commandArgs[1] === 'status';
   const isScriptsDoctor = commandArgs[0] === 'scripts' && commandArgs[1] === 'doctor';
   const isWorkspaceDiscovery = commandArgs[0] === 'info' || commandArgs[0] === 'where' || (commandArgs[0] === 'doctor' && commandArgs[1] === 'workspace');
-  const isControlPlaneCommand = ['kanban', 'task', 'merge', 'integration'].includes(commandArgs[0] ?? '');
+  const isControlPlaneCommand = ['ledger', 'kanban', 'task', 'merge', 'integration'].includes(commandArgs[0] ?? '');
   const isReadOnlyIdentityRequest = isReadOnlyVersionRequest || isReadOnlyLifecycleStatus || isReadOnlyTaskStatus || isMigrationCommand || isScriptsDoctor || isWorkspaceDiscovery || isControlPlaneCommand;
   const isForceUpdate = process.argv.includes('--force-update');
   const isExplicitProjectAssetUpdate =

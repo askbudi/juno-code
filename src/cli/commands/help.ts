@@ -70,6 +70,11 @@ const QUICK_REFERENCE: QuickReference[] = [
         description: 'Manage execution sessions',
         usage: 'juno-code session <list|info|remove>',
       },
+      {
+        name: 'ledger',
+        description: 'Manage tasks with Juno Ledger',
+        usage: 'yy ledger <list|create|get|update|mark>',
+      },
     ],
   },
   {

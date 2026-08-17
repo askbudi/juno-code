@@ -826,7 +826,7 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         if summary_has_command or workflow.get("continue_from_step"):
             raise WorkflowError("task_hydration workflows cannot launch summary commands or continuation")
         forbidden = re.compile(
-            r"(?:^|\s)(?:yy|juno-code|ypl)\s+(?:task|merge|kanban|release|pi|codex|claude|gemini)|"
+            r"(?:^|\s)(?:yy|juno-code|ypl)\s+(?:task|merge|ledger|kanban|release|pi|codex|claude|gemini)|"
             r"JUNO_TASK_ROOT|\.juno_task/(?:state|tasks|ledger|receipts|runtime/merge)", re.IGNORECASE)
         for hydration_step in steps:
             step_id = str(hydration_step["id"])

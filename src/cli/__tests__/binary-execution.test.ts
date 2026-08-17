@@ -480,6 +480,8 @@ exit 1
       expect(result.stdout).toContain('Usage:');
       expect(result.stdout).toContain('Options:');
       expect(result.stdout).toContain('Commands:');
+      expect(result.stdout).toContain('ledger [options] [args...]');
+      expect(result.stdout).toContain('Juno Ledger');
       expect(result.all).not.toContain('refusing to reinterpret it as an agent prompt');
     });
 

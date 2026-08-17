@@ -164,7 +164,7 @@ export function configureTaskWorkspaceCommand(
     .description('Create, inspect, and queue one exact-base feature worktree');
   task
     .command('start')
-    .argument('<task-id>', 'Canonical Kanban task ID')
+    .argument('<task-id>', 'Canonical Juno Ledger task ID')
     .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
     .option('--umbrella-admission <file>', 'Versioned ordered-child exact-scope input')
     .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string }) => (
@@ -174,19 +174,19 @@ export function configureTaskWorkspaceCommand(
     ));
   task.command('preflight')
     .description('Read-only finish/admission check before expensive validation')
-    .argument('<task-id>', 'Canonical Kanban task ID')
+    .argument('<task-id>', 'Canonical Juno Ledger task ID')
     .action((taskId: string) => invoke('preflight', taskId, []));
   task.command('hydrate')
     .description('Rerun the frozen task hydration workflow on a clean task worktree')
-    .argument('<task-id>', 'Canonical Kanban task ID')
+    .argument('<task-id>', 'Canonical Juno Ledger task ID')
     .action((taskId: string) => invoke('hydrate', taskId, []));
   for (const operation of ['status', 'finish'] as const) {
     task.command(operation)
-      .argument('<task-id>', 'Canonical Kanban task ID')
+      .argument('<task-id>', 'Canonical Juno Ledger task ID')
       .action((taskId: string) => invoke(operation, taskId, []));
   }
   task.command('recovery-plan')
-    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .argument('<task-id>', 'Canonical umbrella Juno Ledger task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
     .requiredOption('--output <file>', 'New exclusive recovery plan path')
     .action((taskId: string, options: { umbrellaAdmission: string; output: string }) => invoke(
@@ -194,7 +194,7 @@ export function configureTaskWorkspaceCommand(
         '--output', options.output],
     ));
   task.command('recovery-authorize')
-    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .argument('<task-id>', 'Canonical umbrella Juno Ledger task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
     .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
     .action((taskId: string, options: { umbrellaAdmission: string; plan: string }) => invoke(
@@ -202,7 +202,7 @@ export function configureTaskWorkspaceCommand(
         '--plan', options.plan],
     ));
   task.command('recovery-apply')
-    .argument('<task-id>', 'Canonical umbrella Kanban task ID')
+    .argument('<task-id>', 'Canonical umbrella Juno Ledger task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
     .requiredOption('--plan <file>', 'Exact reviewed recovery plan')
     .requiredOption('--authorization-receipt <file>', 'Canonical immutable authorization for the exact plan')

@@ -93,7 +93,7 @@ classify_prebootstrap_command() {
         esac
     done
     case "$PREBOOTSTRAP_COMMAND" in
-        -V|--version|info|where|benchmark|kanban|task|merge|integration) return 0 ;;
+        -V|--version|info|where|benchmark|ledger|kanban|task|merge|integration) return 0 ;;
         doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
     esac
     return 1
@@ -217,10 +217,10 @@ read_runtime_version() {
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
-    case "$operation" in kanban|task|merge|integration) ;; *) return 1 ;; esac
+    case "$operation" in ledger|kanban|task|merge|integration) ;; *) return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
-        kanban:*) effective_operation=kanban ;;
+        ledger:*|kanban:*) effective_operation=kanban ;;
         task:status|task:preflight|task:recovery-plan|task:|task:-h|task:--help) effective_operation=kanban ;;
         task:start|task:hydrate|task:finish|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap) effective_operation=orchestration ;;
         merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;

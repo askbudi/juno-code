@@ -58,6 +58,8 @@ describe('ypl wrapper', () => {
 
   it.each([
     ['--help'],
+    ['ledger', '--help'],
+    ['kanban', '--help'],
     ['task', '-h'],
     ['scripts', 'update', '--help'],
     ['integration', 'runtime-refresh', '-h'],
@@ -95,7 +97,7 @@ describe('ypl wrapper', () => {
     }
   });
 
-  it.each([['kanban', 'list'], ['task', 'status', 'T1'], ['merge', 'status'], ['integration', 'status'], ['info'], ['where', 'controller'], ['doctor', 'workspace']])(
+  it.each([['ledger', 'list'], ['kanban', 'list'], ['task', 'status', 'T1'], ['merge', 'status'], ['integration', 'status'], ['info'], ['where', 'controller'], ['doctor', 'workspace']])(
     'classifies %s before checkout bootstrap',
     async (...args) => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-control-wrapper-'));
@@ -120,6 +122,7 @@ describe('ypl wrapper', () => {
   );
 
   it.each([
+    ['--quiet', 'ledger', 'list'],
     ['--quiet', 'kanban', 'list'],
     ['--config', 'controller.json', '--no-color', 'task', 'status', 'T1'],
     ['-v', '0', 'merge', 'status'],
@@ -407,6 +410,7 @@ describe('ypl wrapper', () => {
   );
 
   it.each([
+    { args: ['ledger', 'list'], operation: 'kanban' },
     { args: ['kanban', 'list'], operation: 'kanban' },
     { args: ['task', 'status', 'T1'], operation: 'kanban' },
     { args: ['task', 'preflight', 'T1'], operation: 'kanban' },

@@ -443,15 +443,19 @@ juno-code -b shell -s claude -m :opus -i 5 -v
 juno-code -b shell -s claude
 ```
 
-### Task Tracking: Structured, Not Prose
+### Task Tracking with Juno Ledger: Structured, Not Prose
 
-Built-in kanban via [juno-kanban](https://pypi.org/project/juno-kanban/). Hot current state uses safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use immutable NDJSON packs.
+Built-in task tracking uses **Juno Ledger**, distributed compatibly as
+[`juno-kanban`](https://pypi.org/project/juno-kanban/). Hot current state uses
+safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use
+immutable NDJSON packs. `yy ledger` is the preferred command; `yy kanban`
+remains a behaviorally identical compatibility alias.
 
-Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `juno-kanban project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
+Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `yy ledger project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
 
 ```bash
-./.juno_task/scripts/kanban.sh --project juno-code create --body "Cross-project issue" --tags bug
-./.juno_task/scripts/kanban.sh --project juno-code list --status todo
+yy ledger --project juno-code create --body "Cross-project issue" --tags bug
+yy ledger --project juno-code list --status todo
 ```
 
 The destination wrapper/runtime remains authoritative, and invalid routing never falls back to the source board. This implementation boundary matters because direct foreign-storage access could bypass destination controller, virtualenv, stdin, or write guards; real two-project tests prove exact target and stdin behavior.
@@ -460,22 +464,22 @@ Normal local usage remains unchanged:
 
 ```bash
 # Query tasks programmatically - always parseable
-./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
+yy ledger list --status backlog todo in_progress
 
 # Each task is isolated; exact get transparently resolves hot or archived state
-./.juno_task/scripts/kanban.sh get TASK_ID
+yy ledger get TASK_ID
 
 # Scale to thousands of tasks without context bloat
-./.juno_task/scripts/kanban.sh list --limit 5  # Shows only hot work that matters
+yy ledger list --limit 5  # Shows only hot work that matters
 ```
 
 Cold archives never enter normal discovery. Owner-authorized maintenance uses a clean tree, an external revision-bound plan/receipt, `archive-pack create`, and both archive/global doctors. Never edit sealed packs, reopen an archived ID, infer production authorization, or combine implementation work with push/deploy/post-deploy E2E; create a new related hot task instead.
 
 ```bash
-./.juno_task/scripts/kanban.sh archive-pack plan --status done,archive --older-than 90d --report /external/archive-plan.json
-./.juno_task/scripts/kanban.sh archive-pack create --plan /external/archive-plan.json --report /external/archive-create.json
-./.juno_task/scripts/kanban.sh archive-pack doctor
-./.juno_task/scripts/kanban.sh archive-search --tag backend --limit 20 --projection metadata
+yy ledger archive-pack plan --status done,archive --older-than 90d --report /external/archive-plan.json
+yy ledger archive-pack create --plan /external/archive-plan.json --report /external/archive-create.json
+yy ledger archive-pack doctor
+yy ledger archive-search --tag backend --limit 20 --projection metadata
 ```
 
 ### Task Dependencies
@@ -1351,32 +1355,33 @@ Use as a pre-run hook so the agent finds and fixes errors automatically:
 }
 ```
 
-## Kanban Commands
+## Juno Ledger Commands
 
-The kanban.sh script wraps juno-kanban. Here are the actual commands:
+Use `yy ledger` for task operations. Existing `yy kanban`, `kanban.sh`, and
+`juno-kanban` invocations remain supported for backward compatibility.
 
 ```bash
 # Task CRUD
-./.juno_task/scripts/kanban.sh create "Task body" --tags feature,backend
-./.juno_task/scripts/kanban.sh get TASK_ID
-./.juno_task/scripts/kanban.sh update TASK_ID --response "Fixed it" --commit abc123
-./.juno_task/scripts/kanban.sh mark done --id TASK_ID --response "Completed, tests pass"
-./.juno_task/scripts/kanban.sh archive TASK_ID
+yy ledger create "Task body" --tags feature,backend
+yy ledger get TASK_ID
+yy ledger update TASK_ID --response "Fixed it" --commit abc123
+yy ledger mark done --id TASK_ID --response "Completed, tests pass"
+yy ledger archive TASK_ID
 
 # List & search
-./.juno_task/scripts/kanban.sh list --limit 5 --status backlog todo in_progress
-./.juno_task/scripts/kanban.sh search --tag backend --status todo
+yy ledger list --limit 5 --status backlog todo in_progress
+yy ledger search --tag backend --status todo
 
 # Dependencies
-./.juno_task/scripts/kanban.sh create "Deploy" --blocked-by A1b2C3,X4y5Z6
-./.juno_task/scripts/kanban.sh deps TASK_ID                    # Show blockers & dependents
-./.juno_task/scripts/kanban.sh deps add --id T1 --blocked-by T2  # Add dependency
-./.juno_task/scripts/kanban.sh deps remove --id T1 --blocked-by T2
-./.juno_task/scripts/kanban.sh ready                           # Tasks with no unmet blockers
-./.juno_task/scripts/kanban.sh order --scores                  # Topological execution order
+yy ledger create "Deploy" --blocked-by A1b2C3,X4y5Z6
+yy ledger deps TASK_ID                    # Show blockers & dependents
+yy ledger deps add --id T1 --blocked-by T2  # Add dependency
+yy ledger deps remove --id T1 --blocked-by T2
+yy ledger ready                           # Tasks with no unmet blockers
+yy ledger order --scores                  # Topological execution order
 
 # Merge (monorepo support)
-./.juno_task/scripts/kanban.sh merge source/ --into target/ --strategy keep-newer
+yy ledger merge source/ --into target/ --strategy keep-newer
 ```
 
 **Task schema**: `{id, status, body, commit_hash, agent_response, created_date, last_modified, feature_tags[], related_tasks[], blocked_by[]}`
