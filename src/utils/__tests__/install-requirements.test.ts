@@ -409,6 +409,7 @@ steps:
       TASK_WORKTREE: task,
       VERSION_CHECK_CACHE_DIR: hostileTaskCache,
       JUNO_TASK_ROOT: controller,
+      JUNO_CONTROLLER_BRANCH: 'controller',
       JUNO_PROJECT_PATH: controller,
       JUNO_WORKSPACE_ROLE: 'controller',
     });
