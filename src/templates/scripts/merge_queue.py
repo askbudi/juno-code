@@ -642,7 +642,8 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
                  "reopen": {"REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
                             "CONFLICT_RESOLVED", "QUEUED", "AWAITING_RISK",
                             "REOPENING", "REQUEUING_STALE"},
-                 "target-refresh": {"QUEUED", "AWAITING_RISK", "REQUEUING_STALE"}}
+                 "target-refresh": {"QUEUED", "AWAITING_RISK", "REVIEW_FINDINGS",
+                                    "CONFLICT_RESOLVED", "REOPENING", "REQUEUING_STALE"}}
                 .get(operation, {"QUEUED", "CONFLICT", "CONFLICT_RESOLVED",
                                  "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
                                  "REQUEUING_STALE"}))
