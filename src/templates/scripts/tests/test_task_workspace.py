@@ -3206,9 +3206,9 @@ raise SystemExit(2)
         def row(name: str, delay: float, resource: bool = False) -> dict:
             code = (
                 "import json,time,sys; p=sys.argv[1]; name=sys.argv[2]; delay=float(sys.argv[3]); "
-                "open(p,'a').write(json.dumps({'name':name,'event':'start','at':time.monotonic()})+'\\n'); "
+                "open(p,'a').write(json.dumps({'name':name,'event':'start','at':time.time_ns()})+'\\n'); "
                 "time.sleep(delay); "
-                "open(p,'a').write(json.dumps({'name':name,'event':'end','at':time.monotonic()})+'\\n')"
+                "open(p,'a').write(json.dumps({'name':name,'event':'end','at':time.time_ns()})+'\\n')"
             )
             value = {"id": name, "cwd": "src", "argv": [sys.executable, "-c", code,
                      str(markers), name, str(delay)], "timeout_seconds": 3,
