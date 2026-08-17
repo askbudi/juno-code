@@ -437,6 +437,48 @@ def _json_file_identity(repository: Path, revision: str, path: str) -> dict[str,
             "malformed": malformed}
 
 
+def _target_refresh_package_pair(repository: Path, feature_sha: str, lock_path: str,
+                                 authored: set[str]) -> dict[str, Any]:
+    """Authenticate one task-authored npm manifest/lock pair for target refresh."""
+    parent, separator, _ = lock_path.rpartition("/")
+    manifest_path = f"{parent}/package.json" if separator else "package.json"
+    evidence: dict[str, Any] = {
+        "lock_path": lock_path, "manifest_path": manifest_path,
+        "lock_authored": lock_path in authored,
+        "manifest_authored": manifest_path in authored,
+    }
+    if not evidence["lock_authored"] or not evidence["manifest_authored"]:
+        return {**evidence, "valid": False, "reason": "pair_not_task_authored"}
+    manifest_raw = _blob_bytes(repository, feature_sha, manifest_path)
+    lock_raw = _blob_bytes(repository, feature_sha, lock_path)
+    try:
+        manifest = json.loads(manifest_raw) if manifest_raw is not None else None
+        lock = json.loads(lock_raw) if lock_raw is not None else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {**evidence, "valid": False, "reason": "malformed_json"}
+    if not isinstance(manifest, dict) or not isinstance(lock, dict):
+        return {**evidence, "valid": False, "reason": "non_object_json"}
+    lockfile_version = lock.get("lockfileVersion")
+    packages = lock.get("packages")
+    root = packages.get("") if isinstance(packages, dict) else None
+    if lockfile_version not in {2, 3} or not isinstance(root, dict):
+        return {**evidence, "valid": False, "reason": "unsupported_lock_shape",
+                "lockfile_version": lockfile_version}
+    for field in ("name", "version"):
+        expected = manifest.get(field)
+        if expected is not None and (lock.get(field) != expected or root.get(field) != expected):
+            return {**evidence, "valid": False, "reason": f"{field}_mismatch",
+                    "lockfile_version": lockfile_version}
+    for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+        expected = manifest.get(field, {})
+        observed = root.get(field, {})
+        if not isinstance(expected, dict) or observed != expected:
+            return {**evidence, "valid": False, "reason": f"{field}_mismatch",
+                    "lockfile_version": lockfile_version}
+    return {**evidence, "valid": True, "reason": "authenticated_task_authored_pair",
+            "lockfile_version": lockfile_version}
+
+
 def _runtime_identities(controller: Path, repository: Path, feature_sha: str,
                         findings: list[dict[str, Any]]) -> dict[str, Any]:
     runtime_path = controller / ".juno_task/scripts/merge_queue.py"
@@ -503,7 +545,7 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     if not isinstance(base_sha, str) or not isinstance(frozen_feature_sha, str):
         raise MergeQueueError("task record lacks frozen base/tip identity")
     feature_sha = frozen_feature_sha
-    if operation == "reopen":
+    if operation in {"reopen", "target-refresh"}:
         observed_branch_tip = task_runtime.git(
             repository, "rev-parse", record.get("branch_ref", ""), check=False)
         if task_runtime.SHA_RE.fullmatch(observed_branch_tip):
@@ -555,7 +597,8 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
     eligible = ({"next": {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE"}, "resolve": {"CONFLICT", "CONFLICT_RESOLVED"},
                  "reopen": {"REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
                             "CONFLICT_RESOLVED", "QUEUED", "AWAITING_RISK",
-                            "REOPENING", "REQUEUING_STALE"}}
+                            "REOPENING", "REQUEUING_STALE"},
+                 "target-refresh": {"QUEUED", "AWAITING_RISK", "REQUEUING_STALE"}}
                 .get(operation, {"QUEUED", "CONFLICT", "CONFLICT_RESOLVED",
                                  "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
                                  "REQUEUING_STALE"}))
@@ -701,10 +744,14 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
             target_item = next(row for row in packages["target"] if row["path"] == path)
             feature_item = next(row for row in packages["feature"] if row["path"] == path)
             if target_item["present"] and feature_item["present"] and target_item["sha256"] != feature_item["sha256"]:
-                findings.append(_finding("package.lock_diverged", "error", "package_lock_version",
-                                         {"path": path, "target_sha256": target_item["sha256"],
-                                          "feature_sha256": feature_item["sha256"]},
-                                         f"yy task refresh {task_id}"))
+                pair = _target_refresh_package_pair(
+                    repository, feature_sha, path, set(authored))
+                if operation != "target-refresh" or not pair["valid"]:
+                    findings.append(_finding("package.lock_diverged", "error", "package_lock_version",
+                                             {"path": path, "target_sha256": target_item["sha256"],
+                                              "feature_sha256": feature_item["sha256"],
+                                              "target_refresh_pair": pair},
+                                             f"yy task refresh {task_id}"))
     versions = {row["path"]: row.get("version") for row in packages["feature"]
                 if row["path"].endswith("package.json") and isinstance(row.get("version"), str)}
     fixture_hits: list[dict[str, str]] = []
@@ -3295,7 +3342,7 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
         # Reuse the shared static authored/target-derived feasibility gate before
         # any validation process. It observes the refreshed branch tip while
         # the immutable queue record still binds the original admission.
-        static = assert_static_plan(controller, task_id, "reopen")
+        static = assert_static_plan(controller, task_id, "target-refresh")
         worktree = task_runtime.exact_root(Path(plan["worktree"]), "feature worktree")
         validations = validation_rows(config, worktree)
         if (task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]

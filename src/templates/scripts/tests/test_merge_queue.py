@@ -187,6 +187,42 @@ raise SystemExit(2)
         git(setup, "commit", "-m", "add validation lock")
         git(self.repository, "worktree", "remove", str(setup))
 
+    def add_package_pair_base(self) -> None:
+        setup = self.root / "package-pair-base"
+        git(self.repository, "worktree", "add", str(setup), "product")
+        (setup / "src/.gitignore").write_text("node_modules/\n")
+        (setup / "src/package.json").write_text(json.dumps({
+            "name": "fixture", "version": "1.0.0", "dependencies": {},
+        }) + "\n")
+        (setup / "src/package-lock.json").write_text(json.dumps({
+            "name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+            "packages": {"": {"name": "fixture", "version": "1.0.0",
+                              "dependencies": {}}},
+        }) + "\n")
+        git(setup, "add", "src/.gitignore", "src/package.json", "src/package-lock.json")
+        git(setup, "commit", "-m", "add package pair")
+        git(self.repository, "worktree", "remove", str(setup))
+
+    def write_feature_package_pair(self, task_id: str, *, malformed: bool = False,
+                                   include_manifest: bool = True) -> None:
+        worktree = self.workspaces / task_id
+        dependencies = {"yaml": "^2.9.0"}
+        if include_manifest:
+            (worktree / "src/package.json").write_text(json.dumps({
+                "name": "fixture", "version": "1.0.0", "dependencies": dependencies,
+            }) + "\n")
+        (worktree / "src/package-lock.json").write_text(
+            "{malformed\n" if malformed else json.dumps({
+                "name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+                "packages": {"": {"name": "fixture", "version": "1.0.0",
+                                  "dependencies": dependencies},
+                             "node_modules/yaml": {"version": "2.9.0"}},
+            }) + "\n")
+        git(worktree, "add", "src/package-lock.json",
+            *(["src/package.json"] if include_manifest else []))
+        git(worktree, "commit", "-m", "update package pair")
+        (worktree / "src/node_modules").mkdir(exist_ok=True)
+
     def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
         owner = self.root / "integration-owner"
         git(self.repository, "worktree", "add", "--detach", str(owner), self.base)
@@ -643,6 +679,55 @@ raise SystemExit(2)
         reference = applied["target_refreshes"][0]
         self.assertEqual((reference["source_tip"], reference["target_sha"]), (old_tip, target))
         self.assertTrue(Path(reference["receipt_path"]).is_file())
+
+    def test_target_refresh_admits_valid_task_authored_package_pair(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_package_pair_base()
+        self.task("start", "X")
+        self.write_feature_package_pair("X")
+        self.task("finish", "X")
+        self.advance_target("src/target.txt", "target\n")
+        refreshed = self.merge_target_into("X")
+
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        applied = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+
+        self.assertEqual((applied["outcome"], applied["tip_sha"]),
+                         ("TARGET_REFRESH_APPLIED", refreshed))
+        self.assertEqual(set(applied["changed_paths"]),
+                         {"src/package.json", "src/package-lock.json"})
+
+    def test_target_refresh_rejects_malformed_task_authored_package_lock(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_package_pair_base()
+        self.task("start", "X")
+        self.write_feature_package_pair("X", malformed=True)
+        self.task("finish", "X")
+        self.advance_target("src/target.txt", "target\n")
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "package.lock_diverged"):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", planned["receipt"]["path"],
+                planned["receipt"]["sha256"])
+
+    def test_target_refresh_rejects_lock_without_task_authored_manifest_pair(self) -> None:
+        self.install_merge_planner_runtime()
+        self.add_package_pair_base()
+        self.task("start", "X")
+        self.write_feature_package_pair("X", include_manifest=False)
+        self.task("finish", "X")
+        self.advance_target("src/target.txt", "target\n")
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "package.lock_diverged"):
+            merge_runtime.apply_target_refresh(
+                self.controller.resolve(), "X", planned["receipt"]["path"],
+                planned["receipt"]["sha256"])
 
     def test_next_reconciles_fifo_tip_already_integrated_in_target_without_validation(self) -> None:
         tip = self.commit_feature("X", "docs/feature.txt", "feature\n")
