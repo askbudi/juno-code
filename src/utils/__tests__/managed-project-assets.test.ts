@@ -439,7 +439,30 @@ describe('ManagedProjectAssets', {
     expect(taskWorkflowHelper).toContain(
       'role review must not declare edit_capable true or edit_admission',
     );
+    expect(taskWorkflowHelper).toContain(
+      '$(yy wiki --path)/controller/parallel_runner_and_spec_review.md',
+    );
+    expect(taskWorkflowHelper).not.toContain(
+      '"review": ["AGENTS.md", ".juno_task/wiki/parallel_runner_and_spec_review.md"]',
+    );
     expect(taskWorkflowHelper).not.toContain('review_fix');
+    const reflectPrompt = await fs.readFile(
+      path.join(projectDir, '.juno_task/prompts/reflect.md'),
+      'utf8',
+    );
+    expect(reflectPrompt).toContain('resolve the canonical root with `yy wiki --path`');
+    expect(reflectPrompt).toContain('`controller/wiki_maintenance.md` otherwise');
+    for (const name of [
+      'parallel_runner_and_spec_review.md',
+      'runtime_migration_and_replacement_contract.md',
+    ]) {
+      const lifecycleWiki = await fs.readFile(
+        path.join(projectDir, '.juno_task/wiki', name),
+        'utf8',
+      );
+      expect(lifecycleWiki).toContain('wiki_root=$(yy wiki --path 2>/dev/null || true)');
+      expect(lifecycleWiki).toContain(`|| wiki_file=.juno_task/wiki/${name}`);
+    }
 
     const managedWikis = definitions.filter((asset) => asset.type === 'wiki');
     const relativeLink = /\[[^\]]+\]\((?![a-z]+:|#)([^)#]+)(?:#[^)]*)?\)/gi;

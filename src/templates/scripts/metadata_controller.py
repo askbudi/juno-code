@@ -517,6 +517,14 @@ def selected_entries(root: Path, head: str, policy: dict[str, Any]) -> list[tupl
         if copied_allowed(name, policy):
             if mode not in {"100644", "100755"}:
                 raise BoundaryError(f"metadata may not contain symlinks or gitlinks: {name}")
+            if name.startswith(".juno_task/wiki/"):
+                relative = PurePosixPath(name.removeprefix(".juno_task/wiki/"))
+                if relative.suffix.lower() != ".md":
+                    raise BoundaryError(f"controller wiki migration accepts Markdown files only: {name}")
+                if relative.parts and relative.parts[0] == "controller":
+                    raise BoundaryError(
+                        f"legacy wiki collides with the package-owned controller namespace: {name}"
+                    )
             selected.append((mode, oid, name))
     required = (".juno_task/tasks", ".juno_task/ledger", ".juno_task/specs")
     for prefix in required:

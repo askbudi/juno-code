@@ -43,11 +43,11 @@ HIGH_COMPUTE_MARKERS = ("High-compute contract:", "HIGH_COMPUTE", "write-capable
 HIGH_COMPUTE_REQUIRED_TERMS = ["run_id", "attempt_id", "checkpoint", "resume", "telemetry", "early", "denominator"]
 CONSERVATIVE_READ_FIRST = [
     ".juno_task/wiki/parallel_runner_task_creation_best_practices.md",
-    ".juno_task/wiki/parallel_runner_and_spec_review.md",
+    "$(yy wiki --path)/controller/parallel_runner_and_spec_review.md",
 ]
 ROLE_READ_FIRST = {
     "implementation": ["AGENTS.md"],
-    "review": ["AGENTS.md", ".juno_task/wiki/parallel_runner_and_spec_review.md"],
+    "review": ["AGENTS.md", "$(yy wiki --path)/controller/parallel_runner_and_spec_review.md"],
     "planning": ["AGENTS.md", ".juno_task/wiki/parallel_runner_task_creation_best_practices.md"],
 }
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Lint .juno_task/wiki markdown files for optional wiki_contract frontmatter.
+"""Lint canonical or legacy .juno_task/wiki Markdown files.
 
-Policy SOT: .juno_task/wiki/wiki_maintenance.md. This helper intentionally uses
-only the Python standard library so wiki cleanup checks remain runnable in empty
-agent environments.
+The maintenance SOT is controller/wiki_maintenance.md in a canonical controller
+wiki and wiki_maintenance.md in a legacy product install. This helper uses only
+the Python standard library so cleanup checks remain runnable in empty agents.
 """
 from __future__ import annotations
 
@@ -13,11 +13,15 @@ import re
 import sys
 import tempfile
 import textwrap
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIKI_ROOT = REPO_ROOT / ".juno_task" / "wiki"
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+FENCED_CODE_RE = re.compile(r"(?ms)^[ \t]*(?:```|~~~).*?^[ \t]*(?:```|~~~)[ \t]*$")
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 
 
 def path_is_relative_to(path: Path, parent: Path) -> bool:
@@ -26,6 +30,11 @@ def path_is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def maintenance_sot() -> Path:
+    canonical = WIKI_ROOT / "controller" / "wiki_maintenance.md"
+    return canonical if canonical.is_file() else WIKI_ROOT / "wiki_maintenance.md"
 REQUIRED_CONTRACT_FIELDS = {
     "line_limit",
     "purpose",
@@ -220,6 +229,38 @@ def validate_contract(path: Path, contract: Any, result: LintResult) -> int | No
     return effective_limit
 
 
+def markdown_link_target(raw: str) -> str | None:
+    value = raw.strip()
+    if value.startswith("<") and ">" in value:
+        value = value[1:value.index(">")]
+    else:
+        value = value.split(maxsplit=1)[0] if value else ""
+    if not value or value.startswith("#"):
+        return None
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return None
+    decoded = urllib.parse.unquote(parsed.path)
+    if not decoded or any(marker in decoded for marker in ("{{", "}}", "$", "*")):
+        return None
+    return decoded
+
+
+def validate_markdown_links(path: Path, text: str, result: LintResult) -> None:
+    prose = INLINE_CODE_RE.sub("", FENCED_CODE_RE.sub("", text))
+    boundary = REPO_ROOT.resolve() if path_is_relative_to(path.resolve(), REPO_ROOT.resolve()) else path.parent.parent.resolve()
+    for match in MARKDOWN_LINK_RE.finditer(prose):
+        target = markdown_link_target(match.group(1))
+        if target is None:
+            continue
+        candidate = (REPO_ROOT / target.lstrip("/")) if target.startswith("/") else (path.parent / target)
+        resolved = candidate.resolve()
+        if not path_is_relative_to(resolved, boundary):
+            result.emit("FAIL", path, f"relative Markdown link escapes repository root: {target}")
+        elif not resolved.exists():
+            result.emit("FAIL", path, f"relative Markdown link target does not exist: {target}")
+
+
 def raw_frontmatter_has_wiki_contract(raw: str) -> bool:
     return re.search(r"(?m)^wiki_contract\s*:", raw) is not None
 
@@ -264,6 +305,7 @@ def lint_file(path: Path, default_max_lines: int, result: LintResult) -> None:
             contract_limit = validate_contract(path, frontmatter["wiki_contract"], result)
             if contract_limit is not None:
                 effective_limit = contract_limit
+    validate_markdown_links(path, text, result)
     line_count = len(text.splitlines())
     if line_count > effective_limit:
         result.emit("FAIL", path, f"line count {line_count} exceeds effective limit {effective_limit}")
@@ -288,8 +330,8 @@ def positive_int(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Lint .juno_task/wiki markdown contracts. Policy SOT: "
-            ".juno_task/wiki/wiki_maintenance.md. CLI --max-lines sets the default "
+            "Lint wiki Markdown contracts and local links. Policy SOT: "
+            f"{maintenance_sot()}. CLI --max-lines sets the default "
             "limit (250 by default); a valid wiki_contract.line_limit overrides it per file."
         )
     )
@@ -365,6 +407,14 @@ def run_self_test() -> int:
         two
         three
         """), encoding="utf-8")
+        linked = cases / "linked.md"
+        linked.write_text("[valid](../sot.md) [external](https://example.com/x) "
+                          "`[inline example](missing-inline.md)`\n"
+                          "```md\n[example](missing-example.md)\n```\n", encoding="utf-8")
+        missing_link = cases / "missing_link.md"
+        missing_link.write_text("[missing](missing.md)\n", encoding="utf-8")
+        escaping_link = cases / "escaping_link.md"
+        escaping_link.write_text("[escape](../../outside.md)\n", encoding="utf-8")
         checks = [
             (valid, 250, 0, "valid contract passes"),
             (no_yaml, 250, 0, "no YAML warns but exits 0"),
@@ -374,6 +424,9 @@ def run_self_test() -> int:
             (missing_sot, 250, 1, "missing related_sot fails"),
             (too_long, 3, 1, "line-limit violation fails"),
             (override, 3, 0, "per-file line_limit override works"),
+            (linked, 250, 0, "relative links pass while external and fenced examples are excluded"),
+            (missing_link, 250, 1, "missing relative Markdown link fails"),
+            (escaping_link, 250, 1, "relative Markdown link cannot escape repository root"),
         ]
         ok = True
         for file_path, max_lines, expected_failure_state, label in checks:
