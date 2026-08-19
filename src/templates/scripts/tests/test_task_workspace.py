@@ -3405,6 +3405,79 @@ finished = time.monotonic()
         self.assertEqual(status["target_error"], "target_ref_unavailable")
 
 
+
+    def write_profiled_policy(self, profiles: Optional[list[dict]] = None) -> None:
+        config = self.controller / ".juno_task/config/task-workspace.json"
+        value = json.loads(config.read_text())
+        value["allowed_paths"] = ["src", "pkg"]
+        value["validation_profiles"] = (profiles if profiles is not None else [{
+            "id": "pkg-suite", "path_roots": ["pkg"],
+            "commands": [{"id": "pkg-test", "cwd": "pkg",
+                          "argv": [sys.executable, "-c", "pass"],
+                          "timeout_seconds": 10, "max_output_bytes": 4096}],
+        }])
+        config.write_text(json.dumps(value, indent=2) + "\n")
+
+    def test_validation_profiles_policy_admits_only_deterministic_profiles(self) -> None:
+        self.write_profiled_policy()
+        config = task_runtime.load_config(self.controller)
+        self.assertEqual([profile["id"] for profile in config["validation_profiles"]],
+                         ["pkg-suite"])
+        overlapping = [{"id": "pkg-suite", "path_roots": ["pkg"],
+                        "commands": [{"id": "pkg-test", "cwd": "pkg",
+                                      "argv": [sys.executable, "-c", "pass"],
+                                      "timeout_seconds": 10, "max_output_bytes": 4096}]},
+                       {"id": "nested-suite", "path_roots": ["pkg/nested"],
+                        "commands": [{"id": "nested-test", "cwd": "pkg/nested",
+                                      "argv": [sys.executable, "-c", "pass"],
+                                      "timeout_seconds": 10, "max_output_bytes": 4096}]}]
+        for mutation, profiles in (
+                ("overlap", overlapping),
+                ("escaped-cwd", [{"id": "pkg-suite", "path_roots": ["pkg"],
+                                  "commands": [{"id": "pkg-test", "cwd": "src",
+                                                "argv": [sys.executable, "-c", "pass"],
+                                                "timeout_seconds": 10,
+                                                "max_output_bytes": 4096}]}]),
+                ("duplicate-id", [{"id": "full-suite", "path_roots": ["pkg"],
+                                   "commands": [{"id": "pkg-test", "cwd": "pkg",
+                                                 "argv": [sys.executable, "-c", "pass"],
+                                                 "timeout_seconds": 10,
+                                                 "max_output_bytes": 4096}]}]),
+                ("disallowed-root", [{"id": "pkg-suite", "path_roots": [".juno_task/state"],
+                                      "commands": [{"id": "pkg-test", "cwd": ".juno_task/state",
+                                                    "argv": [sys.executable, "-c", "pass"],
+                                                    "timeout_seconds": 10,
+                                                    "max_output_bytes": 4096}]}]),
+                ("duplicate-command-id", [{"id": "pkg-suite", "path_roots": ["pkg"],
+                                           "commands": [
+                                               {"id": "focused", "cwd": "pkg",
+                                                "argv": [sys.executable, "-c", "pass"],
+                                                "timeout_seconds": 10,
+                                                "max_output_bytes": 4096}]}])):
+            with self.subTest(mutation=mutation):
+                self.write_profiled_policy(profiles)
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "validation profile"):
+                    task_runtime.load_config(self.controller)
+        self.write_profiled_policy()
+        task_runtime.load_config(self.controller)
+
+    def test_finish_routes_focused_validation_by_package_profile(self) -> None:
+        self.write_profiled_policy()
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "pkg").mkdir(parents=True, exist_ok=True)
+        (worktree / "pkg/feature.txt").write_text("package feature\n")
+        git(worktree, "add", "pkg/feature.txt")
+        git(worktree, "commit", "-m", "package feature")
+        finished = self.payload("finish", "X")
+        self.assertEqual(finished["state"], "QUEUED")
+        self.assertEqual(finished["validation"], [])
+        self.assertEqual(finished["validation_routing"],
+                         {"mode": "profile", "profile_ids": ["pkg-suite"],
+                          "authored_path_count": 1})
+
+
 if __name__ == "__main__":
     if len(sys.argv) >= 6 and sys.argv[1] == "--resource-lock-guard-probe":
         _protocol_guard_probe(

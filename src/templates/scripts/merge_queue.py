@@ -34,6 +34,10 @@ REFRESH_ID_SCHEMA = "juno_merge_target_refresh_identity.v1"
 RECONCILE_SCHEMA = "juno_merge_terminal_reconciliation_plan.v1"
 RECONCILE_ID_SCHEMA = "juno_merge_terminal_reconciliation_identity.v1"
 RECONCILE_REFERENCE_SCHEMA = "juno_merge_terminal_reconciliation_reference.v1"
+WITHDRAW_SCHEMA = "juno_merge_queue_withdraw_receipt.v1"
+WITHDRAWABLE_STATES = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
+                       "REVIEW_FINDINGS_EXHAUSTED", "CONFLICT", "CONFLICT_RESOLVED",
+                       "REOPENING", "REQUEUING_STALE"}
 OWNER_SCHEMA = "juno_merge_queue_candidate_owner.v1"
 RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 REVIEW_PROMPT_FIELDS = {
@@ -825,10 +829,13 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
                                  "replace hardcoded fixture versions with package-bound SemVer",
                                  tests_safe=True))
 
-    validation_commands = [{**full_suite_command(config), "phase": "full_suite"}]
-    validation_commands[0]["command"] = " ".join(validation_commands[0]["argv"])
+    suite_commands, suite_routing = task_runtime.selected_full_suite_commands(
+        config, authored)
+    validation_commands = [{**row, "phase": "full_suite",
+                            "command": " ".join(row["argv"])}
+                           for row in suite_commands]
     focused: list[dict[str, Any]] = []
-    for row in config["focused_validation"]:
+    for row in task_runtime.selected_focused_rows(config, authored):
         item = {key: row[key] for key in ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")}
         if "resource" in row:
             item["resource"] = row["resource"]
@@ -862,6 +869,7 @@ def merge_plan(controller: Path, task_id: str, against: Optional[str] = None,
         "runtime": runtime_identity, "packages": packages,
         "integration_owner": owner_identity,
         "prospective_tree_sha": prospective_tree_sha,
+        "validation_routing": suite_routing,
         "validation_sha256": digest(validation_commands),
     }
     findings.sort(key=lambda row: (row["phase"], row["code"], canonical(row["evidence"])))
@@ -1153,9 +1161,13 @@ def validation_dependencies(candidate: Path, cwd: Path,
 
 
 def validation_rows(config: dict[str, Any], candidate: Path,
-                    dependency_source: Optional[Path] = None) -> list[dict[str, Any]]:
+                    dependency_source: Optional[Path] = None,
+                    changed_paths: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    """Run the routing-selected focused rows against one exact checkout."""
     evidence = []
-    for row in config["focused_validation"]:
+    rows = (task_runtime.selected_focused_rows(config, changed_paths)
+            if changed_paths is not None else config["focused_validation"])
+    for row in rows:
         cwd = (candidate / row["cwd"]).resolve()
         try:
             cwd.relative_to(candidate)
@@ -1177,6 +1189,12 @@ def full_suite_command(config: dict[str, Any]) -> dict[str, Any]:
     if "resource" in row:
         command["resource"] = row["resource"]
     return command
+
+
+def full_suite_selection(config: dict[str, Any],
+                         changed_paths: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Deterministic package-local suite routing from the authored Git paths."""
+    return task_runtime.selected_full_suite_commands(config, changed_paths)
 
 
 def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -1212,51 +1230,72 @@ def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any
     return best
 
 
-def full_suite_validation(config: dict[str, Any], candidate: Path, plan: dict[str, Any],
-                          identity: dict[str, str], receipt_path: Path,
-                          claim: dict[str, Any],
-                          dependency_source: Optional[Path] = None) -> dict[str, str]:
-    row = config["full_suite_validation"]
-    cwd = (candidate / row["cwd"]).resolve()
-    try:
-        cwd.relative_to(candidate)
-    except ValueError as exc:
-        raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
-    started_at = risk_runtime.utc_now()
-    with validation_dependencies(candidate, cwd, dependency_source):
-        evidence = task_runtime.run_validation(row, cwd)
-    completed_at = risk_runtime.utc_now()
-    receipt = {
-        "schema_version": risk_runtime.FULL_SUITE_SCHEMA,
-        "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
-                     "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
-        "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
-                      "candidate_tree": plan["candidate"]["candidate_tree"]},
-        "policy_identity": plan["policy_identity"],
-        "claim": claim,
-        "validation_identity": identity,
-        "command": full_suite_command(config),
-        "started_at": started_at, "completed_at": completed_at,
-        "timing": evidence["timing"], "resource": evidence["resource"],
-        "identity": evidence["identity"],
-        "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
-                   "stdout": {"sha256": evidence["stdout_sha256"],
-                              "tail": evidence["stdout_tail"],
-                              "truncated_bytes": evidence["stdout_truncated_bytes"]},
-                   "stderr": {"sha256": evidence["stderr_sha256"],
-                              "tail": evidence["stderr_tail"],
-                              "truncated_bytes": evidence["stderr_truncated_bytes"]}},
-    }
-    receipt = fit_full_suite_receipt(receipt, plan["evidence_limits"]["max_receipt_bytes"])
-    write_canonical_exclusive(receipt_path, receipt,
-                              plan["evidence_limits"]["max_receipt_bytes"])
-    if evidence["timed_out"] or evidence["exit_code"]:
-        detail = evidence["stderr_tail"] or evidence["stdout_tail"]
-        raise MergeValidationError(f"full-suite validation failed ({row['id']}): {detail}",
-                                   [evidence], evidence_reference(receipt_path))
-    reference = evidence_reference(receipt_path)
-    return risk_runtime.verify_full_suite_receipt(
-        reference, plan, identity, full_suite_command(config), claim)
+def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
+                          plan: dict[str, Any], identity: dict[str, str],
+                          receipt_paths: list[Path], claim: dict[str, Any],
+                          dependency_source: Optional[Path] = None) -> list[dict[str, str]]:
+    """Run the routed suite in order; write one immutable receipt per command.
+
+    A receipt prefix already on disk is a crash-recovery boundary: each prefix
+    receipt is strictly re-verified before the remaining commands resume.
+    """
+    if len(receipt_paths) != len(commands):
+        raise MergeQueueError("full-suite receipt schedule does not bind its commands")
+    references: list[dict[str, str]] = []
+    for index, (row, receipt_path) in enumerate(zip(commands, receipt_paths)):
+        if receipt_path.exists():
+            reference = evidence_reference(receipt_path)
+            verified = risk_runtime.verify_full_suite_receipt_v3(
+                reference, plan, identity, commands, claim, require_success=False)
+            if verified["timed_out"] or verified["exit_code"]:
+                raise MergeValidationError(
+                    f"recovered full-suite attempt failed ({row['id']})",
+                    [verified], reference)
+            references.append(reference)
+            continue
+        cwd = (candidate / row["cwd"]).resolve()
+        try:
+            cwd.relative_to(candidate)
+        except ValueError as exc:
+            raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
+        started_at = risk_runtime.utc_now()
+        with validation_dependencies(candidate, cwd, dependency_source):
+            evidence = task_runtime.run_validation(row, cwd)
+        completed_at = risk_runtime.utc_now()
+        receipt = {
+            "schema_version": risk_runtime.FULL_SUITE_RECEIPT_V3_SCHEMA,
+            "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                         "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+            "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                          "candidate_tree": plan["candidate"]["candidate_tree"]},
+            "policy_identity": plan["policy_identity"],
+            "claim": claim,
+            "validation_identity": identity,
+            "commands": commands,
+            "command_index": index,
+            "command": row,
+            "started_at": started_at, "completed_at": completed_at,
+            "timing": evidence["timing"], "resource": evidence["resource"],
+            "identity": evidence["identity"],
+            "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
+                       "stdout": {"sha256": evidence["stdout_sha256"],
+                                  "tail": evidence["stdout_tail"],
+                                  "truncated_bytes": evidence["stdout_truncated_bytes"]},
+                       "stderr": {"sha256": evidence["stderr_sha256"],
+                                  "tail": evidence["stderr_tail"],
+                                  "truncated_bytes": evidence["stderr_truncated_bytes"]}},
+        }
+        receipt = fit_full_suite_receipt(receipt, plan["evidence_limits"]["max_receipt_bytes"])
+        write_canonical_exclusive(receipt_path, receipt,
+                                  plan["evidence_limits"]["max_receipt_bytes"])
+        reference = evidence_reference(receipt_path)
+        references.append(reference)
+        if evidence["timed_out"] or evidence["exit_code"]:
+            detail = evidence["stderr_tail"] or evidence["stdout_tail"]
+            raise MergeValidationError(
+                f"full-suite validation failed ({row['id']}): {detail}",
+                [evidence], reference)
+    return references
 
 
 def assert_frozen_candidate(controller: Path, config: dict[str, Any], checkout: Path, candidate_sha: str) -> None:
@@ -1542,13 +1581,22 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
             verified = verify_risk_evidence(policy, request, flags, reference)
             if verified["eligible"] and plan["full_suite_required"]:
                 evidence = json.loads(Path(reference["receipt_path"]).read_text())
+                loaded = task_runtime.load_config(controller)
                 identity = full_validation_identity(
-                    controller, task_runtime.load_config(controller), record,
-                    validation_root, candidate_sha)
-                verify_queue_full_suite_admission(
-                    controller, record["task_id"], plan, identity,
-                    full_suite_command(task_runtime.load_config(controller)),
-                    evidence["validation"]["full_suite_admission"])
+                    controller, loaded, record, validation_root, candidate_sha)
+                admission = evidence["validation"]["full_suite_admission"]
+                if (isinstance(admission, dict)
+                        and admission.get("schema_version")
+                            == risk_runtime.FULL_SUITE_ADMISSION_SCHEMA):
+                    verify_queue_full_suite_admission_legacy(
+                        controller, record["task_id"], plan, identity,
+                        full_suite_command(loaded), admission)
+                else:
+                    suite_commands, suite_routing = full_suite_selection(
+                        loaded, plan["candidate"]["changed_paths"])
+                    verify_queue_full_suite_admission(
+                        controller, record["task_id"], plan, identity,
+                        suite_commands, suite_routing, admission)
         except MergeQueueError:
             if reference_from_state or not (plan["min_reviews"] or plan["full_suite_required"]):
                 raise
@@ -1941,7 +1989,8 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
         attempt["candidate_tree"] = task_runtime.git(repository, "rev-parse", f"{candidate_sha}^{{tree}}")
         try:
             attempt["validation"] = validation_rows(
-                config, validation_root, feature_worktree if checkout is not None else None
+                config, validation_root, feature_worktree if checkout is not None else None,
+                record.get("changed_paths"),
             )
             assert_frozen_candidate(controller, config, validation_root, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != target_sha:
@@ -2447,7 +2496,9 @@ def full_validation_identity(controller: Path, config: dict[str, Any],
     if not policy_bytes or len(policy_bytes) > 65536:
         raise MergeQueueError("task-workspace policy bytes are empty or unbounded")
     recorded = record.get("validation")
-    if not isinstance(recorded, list) or len(recorded) != len(config["focused_validation"]):
+    selected_focused = task_runtime.selected_focused_rows(
+        config, record.get("changed_paths"))
+    if not isinstance(recorded, list) or len(recorded) != len(selected_focused):
         raise MergeQueueError("task record validation command evidence is missing")
     command_projection = []
     for row in recorded:
@@ -2458,12 +2509,23 @@ def full_validation_identity(controller: Path, config: dict[str, Any],
         command_projection.append({"id": row["id"], "argv": row["argv"],
                                    "timeout_seconds": row["timeout_seconds"]})
     commands = canonical(command_projection).encode()
-    full_config = canonical(config["full_suite_validation"]).encode()
+    suite_commands, routing = task_runtime.selected_full_suite_commands(
+        config, record.get("changed_paths"))
+    if routing["mode"] == "default":
+        # Byte-compatible with pre-routing identities: the default suite row.
+        full_config = canonical(config["full_suite_validation"]).encode()
+    else:
+        full_config = canonical([{"id": row["id"], "argv": row["argv"],
+                                  "timeout_seconds": row["timeout_seconds"]}
+                                 for row in suite_commands]).encode()
     if len(commands) > 65536 or len(full_config) > 65536:
         raise MergeQueueError("validation identity projection is unbounded")
-    return {"task_workspace_config_sha256": hashlib.sha256(policy_bytes).hexdigest(),
-            "full_suite_config_sha256": hashlib.sha256(full_config).hexdigest(),
-            "task_validation_commands_sha256": hashlib.sha256(commands).hexdigest()}
+    identity = {"task_workspace_config_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+                "full_suite_config_sha256": hashlib.sha256(full_config).hexdigest(),
+                "task_validation_commands_sha256": hashlib.sha256(commands).hexdigest()}
+    if routing["mode"] != "default":
+        identity["validation_routing_sha256"] = digest(routing)
+    return identity
 
 
 def full_suite_attempt_paths(controller: Path, task_id: str, candidate_sha: str,
@@ -2473,7 +2535,7 @@ def full_suite_attempt_paths(controller: Path, task_id: str, candidate_sha: str,
     return root / "claim.json", root / "receipt.json"
 
 
-def create_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any],
+def create_full_suite_claim_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                             identity: dict[str, str], command: dict[str, Any],
                             attempt_number: int) -> dict[str, Any]:
     claim_path, receipt_path = full_suite_attempt_paths(
@@ -2546,7 +2608,7 @@ def persist_full_suite_claim(controller: Path, attempt: dict[str, Any],
     return claimed, updated
 
 
-def verify_queue_claimed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+def verify_queue_claimed_admission_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                     identity: dict[str, str], command: dict[str, Any],
                                     admission: Any) -> dict[str, Any]:
     keys = {"schema_version", "state", "attempt_number", "token", "claim",
@@ -2590,7 +2652,7 @@ def verify_queue_claimed_admission(controller: Path, task_id: str, plan: dict[st
             "expected_receipt_path": str(receipt_path)}
 
 
-def verify_queue_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
+def verify_queue_full_suite_admission_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                       identity: dict[str, str], command: dict[str, Any],
                                       admission: Any) -> dict[str, Any]:
     if not isinstance(admission, dict) or admission.get("state") != "COMPLETE":
@@ -2614,7 +2676,7 @@ def verify_queue_full_suite_admission(controller: Path, task_id: str, plan: dict
         raise MergeQueueError(f"full-suite admission refused: {exc}") from exc
 
 
-def failed_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
+def failed_full_suite_admission_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                 identity: dict[str, str], command: dict[str, Any],
                                 claimed: dict[str, Any],
                                 receipt_reference: dict[str, str]) -> dict[str, Any]:
@@ -2647,7 +2709,7 @@ def failed_full_suite_admission(controller: Path, task_id: str, plan: dict[str, 
             "receipt": receipt_reference, "failure": failure}
 
 
-def verify_queue_failed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+def verify_queue_failed_admission_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                    identity: dict[str, str], command: dict[str, Any],
                                    admission: Any) -> dict[str, Any]:
     keys = {"schema_version", "state", "attempt_number", "token", "claim",
@@ -2671,9 +2733,9 @@ def verify_queue_failed_admission(controller: Path, task_id: str, plan: dict[str
                "state": "CLAIMED", "attempt_number": attempt_number,
                "token": admission.get("token"), "claim": admission.get("claim"),
                "expected_receipt_path": str(receipt_path)}
-    verify_queue_claimed_admission(
+    verify_queue_claimed_admission_legacy(
         controller, task_id, plan, historical_identity, historical_command, claimed)
-    rebuilt = failed_full_suite_admission(
+    rebuilt = failed_full_suite_admission_legacy(
         controller, task_id, plan, historical_identity, historical_command,
         claimed, admission.get("receipt"))
     if rebuilt != admission:
@@ -2681,7 +2743,7 @@ def verify_queue_failed_admission(controller: Path, task_id: str, plan: dict[str
     return rebuilt
 
 
-def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, Any],
+def recover_claimed_full_suite_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                identity: dict[str, str], command: dict[str, Any],
                                admission: Any) -> Optional[dict[str, Any]]:
     admission = verify_queue_claimed_admission(
@@ -2699,15 +2761,290 @@ def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, A
                 "token": admission.get("token"), "claim": admission.get("claim"),
                 "receipt": evidence_reference(receipt_path)}
     try:
-        return verify_queue_full_suite_admission(
+        return verify_queue_full_suite_admission_legacy(
             controller, task_id, plan, identity, command, complete)
     except MergeQueueError as success_error:
         try:
-            return failed_full_suite_admission(
+            return failed_full_suite_admission_legacy(
                 controller, task_id, plan, identity, command, admission,
                 complete["receipt"])
         except MergeQueueError:
             raise success_error
+
+
+def full_suite_attempt_root(controller: Path, task_id: str, candidate_sha: str,
+                            attempt_number: int) -> Path:
+    return (controller / ".juno_task/state/merge-queue/full-suite" / task_id
+            / candidate_sha / f"attempt-{attempt_number}").resolve()
+
+
+def full_suite_producer_lock_path(controller: Path, task_id: str, candidate_sha: str,
+                                  attempt_number: int) -> Path:
+    return full_suite_attempt_root(controller, task_id, candidate_sha, attempt_number) / "producer.lock"
+
+
+def full_suite_receipt_paths(root: Path, commands: list[dict[str, Any]]) -> list[Path]:
+    return [root / f"receipt-{index}.json" for index in range(1, len(commands) + 1)]
+
+
+@contextmanager
+def full_suite_producer_lock(controller: Path, task_id: str, candidate_sha: str,
+                             attempt_number: int) -> Iterator[None]:
+    """Kernel-released liveness proof for one exact claim attempt.
+
+    The producer holds this lock from before claim creation until the terminal
+    admission is durably persisted; withdrawal must acquire it non-blocking.
+    """
+    lock_path = full_suite_producer_lock_path(controller, task_id, candidate_sha, attempt_number)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise MergeQueueError(
+                    "a live full-suite producer owns this claim") from exc
+            raise
+        yield
+
+
+def create_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any],
+                            identity: dict[str, str], commands: list[dict[str, Any]],
+                            routing: dict[str, Any], attempt_number: int) -> dict[str, Any]:
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    claim_path = root / "claim.json"
+    lock_path = root / "producer.lock"
+    receipt_paths = full_suite_receipt_paths(root, commands)
+    if claim_path.exists() or any(path.exists() for path in receipt_paths):
+        raise MergeQueueError("queue admission canonical path already exists")
+    token = secrets.token_hex(24)
+    producer_lock = {"path": str(lock_path), "kind": "flock"}
+    claim = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_V2_SCHEMA,
+             "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                          "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+             "task_id": task_id,
+             "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                           "candidate_tree": plan["candidate"]["candidate_tree"]},
+             "policy_identity": plan["policy_identity"],
+             "validation_identity": identity, "commands": commands,
+             "routing": routing, "producer_lock": producer_lock,
+             "token": token, "attempt_number": attempt_number,
+             "expected_receipt_paths": [str(path) for path in receipt_paths]}
+    write_canonical_exclusive(claim_path, claim,
+                              plan["evidence_limits"]["max_receipt_bytes"])
+    if any(path.exists() for path in receipt_paths):
+        raise MergeQueueError("queue admission receipt path collided before suite execution")
+    claim_ref = {"claim_path": str(claim_path),
+                 "claim_sha256": hashlib.sha256(claim_path.read_bytes()).hexdigest()}
+    return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+            "state": "CLAIMED", "attempt_number": attempt_number, "token": token,
+            "claim": claim_ref,
+            "expected_receipt_paths": [str(path) for path in receipt_paths],
+            "producer_lock": producer_lock}
+
+
+def verify_queue_claimed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                    identity: dict[str, str], commands: list[dict[str, Any]],
+                                    routing: dict[str, Any],
+                                    admission: Any) -> dict[str, Any]:
+    keys = {"schema_version", "state", "attempt_number", "token", "claim",
+            "expected_receipt_paths", "producer_lock"}
+    if (not isinstance(admission, dict) or set(admission) != keys
+            or admission.get("schema_version") != risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA
+            or admission.get("state") != "CLAIMED"
+            or not isinstance(admission.get("attempt_number"), int)
+            or isinstance(admission.get("attempt_number"), bool)
+            or admission["attempt_number"] <= 0
+            or not isinstance(admission.get("token"), str)
+            or len(admission.get("token")) != 48
+            or not isinstance(admission.get("claim"), dict)
+            or set(admission["claim"]) != {"claim_path", "claim_sha256"}
+            or not isinstance(admission.get("expected_receipt_paths"), list)
+            or len(admission["expected_receipt_paths"]) != len(commands)
+            or any(not isinstance(path, str) for path in admission["expected_receipt_paths"])
+            or not isinstance(admission.get("producer_lock"), dict)):
+        raise MergeQueueError("stored CLAIMED full-suite admission is malformed")
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], admission["attempt_number"])
+    expected_paths = [str(path) for path in full_suite_receipt_paths(root, commands)]
+    expected_lock = {"path": str(root / "producer.lock"), "kind": "flock"}
+    if (admission["claim"].get("claim_path") != str(root / "claim.json")
+            or admission.get("expected_receipt_paths") != expected_paths
+            or admission.get("producer_lock") != expected_lock):
+        raise MergeQueueError("stored CLAIMED full-suite admission is not canonical")
+    try:
+        claim = risk_runtime._bounded_object(
+            admission["claim"]["claim_path"], admission["claim"]["claim_sha256"],
+            plan, "full-suite claim")
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"stored CLAIMED full-suite admission refused: {exc}") from exc
+    expected = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_V2_SCHEMA,
+                "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                             "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                "task_id": task_id,
+                "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                              "candidate_tree": plan["candidate"]["candidate_tree"]},
+                "policy_identity": plan["policy_identity"],
+                "validation_identity": identity, "commands": commands,
+                "routing": routing, "producer_lock": expected_lock,
+                "token": admission["token"], "attempt_number": admission["attempt_number"],
+                "expected_receipt_paths": expected_paths}
+    if claim != expected:
+        raise MergeQueueError("stored CLAIMED full-suite claim identity drifted")
+    return {**admission, "claim": {"claim_path": str(root / "claim.json"),
+                                    "claim_sha256": admission["claim"]["claim_sha256"]},
+            "expected_receipt_paths": expected_paths,
+            "producer_lock": expected_lock}
+
+
+def verify_queue_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                      identity: dict[str, str], commands: list[dict[str, Any]],
+                                      routing: dict[str, Any],
+                                      admission: Any) -> dict[str, Any]:
+    if not isinstance(admission, dict) or admission.get("state") != "COMPLETE":
+        raise MergeQueueError("full-suite admission is not complete")
+    attempt_number = admission.get("attempt_number")
+    if not isinstance(attempt_number, int) or isinstance(attempt_number, bool):
+        raise MergeQueueError("full-suite admission attempt is invalid")
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    state_root = (controller / ".juno_task/state/merge-queue/full-suite").resolve()
+    try:
+        root.relative_to(state_root)
+    except ValueError as exc:
+        raise MergeQueueError("full-suite admission escaped controller state") from exc
+    expected_paths = [str(path) for path in full_suite_receipt_paths(root, commands)]
+    if (admission.get("claim", {}).get("claim_path") != str(root / "claim.json")
+            or admission.get("receipts") is None
+            or [row.get("receipt_path") if isinstance(row, dict) else None
+                for row in admission["receipts"]] != expected_paths):
+        raise MergeQueueError("full-suite admission is not at its canonical queue-owned path")
+    try:
+        return risk_runtime.verify_full_suite_admission_v2(
+            admission, plan, identity, commands)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"full-suite admission refused: {exc}") from exc
+
+
+def failed_full_suite_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                identity: dict[str, str], commands: list[dict[str, Any]],
+                                routing: dict[str, Any], claimed: dict[str, Any],
+                                receipt_reference: dict[str, str]) -> dict[str, Any]:
+    attempt_number = claimed.get("attempt_number")
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    expected_paths = [str(path) for path in full_suite_receipt_paths(root, commands)]
+    receipt_path = receipt_reference.get("receipt_path")
+    if (claimed.get("claim", {}).get("claim_path") != str(root / "claim.json")
+            or claimed.get("expected_receipt_paths") != expected_paths
+            or receipt_path not in expected_paths):
+        raise MergeQueueError("failed full-suite admission is not at its canonical path")
+    failure_index = expected_paths.index(receipt_path)
+    receipts = [evidence_reference(Path(path)) for path in expected_paths[:failure_index + 1]]
+    failure_receipt = json.loads(Path(receipt_path).read_text())
+    result = failure_receipt.get("result") if isinstance(failure_receipt, dict) else None
+    if (not isinstance(result, dict)
+            or not isinstance(result.get("exit_code"), int)
+            or not isinstance(result.get("timed_out"), bool)
+            or not isinstance(result.get("stdout"), dict)
+            or not isinstance(result.get("stderr"), dict)):
+        raise MergeQueueError("failed full-suite terminal receipt is malformed")
+    if not result["timed_out"] and result["exit_code"] == 0:
+        raise MergeQueueError("successful full-suite receipt cannot enter FAILED admission")
+    failure = {"command_id": commands[failure_index]["id"],
+               "command_index": failure_index,
+               "exit_code": result["exit_code"], "timed_out": result["timed_out"],
+               "stdout_tail": result["stdout"]["tail"],
+               "stderr_tail": result["stderr"]["tail"]}
+    failed = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+              "state": "FAILED", "attempt_number": attempt_number,
+              "token": claimed.get("token"), "claim": claimed.get("claim"),
+              "receipts": receipts, "failure": failure}
+    try:
+        risk_runtime.verify_full_suite_admission_v2(
+            failed, plan, identity, commands, require_success=False)
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"failed full-suite receipt refused: {exc}") from exc
+    return failed
+
+
+def verify_queue_failed_admission(controller: Path, task_id: str, plan: dict[str, Any],
+                                   identity: dict[str, str], commands: list[dict[str, Any]],
+                                   routing: dict[str, Any],
+                                   admission: Any) -> dict[str, Any]:
+    keys = {"schema_version", "state", "attempt_number", "token", "claim",
+            "receipts", "failure"}
+    if (not isinstance(admission, dict) or set(admission) != keys
+            or admission.get("schema_version") != risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA
+            or admission.get("state") != "FAILED"):
+        raise MergeQueueError("stored FAILED full-suite admission is malformed")
+    attempt_number = admission.get("attempt_number")
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    try:
+        historical_claim = risk_runtime._bounded_object(
+            admission.get("claim", {}).get("claim_path"),
+            admission.get("claim", {}).get("claim_sha256"), plan, "failed full-suite claim")
+    except risk_runtime.RiskPolicyError as exc:
+        raise MergeQueueError(f"stored FAILED full-suite claim refused: {exc}") from exc
+    claimed = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+               "state": "CLAIMED", "attempt_number": attempt_number,
+               "token": admission.get("token"), "claim": admission.get("claim"),
+               "expected_receipt_paths": historical_claim["expected_receipt_paths"],
+               "producer_lock": historical_claim["producer_lock"]}
+    verified_claimed = verify_queue_claimed_admission(
+        controller, task_id, plan, historical_claim["validation_identity"],
+        historical_claim["commands"], historical_claim["routing"], claimed)
+    receipts = admission.get("receipts")
+    terminal = receipts[-1] if isinstance(receipts, list) and receipts else None
+    rebuilt = failed_full_suite_admission(
+        controller, task_id, plan, historical_claim["validation_identity"],
+        historical_claim["commands"], historical_claim["routing"],
+        verified_claimed, terminal)
+    if rebuilt != admission:
+        raise MergeQueueError("stored FAILED full-suite admission projection drifted")
+    return rebuilt
+
+
+def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, Any],
+                               identity: dict[str, str], commands: list[dict[str, Any]],
+                               routing: dict[str, Any],
+                               admission: Any) -> Optional[dict[str, Any]]:
+    admission = verify_queue_claimed_admission(
+        controller, task_id, plan, identity, commands, routing, admission)
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"],
+        admission["attempt_number"])
+    receipt_paths = full_suite_receipt_paths(root, commands)
+    written = [path for path in receipt_paths if path.exists()]
+    if not written:
+        return admission
+    terminal_reference = evidence_reference(written[-1])
+    if len(written) == len(receipt_paths):
+        complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+                    "state": "COMPLETE", "attempt_number": admission["attempt_number"],
+                    "token": admission.get("token"), "claim": admission.get("claim"),
+                    "receipts": [evidence_reference(path) for path in receipt_paths]}
+        try:
+            return verify_queue_full_suite_admission(
+                controller, task_id, plan, identity, commands, routing, complete)
+        except MergeQueueError as success_error:
+            try:
+                return failed_full_suite_admission(
+                    controller, task_id, plan, identity, commands, routing,
+                    admission, terminal_reference)
+            except MergeQueueError:
+                raise success_error
+    terminal_receipt = json.loads(written[-1].read_text())
+    result = terminal_receipt["result"]
+    if result["timed_out"] or result["exit_code"]:
+        return failed_full_suite_admission(
+            controller, task_id, plan, identity, commands, routing,
+            admission, terminal_reference)
+    # A successful partial prefix resumes under the same claim; the runner
+    # strictly re-verifies each prefix receipt before continuing.
+    return admission
 
 
 def review_target_checkpoint(controller: Path, config: dict[str, Any], repository: Path,
@@ -2811,37 +3148,61 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                          "collision_floor", "full_suite_admission", "steps")}
             current_validation_identity = full_validation_identity(
                 controller, config, record, candidate_root, candidate_sha)
+            suite_commands, suite_routing = full_suite_selection(
+                config, plan["candidate"]["changed_paths"])
+            legacy_command = full_suite_command(config)
             stored = {**stored, "review_progress": progress}
             attempt = {**attempt, "risk": stored, "review": stored}
             suite_admission = None
             prior_attempt = max(progress["attempt_counter"], progress["collision_floor"])
             existing_admission = progress["full_suite_admission"]
+            admission_schema = (existing_admission.get("schema_version")
+                                if isinstance(existing_admission, dict) else None)
+            legacy_admission = admission_schema == risk_runtime.FULL_SUITE_ADMISSION_SCHEMA
             if existing_admission is not None:
                 admission_state = existing_admission.get("state")
                 if (not isinstance(admission_state, str)
-                        or admission_state not in {"COMPLETE", "FAILED", "CLAIMED"}):
+                        or admission_state not in {"COMPLETE", "FAILED", "CLAIMED"}
+                        or admission_schema not in {
+                            risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                            risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA}):
                     raise AdmissionStateError(
                         "stored full-suite admission state is malformed or unsupported")
             if plan["full_suite_required"] and existing_admission is not None:
                 if admission_state == "COMPLETE":
                     try:
-                        suite_admission = verify_queue_full_suite_admission(
-                            controller, task_id, plan, current_validation_identity,
-                            full_suite_command(config), existing_admission)
+                        suite_admission = (
+                            verify_queue_full_suite_admission_legacy(
+                                controller, task_id, plan, current_validation_identity,
+                                legacy_command, existing_admission)
+                            if legacy_admission else
+                            verify_queue_full_suite_admission(
+                                controller, task_id, plan, current_validation_identity,
+                                suite_commands, suite_routing, existing_admission))
                     except MergeQueueError:
                         suite_admission = None
                 elif admission_state == "FAILED":
-                    verified_failed = verify_queue_failed_admission(
-                        controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), existing_admission)
+                    verified_failed = (
+                        verify_queue_failed_admission_legacy(
+                            controller, task_id, plan, current_validation_identity,
+                            legacy_command, existing_admission)
+                        if legacy_admission else
+                        verify_queue_failed_admission(
+                            controller, task_id, plan, current_validation_identity,
+                            suite_commands, suite_routing, existing_admission))
                     prior_attempt = max(prior_attempt, verified_failed["attempt_number"])
                     progress = {**progress, "full_suite_admission": verified_failed}
                     stored = {**stored, "review_progress": progress}
                     attempt = {**attempt, "risk": stored, "review": stored}
                 elif admission_state == "CLAIMED":
-                    recovered = recover_claimed_full_suite(
-                        controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), existing_admission)
+                    recovered = (
+                        recover_claimed_full_suite_legacy(
+                            controller, task_id, plan, current_validation_identity,
+                            legacy_command, existing_admission)
+                        if legacy_admission else
+                        recover_claimed_full_suite(
+                            controller, task_id, plan, current_validation_identity,
+                            suite_commands, suite_routing, existing_admission))
                     prior_attempt = max(prior_attempt, recovered["attempt_number"])
                     if recovered["state"] == "COMPLETE":
                         suite_admission = recovered
@@ -2857,20 +3218,25 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                         persist_attempt(controller, attempt, state_name="AWAITING_RISK")
                         failure = recovered["failure"]
                         detail = failure["stderr_tail"] or failure["stdout_tail"]
+                        terminal = (recovered["receipt"] if legacy_admission
+                                    else recovered["receipts"][-1])
                         raise MergeValidationError(
                             f"recovered full-suite attempt failed: {detail}", [failure],
-                            recovered["receipt"])
+                            terminal)
                     else:
                         claimed = recovered
             if plan["full_suite_required"] and suite_admission is None and claimed is None:
                 if prior_attempt >= 10000:
                     raise MergeQueueError("bounded full-suite attempt namespace is exhausted")
                 suite_attempt_number = prior_attempt + 1
-                claimed, attempt = persist_full_suite_claim(
-                    controller, attempt, suite_attempt_number,
-                    lambda: create_full_suite_claim(
-                        controller, task_id, plan, current_validation_identity,
-                        full_suite_command(config), suite_attempt_number))
+                with full_suite_producer_lock(
+                        controller, task_id, plan["candidate"]["candidate_sha"],
+                        suite_attempt_number):
+                    claimed, attempt = persist_full_suite_claim(
+                        controller, attempt, suite_attempt_number,
+                        lambda: create_full_suite_claim(
+                            controller, task_id, plan, current_validation_identity,
+                            suite_commands, suite_routing, suite_attempt_number))
                 stored = attempt["risk"]
                 progress = stored["review_progress"]
             if plan["full_suite_required"] and suite_admission is None:
@@ -2878,24 +3244,27 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                                  "claim_sha256": claimed["claim"]["claim_sha256"],
                                  "token": claimed["token"],
                                  "attempt_number": claimed["attempt_number"]}
-                receipt_path = Path(claimed["expected_receipt_path"])
-                suite_reference = full_suite_validation(
-                    config, candidate_root, plan, current_validation_identity,
-                    receipt_path, claim_binding,
-                    task_runtime.exact_root(
-                        Path(record["worktree"]), "review feature worktree"))
+                receipt_paths = [Path(path) for path in claimed["expected_receipt_paths"]]
+                with full_suite_producer_lock(
+                        controller, task_id, plan["candidate"]["candidate_sha"],
+                        claimed["attempt_number"]):
+                    suite_references = full_suite_validation(
+                        suite_commands, candidate_root, plan, current_validation_identity,
+                        receipt_paths, claim_binding,
+                        task_runtime.exact_root(
+                            Path(record["worktree"]), "review feature worktree"))
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)
                 if after_validation_identity != current_validation_identity:
                     raise MergeQueueError("validation identity changed during full validation")
-                complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
                             "state": "COMPLETE", "attempt_number": claimed["attempt_number"],
                             "token": claimed["token"], "claim": claimed["claim"],
-                            "receipt": suite_reference}
+                            "receipts": suite_references}
                 suite_admission = verify_queue_full_suite_admission(
                     controller, task_id, plan, current_validation_identity,
-                    full_suite_command(config), complete)
+                    suite_commands, suite_routing, complete)
                 progress = {**progress, "full_suite_admission": suite_admission}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
@@ -2985,9 +3354,14 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 policy, request, risk_flags(record), reference)
         except MergeValidationError as exc:
             if claimed is not None and exc.receipt_reference is not None:
-                failed_admission = failed_full_suite_admission(
-                    controller, task_id, plan, current_validation_identity,
-                    full_suite_command(config), claimed, exc.receipt_reference)
+                failed_admission = (
+                    failed_full_suite_admission_legacy(
+                        controller, task_id, plan, current_validation_identity,
+                        full_suite_command(config), claimed, exc.receipt_reference)
+                    if legacy_admission else
+                    failed_full_suite_admission(
+                        controller, task_id, plan, current_validation_identity,
+                        suite_commands, suite_routing, claimed, exc.receipt_reference))
                 progress = {**progress, "full_suite_admission": failed_admission}
                 stored = {**stored, "review_progress": progress}
                 attempt = {**attempt, "risk": stored, "review": stored}
@@ -3394,7 +3768,8 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
         # the immutable queue record still binds the original admission.
         static = assert_static_plan(controller, task_id, "target-refresh")
         worktree = task_runtime.exact_root(Path(plan["worktree"]), "feature worktree")
-        validations = validation_rows(config, worktree)
+        validations = validation_rows(config, worktree,
+                                      changed_paths=plan["authored_paths"])
         if (task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]
                 or task_runtime.git(worktree, "rev-parse", "HEAD") != plan["refreshed_tip"]
                 or task_runtime.git(repository, "rev-parse", plan["branch_ref"], check=False)
@@ -3607,7 +3982,7 @@ def merge_reopen(controller: Path, task_id: str,
                        if not task_runtime.path_within(path, frozen_allowed)]
             if not changed or forbidden or outside:
                 raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
-            validations = validation_rows(config, worktree)
+            validations = validation_rows(config, worktree, changed_paths=changed)
             if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
                     or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
                 raise MergeQueueError("feature tip changed during reopen validation")
@@ -3698,7 +4073,7 @@ def merge_reopen(controller: Path, task_id: str,
                 "validation_identity": digest({
                     "new_feature_tip": new_tip, "changed_paths": changed,
                     "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
-                    "focused_validation": config["focused_validation"],
+                    "focused_validation": task_runtime.selected_focused_rows(config, changed),
                 }),
             }
             reopening = {**record, "state": "REOPENING", "reopen_attempt": reopen_attempt}
@@ -3719,7 +4094,8 @@ def merge_reopen(controller: Path, task_id: str,
         expected_validation_identity = digest({
             "new_feature_tip": new_tip, "changed_paths": reopen_attempt["changed_paths"],
             "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
-            "focused_validation": config["focused_validation"],
+            "focused_validation": task_runtime.selected_focused_rows(
+                config, reopen_attempt["changed_paths"]),
         })
         if (reopen_attempt.get("repository_identity") != repository_identity(repository)
                 or reopen_attempt.get("repository") != str(repository)
@@ -3823,6 +4199,199 @@ def merge_reopen(controller: Path, task_id: str,
         return {**queued, "outcome": outcome}
 
 
+def _withdraw_receipt_root(controller: Path) -> Path:
+    return (controller / ".juno_task/runtime/merge-queue/withdraw").resolve()
+
+
+def _record_claim_admission(record: dict[str, Any]) -> Optional[dict[str, Any]]:
+    attempt = record.get("queue_attempt")
+    risk = attempt.get("risk") if isinstance(attempt, dict) else None
+    progress = risk.get("review_progress") if isinstance(risk, dict) else None
+    admission = progress.get("full_suite_admission") if isinstance(progress, dict) else None
+    return admission if isinstance(admission, dict) else None
+
+
+def _withdraw_claim_binding(controller: Path, task_id: str,
+                            admission: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Structurally bind one stored CLAIMED admission and prove its producer dead."""
+    if admission.get("state") != "CLAIMED":
+        return None
+    schema = admission.get("schema_version")
+    if schema not in {risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                     risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA}:
+        raise MergeQueueError("stored full-suite admission schema is unsupported for withdraw")
+    claim_ref = admission.get("claim")
+    if (not isinstance(claim_ref, dict)
+            or not isinstance(claim_ref.get("claim_path"), str)
+            or not isinstance(claim_ref.get("claim_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", claim_ref["claim_sha256"])
+            or not isinstance(admission.get("token"), str)
+            or not isinstance(admission.get("attempt_number"), int)
+            or isinstance(admission.get("attempt_number"), bool)):
+        raise MergeQueueError("stored CLAIMED full-suite admission is malformed")
+    claim_path = Path(claim_ref["claim_path"]).resolve()
+    state_root = (controller / ".juno_task/state/merge-queue/full-suite").resolve()
+    try:
+        claim_path.relative_to(state_root / task_id)
+    except ValueError as exc:
+        raise MergeQueueError(
+            "stored CLAIMED full-suite admission escaped controller state") from exc
+    if not claim_path.is_file():
+        raise MergeQueueError("stored CLAIMED full-suite claim artifact is missing")
+    raw = claim_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != claim_ref["claim_sha256"]:
+        raise MergeQueueError("stored CLAIMED full-suite claim digest drifted")
+    try:
+        claim = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MergeQueueError("stored CLAIMED full-suite claim is malformed") from exc
+    if (not isinstance(claim, dict) or claim.get("task_id") != task_id
+            or claim.get("token") != admission.get("token")
+            or claim.get("attempt_number") != admission.get("attempt_number")):
+        raise MergeQueueError("stored CLAIMED full-suite claim identity mismatch")
+    if schema == risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA:
+        lock_value = claim.get("producer_lock")
+        if (not isinstance(lock_value, dict) or lock_value.get("kind") != "flock"
+                or not isinstance(lock_value.get("path"), str)):
+            raise MergeQueueError("stored CLAIMED full-suite claim has no producer lock")
+        lock_path = Path(lock_value["path"]).resolve()
+        if lock_path != claim_path.parent / "producer.lock":
+            raise MergeQueueError("stored CLAIMED producer lock path is not canonical")
+    else:
+        lock_path = claim_path.parent / "producer.lock"
+    return {"schema_version": schema,
+            "claim_path": str(claim_path),
+            "claim_sha256": claim_ref["claim_sha256"],
+            "token": admission.get("token"),
+            "attempt_number": admission.get("attempt_number"),
+            "producer_lock_path": str(lock_path)}
+
+
+@contextmanager
+def _withdraw_producer_liveness(controller: Path, task_id: str,
+                                claim_binding: Optional[dict[str, Any]]) -> Iterator[None]:
+    """Acquire the claim's flock non-blocking; a live producer fails closed."""
+    if claim_binding is None:
+        yield
+        return
+    lock_path = Path(claim_binding["producer_lock_path"])
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise MergeQueueError(
+                    "a live full-suite producer owns this claim; retry after it "
+                    "completes or its process exits") from exc
+            raise
+        yield
+
+
+def merge_withdraw(controller: Path, task_id: str,
+                   reason: Optional[str] = None) -> dict[str, Any]:
+    """Withdraw one queued task through a public, fail-closed queue operation.
+
+    Never hand-edits queue state: the transition runs under the task review and
+    target locks, proves any claimed full-suite producer is dead via its flock,
+    and records one durable withdraw receipt before the terminal state lands.
+    """
+    if not task_runtime.TASK_RE.fullmatch(task_id):
+        raise MergeQueueError("unsafe task id")
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    with review_lock(repository, task_id):
+        with target_lock(controller, repository, config["target_ref"]):
+            with task_runtime.state_lock(controller):
+                state = task_runtime.read_state(controller)
+                record = state["tasks"].get(task_id)
+                if not isinstance(record, dict) or record.get("task_id") != task_id:
+                    raise MergeQueueError("task has no queue record")
+                if (record.get("target_ref") != config["target_ref"]
+                        or Path(str(record.get("repository", ""))).resolve() != repository):
+                    raise MergeQueueError("withdraw task repository/target identity drifted")
+                source_state = record.get("state")
+                if source_state == "WITHDRAWN":
+                    raise MergeQueueError("task is already withdrawn")
+                if source_state not in WITHDRAWABLE_STATES:
+                    raise MergeQueueError(
+                        f"task in terminal or in-flight state {source_state} cannot be withdrawn")
+                frozen = json.loads(json.dumps(record))
+            claim_binding = None
+            admission = _record_claim_admission(frozen)
+            if admission is not None:
+                claim_binding = _withdraw_claim_binding(controller, task_id, admission)
+            with _withdraw_producer_liveness(controller, task_id, claim_binding):
+                target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+                policy_bytes = (controller / ".juno_task/config/task-workspace.json").read_bytes()
+                body = {"schema_version": WITHDRAW_SCHEMA, "task_id": task_id,
+                        "repository_identity": repository_identity(repository),
+                        "repository": str(repository),
+                        "target_ref": config["target_ref"], "target_sha": target_sha,
+                        "source_state": source_state,
+                        "tip_sha": frozen.get("tip_sha"),
+                        "queue_record_sha256": digest(frozen),
+                        "task_workspace_policy_sha256": hashlib.sha256(
+                            policy_bytes).hexdigest(),
+                        "claim": claim_binding,
+                        "operator_reason": (reason[:512] if isinstance(reason, str)
+                                            and reason.strip() else None)}
+                receipt_name = digest({key: value for key, value in body.items()
+                                       if key != "operator_reason"})
+                path = _withdraw_receipt_root(controller) / task_id / f"{receipt_name}.json"
+                receipt = {**body, "created_at": risk_runtime.utc_now()}
+                data = canonical(receipt) + "\n"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileExistsError:
+                    existing = json.loads(path.read_text())
+                    if ({key: value for key, value in existing.items()
+                            if key != "created_at"}
+                            != {key: value for key, value in receipt.items()
+                                if key != "created_at"}):
+                        raise MergeQueueError("withdraw receipt identity collided")
+                else:
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(data.encode()); handle.flush(); os.fsync(handle.fileno())
+                # Clean the exact owned internal candidate before terminal truth.
+                attempt = frozen.get("queue_attempt")
+                checkout_value = attempt.get("candidate_checkout") if isinstance(attempt, dict) else None
+                if checkout_value:
+                    token = attempt.get("candidate_token")
+                    if not isinstance(token, str) or not token:
+                        raise MergeQueueError("withdraw candidate ownership token is missing")
+                    checkout = Path(checkout_value)
+                    if checkout.exists():
+                        rollback_unadmitted_candidate(controller, repository, checkout, token)
+                    else:
+                        marker = owner_marker(controller, checkout)
+                        if marker.exists():
+                            owner = read_candidate_owner(controller, checkout)
+                            if (owner.get("token") != token
+                                    or owner.get("task_id") != task_id):
+                                raise MergeQueueError(
+                                    "withdraw orphan candidate ownership mismatched")
+                            marker.unlink()
+                with task_runtime.state_lock(controller):
+                    current_state = task_runtime.read_state(controller)
+                    current = current_state["tasks"].get(task_id)
+                    if current != frozen:
+                        raise MergeQueueError("task changed during withdraw admission")
+                    reference = {"receipt_path": str(path),
+                                 "receipt_sha256": hashlib.sha256(
+                                     path.read_bytes()).hexdigest()}
+                    updated = {**frozen, "state": "WITHDRAWN",
+                               "last_queue_outcome": "WITHDRAWN",
+                               "withdrawn_from_state": source_state,
+                               "withdraw_receipt": reference}
+                    current_state["tasks"][task_id] = updated
+                    entry = target_entry(current_state, repository, config["target_ref"])
+                    entry["conflicts"].pop(task_id, None)
+                    task_runtime.write_state(controller, current_state)
+            return {**updated, "outcome": "WITHDRAWN"}
+
+
 def status(controller: Path) -> dict[str, Any]:
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
@@ -3864,7 +4433,7 @@ def status(controller: Path) -> dict[str, Any]:
                 and row.get("state") in {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED",
                                          "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
                                          "REVIEW_FINDINGS_EXHAUSTED",
-                                         "REOPENING", "REQUEUING_STALE", "MERGED"}]
+                                         "REOPENING", "REQUEUING_STALE", "MERGED", "WITHDRAWN"}]
     return {"schema_version": QUEUE_SCHEMA, "repository_identity": repository_identity(repository),
             "target_ref": config["target_ref"], "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
             "tasks": rows, "last_attempt": entry["last_attempt"],
@@ -3892,6 +4461,9 @@ def parser() -> argparse.ArgumentParser:
     reopen = sub.add_parser("reopen")
     reopen.add_argument("task_id")
     reopen.add_argument("--plan-id")
+    withdraw = sub.add_parser("withdraw")
+    withdraw.add_argument("task_id")
+    withdraw.add_argument("--reason")
     reconcile = sub.add_parser("reconcile")
     reconcile_sub = reconcile.add_subparsers(dest="reconcile_operation", required=True)
     reconcile_plan = reconcile_sub.add_parser("plan")
@@ -3957,6 +4529,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = merge_review(controller, args.task_id)
         elif args.operation == "reopen":
             result = merge_reopen(controller, args.task_id, args.plan_id)
+        elif args.operation == "withdraw":
+            result = merge_withdraw(controller, args.task_id, args.reason)
         elif args.operation == "reconcile":
             if args.reconcile_operation == "plan":
                 result = persist_terminal_reconciliation_plan(controller, args.task_id)
