@@ -35,6 +35,13 @@ FULL_SUITE_PRODUCER_SCHEMA = "juno_merge_queue_full_suite_producer.v1"
 FULL_SUITE_TOOL_ID = "juno-code.merge-queue"
 FULL_SUITE_CLAIM_SCHEMA = "juno_merge_queue_full_suite_claim.v1"
 FULL_SUITE_ADMISSION_SCHEMA = "juno_merge_queue_full_suite_admission.v1"
+FULL_SUITE_CLAIM_V2_SCHEMA = "juno_merge_queue_full_suite_claim.v2"
+FULL_SUITE_RECEIPT_V3_SCHEMA = "juno_merge_queue_full_suite_receipt.v3"
+FULL_SUITE_ADMISSION_V2_SCHEMA = "juno_merge_queue_full_suite_admission.v2"
+FULL_SUITE_ROUTING_SCHEMA = "juno_merge_queue_full_suite_routing.v1"
+IDENTITY_KEYS = {"task_workspace_config_sha256", "full_suite_config_sha256",
+                 "task_validation_commands_sha256"}
+IDENTITY_KEYS_ROUTED = IDENTITY_KEYS | {"validation_routing_sha256"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 ALLOWED_METRICS = {
@@ -384,75 +391,12 @@ def _bounded_object(path_value: Any, expected_sha256: Any, plan: dict[str, Any],
     return value
 
 
-def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
-                              expected_validation_identity: Any = None,
-                              expected_command: Any = None,
-                              expected_claim: Any = None,
-                              require_success: bool = True,
-                              *, candidate: Any = None) -> dict[str, Any]:
-    """Reopen and strictly validate one immutable full-suite authority receipt."""
-    if not isinstance(reference, dict) or set(reference) != {"receipt_path", "receipt_sha256"}:
-        raise RiskPolicyError("full-suite authority must be one exact receipt reference")
-    receipt = _bounded_object(reference.get("receipt_path"), reference.get("receipt_sha256"),
-                              plan, "full-suite receipt")
-    expected_candidate = candidate if candidate is not None else plan["candidate"]
-    if (not isinstance(expected_candidate, dict)
-            or not isinstance(expected_candidate.get("candidate_sha"), str)
-            or not SHA_RE.fullmatch(expected_candidate["candidate_sha"])
-            or not isinstance(expected_candidate.get("candidate_tree"), str)
-            or not SHA_RE.fullmatch(expected_candidate["candidate_tree"])):
-        raise RiskPolicyError("full-suite expected candidate identity is invalid")
-    keys = {"schema_version", "producer", "candidate", "policy_identity", "claim",
-            "validation_identity", "command", "started_at", "completed_at", "timing",
-            "resource", "identity", "result"}
-    command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
-    result_keys = {"exit_code", "timed_out", "stdout", "stderr"}
-    stream_keys = {"sha256", "tail", "truncated_bytes"}
-    identity_keys = {"task_workspace_config_sha256", "full_suite_config_sha256",
-                     "task_validation_commands_sha256"}
-    command, result = receipt.get("command"), receipt.get("result")
+def _validate_full_suite_execution(receipt: dict[str, Any], command: dict[str, Any],
+                                    plan: dict[str, Any]) -> None:
+    """Validate timing, resource, execution identity, and bounded streams."""
     timing, resource, execution_identity = (receipt.get("timing"), receipt.get("resource"),
                                              receipt.get("identity"))
-    identity = receipt.get("validation_identity")
-    claim = receipt.get("claim")
-    claim_keys = {"claim_path", "claim_sha256", "token", "attempt_number"}
-    if (set(receipt) != keys or receipt.get("schema_version") != FULL_SUITE_SCHEMA
-            or receipt.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
-                                             "tool_id": FULL_SUITE_TOOL_ID}
-            or receipt.get("candidate") != {"candidate_sha": expected_candidate["candidate_sha"],
-                                              "candidate_tree": expected_candidate["candidate_tree"]}
-            or receipt.get("policy_identity") != plan["policy_identity"]
-            or not isinstance(claim, dict) or set(claim) != claim_keys
-            or not isinstance(claim.get("claim_path"), str) or not claim["claim_path"]
-            or not isinstance(claim.get("claim_sha256"), str)
-            or not DIGEST_RE.fullmatch(claim["claim_sha256"])
-            or not isinstance(claim.get("token"), str) or len(claim["token"]) != 48
-            or not isinstance(claim.get("attempt_number"), int)
-            or isinstance(claim.get("attempt_number"), bool) or claim["attempt_number"] <= 0
-            or (expected_claim is not None and claim != expected_claim)
-            or not isinstance(identity, dict) or set(identity) != identity_keys
-            or any(not isinstance(identity.get(key), str) or not DIGEST_RE.fullmatch(identity[key])
-                   for key in identity_keys)
-            or (expected_validation_identity is not None and identity != expected_validation_identity)
-            or not isinstance(command, dict)
-            or set(command) not in (command_keys, command_keys | {"resource"})
-            or (expected_command is not None and command != expected_command)
-            or not isinstance(command.get("id"), str) or not command["id"]
-            or not isinstance(command.get("cwd"), str)
-            or not isinstance(command.get("argv"), list) or not command["argv"]
-            or any(not isinstance(arg, str) or not arg for arg in command["argv"])
-            or not isinstance(command.get("timeout_seconds"), int)
-            or isinstance(command.get("timeout_seconds"), bool) or command["timeout_seconds"] <= 0
-            or not isinstance(command.get("max_output_bytes"), int)
-            or isinstance(command.get("max_output_bytes"), bool) or command["max_output_bytes"] <= 0
-            or command["max_output_bytes"] > plan["evidence_limits"]["max_receipt_bytes"]
-            or any(not isinstance(receipt.get(key), str) or not receipt[key]
-                   or len(receipt[key].encode()) > plan["evidence_limits"]["max_string_bytes"]
-                   for key in ("started_at", "completed_at"))
-            or not isinstance(result, dict) or set(result) != result_keys
-            or not isinstance(result.get("exit_code"), int) or isinstance(result.get("exit_code"), bool)
-            or not isinstance(result.get("timed_out"), bool)):
-        raise RiskPolicyError("full-suite receipt provenance is invalid")
+    result = receipt.get("result")
     states = timing.get("states") if isinstance(timing, dict) else None
     phase_names = [item.get("state") for item in states] if isinstance(states, list) else []
     terminal = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
@@ -484,7 +428,7 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
         raise RiskPolicyError("full-suite receipt timing provenance is invalid")
     for name in ("stdout", "stderr"):
         stream = result.get(name)
-        if (not isinstance(stream, dict) or set(stream) != stream_keys
+        if (not isinstance(stream, dict) or set(stream) != {"sha256", "tail", "truncated_bytes"}
                 or not isinstance(stream.get("sha256"), str)
                 or not DIGEST_RE.fullmatch(stream["sha256"])
                 or not isinstance(stream.get("tail"), str)
@@ -493,6 +437,77 @@ def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
                 or isinstance(stream.get("truncated_bytes"), bool)
                 or stream["truncated_bytes"] < 0):
             raise RiskPolicyError("full-suite receipt stream provenance is invalid")
+
+
+def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],
+                              expected_validation_identity: Any = None,
+                              expected_command: Any = None,
+                              expected_claim: Any = None,
+                              require_success: bool = True,
+                              *, candidate: Any = None) -> dict[str, Any]:
+    """Reopen and strictly validate one immutable full-suite authority receipt."""
+    if not isinstance(reference, dict) or set(reference) != {"receipt_path", "receipt_sha256"}:
+        raise RiskPolicyError("full-suite authority must be one exact receipt reference")
+    receipt = _bounded_object(reference.get("receipt_path"), reference.get("receipt_sha256"),
+                              plan, "full-suite receipt")
+    expected_candidate = candidate if candidate is not None else plan["candidate"]
+    if (not isinstance(expected_candidate, dict)
+            or not isinstance(expected_candidate.get("candidate_sha"), str)
+            or not SHA_RE.fullmatch(expected_candidate["candidate_sha"])
+            or not isinstance(expected_candidate.get("candidate_tree"), str)
+            or not SHA_RE.fullmatch(expected_candidate["candidate_tree"])):
+        raise RiskPolicyError("full-suite expected candidate identity is invalid")
+    keys = {"schema_version", "producer", "candidate", "policy_identity", "claim",
+            "validation_identity", "command", "started_at", "completed_at", "timing",
+            "resource", "identity", "result"}
+    command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
+    result_keys = {"exit_code", "timed_out", "stdout", "stderr"}
+    identity_keys, identity_keys_routed = IDENTITY_KEYS, IDENTITY_KEYS_ROUTED
+    command, result = receipt.get("command"), receipt.get("result")
+    timing, resource, execution_identity = (receipt.get("timing"), receipt.get("resource"),
+                                             receipt.get("identity"))
+    identity = receipt.get("validation_identity")
+    claim = receipt.get("claim")
+    claim_keys = {"claim_path", "claim_sha256", "token", "attempt_number"}
+    if (set(receipt) != keys or receipt.get("schema_version") != FULL_SUITE_SCHEMA
+            or receipt.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
+                                             "tool_id": FULL_SUITE_TOOL_ID}
+            or receipt.get("candidate") != {"candidate_sha": expected_candidate["candidate_sha"],
+                                              "candidate_tree": expected_candidate["candidate_tree"]}
+            or receipt.get("policy_identity") != plan["policy_identity"]
+            or not isinstance(claim, dict) or set(claim) != claim_keys
+            or not isinstance(claim.get("claim_path"), str) or not claim["claim_path"]
+            or not isinstance(claim.get("claim_sha256"), str)
+            or not DIGEST_RE.fullmatch(claim["claim_sha256"])
+            or not isinstance(claim.get("token"), str) or len(claim["token"]) != 48
+            or not isinstance(claim.get("attempt_number"), int)
+            or isinstance(claim.get("attempt_number"), bool) or claim["attempt_number"] <= 0
+            or (expected_claim is not None and claim != expected_claim)
+            or not isinstance(identity, dict)
+            or set(identity) not in (identity_keys, identity_keys_routed)
+            or any(not isinstance(identity.get(key), str) or not DIGEST_RE.fullmatch(identity[key])
+                   for key in identity)
+            or (expected_validation_identity is not None and identity != expected_validation_identity)
+            or not isinstance(command, dict)
+            or set(command) not in (command_keys, command_keys | {"resource"})
+            or (expected_command is not None and command != expected_command)
+            or not isinstance(command.get("id"), str) or not command["id"]
+            or not isinstance(command.get("cwd"), str)
+            or not isinstance(command.get("argv"), list) or not command["argv"]
+            or any(not isinstance(arg, str) or not arg for arg in command["argv"])
+            or not isinstance(command.get("timeout_seconds"), int)
+            or isinstance(command.get("timeout_seconds"), bool) or command["timeout_seconds"] <= 0
+            or not isinstance(command.get("max_output_bytes"), int)
+            or isinstance(command.get("max_output_bytes"), bool) or command["max_output_bytes"] <= 0
+            or command["max_output_bytes"] > plan["evidence_limits"]["max_receipt_bytes"]
+            or any(not isinstance(receipt.get(key), str) or not receipt[key]
+                   or len(receipt[key].encode()) > plan["evidence_limits"]["max_string_bytes"]
+                   for key in ("started_at", "completed_at"))
+            or not isinstance(result, dict) or set(result) != result_keys
+            or not isinstance(result.get("exit_code"), int) or isinstance(result.get("exit_code"), bool)
+            or not isinstance(result.get("timed_out"), bool)):
+        raise RiskPolicyError("full-suite receipt provenance is invalid")
+    _validate_full_suite_execution(receipt, command, plan)
     if _time(receipt["completed_at"]) < _time(receipt["started_at"]):
         raise RiskPolicyError("full-suite receipt completion precedes its start")
     if require_success and (result["timed_out"] or result["exit_code"] != 0):
@@ -556,6 +571,259 @@ def verify_full_suite_admission(admission: Any, plan: dict[str, Any],
             "claim": {"claim_path": compact_claim["claim_path"],
                       "claim_sha256": compact_claim["claim_sha256"]},
             "receipt": receipt}
+
+
+def _validate_command_row(command: Any, plan: dict[str, Any]) -> None:
+    command_keys = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
+    if (not isinstance(command, dict)
+            or set(command) not in (command_keys, command_keys | {"resource"})
+            or not isinstance(command.get("id"), str) or not command["id"]
+            or not isinstance(command.get("cwd"), str)
+            or not isinstance(command.get("argv"), list) or not command["argv"]
+            or any(not isinstance(arg, str) or not arg for arg in command["argv"])
+            or not isinstance(command.get("timeout_seconds"), int)
+            or isinstance(command.get("timeout_seconds"), bool)
+            or command["timeout_seconds"] <= 0
+            or not isinstance(command.get("max_output_bytes"), int)
+            or isinstance(command.get("max_output_bytes"), bool)
+            or command["max_output_bytes"] <= 0
+            or command["max_output_bytes"] > plan["evidence_limits"]["max_receipt_bytes"]):
+        raise RiskPolicyError("full-suite command row provenance is invalid")
+
+
+def _validate_command_suite(commands: Any, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    if (not isinstance(commands, list) or not commands or len(commands) > 16
+            or len({row.get("id") if isinstance(row, dict) else None for row in commands})
+                != len(commands)):
+        raise RiskPolicyError("full-suite command suite is empty, unbounded, or duplicated")
+    for row in commands:
+        _validate_command_row(row, plan)
+    return commands
+
+
+def _validate_routing(routing: Any) -> None:
+    if (not isinstance(routing, dict)
+            or set(routing) != {"mode", "profile_ids", "authored_path_count"}
+            or routing.get("mode") not in {"default", "profile", "union"}
+            or not isinstance(routing.get("profile_ids"), list)
+            or any(not isinstance(item, str) or not item for item in routing["profile_ids"])
+            or not isinstance(routing.get("authored_path_count"), int)
+            or isinstance(routing.get("authored_path_count"), bool)
+            or routing["authored_path_count"] < 0
+            or (routing["mode"] == "default") != (not routing["profile_ids"])
+            or (routing["mode"] in {"profile", "union"}) != (bool(routing["profile_ids"]))
+            or (routing["mode"] == "profile" and len(routing["profile_ids"]) != 1)):
+        raise RiskPolicyError("full-suite routing provenance is invalid")
+
+
+def _validate_producer_lock(lock: Any, plan: dict[str, Any]) -> None:
+    if (not isinstance(lock, dict) or set(lock) != {"path", "kind"}
+            or lock.get("kind") != "flock"
+            or not isinstance(lock.get("path"), str) or not lock["path"]
+            or len(lock["path"].encode()) > plan["evidence_limits"]["max_string_bytes"]):
+        raise RiskPolicyError("full-suite producer lock provenance is invalid")
+
+
+def _claim_v2_binding(claim: Any, plan: dict[str, Any], admission: dict[str, Any],
+                      expected_validation_identity: Any, expected_commands: Any,
+                      expected_candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    """Strictly validate one v2 suite claim and return its command rows."""
+    claim_keys = {"schema_version", "producer", "task_id", "candidate",
+                  "policy_identity", "validation_identity", "commands", "routing",
+                  "producer_lock", "token", "attempt_number", "expected_receipt_paths"}
+    if (not isinstance(claim, dict) or set(claim) != claim_keys
+            or claim.get("schema_version") != FULL_SUITE_CLAIM_V2_SCHEMA
+            or claim.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
+                                          "tool_id": FULL_SUITE_TOOL_ID}
+            or not isinstance(claim.get("task_id"), str) or not claim["task_id"]
+            or claim.get("candidate") != {
+                "candidate_sha": expected_candidate.get("candidate_sha"),
+                "candidate_tree": expected_candidate.get("candidate_tree")}
+            or claim.get("policy_identity") != plan["policy_identity"]
+            or (expected_validation_identity is not None
+                and claim.get("validation_identity") != expected_validation_identity)
+            or (expected_commands is not None and claim.get("commands") != expected_commands)):
+        raise RiskPolicyError("full-suite suite claim provenance is invalid")
+    commands = _validate_command_suite(claim.get("commands"), plan)
+    _validate_routing(claim.get("routing"))
+    _validate_producer_lock(claim.get("producer_lock"), plan)
+    if (claim.get("token") != admission.get("token")
+            or claim.get("attempt_number") != admission.get("attempt_number")
+            or not isinstance(claim.get("expected_receipt_paths"), list)
+            or len(claim["expected_receipt_paths"]) != len(commands)
+            or any(not isinstance(path, str) or not path
+                   or len(path.encode()) > plan["evidence_limits"]["max_string_bytes"]
+                   for path in claim["expected_receipt_paths"])
+            or len(set(claim["expected_receipt_paths"])) != len(commands)):
+        raise RiskPolicyError("full-suite suite claim receipt binding is invalid")
+    return commands
+
+
+def verify_full_suite_receipt_v3(reference: Any, plan: dict[str, Any],
+                                 expected_validation_identity: Any = None,
+                                 expected_commands: Any = None,
+                                 expected_claim: Any = None,
+                                 require_success: bool = True,
+                                 *, candidate: Any = None,
+                                 expected_command_index: Any = None) -> dict[str, Any]:
+    """Reopen and strictly validate one immutable per-command suite receipt."""
+    if not isinstance(reference, dict) or set(reference) != {"receipt_path", "receipt_sha256"}:
+        raise RiskPolicyError("full-suite authority must be one exact receipt reference")
+    receipt = _bounded_object(reference.get("receipt_path"), reference.get("receipt_sha256"),
+                              plan, "full-suite receipt")
+    expected_candidate = candidate if candidate is not None else plan["candidate"]
+    if (not isinstance(expected_candidate, dict)
+            or not isinstance(expected_candidate.get("candidate_sha"), str)
+            or not SHA_RE.fullmatch(expected_candidate["candidate_sha"])
+            or not isinstance(expected_candidate.get("candidate_tree"), str)
+            or not SHA_RE.fullmatch(expected_candidate["candidate_tree"])):
+        raise RiskPolicyError("full-suite expected candidate identity is invalid")
+    keys = {"schema_version", "producer", "candidate", "policy_identity", "claim",
+            "validation_identity", "commands", "command_index", "command",
+            "started_at", "completed_at", "timing", "resource", "identity", "result"}
+    claim_keys = {"claim_path", "claim_sha256", "token", "attempt_number"}
+    identity = receipt.get("validation_identity")
+    claim = receipt.get("claim")
+    commands, command, index = (receipt.get("commands"), receipt.get("command"),
+                                receipt.get("command_index"))
+    if (set(receipt) != keys
+            or receipt.get("schema_version") != FULL_SUITE_RECEIPT_V3_SCHEMA
+            or receipt.get("producer") != {"schema_version": FULL_SUITE_PRODUCER_SCHEMA,
+                                             "tool_id": FULL_SUITE_TOOL_ID}
+            or receipt.get("candidate") != {
+                "candidate_sha": expected_candidate["candidate_sha"],
+                "candidate_tree": expected_candidate["candidate_tree"]}
+            or receipt.get("policy_identity") != plan["policy_identity"]
+            or not isinstance(claim, dict) or set(claim) != claim_keys
+            or not isinstance(claim.get("claim_path"), str) or not claim["claim_path"]
+            or not isinstance(claim.get("claim_sha256"), str)
+            or not DIGEST_RE.fullmatch(claim["claim_sha256"])
+            or not isinstance(claim.get("token"), str) or len(claim["token"]) != 48
+            or not isinstance(claim.get("attempt_number"), int)
+            or isinstance(claim.get("attempt_number"), bool) or claim["attempt_number"] <= 0
+            or (expected_claim is not None and claim != expected_claim)
+            or not isinstance(identity, dict)
+            or set(identity) not in (IDENTITY_KEYS, IDENTITY_KEYS_ROUTED)
+            or any(not isinstance(identity.get(key), str) or not DIGEST_RE.fullmatch(identity[key])
+                   for key in identity)
+            or (expected_validation_identity is not None and identity != expected_validation_identity)
+            or (expected_commands is not None and commands != expected_commands)
+            or not isinstance(index, int) or isinstance(index, bool) or index < 0):
+        raise RiskPolicyError("full-suite receipt provenance is invalid")
+    commands = _validate_command_suite(commands, plan)
+    if (index >= len(commands) or command != commands[index]
+            or (expected_command_index is not None and index != expected_command_index)):
+        raise RiskPolicyError("full-suite receipt command binding is invalid")
+    _validate_command_row(command, plan)
+    _validate_full_suite_execution(receipt, command, plan)
+    if _time(receipt["completed_at"]) < _time(receipt["started_at"]):
+        raise RiskPolicyError("full-suite receipt completion precedes its start")
+    if require_success and (receipt["result"]["timed_out"]
+                            or receipt["result"]["exit_code"] != 0):
+        raise RiskPolicyError("full-suite receipt is not successful")
+    return {"receipt_path": str(Path(reference["receipt_path"]).resolve()),
+            "receipt_sha256": reference["receipt_sha256"],
+            "command_id": command["id"], "command_index": index,
+            "exit_code": receipt["result"]["exit_code"],
+            "timed_out": receipt["result"]["timed_out"]}
+
+
+def verify_full_suite_admission_v2(admission: Any, plan: dict[str, Any],
+                                   expected_validation_identity: Any = None,
+                                   expected_commands: Any = None,
+                                   require_success: bool = True,
+                                   *, candidate: Any = None) -> dict[str, Any]:
+    """Verify one v2 suite admission: one claim, per-command receipts, routing."""
+    base_keys = {"schema_version", "state", "attempt_number", "token", "claim"}
+    complete_keys = base_keys | {"receipts"}
+    failed_keys = complete_keys | {"failure"}
+    if (not isinstance(admission, dict)
+            or admission.get("schema_version") != FULL_SUITE_ADMISSION_V2_SCHEMA
+            or admission.get("state") not in {"COMPLETE", "FAILED"}
+            or set(admission) not in (complete_keys, failed_keys)
+            or (admission.get("state") == "FAILED") != (set(admission) == failed_keys)
+            or not isinstance(admission.get("attempt_number"), int)
+            or isinstance(admission.get("attempt_number"), bool)
+            or admission["attempt_number"] <= 0
+            or not isinstance(admission.get("token"), str) or len(admission["token"]) != 48
+            or not isinstance(admission.get("claim"), dict)
+            or set(admission["claim"]) != {"claim_path", "claim_sha256"}
+            or not isinstance(admission.get("receipts"), list) or not admission["receipts"]):
+        raise RiskPolicyError("full-suite suite admission provenance is invalid")
+    claim_ref = admission["claim"]
+    claim = _bounded_object(claim_ref.get("claim_path"), claim_ref.get("claim_sha256"),
+                            plan, "full-suite claim")
+    expected_candidate = candidate if candidate is not None else plan["candidate"]
+    commands = _claim_v2_binding(claim, plan, admission, expected_validation_identity,
+                                 expected_commands, expected_candidate)
+    receipts = admission["receipts"]
+    if len(receipts) > len(commands):
+        raise RiskPolicyError("full-suite suite admission exceeds its claimed commands")
+    compact_claim = {"claim_path": str(Path(claim_ref["claim_path"]).resolve()),
+                     "claim_sha256": claim_ref["claim_sha256"],
+                     "token": admission["token"],
+                     "attempt_number": admission["attempt_number"]}
+    verified: list[dict[str, Any]] = []
+    for index, reference in enumerate(receipts):
+        verified.append(verify_full_suite_receipt_v3(
+            reference, plan, expected_validation_identity, claim["commands"],
+            compact_claim, require_success=False, candidate=expected_candidate,
+            expected_command_index=index))
+    if admission["state"] == "COMPLETE":
+        if len(receipts) != len(commands):
+            raise RiskPolicyError("complete suite admission lacks one receipt per command")
+        if require_success and any(row["timed_out"] or row["exit_code"] for row in verified):
+            raise RiskPolicyError("full-suite suite admission is not successful")
+    else:
+        failure = admission.get("failure")
+        if (not isinstance(failure, dict)
+                or set(failure) != {"command_id", "command_index", "exit_code",
+                                    "timed_out", "stdout_tail", "stderr_tail"}
+                or not isinstance(failure.get("command_id"), str) or not failure["command_id"]
+                or not isinstance(failure.get("command_index"), int)
+                or isinstance(failure.get("command_index"), bool)
+                or failure["command_index"] != len(receipts) - 1
+                or not isinstance(failure.get("exit_code"), int)
+                or isinstance(failure.get("exit_code"), bool)
+                or not isinstance(failure.get("timed_out"), bool)
+                or not isinstance(failure.get("stdout_tail"), str)
+                or not isinstance(failure.get("stderr_tail"), str)):
+            raise RiskPolicyError("full-suite suite failure projection is invalid")
+        terminal = verified[-1]
+        if (failure["command_id"] != terminal["command_id"]
+                or failure["exit_code"] != terminal["exit_code"]
+                or failure["timed_out"] != terminal["timed_out"]):
+            raise RiskPolicyError("full-suite suite failure does not bind its terminal receipt")
+        if not failure["timed_out"] and failure["exit_code"] == 0:
+            raise RiskPolicyError("successful terminal receipt cannot be a suite failure")
+    observed = [row["receipt_path"] for row in verified]
+    if observed != [str(Path(path).resolve()) for path
+                    in claim["expected_receipt_paths"][:len(receipts)]]:
+        raise RiskPolicyError("full-suite suite receipts are not in their claimed canonical order")
+    return {"schema_version": FULL_SUITE_ADMISSION_V2_SCHEMA, "state": admission["state"],
+            "attempt_number": admission["attempt_number"], "token": admission["token"],
+            "claim": {"claim_path": compact_claim["claim_path"],
+                      "claim_sha256": claim_ref["claim_sha256"]},
+            "receipts": [{"receipt_path": row["receipt_path"],
+                          "receipt_sha256": row["receipt_sha256"]} for row in receipts]}
+
+
+def verify_full_suite_admission_any(admission: Any, plan: dict[str, Any],
+                                    expected_validation_identity: Any = None,
+                                    expected_command: Any = None,
+                                    require_success: bool = True,
+                                    *, candidate: Any = None) -> dict[str, Any]:
+    """Dispatch on the admission schema; legacy v1 evidence still verifies."""
+    schema = admission.get("schema_version") if isinstance(admission, dict) else None
+    if schema == FULL_SUITE_ADMISSION_SCHEMA:
+        return verify_full_suite_admission(
+            admission, plan, expected_validation_identity, expected_command,
+            require_success, candidate=candidate)
+    if schema == FULL_SUITE_ADMISSION_V2_SCHEMA:
+        return verify_full_suite_admission_v2(
+            admission, plan, expected_validation_identity, expected_command,
+            require_success, candidate=candidate)
+    raise RiskPolicyError("full-suite admission schema is unsupported or ambiguous")
 
 
 def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
@@ -644,9 +912,9 @@ def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, 
         raise RiskPolicyError("previous reuse projection is malformed")
     if plan["full_suite_required"]:
         source_sha = reused["origin_candidate_sha"] if reused is not None else prior["candidate_sha"]
-        verify_full_suite_admission(validation.get("full_suite_admission"), plan,
-                                    candidate={"candidate_sha": source_sha,
-                                               "candidate_tree": prior["candidate_tree"]})
+        verify_full_suite_admission_any(validation.get("full_suite_admission"), plan,
+                                        candidate={"candidate_sha": source_sha,
+                                                   "candidate_tree": prior["candidate_tree"]})
     evidence_reviews = reused["origin_reviews"] if reused is not None else reviews
     evidence_candidate = reused["origin_candidate_sha"] if reused is not None else prior["candidate_sha"]
     if not (plan["min_reviews"] <= len(evidence_reviews) <= plan["max_reviews"]):
@@ -917,8 +1185,8 @@ def verify_candidate_evidence(policy: dict[str, Any], candidate_request: dict[st
         if reused is not None:
             receipt_candidate = {"candidate_sha": reused.get("origin_candidate_sha"),
                                  "candidate_tree": identity["candidate_tree"]}
-        verify_full_suite_admission(validation.get("full_suite_admission"), plan,
-                                    candidate=receipt_candidate)
+        verify_full_suite_admission_any(validation.get("full_suite_admission"), plan,
+                                        candidate=receipt_candidate)
     elif validation.get("full_suite_admission") is not None:
         raise RiskPolicyError("full-suite receipt is forbidden when the suite is not required")
     _metrics(plan, evidence["metrics"])
@@ -994,7 +1262,7 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
     reusable = _validate_previous(previous, plan, identity)
     suite_admission = None
     if plan["full_suite_required"] and full_suite_admission is not None:
-        suite_admission = verify_full_suite_admission(full_suite_admission, plan)
+        suite_admission = verify_full_suite_admission_any(full_suite_admission, plan)
     elif not plan["full_suite_required"] and full_suite_admission is not None:
         raise RiskPolicyError("full-suite receipt is forbidden when the suite is not required")
     if plan["full_suite_required"] and suite_admission is None and not reusable:

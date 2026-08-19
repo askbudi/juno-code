@@ -477,6 +477,38 @@ raise SystemExit(2)
         self.task("finish", task_id)
         return tip
 
+
+    def write_profiled_policy(self) -> Path:
+        """Add one package-local validation profile rooted at pkg/."""
+        pkg_counter = self.root / "pkg-validation.log"
+        path = self.controller / ".juno_task/config/task-workspace.json"
+        config = json.loads(path.read_text())
+        config["allowed_paths"] = ["src", "docs", "pkg"]
+        config["validation_profiles"] = [{
+            "id": "pkg-suite", "path_roots": ["pkg"],
+            "commands": [
+                {"id": "pkg-test", "cwd": "pkg",
+                 "argv": [sys.executable, "-c",
+                          f"from pathlib import Path; Path({str(pkg_counter)!r}).open('a').write('run\\n')"],
+                 "timeout_seconds": 10, "max_output_bytes": 4096},
+                {"id": "pkg-build", "cwd": "pkg",
+                 "argv": [sys.executable, "-c",
+                          f"from pathlib import Path; Path({str(pkg_counter)!r}).open('a').write('run\\n')"],
+                 "timeout_seconds": 10, "max_output_bytes": 4096},
+            ],
+        }]
+        path.write_text(json.dumps(config, sort_keys=True) + "\n")
+        relative = str(path.relative_to(self.controller))
+        if git(self.controller, "status", "--porcelain=v1", "--", relative):
+            git(self.controller, "add", relative)
+            git(self.controller, "commit", "-m", "test package-local validation profile")
+        (self.repository / "pkg").mkdir(exist_ok=True)
+        (self.repository / "pkg/base.txt").write_text("base\n")
+        git(self.repository, "add", "pkg")
+        git(self.repository, "commit", "-m", "add package root")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        return pkg_counter
+
     def install_merge_planner_runtime(self) -> None:
         target = self.controller / ".juno_task/scripts/merge_queue.py"
         target.write_bytes(QUEUE.read_bytes())
@@ -1606,7 +1638,7 @@ raise SystemExit(2)
         self.assertTrue(all(row["id"] != "full-suite" for row in ready["validation"]))
         complete = ready["risk"]["review_progress"]["full_suite_admission"]
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 2))
-        receipt = json.loads(Path(complete["receipt"]["receipt_path"]).read_text())
+        receipt = json.loads(Path(complete["receipts"][0]["receipt_path"]).read_text())
         self.assertEqual(receipt["timing"]["schema_version"], "juno_validation_timing.v1")
         self.assertEqual([item["state"] for item in receipt["timing"]["states"]],
                          ["WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED"])
@@ -1788,7 +1820,7 @@ raise SystemExit(2)
         self.assertEqual(attempts, ["attempt-1", "attempt-2"])
         for name in attempts:
             self.assertTrue((next(root.iterdir()) / name / "claim.json").is_file())
-            self.assertTrue((next(root.iterdir()) / name / "receipt.json").is_file())
+            self.assertTrue((next(root.iterdir()) / name / "receipt-1.json").is_file())
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
 
     def test_restart_from_claimed_failed_receipt_marks_failed_without_reviewer(self) -> None:
@@ -1836,7 +1868,7 @@ raise SystemExit(2)
             with self.assertRaises(OSError):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
         claimed = self.task("status", "X")["queue_attempt"]["risk"]["review_progress"]
-        Path(claimed["full_suite_admission"]["expected_receipt_path"]).write_text("{}\n")
+        Path(claimed["full_suite_admission"]["expected_receipt_paths"][0]).write_text("{}\n")
         with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
             with self.assertRaises(merge_runtime.MergeQueueError):
                 merge_runtime.merge_review(self.controller.resolve(), "X")
@@ -3015,6 +3047,196 @@ raise SystemExit(2)
         self.assertEqual(result["outcome"], "MERGED")
         self.assertEqual(self.task("status", "X")["state"], "MERGED")
         self.assertEqual(len(self.counter.read_text().splitlines()), 1)  # finish only; candidate was already validated
+
+
+
+    def test_profile_confined_candidate_runs_only_package_suite_gates(self) -> None:
+        pkg_counter = self.write_profiled_policy()
+        self.install_merge_planner_runtime()
+        tip = self.commit_feature("X", "pkg/security/auth.py", "package change\n")
+        waiting = self.queue_payload("next")
+        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
+        self.assertFalse(self.full_counter.exists())
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "RISK_EVIDENCE_READY")
+        admission = reviewed["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["schema_version"],
+                         risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA)
+        self.assertEqual(admission["state"], "COMPLETE")
+        self.assertEqual(len(admission["receipts"]), 2)
+        claim = json.loads(Path(admission["claim"]["claim_path"]).read_text())
+        self.assertEqual([row["id"] for row in claim["commands"]], ["pkg-test", "pkg-build"])
+        self.assertEqual(claim["routing"]["mode"], "profile")
+        self.assertEqual(claim["routing"]["profile_ids"], ["pkg-suite"])
+        self.assertIn("validation_routing_sha256", claim["validation_identity"])
+        self.assertEqual(pkg_counter.read_text().splitlines(), ["run", "run"])
+        self.assertFalse(self.full_counter.exists())
+        merged = merge_runtime.merge_next(self.controller.resolve(), "X")
+        self.assertEqual((merged["outcome"], merged["candidate_sha"]), ("MERGED", tip))
+
+    def test_mixed_candidate_runs_union_of_package_and_default_suites(self) -> None:
+        pkg_counter = self.write_profiled_policy()
+        self.install_merge_planner_runtime()
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "pkg/security").mkdir(parents=True, exist_ok=True)
+        (worktree / "pkg/security/auth.py").write_text("package side\n")
+        (worktree / "src/one.txt").write_text("repository side\n")
+        git(worktree, "add", "pkg/security/auth.py", "src/one.txt")
+        git(worktree, "commit", "-m", "mixed feature")
+        self.task("finish", "X")
+        waiting = self.queue_payload("next")
+        self.assertEqual(waiting["outcome"], "AWAITING_RISK")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "RISK_EVIDENCE_READY")
+        admission = reviewed["risk"]["review_progress"]["full_suite_admission"]
+        claim = json.loads(Path(admission["claim"]["claim_path"]).read_text())
+        self.assertEqual(claim["routing"]["mode"], "union")
+        self.assertEqual([row["id"] for row in claim["commands"]],
+                         ["pkg-test", "pkg-build", "full-suite"])
+        self.assertEqual(pkg_counter.read_text().splitlines(), ["run", "run"])
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+
+    def test_plan_binds_validation_routing_identity(self) -> None:
+        self.write_profiled_policy()
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "pkg/security/auth.py", "routed\n")
+        report = merge_runtime.merge_plan(self.controller.resolve(), "X")
+        self.assertTrue(report["ready"])
+        self.assertEqual(report["identities"]["validation_routing"],
+                         {"mode": "profile", "profile_ids": ["pkg-suite"],
+                          "authored_path_count": 1})
+        self.assertEqual([row["id"] for row in report["validation_commands"]],
+                         ["pkg-test", "pkg-build"])
+        routed_plan_id = report["plan_id"]
+        self.commit_feature("Y", "src/security/auth.py", "default\n")
+        default_report = merge_runtime.merge_plan(self.controller.resolve(), "Y")
+        self.assertEqual(default_report["identities"]["validation_routing"],
+                         {"mode": "default", "profile_ids": [], "authored_path_count": 1})
+        self.assertEqual([row["id"] for row in default_report["validation_commands"]],
+                         ["affected", "full-suite"])
+        self.assertNotEqual(routed_plan_id, default_report["plan_id"])
+
+    def test_withdraw_orphaned_claimed_admission_records_receipt_and_terminal_state(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "orphan\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "full_suite_validation",
+                               side_effect=OSError("producer died after claim")):
+            with self.assertRaises(OSError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        claimed = self.task("status", "X")
+        admission = claimed["queue_attempt"]["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["state"], "CLAIMED")
+        withdrawn = merge_runtime.merge_withdraw(self.controller.resolve(), "X",
+                                                 reason="orphaned claim recovery")
+        self.assertEqual((withdrawn["state"], withdrawn["outcome"]),
+                         ("WITHDRAWN", "WITHDRAWN"))
+        self.assertEqual(withdrawn["withdrawn_from_state"], "AWAITING_RISK")
+        reference = withdrawn["withdraw_receipt"]
+        receipt = json.loads(Path(reference["receipt_path"]).read_text())
+        self.assertEqual(receipt["schema_version"],
+                         merge_runtime.WITHDRAW_SCHEMA)
+        self.assertEqual(receipt["source_state"], "AWAITING_RISK")
+        self.assertEqual(receipt["claim"]["schema_version"],
+                         risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA)
+        self.assertEqual(
+            hashlib.sha256(Path(reference["receipt_path"]).read_bytes()).hexdigest(),
+            reference["receipt_sha256"])
+        status = self.queue_payload("status")
+        row = next(item for item in status["tasks"] if item["task_id"] == "X")
+        self.assertEqual(row["state"], "WITHDRAWN")
+        again = self.queue("withdraw", "X", check=False)
+        self.assertEqual(again.returncode, 2)
+        self.assertIn("already withdrawn", again.stderr)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
+
+    def test_withdraw_refuses_live_producer_and_preserves_state(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "live\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "full_suite_validation",
+                               side_effect=OSError("producer crashed after claim")):
+            with self.assertRaises(OSError):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        record = self.task("status", "X")
+        admission = record["queue_attempt"]["risk"]["review_progress"]["full_suite_admission"]
+        lock_path = Path(admission["producer_lock"]["path"])
+        self.assertTrue(lock_path.is_file())
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            refused = self.queue("withdraw", "X", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("live full-suite producer", refused.stderr)
+        preserved = self.task("status", "X")
+        self.assertEqual(preserved["state"], "AWAITING_RISK")
+        self.assertEqual(preserved["queue_attempt"]["risk"]["review_progress"]
+                         ["full_suite_admission"]["state"], "CLAIMED")
+
+    def test_withdraw_queued_task_removes_it_from_fifo_selection(self) -> None:
+        self.commit_feature("X", "docs/queued.md", "queued\n")
+        self.assertEqual(self.task("status", "X")["state"], "QUEUED")
+        withdrawn = merge_runtime.merge_withdraw(self.controller.resolve(), "X")
+        self.assertEqual((withdrawn["state"], withdrawn["outcome"]),
+                         ("WITHDRAWN", "WITHDRAWN"))
+        receipt = json.loads(Path(withdrawn["withdraw_receipt"]["receipt_path"]).read_text())
+        self.assertIsNone(receipt["claim"])
+        self.assertEqual(receipt["source_state"], "QUEUED")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "no QUEUED task is ready"):
+            merge_runtime.select_next(
+                self.controller.resolve(),
+                task_runtime.load_config(self.controller.resolve()))
+
+    def test_withdraw_refuses_terminal_merged_state(self) -> None:
+        self.install_merge_planner_runtime()
+        tip = self.commit_feature("X", "docs/terminal.md", "terminal\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
+            merged = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual(merged["outcome"], "MERGED")
+        self.assertEqual(merged["candidate_sha"], tip)
+        refused = self.queue("withdraw", "X", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("cannot be withdrawn", refused.stderr)
+        self.assertEqual(self.task("status", "X")["state"], "MERGED")
+
+    def test_legacy_v1_admission_at_canonical_path_still_verifies(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "legacy\n")
+        self.queue_payload("next")
+        record = self.task("status", "X")
+        attempt = record["queue_attempt"]
+        plan = attempt["risk"]["plan"]
+        config = task_runtime.load_config(self.controller.resolve())
+        identity = merge_runtime.full_validation_identity(
+            self.controller.resolve(), config, record,
+            Path(record["worktree"]), attempt["candidate_sha"])
+        command = merge_runtime.full_suite_command(config)
+        admission = self.external_full_suite_admission(plan, identity, command)
+        root = merge_runtime.full_suite_attempt_root(
+            self.controller.resolve(), "X", attempt["candidate_sha"], 1)
+        root.mkdir(parents=True, exist_ok=True)
+        claim = json.loads(Path(admission["claim"]["claim_path"]).read_text())
+        receipt = json.loads(Path(admission["receipt"]["receipt_path"]).read_text())
+        claim["expected_receipt_path"] = str(root / "receipt.json")
+        claim_bytes = risk_runtime.canonical(claim)
+        receipt["claim"]["claim_path"] = str(root / "claim.json")
+        receipt["claim"]["claim_sha256"] = hashlib.sha256(claim_bytes).hexdigest()
+        (root / "claim.json").write_bytes(claim_bytes)
+        (root / "receipt.json").write_bytes(risk_runtime.canonical(receipt))
+        canonical_admission = {
+            "schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+            "state": "COMPLETE", "attempt_number": 1,
+            "token": admission["token"],
+            "claim": {"claim_path": str(root / "claim.json"),
+                      "claim_sha256": receipt["claim"]["claim_sha256"]},
+            "receipt": {"receipt_path": str(root / "receipt.json"),
+                        "receipt_sha256": hashlib.sha256(
+                            (root / "receipt.json").read_bytes()).hexdigest()}}
+        verified = merge_runtime.verify_queue_full_suite_admission_legacy(
+            self.controller.resolve(), "X", plan, identity, command, canonical_admission)
+        self.assertEqual((verified["state"], verified["attempt_number"]),
+                         ("COMPLETE", 1))
+        self.assertEqual(tip, attempt["candidate_sha"])
 
 
 if __name__ == "__main__":

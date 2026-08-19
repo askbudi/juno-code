@@ -264,7 +264,7 @@ def load_config(controller: Path) -> dict[str, Any]:
     required = {"schema_version", "repository", "target_ref", "workspace_root", "branch_prefix",
                 "allowed_paths", "controller_private_paths", "focused_validation",
                 "full_suite_validation"}
-    optional = {"selectable_paths", "hydration_workflow"}
+    optional = {"selectable_paths", "hydration_workflow", "validation_profiles"}
     if (not isinstance(value, dict) or not required.issubset(value) or set(value) - required - optional
             or value.get("schema_version") != CONFIG_SCHEMA):
         raise TaskWorkspaceError(f"task workspace policy must contain exactly the {CONFIG_SCHEMA} fields")
@@ -345,7 +345,123 @@ def load_config(controller: Path) -> dict[str, Any]:
                 f"focused validation resource {resource['id']!r} has conflicting declarations")
     full_suite = value["full_suite_validation"]
     validate_row(full_suite, "full-suite validation")
+    value["validation_profiles"] = _validated_validation_profiles(
+        value, full_suite["id"], validate_row)
     return value
+
+
+def _validated_validation_profiles(value: dict[str, Any], full_suite_id: str,
+                                   validate_row: Any) -> list[dict[str, Any]]:
+    """Admit only deterministic, package-local, product-admissible profiles."""
+    profiles = value.get("validation_profiles")
+    if profiles is None:
+        return []
+    if not isinstance(profiles, list) or not profiles or len(profiles) > 16:
+        raise TaskWorkspaceError(
+            "validation_profiles must be a bounded nonempty list when present")
+    seen_ids: set[str] = {full_suite_id}
+    seen_ids.update(row["id"] for row in value["focused_validation"])
+    seen_roots: list[tuple[str, str]] = []
+    for profile in profiles:
+        if (not isinstance(profile, dict)
+                or set(profile) != {"id", "path_roots", "commands"}):
+            raise TaskWorkspaceError(
+                "validation profile requires exactly id, path_roots, and commands")
+        profile_id = profile["id"]
+        if (not isinstance(profile_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", profile_id)
+                or profile_id in seen_ids):
+            raise TaskWorkspaceError(
+                f"validation profile id is malformed or duplicated: {profile_id!r}")
+        seen_ids.add(profile_id)
+        roots = profile["path_roots"]
+        if (not isinstance(roots, list) or not roots or len(roots) > 16
+                or any(not isinstance(root, str) or not root for root in roots)):
+            raise TaskWorkspaceError(
+                f"validation profile {profile_id!r} path_roots must be a bounded nonempty list")
+        profile["path_roots"] = [
+            normalized_relative(root, f"validation profile {profile_id!r} path root")
+            for root in roots]
+        if len(set(profile["path_roots"])) != len(profile["path_roots"]):
+            raise TaskWorkspaceError(
+                f"validation profile {profile_id!r} path_roots contains duplicates")
+        for root in profile["path_roots"]:
+            if (not path_within(root, value["allowed_paths"])
+                    or path_within(root, value["controller_private_paths"])):
+                raise TaskWorkspaceError(
+                    f"validation profile {profile_id!r} path root is not product-admissible: {root}")
+            for prior_id, prior_root in seen_roots:
+                if path_within(root, [prior_root]) or path_within(prior_root, [root]):
+                    raise TaskWorkspaceError(
+                        f"validation profile path roots overlap: {root} and {prior_id}:{prior_root}")
+            seen_roots.append((profile_id, root))
+        commands = profile["commands"]
+        if (not isinstance(commands, list) or not commands or len(commands) > 16):
+            raise TaskWorkspaceError(
+                f"validation profile {profile_id!r} requires a bounded nonempty command list")
+        for row in commands:
+            validate_row(row, f"validation profile {profile_id!r} command")
+            if not path_within(row["cwd"], profile["path_roots"]):
+                raise TaskWorkspaceError(
+                    f"validation profile {profile_id!r} command cwd escapes its package roots: {row['cwd']}")
+        command_ids = [row["id"] for row in commands]
+        if (any(command_id in seen_ids for command_id in command_ids)
+                or len(set(command_ids)) != len(command_ids)):
+            raise TaskWorkspaceError(
+                f"validation profile {profile_id!r} command ids collide with another suite command")
+        seen_ids.update(command_ids)
+    return profiles
+
+
+def validation_profile_selection(config: dict[str, Any],
+                                 changed_paths: Any) -> dict[str, Any]:
+    """Deterministically route validation from the authored Git path set.
+
+    Exactly one matched profile covering every authored path selects that
+    package-local suite alone. Any uncovered path, or a spread across profiles,
+    conservatively adds the repository default suite (union semantics).
+    """
+    paths = [path for path in (changed_paths or []) if isinstance(path, str)]
+    matched = sorted(
+        (profile for profile in (config.get("validation_profiles") or [])
+         if isinstance(profile, dict)
+         and any(path_within(path, profile.get("path_roots", [])) for path in paths)),
+        key=lambda profile: str(profile.get("id")))
+    covered_roots = [root for profile in matched for root in profile["path_roots"]]
+    covered = bool(paths) and all(path_within(path, covered_roots) for path in paths)
+    if not matched or not paths:
+        mode = "default"
+    elif covered and len(matched) == 1:
+        mode = "profile"
+    else:
+        mode = "union"
+    return {"mode": mode, "profile_ids": [profile["id"] for profile in matched],
+            "authored_path_count": len(paths)}
+
+
+def selected_full_suite_commands(config: dict[str, Any],
+                                 changed_paths: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return the ordered full-suite command rows plus their routing selection."""
+    selection = validation_profile_selection(config, changed_paths)
+    commands: list[dict[str, Any]] = []
+    for profile_id in selection["profile_ids"]:
+        profile = next(row for row in config["validation_profiles"]
+                       if row["id"] == profile_id)
+        commands.extend(profile["commands"])
+    if selection["mode"] != "profile":
+        commands.append(config["full_suite_validation"])
+    return commands, selection
+
+
+def selected_focused_rows(config: dict[str, Any], changed_paths: Any) -> list[dict[str, Any]]:
+    """Route pre-queue focused rows; mixed or default candidates run every row."""
+    selection = validation_profile_selection(config, changed_paths)
+    if selection["mode"] != "profile":
+        return config["focused_validation"]
+    roots = next(row for row in config["validation_profiles"]
+                 if row["id"] == selection["profile_ids"][0])["path_roots"]
+    return [row for row in config["focused_validation"]
+            if path_within(row["cwd"], roots)]
 
 
 def lexical_absolute(path: Path) -> Path:
@@ -868,6 +984,8 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
 
 def run_focused_validations(rows: list[dict[str, Any]], worktree: Path) -> list[dict[str, Any]]:
     """Run independent lanes concurrently and each exclusive-resource lane in policy order."""
+    if not rows:
+        return []
     lanes: dict[str, list[tuple[int, dict[str, Any], Path]]] = {}
     lane_order: list[str] = []
     for index, row in enumerate(rows):
@@ -1644,7 +1762,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
             "start", "status", "hydrate", "preflight", "finish",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
-    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh"}:
+    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
     if forwarded_policy is not None and forwarded_policy != expected_policy:
         raise TaskWorkspaceError(
@@ -1724,6 +1842,8 @@ def validation_dependency_evidence(worktree: Path, config: dict[str, Any]) -> li
     evidence: list[dict[str, Any]] = []
     seen: set[str] = set()
     rows = [*config["focused_validation"], config["full_suite_validation"]]
+    for profile in config.get("validation_profiles") or []:
+        rows.extend(profile["commands"])
     for row in rows:
         relative = normalized_relative(row["cwd"], "validation cwd")
         if relative in seen:
@@ -2531,8 +2651,10 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         if frozen_record.get("admission_supersessions")
         else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
     )
-    validations = run_focused_validations(config["focused_validation"], worktree)
-    for row, evidence in zip(config["focused_validation"], validations):
+    routing = validation_profile_selection(config, changed)
+    selected_focused = selected_focused_rows(config, changed)
+    validations = run_focused_validations(selected_focused, worktree)
+    for row, evidence in zip(selected_focused, validations):
         if evidence["timed_out"] or evidence["exit_code"]:
             # Persist every terminal result from this one deterministic schedule.
             # A failed row never causes automatic multiplication of an unchanged run.
@@ -2561,6 +2683,7 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         raise TaskWorkspaceError("task tip or worktree changed during focused validation")
     queued = {**record, "state": "QUEUED", "tip_sha": head, "changed_paths": changed,
               "review_ready_closure": closure,
+              "validation_routing": routing,
               "review_round": 1,
               "validation": validations, "last_validation_outcome": "PASSED"}
     with state_lock(controller):

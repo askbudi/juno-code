@@ -66,6 +66,7 @@ describe('merge queue CLI', () => {
     { argv: ['resolve', 'T123'], expected: ['resolve', 'T123'] },
     { argv: ['review', 'T123'], expected: ['review', 'T123'] },
     { argv: ['reopen', 'T123'], expected: ['reopen', 'T123'] },
+    { argv: ['withdraw', 'T123'], expected: ['withdraw', 'T123'] },
   ] as const)('forwards merge $argv', async ({ argv, expected }) => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
@@ -111,13 +112,29 @@ describe('merge queue CLI', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
     const merge = program.commands.find((command) => command.name() === 'merge');
-    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'reconcile', 'refresh']);
+    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'withdraw', 'reconcile', 'refresh']);
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
     expect(merge?.commands[1]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(false);
     expect(merge?.commands[3]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[4]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[5]?.registeredArguments[0]?.required).toBe(true);
+    expect(merge?.commands[6]?.registeredArguments[0]?.required).toBe(true);
+  });
+
+  it('forwards the bounded withdraw operator reason', async () => {
+    const reasonInvoke = vi.fn(async () => undefined);
+    const reasonProgram = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureMergeQueueCommand(reasonProgram, reasonInvoke);
+    await reasonProgram.parseAsync(['node', 'yy', 'merge', 'withdraw', 'T123',
+      '--reason', 'orphaned claim recovery']);
+    expect(reasonInvoke).toHaveBeenCalledWith('withdraw', 'T123',
+      ['--reason', 'orphaned claim recovery']);
+    const plainInvoke = vi.fn(async () => undefined);
+    const plainProgram = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureMergeQueueCommand(plainProgram, plainInvoke);
+    await plainProgram.parseAsync(['node', 'yy', 'merge', 'withdraw', 'T123']);
+    expect(plainInvoke).toHaveBeenCalledWith('withdraw', 'T123');
   });
 
   it('documents queue advance and evidence-continuation semantics', () => {

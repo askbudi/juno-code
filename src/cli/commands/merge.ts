@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh';
+export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh' | 'withdraw';
 export type MergeQueueInvoker = (
   operation: MergeQueueOperation,
   taskId?: string,
@@ -176,6 +176,14 @@ export function configureMergeQueueCommand(
     .action((taskId: string, options: { planId?: string }) => options.planId
       ? invoke('reopen', taskId, ['--plan-id', options.planId])
       : invoke('reopen', taskId));
+  merge
+    .command('withdraw')
+    .description('Withdraw one queued task after proving no live producer owns its claims')
+    .argument('<task-id>', 'Canonical Juno Ledger task ID')
+    .option('--reason <text>', 'Bounded operator reason recorded in the withdraw receipt')
+    .action((taskId: string, options: { reason?: string }) => options.reason
+      ? invoke('withdraw', taskId, ['--reason', options.reason])
+      : invoke('withdraw', taskId));
   const reconcile = merge.command('reconcile')
     .description('Reconcile terminal findings whose exact tip is already in the protected target');
   reconcile.command('plan').argument('<task-id>', 'Terminal findings task to reconcile')
