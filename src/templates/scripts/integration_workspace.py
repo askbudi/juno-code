@@ -292,6 +292,43 @@ def managed_safe_path(controller: Path, relative: str) -> Path:
     return destination
 
 
+def commit_tree(repository: Path, commit: str) -> str | None:
+    value = git(repository, "rev-parse", "--verify", f"{commit}^{{tree}}", check=False)
+    return value if SHA_RE.fullmatch(value) else None
+
+
+def commit_path_bytes(repository: Path, commit: str, relative: str) -> bytes | None:
+    result = managed_run(["git", "-C", str(repository), "show", f"{commit}:{relative}"],
+                         repository, check=False)
+    return result.stdout if result.returncode == 0 else None
+
+
+def commit_tracks_path(repository: Path, commit: str, relative: str) -> bool:
+    return bool(git(repository, "ls-tree", "-r", "--name-only", commit, "--", relative,
+                    check=False).splitlines())
+
+
+def version_cache_commit_evidence(repository: Path, commit: str) -> dict[str, Any]:
+    """Bind the two legacy findings to immutable commit-tree evidence."""
+    script = commit_path_bytes(repository, commit, INSTALL_REQUIREMENTS_PATH)
+    markers = [managed_sha256(marker) for marker in LEGACY_VERSION_CACHE_MARKERS
+               if script is not None and marker in script]
+    return {
+        "commit": commit,
+        "tree": commit_tree(repository, commit),
+        "legacy_writer": {
+            "path": INSTALL_REQUIREMENTS_PATH,
+            "present": bool(markers),
+            "content_sha256": managed_sha256(script) if script is not None else None,
+            "marker_sha256": markers,
+        },
+        "tracked_cache": {
+            "path": VERSION_CACHE_PATH,
+            "present": commit_tracks_path(repository, commit, VERSION_CACHE_PATH),
+        },
+    }
+
+
 def managed_version_cache_findings(root: Path, workspace: str) -> list[dict[str, str]]:
     """Report exact legacy cache paths without changing checkout bytes."""
     root = root.expanduser().resolve()
@@ -1129,6 +1166,51 @@ def submodule_state(owner: Path) -> list[dict[str, str]]:
     return rows
 
 
+def commit_gitlinks(repository: Path, commit: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in git(repository, "ls-tree", "-r", commit, check=False).splitlines():
+        metadata, separator, path = line.partition("\t")
+        fields = metadata.split()
+        if separator and len(fields) == 3 and fields[:2] == ["160000", "commit"]:
+            rows.append({"path": path, "sha": fields[2]})
+    return sorted(rows, key=lambda row: row["path"])
+
+
+def local_target_gitlink_evidence(owner: Path, repository: Path, old_sha: str,
+                                  target_sha: str) -> dict[str, Any]:
+    """Prove a topology-preserving recursive gitlink transition without network I/O."""
+    def collect(repo: Path, commit: str, checkout: Path,
+                prefix: str = "") -> tuple[list[dict[str, str]], bool]:
+        flattened: list[dict[str, str]] = []
+        available = True
+        for row in commit_gitlinks(repo, commit):
+            full_path = f"{prefix}/{row['path']}" if prefix else row["path"]
+            child = checkout / row["path"]
+            exact = bool(child.is_dir() and sha(child, row["sha"]) == row["sha"])
+            flattened.append({"path": full_path, "sha": row["sha"]})
+            available = available and exact
+            if exact:
+                nested, nested_available = collect(child, row["sha"], child, full_path)
+                flattened.extend(nested)
+                available = available and nested_available
+        return sorted(flattened, key=lambda item: item["path"]), available
+
+    old_links, old_available = collect(repository, old_sha, owner)
+    target_links, target_available = collect(repository, target_sha, owner)
+    old_paths = [row["path"] for row in old_links]
+    target_paths = [row["path"] for row in target_links]
+    target_by_path = {row["path"]: row["sha"] for row in target_links}
+    evidence = [{"path": path, "sha": target_by_path[path],
+                 "local_object_available": target_available}
+                for path in target_paths]
+    return {"topology_preserved": old_paths == target_paths,
+            "old": old_links, "target": target_links,
+            "old_objects_available": old_available,
+            "local_objects_available": target_available,
+            "gitlinks": evidence,
+            "hydration": "submodule_update_recursive_checkout_no_fetch"}
+
+
 def target_holders(repository: Path, target_ref: str) -> list[str]:
     return sorted(str(row["worktree"]) for row in parse_worktrees(repository)
                   if row.get("branch") == target_ref)
@@ -1251,6 +1333,67 @@ def worktree_identity(root: Path) -> dict[str, Any]:
             "authority": worktree_config(root, "juno.workspace.roleAuthority")}
 
 
+def stale_owner_cache_migration(status: dict[str, Any], repository: Path,
+                                policy: dict[str, Any]) -> dict[str, Any] | None:
+    owner = status["integration"]["owner"]
+    target_sha = status["target"]["sha"]
+    if not owner or not target_sha or owner["head"] == target_sha:
+        return None
+    old_sha = owner["head"]
+    finding_codes = sorted(row["code"] for row in status["findings"])
+    allowed_codes = sorted([
+        "legacy_checkout_local_version_cache_writer",
+        "tracked_worktree_version_cache",
+        "integration_owner_stale",
+        "integration_owner_role_base_stale",
+    ])
+    old_evidence = version_cache_commit_evidence(repository, old_sha)
+    target_evidence = version_cache_commit_evidence(repository, target_sha)
+    gitlinks = local_target_gitlink_evidence(
+        Path(owner["path"]), repository, old_sha, target_sha)
+    ancestry = run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                    old_sha, target_sha], repository, check=False).returncode == 0
+    checks = {
+        "registered_unique_protected_owner": bool(
+            status["integration"]["status"] == "registered"
+            and status["integration"]["registered_path"] == owner["path"]
+            and len(status["integration"]["candidates"]) == 1),
+        "owner_clean_detached_full": bool(
+            owner["clean"] and owner["detached"] and owner["full_checkout"]),
+        "owner_head_role_base_fast_forward": bool(
+            owner["role_base"] == old_sha and ancestry),
+        "owner_authority_exact": owner["authority"] == policy["owner_role_authority"],
+        "only_legacy_cache_findings": finding_codes == allowed_codes,
+        "old_findings_present": bool(old_evidence["legacy_writer"]["present"]
+                                     and old_evidence["tracked_cache"]["present"]),
+        "target_findings_absent": bool(not target_evidence["legacy_writer"]["present"]
+                                       and not target_evidence["tracked_cache"]["present"]),
+        "submodule_topology_preserved": gitlinks["topology_preserved"],
+        "target_gitlinks_locally_available": gitlinks["local_objects_available"],
+    }
+    refusals = sorted(key for key, passed in checks.items() if not passed)
+    eligible = not refusals
+    return {
+        "disposition": "stale_owner_legacy_cache_migration.v1",
+        "eligible": eligible,
+        "old": old_evidence,
+        "target": target_evidence,
+        "owner": {"path": owner["path"], "head": old_sha,
+                  "role_base": owner["role_base"], "role": "integration-owner",
+                  "authority": owner["authority"], "clean": owner["clean"],
+                  "detached": owner["detached"], "full_checkout": owner["full_checkout"]},
+        "finding_codes": finding_codes, "allowed_finding_codes": allowed_codes,
+        "checks": checks, "refusals": refusals,
+        "ancestry": "fast_forward" if ancestry else "diverged",
+        "submodules": gitlinks,
+        "expected_final": {"head": target_sha, "tree": target_evidence["tree"],
+                           "role_base": target_sha, "role": "integration-owner",
+                           "authority": policy["owner_role_authority"],
+                           "clean": True, "detached": True, "full_checkout": True,
+                           "gitlinks": gitlinks["target"]},
+    }
+
+
 def repair_plan(controller: Path) -> dict[str, Any]:
     controller = exact_root(controller, "controller")
     policy, task_policy, policy_path = load_policy(controller)
@@ -1261,6 +1404,13 @@ def repair_plan(controller: Path) -> dict[str, Any]:
     blockers: list[str] = []
     target_sha = status["target"]["sha"]
     owner_path = owner["path"] if owner else None
+    migration = stale_owner_cache_migration(status, repository, policy)
+    migration_eligible = bool(migration and migration["eligible"])
+    if migration and not migration_eligible:
+        blockers.extend(code for code in migration["finding_codes"]
+                        if code not in migration["allowed_finding_codes"])
+        blockers.extend(f"stale_owner_migration:{reason}"
+                        for reason in migration["refusals"])
     attached_owner_repairable = bool(
         owner and not owner["detached"] and owner["clean"] and owner["full_checkout"]
         and owner["head"] == target_sha and owner["role_base"] == target_sha
@@ -1307,6 +1457,9 @@ def repair_plan(controller: Path) -> dict[str, Any]:
                             "role": identity["role"], "authority": identity["authority"]})
     ignored = {"target_checked_out", "integration_owner_stale",
                "integration_owner_role_base_stale"}
+    if migration_eligible:
+        ignored.update({"legacy_checkout_local_version_cache_writer",
+                        "tracked_worktree_version_cache"})
     if attached_owner_repairable:
         ignored.add("integration_owner_attached")
     blockers.extend(row["code"] for row in status["findings"]
@@ -1318,7 +1471,8 @@ def repair_plan(controller: Path) -> dict[str, Any]:
             "policy": str(policy_path), "policy_sha256": hashlib.sha256(
                 policy_path.read_bytes()).hexdigest(), "target": status["target"],
             "registered_owner": status["integration"]["registered_path"],
-            "owner": owner, "actions": actions, "blockers": sorted(set(blockers))}
+            "owner": owner, "migration": migration,
+            "actions": actions, "blockers": sorted(set(blockers))}
     return {**core, "plan_sha256": json_digest(core)}
 
 
@@ -1366,7 +1520,13 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
             locked = repair_plan(controller)
             if locked["plan_sha256"] != current["plan_sha256"]:
                 raise IntegrationError("repair plan identity drifted while acquiring target lock")
+            migration = locked.get("migration")
+            migration_eligible = bool(migration and migration.get("eligible"))
+            deferred_role_base: dict[str, Any] | None = None
             for action in locked["actions"]:
+                if migration_eligible and action["kind"] == "advance_role_base":
+                    deferred_role_base = action
+                    continue
                 if action["kind"] == "detach_target_holder":
                     root = Path(action["path"])
                     git(root, "switch", "--detach", action["head"])
@@ -1382,11 +1542,54 @@ def repair(controller: Path, *, dry_run: bool, apply: Path | None) -> tuple[dict
                 reference = write_receipt(result_path, result)
             owner = Path(current["registered_owner"])
             git(owner, "submodule", "sync", "--recursive")
-            git(owner, "submodule", "update", "--init", "--recursive", "--checkout")
+            update_args = ["submodule", "update", "--init", "--recursive", "--checkout"]
+            if migration_eligible:
+                update_args.append("--no-fetch")
+            git(owner, *update_args)
+            if migration_eligible:
+                observed_links = sorted(
+                    ({"path": row["path"], "sha": row["sha"]}
+                     for row in submodule_state(owner)), key=lambda row: row["path"])
+                if observed_links != migration["expected_final"]["gitlinks"]:
+                    raise IntegrationError("receipt-bound target submodule readback mismatch")
+                result["phases"].append({"kind": "hydrate_target_submodules_no_fetch",
+                                         "status": "complete",
+                                         "gitlinks": observed_links})
+                reference = write_receipt(result_path, result)
+            if deferred_role_base:
+                advance_owner_role_base(owner, deferred_role_base["before"],
+                                        deferred_role_base["after"])
+                result["phases"].append({**deferred_role_base, "status": "complete"})
+                reference = write_receipt(result_path, result)
             after = status_payload(controller)
             if not after["ready"]:
                 raise IntegrationError("repair verification did not reach ready state")
-            result.update({"outcome": "completed", "status": after})
+            final_readback = None
+            if migration_eligible:
+                final_owner = after["integration"]["owner"] or {}
+                final_readback = {
+                    "head": final_owner.get("head"),
+                    "tree": commit_tree(repository, final_owner.get("head", "")),
+                    "role_base": final_owner.get("role_base"),
+                    "role": worktree_config(owner, "juno.workspace.role"),
+                    "authority": final_owner.get("authority"),
+                    "clean": final_owner.get("clean"), "detached": final_owner.get("detached"),
+                    "full_checkout": final_owner.get("full_checkout"),
+                    "gitlinks": sorted(
+                        ({"path": row["path"], "sha": row["sha"]}
+                         for row in final_owner.get("submodules", [])),
+                        key=lambda row: row["path"]),
+                    "legacy_findings": sorted(row["code"] for row in after["findings"]
+                                              if row["code"] in {
+                        "legacy_checkout_local_version_cache_writer",
+                        "tracked_worktree_version_cache"}),
+                    "ready": after["ready"],
+                }
+                expected = {**migration["expected_final"], "legacy_findings": [], "ready": True}
+                if final_readback != expected:
+                    raise IntegrationError("stale-owner migration final readback mismatch")
+            result.update({"outcome": "completed", "status": after,
+                           "final_readback": final_readback})
             reference = write_receipt(result_path, result)
             return {**result, "receipt": reference}, 0
     except (IntegrationError, task_workspace.TaskWorkspaceError,

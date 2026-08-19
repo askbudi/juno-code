@@ -86,6 +86,16 @@ describe('integration workspace CLI', () => {
     expect(invoke).toHaveBeenLastCalledWith('push', {});
   });
 
+  it('keeps stale-owner migration inside receipt-bound repair with no bypass mode', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureIntegrationCommand(program, invoke);
+    await expect(program.parseAsync([
+      'node', 'yy', 'integration', 'repair', '--migrate-stale-owner',
+    ])).rejects.toThrow('unknown option');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('keeps bare repair invalid and rejects combined push modes', async () => {
     const invoke = vi.fn(async () => undefined);
     const repair = new Command().exitOverride().configureOutput({ writeOut: () => undefined });

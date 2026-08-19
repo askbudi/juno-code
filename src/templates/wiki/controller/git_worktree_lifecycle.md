@@ -146,6 +146,16 @@ receipt-bound runtime transition may replace the writer only when its bytes
 match immutable target history. A tracked cache is never restored or deleted
 automatically: remove it in a normal product task, validate the protected
 worktrees byte-stable, and deliver that commit through `yy task`/`yy merge`.
+If that delivered target leaves a clean, detached, full registered owner stale
+with only these two findings, `yy integration repair --dry-run` may emit the
+narrow `stale_owner_legacy_cache_migration.v1` disposition. It binds the old
+HEAD/tree/role base, exact target SHA/tree, finding-removal evidence, protected
+authority, and a topology-preserving recursive gitlink closure. Gitlink SHAs may
+advance, but every target object must already exist locally. Apply revalidates
+the receipt under the target lock, advances only the bound owner and role base,
+hydrates with `--no-fetch`, and requires an exact clean final readback. Any other
+finding, dirt, topology change, unavailable object, authority mismatch, or ref
+drift refuses; this is not a generic blocker bypass.
 
 ## Integration owner lifecycle
 

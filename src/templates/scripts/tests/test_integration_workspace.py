@@ -125,6 +125,84 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         git(self.repo, "worktree", "remove", str(worktree))
         return value
 
+    def legacy_cache_migration_fixture(
+            self, *, retain_writer: bool = False,
+            retain_cache: bool = False) -> tuple[str, str, Path]:
+        source = self.root / f"legacy-migration-{len(list(self.root.glob('legacy-migration-*')))}"
+        git(self.repo, "worktree", "add", str(source), "product")
+        script = source / runtime.INSTALL_REQUIREMENTS_PATH
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"\n')
+        cache = source / runtime.VERSION_CACHE_PATH
+        cache.write_text("checked_at=1\n")
+        git(source, "add", runtime.INSTALL_REQUIREMENTS_PATH, runtime.VERSION_CACHE_PATH)
+        git(source, "commit", "-m", "legacy checkout cache")
+        old = git(source, "rev-parse", "HEAD")
+        git(self.owner, "switch", "--detach", old)
+        git(self.owner, "config", "--worktree", "juno.workspace.roleBase", old)
+        if not retain_writer:
+            script.write_text("VERSION_CHECK_CACHE_DIR=/external/cache\n")
+        if not retain_cache:
+            git(source, "rm", runtime.VERSION_CACHE_PATH)
+        git(source, "add", runtime.INSTALL_REQUIREMENTS_PATH)
+        git(source, "commit", "-m", "remove checkout cache")
+        target = git(source, "rev-parse", "HEAD")
+        git(source, "switch", "--detach", target)
+        runtime.register(self.controller, self.owner)
+        return old, target, source
+
+    def legacy_cache_submodule_migration_fixture(
+            self, *, admit_target_object: bool) -> tuple[str, str, str]:
+        child_remote = self.root / "migration-child.git"
+        child_source = self.root / "migration-child-source"
+        git(self.root, "init", "--bare", str(child_remote))
+        git(self.root, "init", "-b", "main", str(child_source))
+        git(child_source, "config", "user.email", "test@example.com")
+        git(child_source, "config", "user.name", "Test")
+        (child_source / "value.txt").write_text("old\n")
+        git(child_source, "add", "value.txt")
+        git(child_source, "commit", "-m", "child old")
+        child_old = git(child_source, "rev-parse", "HEAD")
+        git(child_source, "remote", "add", "origin", str(child_remote))
+        git(child_source, "push", "-u", "origin", "main")
+        git(child_remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+        source = self.root / "legacy-submodule-migration"
+        git(self.repo, "worktree", "add", str(source), "product")
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(source),
+             "submodule", "add", str(child_remote), "vendor/child"], source)
+        script = source / runtime.INSTALL_REQUIREMENTS_PATH
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            'VERSION_CHECK_CACHE_DIR="${VERSION_CHECK_CACHE_DIR:-${PWD}/.juno_task}"\n')
+        (source / runtime.VERSION_CACHE_PATH).write_text("checked_at=1\n")
+        git(source, "add", ".")
+        git(source, "commit", "-m", "legacy cache with child")
+        old = git(source, "rev-parse", "HEAD")
+        git(self.owner, "switch", "--detach", old)
+        run(["git", "-c", "protocol.file.allow=always", "-C", str(self.owner),
+             "submodule", "update", "--init", "--recursive"], self.owner)
+        git(self.owner, "config", "--worktree", "juno.workspace.roleBase", old)
+
+        (child_source / "value.txt").write_text("target\n")
+        git(child_source, "commit", "-am", "child target")
+        child_target = git(child_source, "rev-parse", "HEAD")
+        git(source / "vendor/child", "fetch", str(child_source), child_target)
+        git(source / "vendor/child", "checkout", "--detach", child_target)
+        git(source, "add", "vendor/child")
+        script.write_text("VERSION_CHECK_CACHE_DIR=/external/cache\n")
+        git(source, "rm", runtime.VERSION_CACHE_PATH)
+        git(source, "add", runtime.INSTALL_REQUIREMENTS_PATH)
+        git(source, "commit", "-m", "advance child and remove checkout cache")
+        target = git(source, "rev-parse", "HEAD")
+        git(source, "switch", "--detach", target)
+        if admit_target_object:
+            git(self.owner / "vendor/child", "fetch", str(child_source), child_target)
+        runtime.register(self.controller, self.owner)
+        self.assertEqual(git(self.owner / "vendor/child", "rev-parse", "HEAD"), child_old)
+        return old, target, child_target
+
     def unpublished_submodule_fixture(self) -> tuple[Path, str, str, str]:
         child_remote = self.root / "child.git"
         child_source = self.root / "child-source"
@@ -431,6 +509,132 @@ class IntegrationWorkspaceTests(unittest.TestCase):
             self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
         self.assertEqual(apply_code, 2)
         self.assertIn("identity drifted", applied["error"])
+
+    def test_repair_migrates_clean_stale_owner_when_exact_target_removes_legacy_cache(self) -> None:
+        old, target, _ = self.legacy_cache_migration_fixture()
+
+        planned, plan_code = runtime.repair(self.controller, dry_run=True, apply=None)
+
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        migration = planned["migration"]
+        self.assertTrue(migration["eligible"], migration)
+        self.assertEqual(migration["old"]["commit"], old)
+        self.assertEqual(migration["target"]["commit"], target)
+        self.assertTrue(migration["old"]["legacy_writer"]["present"])
+        self.assertTrue(migration["old"]["tracked_cache"]["present"])
+        self.assertFalse(migration["target"]["legacy_writer"]["present"])
+        self.assertFalse(migration["target"]["tracked_cache"]["present"])
+        applied, apply_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertEqual(applied["final_readback"], {
+            "head": target, "tree": git(self.repo, "rev-parse", f"{target}^{{tree}}"),
+            "role_base": target, "role": "integration-owner",
+            "authority": runtime.AUTHORITY, "clean": True, "detached": True,
+            "full_checkout": True, "gitlinks": [], "legacy_findings": [], "ready": True,
+        })
+        self.assertEqual(git(self.owner, "status", "--porcelain"), "")
+        self.assertEqual(git(self.owner, "config", "--worktree", "--get",
+                             "juno.workspace.roleBase"), target)
+
+    def test_repair_legacy_cache_migration_refuses_stale_owner_or_target_receipt(self) -> None:
+        old, target, _ = self.legacy_cache_migration_fixture()
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual(code, 0, planned)
+        git(self.owner, "switch", "--detach", f"{old}^")
+        changed, changed_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual(changed_code, 2)
+        self.assertIn("identity drifted", changed["error"])
+
+        git(self.owner, "switch", "--detach", old)
+        tree = git(self.repo, "rev-parse", f"{target}^{{tree}}")
+        moved = git(self.repo, "commit-tree", tree, "-p", target, "-m", "target drift")
+        git(self.repo, "update-ref", "refs/heads/product", moved, target)
+        drifted, drifted_code = runtime.repair(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual(drifted_code, 2)
+        self.assertIn("identity drifted", drifted["error"])
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), old)
+
+    def test_repair_legacy_cache_migration_refuses_dirty_owner(self) -> None:
+        self.legacy_cache_migration_fixture()
+        (self.owner / "src/base.txt").write_text("dirty\n")
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((code, planned["outcome"]), (2, "refused"), planned)
+        self.assertIn("canonical_integration_owner_not_safe", planned["blockers"])
+        self.assertFalse(planned["migration"]["eligible"])
+
+    def test_repair_legacy_cache_migration_requires_target_to_remove_each_finding(self) -> None:
+        for retain_writer, retain_cache, expected in (
+                (True, False, "legacy_checkout_local_version_cache_writer"),
+                (False, True, "tracked_worktree_version_cache")):
+            with self.subTest(expected=expected):
+                # Each subcase needs its own real-Git fixture because the product ref advances.
+                temporary = IntegrationWorkspaceTests(methodName="runTest")
+                temporary.setUp()
+                try:
+                    temporary.legacy_cache_migration_fixture(
+                        retain_writer=retain_writer, retain_cache=retain_cache)
+                    planned, code = runtime.repair(
+                        temporary.controller, dry_run=True, apply=None)
+                    self.assertEqual((code, planned["outcome"]), (2, "refused"), planned)
+                    self.assertFalse(planned["migration"]["eligible"])
+                    self.assertIn(expected, planned["blockers"])
+                finally:
+                    temporary.tearDown()
+
+    def test_repair_legacy_cache_migration_hydrates_advanced_local_gitlink_without_fetch(self) -> None:
+        _, target, child_target = self.legacy_cache_submodule_migration_fixture(
+            admit_target_object=True)
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual(planned["migration"]["submodules"]["target"], [{
+            "path": "vendor/child", "sha": child_target,
+        }])
+        with mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}, clear=False):
+            applied, apply_code = runtime.repair(
+                self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), target)
+        self.assertEqual(git(self.owner / "vendor/child", "rev-parse", "HEAD"), child_target)
+        self.assertEqual(applied["final_readback"]["gitlinks"], [{
+            "path": "vendor/child", "sha": child_target,
+        }])
+
+    def test_repair_legacy_cache_migration_refuses_unavailable_target_gitlink(self) -> None:
+        old, _, _ = self.legacy_cache_submodule_migration_fixture(
+            admit_target_object=False)
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((code, planned["outcome"]), (2, "refused"), planned)
+        self.assertFalse(planned["migration"]["eligible"])
+        self.assertFalse(planned["migration"]["submodules"]["local_objects_available"])
+        self.assertEqual(git(self.owner, "rev-parse", "HEAD"), old)
+
+    def test_repair_legacy_cache_migration_refuses_additional_owner_finding(self) -> None:
+        old, _, _ = self.legacy_cache_migration_fixture()
+        extra = self.root / "extra-protected-owner"
+        git(self.repo, "worktree", "add", "--detach", str(extra), old)
+        git(extra, "config", "--worktree", "juno.workspace.role", "integration-owner")
+        git(extra, "config", "--worktree", "juno.workspace.roleAuthority", runtime.AUTHORITY)
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((code, planned["outcome"]), (2, "refused"), planned)
+        self.assertFalse(planned["migration"]["eligible"])
+        self.assertIn("integration_owner_extra", planned["blockers"])
+
+    def test_repair_legacy_cache_migration_refuses_role_or_authority_mismatch(self) -> None:
+        self.legacy_cache_migration_fixture()
+        git(self.owner, "config", "--worktree", "juno.workspace.roleAuthority", "unprotected")
+        planned, code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((code, planned["outcome"]), (2, "refused"), planned)
+        self.assertIn("integration_owner_wrong_authority", planned["blockers"])
+        self.assertFalse(planned["migration"]["eligible"])
+
+        git(self.owner, "config", "--worktree", "juno.workspace.roleAuthority", runtime.AUTHORITY)
+        git(self.owner, "config", "--worktree", "juno.workspace.role", "task")
+        role_plan, role_code = runtime.repair(self.controller, dry_run=True, apply=None)
+        self.assertEqual((role_code, role_plan["outcome"]), (2, "refused"), role_plan)
+        self.assertIn("canonical_integration_owner_unavailable", role_plan["blockers"])
 
     def test_repair_clears_only_a_stale_legacy_integration_registration(self) -> None:
         runtime.register(self.controller, self.owner)

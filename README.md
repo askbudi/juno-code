@@ -296,8 +296,13 @@ yy integration push --apply /absolute/path/to/push-plan.json
 ```
 
 Apply revalidates the plan digest, controller/owner/target identity, exact SHAs,
-and remote readiness under a lock. Repair does not stash, reset, force, rewind,
-or discard dirty work. Push publishes submodules child-first and the root last,
+and remote readiness under a lock. When a delivered target removes both the
+legacy checkout-local version-cache writer and tracked cache, repair can advance
+a clean stale protected owner only through its explicit receipt disposition. It
+requires those to be the only blockers, preserves recursive submodule paths,
+permits receipt-bound gitlink advances only from locally available objects, and
+hydrates with no fetch before exact final readback. Repair does not stash, reset,
+force, rewind, or discard dirty work. Push publishes submodules child-first and the root last,
 records every phase, refuses a remote race, and supports idempotent retry from
 truthful partial-failure receipts. A dry-run authorizes no mutation, and repair
 authority does not authorize push. Remote branch/tag push, npm/PyPI publication,
