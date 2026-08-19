@@ -113,7 +113,7 @@ try {
     throw new Error('Packed yy --help does not list benchmark');
   }
 
-  for (const args of [['--version'], ['--help']]) {
+  for (const args of [['--version'], ['--help'], ['plan', '--help'], ['run', '--help'], ['recover', '--help'], ['rejudge', '--help']]) {
     const standalone = run(benchmark, args, { cwd: fixtureRoot, env });
     const delegated = run(yy, ['benchmark', ...args], { cwd: fixtureRoot, env });
     if (standalone.status !== delegated.status ||
@@ -121,9 +121,76 @@ try {
       throw new Error(`Packed delegate differs from standalone for ${args.join(' ')}: ` +
         JSON.stringify({ standalone, delegated }, null, 2));
     }
+    if (args.length === 1 && args[0] === '--help') {
+      for (const command of ['plan', 'run', 'recover', 'rejudge']) {
+        if (!new RegExp(`(^|\\s)${command}(\\s|$)`, 'm').test(standalone.stdout)) throw new Error(`Packed help omits workflow command ${command}`);
+      }
+      if (/(^|\s)daily-ops(\s|$)/m.test(standalone.stdout)) throw new Error('Packed help must not expose a daily-ops command');
+    }
   }
   if (versionOutput(benchmark, ['--version'], { cwd: fixtureRoot, env }) !== requiredBenchmarkVersion) {
     throw new Error('Packed standalone version does not satisfy the exact Juno Code contract');
+  }
+
+  // Prove the packed standalone and yy delegate expose the same live generic
+  // workflow lifecycle through one exact reviewed boundary. This fixture is
+  // synthetic and zero-network; it validates dispatch, retained recovery, and
+  // governed rejudge without granting a product-specific command.
+  const workflowProject = join(fixtureRoot, 'workflow-live'); await mkdir(join(workflowProject, '.juno_task'), { recursive: true });
+  await writeFile(join(workflowProject, 'workflow.yaml'), 'schema_version: 2\nworkflow_id: packed-live\nsteps:\n  - id: analyze\n    command: [yy, pi, "Synthetic installed lifecycle"]\n');
+  await writeFile(join(workflowProject, 'policy.yaml'), JSON.stringify({
+    schema_version: 'juno_benchmark_workflow_policy.v1',
+    judge: { judge_id: 'packed-governed', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+    authorization: { authorization_id: 'packed-live', production: true, spend: true },
+    recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 }, redaction: { secret_patterns: [], retain_prompts: false },
+    steps: [{ step_id: 'analyze', scoring_id: 'packed-analyze', side_effect: 'production',
+      resources: [{ type: 'production', id: 'PACKED_SYNTHETIC', access: 'exclusive' }],
+      limits: { timeout_ms: 5000, max_usd: 1 }, authorization: 'production_and_spend', recovery: 'manual',
+      redaction: { patterns: [], retain_prompt: false } }],
+  }));
+  await writeFile(join(workflowProject, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol'] }));
+  await writeFile(join(workflowProject, 'juno-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1',
+    repository_id: 'packed-live', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol' } }));
+  run('git', ['init', '-b', 'fixture'], { cwd: workflowProject, env });
+  run('git', ['config', 'user.email', 'fixture@example.test'], { cwd: workflowProject, env });
+  run('git', ['config', 'user.name', 'Fixture'], { cwd: workflowProject, env });
+  run('git', ['add', 'workflow.yaml'], { cwd: workflowProject, env });
+  run('git', ['commit', '-m', 'fixture'], { cwd: workflowProject, env });
+  const boundaryPath = join(fixtureRoot, 'reviewed-workflow-boundary.mjs');
+  const boundarySource = `import { readFileSync } from 'node:fs';
+const operation = process.argv[2]; const payload = JSON.parse(readFileSync(3, 'utf8'));
+const input = operation === 'probe' ? payload : payload.invocation;
+let output;
+const terminal = () => ({ dispatch_id: input.dispatch_id, status: 'success', effect: 'completed', runner_run_id: 'packed-' + input.step_id,
+  observed_provider: input.provider, observed_model: input.model, evidence: { outer_session_id: 'outer-packed', nested_session_ids: ['nested-packed'],
+  started_at: '2026-08-12T00:00:00.000Z', ended_at: '2026-08-12T00:00:01.000Z', runtime_ms: 1000,
+  cost: { completeness: 'complete', usd: 0.5 }, candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
+  transcript: 'packed synthetic truth', artifacts: { result: 'ok' } } });
+if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_process_boundary.v1', providers: ['openai-codex'] };
+else if (operation === 'preflight') output = { ok: true };
+else if (operation === 'dispatch' || operation === 'resume') output = terminal();
+else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
+else if (operation === 'judge') output = { resolved: true, evidence: 'packed governed judgement' };
+else throw new Error('unsupported operation'); process.stdout.write(JSON.stringify(output));\n`;
+  await writeFile(boundaryPath, boundarySource);
+  const canonicalBoundary = await realpath(boundaryPath); const boundaryHash = sha256(boundarySource).slice(7);
+  const planArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--dry-run'];
+  const standalonePlan = run(benchmark, planArgs, { cwd: workflowProject, env });
+  const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env });
+  if (standalonePlan.stdout !== delegatedPlan.stdout || standalonePlan.stderr !== delegatedPlan.stderr) throw new Error('Packed live workflow plans differ');
+  await writeFile(join(workflowProject, 'plan.json'), standalonePlan.stdout);
+  const liveBase = { ...env, JUNO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
+  const standaloneLiveEnv = { ...liveBase, JUNO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-standalone') };
+  const delegatedLiveEnv = { ...liveBase, JUNO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-delegated') };
+  const liveOperations = [
+    ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
+    ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
+    ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--judge', ':sol'],
+  ];
+  for (const operation of liveOperations) {
+    const standalone = run(benchmark, operation, { cwd: workflowProject, env: standaloneLiveEnv });
+    const delegated = run(yy, ['benchmark', ...operation], { cwd: workflowProject, env: delegatedLiveEnv });
+    if (standalone.stdout !== delegated.stdout || standalone.stderr !== delegated.stderr) throw new Error(`Packed live ${operation[0]} differs from delegated execution`);
   }
   const installedEnvelopeEvidence = await verifyInstalledExecutionEnvelope({
     fixtureRoot, prefix, cleanEnvironment: env,
@@ -190,13 +257,25 @@ process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
   const api = await import(join(stagedBenchmarkRoot, 'dist/index.js'));
 
   const releaseCaseEvidencePath = join(fixtureRoot, 'release-case-evidence.json');
+  const vitestReleaseHarness = join(fixtureRoot, 'vitest-release-harness.cjs');
+  await writeFile(vitestReleaseHarness, String.raw`if (/(?:^|[\\/])vitest(?:\.mjs)?$/u.test(process.argv[1] ?? '')) {
+  process.argv.push('--testTimeout=60000', '--hookTimeout=60000');
+}
+`);
   const executeEvidence = (kind) => {
     const command = api.RELEASE_VERIFICATION_COMMANDS[kind];
     const executionEnv = {
       ...env,
       JUNO_BENCHMARK_RELEASE_SOURCE_TREE: gitTreeBefore,
       JUNO_BENCHMARK_RELEASE_COMMAND_HASH: api.canonicalHash(command),
-      ...(kind === 'coverage' ? { JUNO_BENCHMARK_RELEASE_CASE_EVIDENCE: releaseCaseEvidencePath } : {}),
+      VITEST_MAX_THREADS: '1',
+      VITEST_MIN_THREADS: '1',
+      VITEST_MAX_FORKS: '1',
+      VITEST_MIN_FORKS: '1',
+      ...(kind === 'coverage' ? {
+        JUNO_BENCHMARK_RELEASE_CASE_EVIDENCE: releaseCaseEvidencePath,
+        NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${vitestReleaseHarness}`.trim(),
+      } : {}),
     };
     const result = run(command.executable, [...command.arguments], { cwd: join(sourceRoot, command.cwd), env: executionEnv, timeout: command.timeout_ms });
     return { command, result };

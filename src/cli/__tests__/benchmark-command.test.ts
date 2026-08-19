@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execa } from 'execa';
 import { afterEach, describe, expect, it } from 'vitest';
 import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
+import packageJson from '../../../package.json';
 import { inspect, runSyntheticLeakageCanaries } from '../../../scripts/scan-benchmark-release-artifacts.mjs';
 import {
   BENCHMARK_VERSION_RANGE,
@@ -22,6 +23,7 @@ const requiredLeakageClasses = [
   'canonical-controller-route', 'host-paths', 'candidate-git-metadata',
 ];
 const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+const requiredBenchmarkVersion = packageJson.junoBenchmark.version;
 
 useSharedHeavyWorkloadLock('benchmark clean-source release artifact smoke');
 
@@ -37,7 +39,7 @@ const fs = require('node:fs');
 if (process.argv[2] === '--version') {
   if (process.env.FAKE_VERSION_WAIT) setInterval(() => {}, 1000);
   else {
-    process.stdout.write(process.env.FAKE_BENCHMARK_VERSION || 'juno-benchmark 0.1.0');
+    process.stdout.write(process.env.FAKE_BENCHMARK_VERSION || 'juno-benchmark ${requiredBenchmarkVersion}');
     process.exit(Number(process.env.FAKE_VERSION_EXIT || 0));
   }
 }
@@ -165,7 +167,7 @@ describe('benchmark delegate', () => {
     }
   });
 
-  it.each(['juno-benchmark 0.1.1', 'juno-benchmark 1.0.0', 'juno-benchmark 0.1.0-alpha.1'])(
+  it.each(['juno-benchmark 0.1.0', 'juno-benchmark 1.0.0', 'juno-benchmark 0.1.1-alpha.1'])(
     'refuses incompatible version %s before forwarding user arguments',
     async (reportedVersion) => {
       const { root, bin, record } = await fixture();

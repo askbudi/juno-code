@@ -10,7 +10,7 @@ const digest = (value) => `sha256:${createHash('sha256').update(value).digest('h
 function attempt(id, identity, versions) {
   const fixed = digest('installed-pair-fixture');
   return {
-    schema_version: 'juno_benchmark_attempt.v1', attempt_id: id, experiment_id: 'installed-pair',
+    schema_version: 'juno_benchmark_attempt.v1', attempt_id: id, experiment_id: fixed,
     case_input_hash: fixed, snapshot_hash: fixed, prompt_hash: fixed, agent: 'juno-code',
     provider: identity.provider, model: identity.exact, tool_policy_hash: fixed, budget_hash: fixed,
     package_version: versions.benchmark, juno_version: versions.juno, session_topology: 'fresh',
@@ -62,6 +62,15 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
     JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata, NO_COLOR: '1', CI: '1', OFFLINE_CALLS: calls,
   };
   const runner = api.createJunoRunner({ executable: process.execPath, leadingArguments: [installedJunoEntry], versionTimeoutMs: 30_000 });
+  const spend = (selected) => {
+    const grant = { schema_version: 'juno_benchmark_task_authorization.v1', plan_id: selected.experiment_id,
+      authorization_id: 'installed-envelope', models: [selected.model], expires_at: '2099-01-01T00:00:00.000Z',
+      currency: 'USD', aggregate_max_usd: 20, per_attempt_max_usd: 20 };
+    return { schema_version: 'juno_benchmark_task_spend_dispatch.v1', authorization_hash: api.canonicalHash(grant),
+      plan_id: selected.experiment_id, authorization_id: grant.authorization_id, model: selected.model, provider: selected.provider,
+      attempt: 1, currency: 'USD', attempt_max_usd: 20, aggregate_max_usd: 20, reserved_before_usd: 0,
+      remaining_before_usd: 20, expires_at: grant.expires_at, grant };
+  };
   const identities = [
     { name: 'Sol', provider: 'openai-codex', model: 'gpt-5.6-sol', exact: 'openai-codex/gpt-5.6-sol', cost: '1.25', expectedCost: { completeness: 'complete', usd: 1.25 } },
     { name: 'Mini', provider: 'openai-codex', model: 'gpt-5.6-terra', exact: 'openai-codex/gpt-5.6-terra', cost: '0', expectedCost: { completeness: 'complete', usd: 0 } },
@@ -74,7 +83,8 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
     const repository = await prepareProject(identity.name.toLowerCase());
     const evidence = await runner({ attempt: selected, repository, prompt: 'offline candidate fixture',
       environment: { ...baseEnvironment, JUNO_CODE_SESSION_METADATA_DIRECTORY: join(metadata, identity.name.toLowerCase()),
-        OFFLINE_PROVIDER: identity.provider, OFFLINE_MODEL: identity.model, OFFLINE_COST: identity.cost }, timeoutMs: 30_000 });
+        OFFLINE_PROVIDER: identity.provider, OFFLINE_MODEL: identity.model, OFFLINE_COST: identity.cost }, timeoutMs: 30_000,
+      spendAuthorization: spend(selected) });
     const patchHash = index === identities.length - 1 ? digest('successful installed patch') : null;
     const observed = api.reconcileJunoTelemetry({ ...evidence, patchHash });
     if (!observed.candidateSucceeded || observed.provider !== identity.provider || observed.model !== identity.model ||
@@ -97,7 +107,7 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
   const failedAttempt = attempt('installed-failure', failedIdentity, versions); const failureProject = await prepareProject('failure');
   const failedEvidence = await runner({ attempt: failedAttempt, repository: failureProject, prompt: 'offline failure fixture',
     environment: { ...baseEnvironment, JUNO_CODE_SESSION_METADATA_DIRECTORY: join(metadata, 'failure'), OFFLINE_PROVIDER: failedIdentity.provider, OFFLINE_MODEL: failedIdentity.model,
-      OFFLINE_COST: 'missing', OFFLINE_FAILURE: '1' }, timeoutMs: 30_000 });
+      OFFLINE_COST: 'missing', OFFLINE_FAILURE: '1' }, timeoutMs: 30_000, spendAuthorization: spend(failedAttempt) });
   const failed = api.reconcileJunoTelemetry(failedEvidence);
   if (failed.candidateSucceeded || failed.result.resolved || failed.result.terminal_class !== 'model_failure' || failed.result.cost.completeness !== 'unavailable') {
     throw new Error(`Installed failure envelope was misclassified: ${JSON.stringify(failed)}`);
@@ -161,11 +171,13 @@ console.log(JSON.stringify({schema_version:'juno_execution_envelope.v1',status:'
       credential: { kind: 'environment', name: credentialName } });
     // Deliberately replace the incorrect digest above before any credential resolution is attempted.
     let badDigestRejected = false;
-    try { await authRunner.preflight?.({ attempt: reconciled[0].selected, repository: authProject, prompt: 'offline auth', environment: baseEnvironment, timeoutMs: 10_000 }); }
+    try { await authRunner.preflight?.({ attempt: reconciled[0].selected, repository: authProject, prompt: 'offline auth', environment: baseEnvironment,
+      timeoutMs: 10_000, spendAuthorization: spend(reconciled[0].selected) }); }
     catch { badDigestRejected = true; }
     if (!badDigestRejected) throw new Error('Authenticated launcher accepted unbound bytes');
     const boundRunner = api.createAuthenticatedJunoRunner({ executable: launcherPath, sha256: digest(launcherSource).slice(7), provider: 'openai-codex', credential: { kind: 'environment', name: credentialName } });
-    const request = { attempt: reconciled[0].selected, repository: authProject, prompt: 'offline auth', environment: baseEnvironment, timeoutMs: 10_000 };
+    const request = { attempt: reconciled[0].selected, repository: authProject, prompt: 'offline auth', environment: baseEnvironment,
+      timeoutMs: 10_000, spendAuthorization: spend(reconciled[0].selected) };
     await boundRunner.preflight?.(request); const authEvidence = await boundRunner(request); const authObserved = api.reconcileJunoTelemetry(authEvidence);
     if (!authObserved.candidateSucceeded || JSON.stringify(authEvidence).includes(process.env[credentialName])) throw new Error(`Installed authenticated launcher contract failed: ${JSON.stringify({ authObserved, authEvidence })}`);
   } finally {
