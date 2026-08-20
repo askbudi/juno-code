@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fullConfig, { MANAGED_INSTALL_POOL_MATCH_GLOBS } from '../../../vitest.config.js';
 import fastConfig from '../../../vitest.fast.config.js';
 import { runBoundedTestProcess } from '../../test-utils/bounded-process.js';
+import { contentionBudgetMs } from '../../test-utils/contention-budget.js';
 import {
   acquireTestResourceLock,
   DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS,
@@ -84,8 +85,10 @@ describe('cross-language heavy test resource lock', () => {
     const pending = acquireTestResourceLock('concurrent worktree', {
       lockPath,
       // Scaled deterministic contention: wait past the old local cap while the
-      // policy budget remains independently bounded.
-      timeoutMs: 1_000,
+      // policy budget remains independently bounded. The budget is
+      // contention-aware so a starved event loop cannot expire the successor
+      // before the deterministic release point.
+      timeoutMs: contentionBudgetMs(1_000),
       pollMs: 5,
       diagnosticIntervalMs: 50,
       onDiagnostic: (message) => diagnostics.push(message),

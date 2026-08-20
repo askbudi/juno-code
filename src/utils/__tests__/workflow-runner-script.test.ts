@@ -4,11 +4,14 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { contentionBudgetMs } from '../../test-utils/contention-budget.js';
 
 const repoRoot = path.resolve(process.cwd(), '..');
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/workflow_runner.sh');
 const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner.sh');
-const WORKFLOW_CHILD_TIMEOUT_MS = 30_000;
+// Workflow children spawn real interpreters; their bounded operation budget must
+// tolerate shared-host contention or every lane fails together under load.
+const WORKFLOW_CHILD_TIMEOUT_MS = contentionBudgetMs(120_000);
 let workflowFixtureController: string | undefined;
 
 type FixtureDiscoveryResult = {
@@ -97,7 +100,7 @@ function discoverFixturePython(start: string, spawnFixture: FixtureSpawn): Fixtu
 
 // This process-heavy file runs real Python/Git subprocesses. Keep the larger
 // budget file-scoped while every child remains independently bounded above.
-vi.setConfig({ testTimeout: 120_000, hookTimeout: 30_000 });
+vi.setConfig({ testTimeout: contentionBudgetMs(300_000), hookTimeout: contentionBudgetMs(60_000) });
 afterAll(() => vi.resetConfig());
 
 function runWorkflowScript(scriptPath: string, args: string[], input?: string, env?: NodeJS.ProcessEnv) {
@@ -981,7 +984,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     const undeclaredProducerDigest = runWorkflow(['lint', '--workflow', workflowPath]);
     expect(undeclaredProducerDigest.status).not.toBe(0);
     expect(undeclaredProducerDigest.stderr).toMatch(/must include producer_step_digest/);
-  }, 120_000);
+  }, contentionBudgetMs(300_000));
 
   it('rejects old local-integration start, resume, recovery, and amendment while doctor remains readable', async () => {
     const workflowPath = path.join(testDir, 'retired-local-integration.json');
@@ -1337,7 +1340,7 @@ print('PASS')
     });
     expect(recovered.status).not.toBe(0);
     expect(recovered.stderr).toMatch(/candidate_read_only checkpoint\[candidate_review\] artifact hash mismatch/);
-  }, 120_000);
+  }, contentionBudgetMs(300_000));
 
   it('warns when a runtime copy differs from the installed workflow template', async () => {
     const templateDir = path.join(testDir, 'templates');

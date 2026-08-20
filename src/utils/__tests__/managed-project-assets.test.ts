@@ -16,6 +16,7 @@ import {
   MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
   useSharedHeavyWorkloadLock,
 } from '../../test-utils/resource-lock.js';
+import { contentionBudgetMs } from '../../test-utils/contention-budget.js';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -521,8 +522,9 @@ describe('ManagedProjectAssets', {
           PYTHONPYCACHEPREFIX: '/tmp/juno-managed-assets-pycache',
         },
         // The metadata-controller fixture is CPU-heavy on a loaded host. This
-        // bounded operation budget starts after the cross-worktree lease wait.
-        timeoutMs: 300_000,
+        // bounded operation budget starts after the cross-worktree lease wait
+        // and scales with ambient contention so admission stays deterministic.
+        timeoutMs: contentionBudgetMs(300_000),
         terminationGraceMs: 1_000,
       });
       expect(

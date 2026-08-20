@@ -16,6 +16,7 @@ import {
   MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
   useSharedHeavyWorkloadLock,
 } from '../../test-utils/resource-lock.js';
+import { contentionBudgetMs } from '../../test-utils/contention-budget.js';
 
 describe('ScriptInstaller', {
   timeout: MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
@@ -311,7 +312,7 @@ describe('ScriptInstaller', {
       const installed = await ScriptInstaller.autoInstallMissing(testDir, true);
       expect(installed).toBe(true);
       expect(await fs.pathExists(path.join(junoTaskDir, 'scripts'))).toBe(true);
-    }, 60_000);
+    }, contentionBudgetMs(180_000));
   });
 
   describe('getScriptPath', () => {
@@ -671,7 +672,9 @@ describe('ScriptInstaller', {
         {
           cwd: fixtureController,
           encoding: 'utf8',
-          timeout: 30000,
+          // Managed runner scripts spawn interpreters and real Git fixtures;
+          // their bounded subprocess budget must tolerate shared-host load.
+          timeout: contentionBudgetMs(120_000),
           env: {
             ...process.env,
             JUNO_TASK_ROOT: fixtureController,
@@ -721,7 +724,7 @@ describe('ScriptInstaller', {
         {
           cwd: fixtureController,
           encoding: 'utf8',
-          timeout: 30000,
+          timeout: contentionBudgetMs(120_000),
           env: {
             ...process.env,
             JUNO_TASK_ROOT: fixtureController,
@@ -1142,7 +1145,7 @@ describe('ScriptInstaller', {
       );
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git-flow.sh'))).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git_flow.py'))).toBe(true);
-    }, 60_000);
+    }, contentionBudgetMs(180_000));
 
     it('preserves an unrelated root Git-flow script', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task'));
