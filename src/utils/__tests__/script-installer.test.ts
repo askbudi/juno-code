@@ -231,6 +231,7 @@ describe('ScriptInstaller', {
 
       const newlyManaged = await ScriptInstaller.getMissingScripts(testDir);
       expect(newlyManaged.sort()).toEqual([
+        'await_blocker.py',
         'controller_registration.py',
         'integration_workspace.py',
         'invocation_correlation.py',
@@ -369,6 +370,7 @@ describe('ScriptInstaller', {
         { name: 'wiki_lint.sh', installed: false },
         { name: 'tests/test_managed_agent_runner.py', installed: false },
         { name: 'git_index_lock.py', installed: false },
+        { name: 'await_blocker.py', installed: false },
         { name: 'controller_checkpoint.py', installed: false },
         { name: 'managed_agent_runner.py', installed: false },
         { name: 'invocation_correlation.py', installed: false },
@@ -576,6 +578,10 @@ describe('ScriptInstaller', {
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'worktree_hydration.py'), '#!/usr/bin/env python3\n');
 
+      await fs.writeFile(
+        path.join(scriptsDir, 'await_blocker.py'),
+        '#!/usr/bin/env python3\nprint("await")',
+      );
       const list = await ScriptInstaller.listRequiredScripts(testDir);
 
       expect(list).toEqual([
@@ -621,6 +627,7 @@ describe('ScriptInstaller', {
         { name: 'wiki_lint.sh', installed: true },
         { name: 'tests/test_managed_agent_runner.py', installed: true },
         { name: 'git_index_lock.py', installed: true },
+        { name: 'await_blocker.py', installed: true },
         { name: 'controller_checkpoint.py', installed: true },
         { name: 'managed_agent_runner.py', installed: true },
         { name: 'invocation_correlation.py', installed: true },

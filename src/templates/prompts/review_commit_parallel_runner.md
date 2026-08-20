@@ -9,6 +9,7 @@ Tip: `{{ tip_sha }}`
 Requirements checklist: `{{ checklist_path }}`
 Consolidated prior findings: `{{ findings_summary_path }}`
 Validation evidence: `{{ validation_evidence_path }}`
+Preimplementation acceptance contract: `{{ acceptance_contract }}`
 
 ## Complete requirements bundle
 

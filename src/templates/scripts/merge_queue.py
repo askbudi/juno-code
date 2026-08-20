@@ -43,7 +43,8 @@ RISK_STATE_SCHEMA = "juno_merge_queue_risk_state.v1"
 REVIEW_PROMPT_FIELDS = {
     "task_id", "review_kind", "reviewer_index", "repository", "base_sha",
     "tip_sha", "checklist_path", "findings_summary_path",
-    "validation_evidence_path", "requirements_bundle", "findings_summary",
+    "validation_evidence_path", "acceptance_contract", "requirements_bundle",
+    "findings_summary",
 }
 REVIEW_PLACEHOLDER_RE = re.compile(r"{{\s*([a-z_][a-z0-9_]*)\s*}}")
 INTEGRATION_OWNER_CONFIG = "juno.integration.ownerPath"
@@ -1343,18 +1344,241 @@ def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
     }
 
 
+EVIDENCE_CACHE_SCHEMA = "juno_merge_queue_evidence_cache.v1"
+EVIDENCE_CACHE_ROOT = ".juno_task/runtime/merge-queue/evidence-cache"
+EVIDENCE_CACHE_MAX_ENTRIES = 4096
+# Behavior-affecting environment keys admitted into evidence identity. v1 is
+# deliberately empty: admission suites must not depend on ambient env at all.
+EVIDENCE_ENV_KEYS: tuple[str, ...] = ()
+
+
+def _bounded_text(path: Path, limit: int) -> Optional[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) > limit:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
+def _toolchain_versions(cwd: Path) -> dict[str, Optional[str]]:
+    def probe(argv: list[str]) -> Optional[str]:
+        try:
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                                     text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.strip()[:64] if result.returncode == 0 else None
+    package = _bounded_text(cwd / "package.json", 1 << 16)
+    package_version: Optional[str] = None
+    if package is not None:
+        try:
+            package_version = str(json.loads(package).get("version"))[:64]
+        except (UnicodeError, json.JSONDecodeError):
+            package_version = None
+    return {"package_version": package_version,
+            "node": probe(["node", "--version"]),
+            "python": probe(["python3", "--version"])}
+
+
+def validation_evidence_identity(row: dict[str, Any], candidate: Path, cwd: Path,
+                                  identity: dict[str, str], plan: dict[str, Any],
+                                  repository: Path) -> dict[str, Any]:
+    """Content-addressed behavioral identity of one validation command.
+
+    Every behavior-affecting input is hashed: the candidate tree (which covers
+    test sources and submodule gitlinks), the exact command row, the frozen
+    validation-policy identity, the exact dependency lock bytes, the executing
+    toolchain (package/node/python), the repository identity (cross-repository
+    receipts refuse reuse), and the admitted environment keys. One byte changed
+    in any input yields a different key and forces fresh validation.
+    """
+    lock = cwd / "package-lock.json"
+    lock_sha: Optional[str] = None
+    if lock.is_file():
+        lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
+    material = {
+        "schema_version": "juno_validation_evidence_identity.v1",
+        "candidate_tree": plan["candidate"]["candidate_tree"],
+        "policy_identity": plan["policy_identity"],
+        "command": {key: row[key] for key in
+                    ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes")},
+        "validation_identity": identity,
+        "dependency_lock_sha256": lock_sha,
+        "toolchain": _toolchain_versions(cwd),
+        "repository_identity": repository_identity(repository),
+        "environment_keys": list(EVIDENCE_ENV_KEYS),
+    }
+    return material
+
+
+def evidence_cache_path(controller: Path, key_sha256: str) -> Path:
+    return controller / EVIDENCE_CACHE_ROOT / f"{key_sha256}.json"
+
+
+def _canonical_bytes(value: Any) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False) + "\n").encode()
+
+
+def load_cached_evidence(controller: Path, key_sha256: str, row: dict[str, Any],
+                          plan: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Load and strictly re-verify one cached green evidence entry.
+
+    Reuse is fail-closed: a missing, malformed, stale, tampered, partial,
+    timed-out, cross-identity, or otherwise ambiguous entry yields None (fresh
+    validation) and the entry is removed when it is provably unusable.
+    """
+    path = evidence_cache_path(controller, key_sha256)
+    raw = _bounded_text(path, 1 << 20)
+    if raw is None:
+        return None
+    try:
+        entry = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError):
+        path.unlink(missing_ok=True)
+        return None
+    keys = {"schema_version", "key_sha256", "source", "recorded_at", "reuse_count"}
+    source_keys = {"receipt", "candidate", "policy_identity", "validation_identity",
+                   "commands", "command_index"}
+    if (not isinstance(entry, dict) or set(entry) != keys
+            or entry.get("schema_version") != EVIDENCE_CACHE_SCHEMA
+            or not isinstance(entry.get("key_sha256"), str)
+            or entry["key_sha256"] != key_sha256
+            or not isinstance(entry.get("source"), dict)
+            or set(entry["source"]) != source_keys
+            or not isinstance(entry.get("recorded_at"), str)
+            or not isinstance(entry.get("reuse_count"), int)
+            or isinstance(entry.get("reuse_count"), bool) or entry["reuse_count"] < 0):
+        path.unlink(missing_ok=True)
+        return None
+    source = entry["source"]
+    source_plan = {"candidate": source["candidate"],
+                   "policy_identity": source["policy_identity"],
+                   "evidence_limits": plan["evidence_limits"]}
+    try:
+        verified = risk_runtime.verify_full_suite_receipt_v3(
+            source["receipt"], source_plan, source["validation_identity"],
+            source["commands"], None, require_success=True)
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+    commands = source["commands"]
+    index = source["command_index"]
+    if (not isinstance(commands, list) or not isinstance(index, int)
+            or isinstance(index, bool) or not 0 <= index < len(commands)
+            or commands[index] != row
+            or source["candidate"].get("candidate_tree") != plan["candidate"]["candidate_tree"]):
+        path.unlink(missing_ok=True)
+        return None
+    return entry
+
+
+def store_cached_evidence(controller: Path, key_sha256: str,
+                          reference: dict[str, str], plan: dict[str, Any],
+                          identity: dict[str, str], commands: list[dict[str, Any]],
+                          index: int) -> None:
+    """Persist one green evidence entry with bounded retention.
+
+    Storage happens only for verified green receipts; garbage collection keeps
+    the newest EVIDENCE_CACHE_MAX_ENTRIES entries and never removes entries
+    whose source receipts are still referenced by live queue/task records.
+    """
+    entry = {"schema_version": EVIDENCE_CACHE_SCHEMA, "key_sha256": key_sha256,
+             "source": {"receipt": reference, "candidate": plan["candidate"],
+                        "policy_identity": plan["policy_identity"],
+                        "validation_identity": identity, "commands": commands,
+                        "command_index": index},
+             "recorded_at": risk_runtime.utc_now(), "reuse_count": 0}
+    path = evidence_cache_path(controller, key_sha256)
+    _write_cache_entry(controller, entry, key_sha256)
+    _evidence_cache_gc(controller)
+
+
+def _evidence_cache_gc(controller: Path) -> None:
+    root = controller / EVIDENCE_CACHE_ROOT
+    try:
+        entries = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return
+    if len(entries) <= EVIDENCE_CACHE_MAX_ENTRIES:
+        return
+    referenced = live_receipt_paths(controller)
+    for path in entries[:-EVIDENCE_CACHE_MAX_ENTRIES]:
+        raw = _bounded_text(path, 1 << 20)
+        if raw is None:
+            path.unlink(missing_ok=True)
+            continue
+        try:
+            entry = json.loads(raw)
+            source = entry["source"]["receipt"]["receipt_path"]
+        except (KeyError, TypeError, UnicodeError, json.JSONDecodeError):
+            path.unlink(missing_ok=True)
+            continue
+        if Path(source).resolve() not in referenced:
+            path.unlink(missing_ok=True)
+
+
+def live_receipt_paths(controller: Path) -> set[Path]:
+    """Receipt paths referenced by live queue/task records (GC protection)."""
+    referenced: set[Path] = set()
+    try:
+        state = task_runtime.read_state(controller)
+    except Exception:
+        return referenced
+    for record in (state.get("tasks") or {}).values():
+        if not isinstance(record, dict):
+            continue
+        attempt = record.get("queue_attempt")
+        if not isinstance(attempt, dict):
+            continue
+        admission = ((attempt.get("risk") or {}).get("review_progress") or {}).get("full_suite_admission")
+        if not isinstance(admission, dict):
+            continue
+        for receipt in admission.get("receipts") or []:
+            if isinstance(receipt, dict) and isinstance(receipt.get("receipt_path"), str):
+                referenced.add(Path(receipt["receipt_path"]).resolve())
+    return referenced
+
+
+def _write_cache_entry(controller: Path, entry: dict[str, Any], key_sha256: str) -> None:
+    path = evidence_cache_path(controller, key_sha256)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix="." + path.name + ".",
+                                     delete=False) as handle:
+        handle.write(_canonical_bytes(entry)); handle.flush(); os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+
+def _mark_reuse(entry: dict[str, Any], controller: Path, key_sha256: str) -> None:
+    updated = {**entry, "reuse_count": entry["reuse_count"] + 1}
+    _write_cache_entry(controller, updated, key_sha256)
+
+
 def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                           plan: dict[str, Any], identity: dict[str, str],
                           receipt_paths: list[Path], claim: dict[str, Any],
-                          dependency_source: Optional[Path] = None) -> list[dict[str, str]]:
+                          dependency_source: Optional[Path] = None,
+                          controller: Optional[Path] = None,
+                          repository: Optional[Path] = None
+                          ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     """Run the routed suite in order; write one immutable receipt per command.
 
     A receipt prefix already on disk is a crash-recovery boundary: each prefix
     receipt is strictly re-verified before the remaining commands resume.
+
+    When controller and repository are provided, each command first consults
+    the content-addressed green-evidence cache: a hit whose source receipt
+    still strictly verifies against identical behavioral inputs produces a
+    derived receipt without re-execution, and the returned reuse rows explain
+    every reuse decision for attempt receipts and human/JSON output.
     """
     if len(receipt_paths) != len(commands):
         raise MergeQueueError("full-suite receipt schedule does not bind its commands")
     references: list[dict[str, str]] = []
+    reuse_rows: list[dict[str, Any]] = []
     for index, (row, receipt_path) in enumerate(zip(commands, receipt_paths)):
         if receipt_path.exists():
             reference = evidence_reference(receipt_path)
@@ -1371,6 +1595,31 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             cwd.relative_to(candidate)
         except ValueError as exc:
             raise MergeQueueError("full-suite validation cwd escaped candidate") from exc
+        reuse_entry: Optional[dict[str, Any]] = None
+        key_sha: Optional[str] = None
+        if controller is not None and repository is not None:
+            evidence_identity = validation_evidence_identity(
+                row, candidate, cwd, identity, plan, repository)
+            key_sha = hashlib.sha256(
+                _canonical_bytes(evidence_identity)).hexdigest()
+            reuse_entry = load_cached_evidence(controller, key_sha, row, plan)
+        if reuse_entry is not None:
+            source = reuse_entry["source"]
+            started_at = risk_runtime.utc_now()
+            derived = _derived_reuse_receipt(
+                source, commands, index, row, claim, started_at)
+            write_canonical_exclusive(receipt_path, derived,
+                                      plan["evidence_limits"]["max_receipt_bytes"])
+            _mark_reuse(reuse_entry, controller, key_sha)
+            references.append(evidence_reference(receipt_path))
+            reuse_rows.append({
+                "command_id": row["id"], "decision": "reused",
+                "evidence_key_sha256": key_sha,
+                "source_receipt": source["receipt"],
+                "source_candidate_sha": source["candidate"]["candidate_sha"],
+                "derived_receipt": evidence_reference(receipt_path),
+            })
+            continue
         started_at = risk_runtime.utc_now()
         with validation_dependencies(candidate, cwd, dependency_source):
             evidence = task_runtime.run_validation(row, cwd)
@@ -1410,12 +1659,55 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                                   plan["evidence_limits"]["max_receipt_bytes"])
         reference = evidence_reference(receipt_path)
         references.append(reference)
+        if (controller is not None and repository is not None
+                and not evidence["timed_out"] and evidence["exit_code"] == 0):
+            store_cached_evidence(controller, key_sha, reference, plan, identity,
+                                  commands, index)
         if evidence["timed_out"] or evidence["exit_code"]:
             detail = evidence["stderr_tail"] or evidence["stdout_tail"]
             raise MergeValidationError(
                 f"full-suite validation failed ({row['id']}): {detail}",
                 [evidence], reference)
-    return references
+    return references, reuse_rows
+
+
+def _derived_reuse_receipt(source: dict[str, Any],
+                           commands: list[dict[str, Any]], index: int,
+                           row: dict[str, Any], claim: dict[str, Any],
+                           started_at: str) -> dict[str, Any]:
+    """Derive this attempt's receipt from a strictly verified cached source.
+
+    Behavioral fields (execution identity, result streams) come from the
+    verified source receipt whose inputs are identical by cache-key
+    construction; binding fields (claim, commands, indices, timestamps) come
+    from this attempt so the derived receipt re-verifies standalone.
+    """
+    source_receipt_path = Path(source["receipt"]["receipt_path"])
+    source_receipt = json.loads(_bounded_text(source_receipt_path, 1 << 20) or "null")
+    if not isinstance(source_receipt, dict):
+        raise MergeQueueError("cached evidence source receipt is unreadable")
+    lookup_states = [{"state": name, "duration_ms": 0} for name in
+                     ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED")]
+    return {
+        "schema_version": risk_runtime.FULL_SUITE_RECEIPT_V3_SCHEMA,
+        "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                     "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+        "candidate": source["candidate"],
+        "policy_identity": source["policy_identity"],
+        "claim": claim,
+        "validation_identity": source["validation_identity"],
+        "commands": commands,
+        "command_index": index,
+        "command": row,
+        "started_at": started_at,
+        "completed_at": risk_runtime.utc_now(),
+        "timing": {"schema_version": source_receipt["timing"]["schema_version"],
+                   "states": lookup_states,
+                   "wall_duration_ms": 0, "critical_path_contribution_ms": 0},
+        "resource": source_receipt["resource"],
+        "identity": source_receipt["identity"],
+        "result": source_receipt["result"],
+    }
 
 
 def assert_frozen_candidate(controller: Path, config: dict[str, Any], checkout: Path, candidate_sha: str) -> None:
@@ -2579,6 +2871,20 @@ def render_managed_review_prompt(controller: Path, candidate_root: Path,
     else:
         validation_path = "queue-state: affected validation embedded below"
     findings_summary, findings_path = prior_findings_summary(controller, record, plan)
+    contract_section = "none"
+    contract = getattr(task_runtime, "active_preimplementation_contract", lambda c, t: None)(
+        controller, task_id)
+    if isinstance(contract, dict):
+        contract_path = (controller / task_runtime.CONTRACTS_ROOT / task_id
+                         / f"v{contract.get('version')}.json")
+        contract_bytes = contract_path.read_bytes()
+        checklist = contract.get("reviewer_checklist")
+        contract_section = (
+            f"{contract_path} sha256={hashlib.sha256(contract_bytes).hexdigest()} "
+            f"status={contract.get('status')} version={contract.get('version')}\n"
+            + "\n".join(f"- {item}" for item in checklist[:32]
+                         if isinstance(checklist, list))
+            if isinstance(checklist, list) else str(contract_path))
     validation_bundle = canonical({
         "affected_validation": attempt.get("validation", []),
         "full_suite_admission": admission,
@@ -2598,6 +2904,7 @@ def render_managed_review_prompt(controller: Path, candidate_root: Path,
         "tip_sha": plan["candidate"]["candidate_sha"],
         "checklist_path": f"{task_path} sha256={hashlib.sha256(task_data).hexdigest()}",
         "findings_summary_path": findings_path,
+        "acceptance_contract": contract_section,
         "validation_evidence_path": validation_path,
         "requirements_bundle": requirements,
         "findings_summary": findings_summary,
@@ -3199,9 +3506,30 @@ def review_target_checkpoint(controller: Path, config: dict[str, Any], repositor
     return None
 
 
+def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None:
+    """Fail the review before, not after, expensive validation.
+
+    The managed reviewer launch refuses a dirty controller; discovering that
+    after a 15-minute green full-suite admission wastes the run. Surface the
+    identical condition up front with the reconciliation hint. Only canonical
+    controllers (config.json present) enforce the full identity contract here;
+    other roots keep the launch-time check.
+    """
+    if not (controller / ".juno_task/config.json").is_file():
+        return
+    import managed_agent_runner as runner
+    try:
+        runner.controller_identity(controller)
+    except runner.RunnerError as exc:
+        raise MergeQueueError(
+            f"controller must be reconciled before review evidence runs ({exc}); "
+            "commit or checkpoint controller metadata, then rerun") from exc
+
+
 def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
+    _assert_controller_clean_before_expensive_evidence(controller)
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with review_lock(repository, task_id):
@@ -3381,11 +3709,14 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 with full_suite_producer_lock(
                         controller, task_id, plan["candidate"]["candidate_sha"],
                         claimed["attempt_number"]):
-                    suite_references = full_suite_validation(
+                    suite_references, evidence_reuse = full_suite_validation(
                         suite_commands, candidate_root, plan, current_validation_identity,
                         receipt_paths, claim_binding,
                         task_runtime.exact_root(
-                            Path(record["worktree"]), "review feature worktree"))
+                            Path(record["worktree"]), "review feature worktree"),
+                        controller=controller, repository=repository)
+                if evidence_reuse:
+                    attempt["evidence_reuse"] = evidence_reuse
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)

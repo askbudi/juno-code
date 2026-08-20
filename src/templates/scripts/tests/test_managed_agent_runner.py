@@ -475,11 +475,55 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         unknown = {**passing, "unknown": True}
         bad_severity = json.loads(json.dumps(finding))
         bad_severity["findings"][0]["severity"] = "urgent"
+        # Prose-wrapped single islands are now accepted format-only tolerance
+        # (verified by the island tests below); ambiguity and schema violations
+        # stay exact-JSON failures.
         invalid = (json.dumps(unknown).encode(), json.dumps(bad_severity).encode(),
-                   raw + b" trailing", b"prefix " + raw, raw + b"\n" + raw,
+                   raw + b"\n" + raw,
                    b"{malformed", json.dumps({**passing, "sequence": True}).encode())
         for data in invalid:
             with self.assertRaises(runner.RunnerError):
+                runner.structured_review_result(data, binding)
+
+    def test_structured_review_parser_accepts_one_unambiguous_prose_wrapped_island(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_b", "sequence": 2}
+        verdict = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                   "candidate_sha": binding["candidate_sha"],
+                   "policy_identity": binding["policy_identity"],
+                   "reviewer_role": "reviewer_b", "sequence": 2,
+                   "verdict": "pass", "findings": []}
+        body = json.dumps(verdict)
+        prose = (f"I verified all prior findings against the tip.\n\n"
+                 f"Summary of the pass:\n\n```text\nJUNO_REVIEW_VERDICT: PASS\n```\n\n"
+                 f"{body}\n").encode()
+        self.assertEqual(verdict, runner.structured_review_result(prose, binding))
+        finding_verdict = {**verdict, "verdict": "findings", "findings": [
+            {"code": "NESTED", "severity": "medium",
+             "summary": "braces { inside } summaries stay one island"}]}
+        nested = ("review prose\n" + json.dumps(finding_verdict) + "\nfooter\n").encode()
+        self.assertEqual(finding_verdict,
+                         runner.structured_review_result(nested, binding))
+
+    def test_structured_review_parser_rejects_ambiguous_or_keyless_islands(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_b", "sequence": 2}
+        verdict = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                   "candidate_sha": binding["candidate_sha"],
+                   "policy_identity": binding["policy_identity"],
+                   "reviewer_role": "reviewer_b", "sequence": 2,
+                   "verdict": "pass", "findings": []}
+        other = {**verdict, "sequence": 3}
+        two_islands = (json.dumps(verdict) + "\n" + json.dumps(other) + "\n").encode()
+        unrelated_objects = b'{"summary": "prose quote with json"} and {"note": 1}\n'
+        missing_keys = b'{"verdict": "pass"}\n'
+        # two_islands is ambiguous prose (no exact parse, two islands);
+        # unrelated_objects has no island; missing_keys is valid JSON with an
+        # incomplete schema. All fail closed; only the reason differs.
+        for data, pattern in ((two_islands, "is not exact JSON"),
+                              (unrelated_objects, "is not exact JSON"),
+                              (missing_keys, "schema/binding is invalid")):
+            with self.assertRaisesRegex(runner.RunnerError, pattern):
                 runner.structured_review_result(data, binding)
 
     def test_reviewer_stdout_finalizer_requires_exact_result_and_fresh_single_session(self):
@@ -506,6 +550,11 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(passing, json.loads(payload["result"]))
 
         capture.unlink(); stdout.write_text("log prefix\n" + json.dumps(passing))
+        # Format-only prose wrapping of one unambiguous verdict now binds.
+        self.assertEqual("managed_stdout_finalizer", runner.finalize_managed_capture(
+            capture, stdout, metadata, binding, started_ns))
+        capture.unlink(); stdout.write_text(
+            json.dumps(passing) + "\n" + json.dumps(passing) + "\n")
         with self.assertRaisesRegex(runner.RunnerError, "structured review result"):
             runner.finalize_managed_capture(capture, stdout, metadata, binding, started_ns)
         with self.assertRaisesRegex(runner.RunnerError, "capture is missing"):
@@ -630,6 +679,18 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                  "validation_identity": identity, "command": command,
                  "started_at": "2026-08-09T00:00:00Z",
                  "completed_at": "2026-08-09T00:00:01Z",
+                 "timing": {"schema_version": "juno_validation_timing.v1",
+                            "states": [{"state": name, "duration_ms": 1} for name in
+                                       ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING",
+                                        "TEARDOWN", "PASSED")],
+                            "wall_duration_ms": 5,
+                            "critical_path_contribution_ms": 5},
+                 "resource": {"id": "fixture", "lock_identity_sha256": None,
+                              "wait_timeout_seconds": 1, "owner_diagnostics": None},
+                 "identity": {"command_sha256": "0" * 64, "cwd_sha256": "0" * 64,
+                              "policy_sha256": "0" * 64,
+                              "candidate_sha": plan["candidate"]["candidate_sha"],
+                              "candidate_tree": plan["candidate"]["candidate_tree"]},
                  "result": {"exit_code": 0, "timed_out": False,
                             "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
                                        "tail": "", "truncated_bytes": 0},
