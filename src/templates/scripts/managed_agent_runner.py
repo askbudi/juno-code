@@ -47,8 +47,11 @@ LEGACY_METADATA_POLICY = b'''{
   "spec_copy_mode": "top_level_files_only",
   "copied_metadata": [
     ".juno_task/cutover.json",
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/ledger",
+    ".juno_task/wiki",
     ".juno_task/specs",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/tasks.md"
   ],
@@ -60,19 +63,30 @@ LEGACY_METADATA_POLICY = b'''{
     ".juno_task/config/integration-workspace.json",
     ".juno_task/config/risk-policy.json",
     ".juno_task/receipts/controller-boundary.json",
-    ".juno_task/state/tasks.json"
+    ".juno_task/state/tasks.json",
+    ".juno_task/wiki/controller/git_worktree_lifecycle.md",
+    ".juno_task/wiki/controller/metadata_controller_boundary.md",
+    ".juno_task/wiki/controller/parallel_runner_and_spec_review.md",
+    ".juno_task/wiki/controller/runtime_migration_and_replacement_contract.md",
+    ".juno_task/wiki/controller/task_dependency_hydration.md",
+    ".juno_task/wiki/controller/tmux_best_practices.md",
+    ".juno_task/wiki/controller/wiki_maintenance.md",
+    ".juno_task/wiki/controller/yy_pi_progress.md"
   ],
   "product_forbidden": [
     ".juno_task/artifacts",
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/cutover.json",
     ".juno_task/ledger",
     ".juno_task/logs",
     ".juno_task/receipts",
     ".juno_task/specs",
     ".juno_task/state",
+    ".juno_task/task-scopes",
     ".juno_task/tasks",
     ".juno_task/tasks.md",
-    ".juno_task/workflows"
+    ".juno_task/workflows",
+    ".juno_task/wiki"
   ],
   "tracked_exact": [
     ".gitignore",
@@ -87,8 +101,11 @@ LEGACY_METADATA_POLICY = b'''{
     ".juno_task/tasks.md"
   ],
   "tracked_recursive": [
+    ".juno_task/config/umbrella-admissions",
     ".juno_task/ledger",
-    ".juno_task/tasks"
+    ".juno_task/task-scopes",
+    ".juno_task/tasks",
+    ".juno_task/wiki"
   ],
   "tracked_top_level_files": [
     ".juno_task/receipts",
@@ -106,7 +123,7 @@ LEGACY_METADATA_POLICY = b'''{
   }
 }
 '''
-LEGACY_METADATA_POLICY_SHA256 = "124e00a92edeec889cacbbb6cd7f308be8be164be68d81df170235b4843aeea6"
+LEGACY_METADATA_POLICY_SHA256 = "d3137a8046b1ac5dd8f851d4893547205a2d243eaf783b6aa1baa6cf3eebdd4d"
 LEGACY_METADATA_CONTROLLER_BRANCH = "refs/heads/juno/controller-metadata-2.1"
 LEGACY_METADATA_PRODUCT_REF = "refs/heads/juno-mono-002"
 
@@ -115,12 +132,41 @@ class RunnerError(RuntimeError):
     pass
 
 
+def _exact_json_island(data: bytes) -> Optional[dict[str, Any]]:
+    """Extract one unambiguous verdict JSON object from prose-wrapped output.
+
+    Reviewers sometimes wrap the exact verdict object in explanatory prose or
+    code fences. A format-only loss must not burn a review attempt, but only
+    an unambiguous island binds: exactly one candidate object carrying the
+    complete required key set. Anything else fails closed to exact parsing.
+    """
+    text = data.decode("utf-8", errors="replace")
+    required = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
+                "sequence", "verdict", "findings"}
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    for index in (i for i, ch in enumerate(text) if ch == "{"):
+        try:
+            value, _end = decoder.raw_decode(text, index)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict) and required <= set(value):
+            candidates.append(value)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, Any]:
     if not data or len(data) > 65536:
         raise RunnerError("structured review result is empty or unbounded")
     try: value = json.loads(data)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise RunnerError("structured review result is not exact JSON") from exc
+    except (UnicodeError, json.JSONDecodeError):
+        # Format-only tolerance: one unambiguous JSON island wrapped in prose
+        # binds; zero or multiple islands stay an exact-JSON failure.
+        value = _exact_json_island(data)
+        if value is None:
+            raise RunnerError("structured review result is not exact JSON") from None
     keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
             "sequence", "verdict", "findings"}
     if (not isinstance(value, dict) or set(value) != keys

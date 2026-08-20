@@ -3506,9 +3506,30 @@ def review_target_checkpoint(controller: Path, config: dict[str, Any], repositor
     return None
 
 
+def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None:
+    """Fail the review before, not after, expensive validation.
+
+    The managed reviewer launch refuses a dirty controller; discovering that
+    after a 15-minute green full-suite admission wastes the run. Surface the
+    identical condition up front with the reconciliation hint. Only canonical
+    controllers (config.json present) enforce the full identity contract here;
+    other roots keep the launch-time check.
+    """
+    if not (controller / ".juno_task/config.json").is_file():
+        return
+    import managed_agent_runner as runner
+    try:
+        runner.controller_identity(controller)
+    except runner.RunnerError as exc:
+        raise MergeQueueError(
+            f"controller must be reconciled before review evidence runs ({exc}); "
+            "commit or checkpoint controller metadata, then rerun") from exc
+
+
 def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
+    _assert_controller_clean_before_expensive_evidence(controller)
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with review_lock(repository, task_id):

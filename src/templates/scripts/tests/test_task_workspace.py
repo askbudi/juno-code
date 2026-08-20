@@ -1071,6 +1071,64 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(len(contract["parity_pairs"]), 1)
         self.assertTrue(any("Parity:" in item for item in contract["reviewer_checklist"]))
 
+    def test_handoff_is_deterministic_bounded_and_byte_stable(self) -> None:
+        task_runtime.start(self.controller, "X")
+        first = task_runtime.run_handoff(self.controller, "X")
+        second = task_runtime.run_handoff(self.controller, "X")
+        self.assertEqual(first["schema_version"], task_runtime.HANDOFF_SCHEMA)
+        self.assertEqual(first["state"], "WORKING")
+        self.assertEqual(first["next_command"], "yy task preflight X")
+        self.assertLessEqual(len(first["handoff_text"].encode()),
+                             task_runtime.HANDOFF_MAX_BYTES)
+        markdown = Path(first["handoff_paths"][1])
+        before = markdown.read_bytes()
+        task_runtime.run_handoff(self.controller, "X")
+        self.assertEqual(markdown.read_bytes(), before,
+                         "handoff must be byte-stable without state changes")
+        self.assertIn("[x]", first["handoff_text"])
+        self.assertIn("[>]", first["handoff_text"])
+        self.assertIn("cost/duration: not available", first["handoff_text"])
+
+    def test_handoff_fails_closed_on_conflicting_evidence(self) -> None:
+        task_runtime.start(self.controller, "X")
+        with task_runtime.state_lock(self.controller):
+            state = task_runtime.read_state(self.controller)
+            state["tasks"]["X"]["state"] = "AWAITING_RISK"
+            state["tasks"]["X"]["queue_attempt"] = {"candidate_sha": None,
+                                                    "risk": {"status": "AWAITING_RISK"}}
+            task_runtime.write_state(self.controller, state)
+        handoff = task_runtime.run_handoff(self.controller, "X")
+        self.assertTrue(handoff["conflicts"])
+        self.assertEqual(handoff["next_command"], "yy integration runtime-doctor")
+
+    def test_handoff_maps_lifecycle_states_to_next_commands(self) -> None:
+        task_runtime.start(self.controller, "X")
+        cases = {"QUEUED": "yy merge next",
+                 "AWAITING_RISK": "yy merge review X",
+                 "REVIEW_FINDINGS": "repair findings in the task worktree, then yy merge reopen X",
+                 "RISK_EVIDENCE_READY": "yy merge next X",
+                 "MERGED": "none: task integrated; archive the Kanban task"}
+        for queue_state, command in cases.items():
+            with task_runtime.state_lock(self.controller):
+                state = task_runtime.read_state(self.controller)
+                if queue_state in {"AWAITING_RISK", "RISK_EVIDENCE_READY", "REVIEWING"}:
+                    state["tasks"]["X"]["queue_attempt"] = {
+                        "candidate_sha": "a" * 40,
+                        "risk": {"status": queue_state,
+                                 "review_progress": {"full_suite_admission": {
+                                     "receipts": [{"receipt_path": "/tmp/r.json",
+                                                   "receipt_sha256": "0" * 64}]}}}}
+                elif queue_state == "MERGED":
+                    state["tasks"]["X"]["queue_attempt"] = {"outcome": "MERGED",
+                                                            "candidate_sha": "a" * 40}
+                    state["tasks"]["X"]["outcome"] = "MERGED"
+                else:
+                    state["tasks"]["X"]["queue_attempt"] = {"risk": {"status": queue_state}}
+                state["tasks"]["X"]["state"] = queue_state
+                task_runtime.write_state(self.controller, state)
+            handoff = task_runtime.run_handoff(self.controller, "X")
+            self.assertEqual(handoff["next_command"], command, queue_state)
+
     def test_recovery_plan_audit_requires_kanban_routing_policy(self) -> None:
         self.payload("start", "X")
         with mock.patch.dict(os.environ, {
@@ -3440,6 +3498,10 @@ started = time.monotonic()
 while len(list(events.glob('*.ready'))) < 2:
     time.sleep(0.01)
 counter.open('a').write('run\\n')
+# Hold the post-barrier window open briefly so the overlap assertion observes
+# genuine concurrency even under heavy host scheduling; the barrier above, not
+# this hold, is what proves the different-task concurrency contract.
+time.sleep(0.25)
 finished = time.monotonic()
 (events / f'{{workspace}}-{{os.getpid()}}.json').write_text(json.dumps(
     {{'workspace': workspace, 'started': started, 'finished': finished}}
