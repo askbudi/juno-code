@@ -2508,15 +2508,28 @@ def render_managed_review_prompt(controller: Path, candidate_root: Path,
         raise MergeQueueError("canonical review task is empty or unbounded")
     progress = stored.get("review_progress", {})
     admission = progress.get("full_suite_admission") if isinstance(progress, dict) else None
-    receipt = admission.get("receipt") if isinstance(admission, dict) else None
     if plan["full_suite_required"]:
-        if not isinstance(receipt, dict) or set(receipt) != {"receipt_path", "receipt_sha256"}:
+        receipts = admission.get("receipts") if isinstance(admission, dict) else None
+        singular = admission.get("receipt") if isinstance(admission, dict) else None
+        if isinstance(receipts, list) and receipts:
+            # Package-local routing admits a bounded list of suite receipts;
+            # every receipt must remain byte-identical to its bound digest.
+            for row in receipts:
+                if not isinstance(row, dict) or set(row) != {"receipt_path", "receipt_sha256"}:
+                    raise MergeQueueError("review prompt full-suite evidence is missing")
+                receipt_data = Path(row["receipt_path"]).read_bytes()
+                if hashlib.sha256(receipt_data).hexdigest() != row["receipt_sha256"]:
+                    raise MergeQueueError("review prompt full-suite evidence identity drifted")
+            validation_path = "; ".join(
+                f"{row['receipt_path']} sha256={row['receipt_sha256']}" for row in receipts)
+        elif isinstance(singular, dict) and set(singular) == {"receipt_path", "receipt_sha256"}:
+            receipt_path = Path(singular["receipt_path"]).resolve()
+            receipt_data = receipt_path.read_bytes()
+            if hashlib.sha256(receipt_data).hexdigest() != singular["receipt_sha256"]:
+                raise MergeQueueError("review prompt full-suite evidence identity drifted")
+            validation_path = f"{receipt_path} sha256={singular['receipt_sha256']}"
+        else:
             raise MergeQueueError("review prompt full-suite evidence is missing")
-        receipt_path = Path(receipt["receipt_path"]).resolve()
-        receipt_data = receipt_path.read_bytes()
-        if hashlib.sha256(receipt_data).hexdigest() != receipt["receipt_sha256"]:
-            raise MergeQueueError("review prompt full-suite evidence identity drifted")
-        validation_path = f"{receipt_path} sha256={receipt['receipt_sha256']}"
     else:
         validation_path = "queue-state: affected validation embedded below"
     findings_summary, findings_path = prior_findings_summary(controller, record, plan)

@@ -365,6 +365,98 @@ raise SystemExit(2)
         for field in merge_runtime.REVIEW_PROMPT_FIELDS:
             self.assertNotRegex(text, r"{{\s*" + field + r"\s*}}")
 
+    def test_rendered_reviewer_prompt_accepts_multi_receipt_full_suite_admission(self) -> None:
+        template = SCRIPTS.parent / "prompts/review_commit_parallel_runner.md"
+        candidate_sha = "b" * 40
+        base_sha = "a" * 40
+        plan = {
+            "tier": "high", "full_suite_required": True,
+            "evidence_limits": {"max_receipt_bytes": 65536},
+            "candidate": {"base_sha": base_sha, "candidate_sha": candidate_sha},
+        }
+        receipts = []
+        for index in (1, 2):
+            path = self.root / f"suite-receipt-{index}.json"
+            path.write_text(json.dumps({"suite": index}) + "\n")
+            receipts.append({"receipt_path": str(path),
+                             "receipt_sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        record = {
+            "task_id": "A", "state": "AWAITING_RISK",
+            "queue_attempt": {
+                "candidate_sha": candidate_sha,
+                "validation": [{"id": "affected", "exit_code": 0}],
+                "risk": {"plan": plan, "review_progress": {
+                    "full_suite_admission": {"state": "COMPLETE", "receipts": receipts}}},
+            },
+        }
+        output = self.root / "rendered-multi-receipt.md"
+        with (mock.patch.object(merge_runtime, "managed_review_prompt", return_value=template),
+              mock.patch.object(merge_runtime.task_runtime, "read_state",
+                                return_value={"tasks": {"A": record}})):
+            rendered = merge_runtime.render_managed_review_prompt(
+                self.controller, self.repository, plan, "A", "reviewer_b", 2, output)
+        text = rendered.read_text()
+        for row in receipts:
+            self.assertIn(f"{row['receipt_path']} sha256={row['receipt_sha256']}", text)
+
+    def test_rendered_reviewer_prompt_still_accepts_legacy_singular_admission(self) -> None:
+        template = SCRIPTS.parent / "prompts/review_commit_parallel_runner.md"
+        candidate_sha = "b" * 40
+        plan = {
+            "tier": "high", "full_suite_required": True,
+            "evidence_limits": {"max_receipt_bytes": 65536},
+            "candidate": {"base_sha": "a" * 40, "candidate_sha": candidate_sha},
+        }
+        receipt_path = self.root / "legacy-receipt.json"
+        receipt_path.write_text("{}\n")
+        record = {
+            "task_id": "A", "state": "AWAITING_RISK",
+            "queue_attempt": {
+                "candidate_sha": candidate_sha,
+                "validation": [],
+                "risk": {"plan": plan, "review_progress": {
+                    "full_suite_admission": {"state": "COMPLETE", "receipt": {
+                        "receipt_path": str(receipt_path),
+                        "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}}}},
+            },
+        }
+        output = self.root / "rendered-legacy.md"
+        with (mock.patch.object(merge_runtime, "managed_review_prompt", return_value=template),
+              mock.patch.object(merge_runtime.task_runtime, "read_state",
+                                return_value={"tasks": {"A": record}})):
+            rendered = merge_runtime.render_managed_review_prompt(
+                self.controller, self.repository, plan, "A", "reviewer_a", 1, output)
+        self.assertIn(hashlib.sha256(receipt_path.read_bytes()).hexdigest(), rendered.read_text())
+
+    def test_rendered_reviewer_prompt_rejects_tampered_multi_receipt_evidence(self) -> None:
+        template = SCRIPTS.parent / "prompts/review_commit_parallel_runner.md"
+        candidate_sha = "b" * 40
+        plan = {
+            "tier": "high", "full_suite_required": True,
+            "evidence_limits": {"max_receipt_bytes": 65536},
+            "candidate": {"base_sha": "a" * 40, "candidate_sha": candidate_sha},
+        }
+        receipt_path = self.root / "tampered-receipt.json"
+        receipt_path.write_text("{}\n")
+        record = {
+            "task_id": "A", "state": "AWAITING_RISK",
+            "queue_attempt": {
+                "candidate_sha": candidate_sha,
+                "validation": [],
+                "risk": {"plan": plan, "review_progress": {
+                    "full_suite_admission": {"state": "COMPLETE", "receipts": [
+                        {"receipt_path": str(receipt_path), "receipt_sha256": "0" * 64}]}}},
+            },
+        }
+        output = self.root / "rendered-tampered.md"
+        with (mock.patch.object(merge_runtime, "managed_review_prompt", return_value=template),
+              mock.patch.object(merge_runtime.task_runtime, "read_state",
+                                return_value={"tasks": {"A": record}})):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "full-suite evidence identity drifted"):
+                merge_runtime.render_managed_review_prompt(
+                    self.controller, self.repository, plan, "A", "reviewer_a", 1, output)
+
     def test_rendered_reviewer_prompt_rejects_template_placeholder_drift(self) -> None:
         fields = {name: name for name in merge_runtime.REVIEW_PROMPT_FIELDS}
         with self.assertRaisesRegex(merge_runtime.MergeQueueError, "placeholder contract drifted"):

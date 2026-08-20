@@ -408,6 +408,75 @@ class SemVerValidationTests(unittest.TestCase):
         self.assertFalse(task_runtime.semver_precedes("1.0.0+one", "1.0.0+two"))
 
 
+class ValidationProfilesRoundTripTests(unittest.TestCase):
+    """Normalization must stay idempotent: load -> dump -> load must not fail.
+
+    A config that authors no validation_profiles must not gain an explicit
+    empty list whose own re-validation the strict schema rejects.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.controller = Path(self.temporary.name).resolve() / "controller"
+        (self.controller / ".juno_task/config").mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write_config(self, value: object) -> None:
+        (self.controller / ".juno_task/config/task-workspace.json").write_text(
+            json.dumps(value) + "\n")
+
+    def base_config(self) -> dict[str, object]:
+        return {
+            "schema_version": "juno_task_workspace_config.v1",
+            "repository": ".",
+            "target_ref": "refs/heads/product",
+            "workspace_root": str(self.controller / "workspaces"),
+            "branch_prefix": "refs/heads/task-",
+            "allowed_paths": ["src"],
+            "controller_private_paths": [".juno_task/state"],
+            "focused_validation": [{"id": "focused", "cwd": "src",
+                                    "timeout_seconds": 5, "max_output_bytes": 1024,
+                                    "argv": [sys.executable, "-c", "pass"]}],
+            "full_suite_validation": {"id": "full-suite", "cwd": "src",
+                                       "timeout_seconds": 10, "max_output_bytes": 4096,
+                                       "argv": [sys.executable, "-c", "pass"]},
+        }
+
+    def test_absent_profiles_stay_absent_across_renormalization(self) -> None:
+        self.write_config(self.base_config())
+        first = task_runtime.load_config(self.controller)
+        self.assertNotIn("validation_profiles", first)
+        self.write_config(first)
+        second = task_runtime.load_config(self.controller)
+        self.assertNotIn("validation_profiles", second)
+        self.assertEqual(first, second)
+
+    def test_authored_profiles_survive_renormalization(self) -> None:
+        config = self.base_config()
+        config["validation_profiles"] = [{
+            "id": "package-local", "path_roots": ["src"],
+            "commands": [{"id": "package-suite", "cwd": "src",
+                          "timeout_seconds": 60, "max_output_bytes": 2048,
+                          "argv": [sys.executable, "-c", "pass"]}],
+        }]
+        self.write_config(config)
+        first = task_runtime.load_config(self.controller)
+        self.assertEqual(
+            [profile["id"] for profile in first["validation_profiles"]],
+            ["package-local"])
+        self.write_config(first)
+        self.assertEqual(task_runtime.load_config(self.controller), first)
+
+    def test_authored_empty_profiles_are_still_rejected(self) -> None:
+        config = self.base_config()
+        config["validation_profiles"] = []
+        self.write_config(config)
+        with self.assertRaises(task_runtime.TaskWorkspaceError):
+            task_runtime.load_config(self.controller)
+
+
 class TaskWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
