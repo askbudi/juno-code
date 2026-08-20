@@ -7,6 +7,10 @@
 
 import '@testing-library/jest-dom';
 
+// Admission hermeticity: refuse new network connections during tests unless
+// explicitly overridden (never in admission lanes).
+import './hermetic-network-guard.js';
+
 // Mock environment variables for tests
 process.env.NODE_ENV = 'test';
 process.env.VITEST = 'true';
