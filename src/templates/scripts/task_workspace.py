@@ -345,8 +345,11 @@ def load_config(controller: Path) -> dict[str, Any]:
                 f"focused validation resource {resource['id']!r} has conflicting declarations")
     full_suite = value["full_suite_validation"]
     validate_row(full_suite, "full-suite validation")
-    value["validation_profiles"] = _validated_validation_profiles(
-        value, full_suite["id"], validate_row)
+    profiles = _validated_validation_profiles(value, full_suite["id"], validate_row)
+    # Keep normalization round-trip safe: a config that authored no profiles
+    # must not gain an explicit empty list that its own re-validation rejects.
+    if profiles:
+        value["validation_profiles"] = profiles
     return value
 
 
@@ -445,7 +448,7 @@ def selected_full_suite_commands(config: dict[str, Any],
     selection = validation_profile_selection(config, changed_paths)
     commands: list[dict[str, Any]] = []
     for profile_id in selection["profile_ids"]:
-        profile = next(row for row in config["validation_profiles"]
+        profile = next(row for row in config.get("validation_profiles") or []
                        if row["id"] == profile_id)
         commands.extend(profile["commands"])
     if selection["mode"] != "profile":
@@ -458,7 +461,7 @@ def selected_focused_rows(config: dict[str, Any], changed_paths: Any) -> list[di
     selection = validation_profile_selection(config, changed_paths)
     if selection["mode"] != "profile":
         return config["focused_validation"]
-    roots = next(row for row in config["validation_profiles"]
+    roots = next(row for row in config.get("validation_profiles") or []
                  if row["id"] == selection["profile_ids"][0])["path_roots"]
     return [row for row in config["focused_validation"]
             if path_within(row["cwd"], roots)]
