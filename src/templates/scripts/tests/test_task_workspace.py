@@ -998,6 +998,79 @@ class TaskWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "commit history escaped"):
             task_runtime.build_umbrella_recovery_plan(self.controller, "X", declaration)
 
+    def _contract_body(self, task_id: str, *, owner_decision: bool = False) -> None:
+        decisions = ("\n## Unresolved decisions\n\n- The owner must authorize the release scope before implementation.\n"
+                     if owner_decision else "")
+        task_runtime.task_file(self.controller, task_id).write_text(
+            f"---\nid: {task_id}\nstatus: todo\nlast_modified: '2026-08-20T00:00:00Z'\n---\n"
+            f"\n<!-- juno:body:start -->\n\n## Goal\n\nShip the feature.\n\n"
+            f"## Acceptance\n\n- Focused tests pass.\n- Full suite passes.\n"
+            f"{decisions}\n<!-- juno:body:end -->\n")
+
+    def test_contract_binds_requirements_base_and_reviewer_checklist(self) -> None:
+        self._contract_body("X")
+        task_runtime.start(self.controller, "X")
+        contract = task_runtime.preimplementation_contract(self.controller, "X")
+        self.assertEqual(contract["schema_version"],
+                         task_runtime.PREIMPLEMENTATION_CONTRACT_SCHEMA)
+        self.assertEqual(contract["status"], "ready")
+        self.assertEqual(contract["version"], 1)
+        binding = contract["binding"]
+        self.assertEqual(binding["task_manifest_sha256"],
+                         hashlib.sha256(
+                             task_runtime.task_file(self.controller, "X").read_bytes()
+                         ).hexdigest())
+        self.assertEqual(binding["base_sha"], task_runtime.ref_sha(self.repository, "refs/heads/product"))
+        checklist = contract["reviewer_checklist"]
+        self.assertTrue(any("Focused tests pass" in item for item in checklist))
+        self.assertTrue(contract["contract_path"].endswith("v1.json"))
+        self.assertTrue(Path(contract["contract_path"]).is_file())
+
+    def test_contract_refuses_handoff_while_owner_decisions_open(self) -> None:
+        self._contract_body("X", owner_decision=True)
+        task_runtime.start(self.controller, "X")
+        contract = task_runtime.preimplementation_contract(self.controller, "X")
+        self.assertEqual(contract["status"], "blocked_handoff")
+        self.assertEqual(len(contract["owner_decisions"]), 1)
+        self.assertIn("owner must authorize", contract["owner_decisions"][0])
+
+    def test_contract_supersedes_without_rewriting_the_predecessor(self) -> None:
+        self._contract_body("X")
+        task_runtime.start(self.controller, "X")
+        first = task_runtime.preimplementation_contract(self.controller, "X")
+        first_path = Path(first["contract_path"])
+        first_bytes = first_path.read_bytes()
+        self._contract_body("X")
+        second = task_runtime.preimplementation_contract(self.controller, "X")
+        self.assertEqual(second["version"], 2)
+        self.assertEqual(second["predecessor"]["path"], str(first_path))
+        self.assertEqual(second["predecessor"]["sha256"],
+                         hashlib.sha256(first_bytes).hexdigest())
+        self.assertEqual(first_path.read_bytes(), first_bytes,
+                         "superseding must never rewrite predecessor evidence")
+        active = task_runtime.active_preimplementation_contract(self.controller, "X")
+        assert active is not None
+        self.assertEqual(active["version"], 2)
+
+    def test_contract_parity_pairs_follow_runtime_template_twins(self) -> None:
+        self._contract_body("X")
+        task_runtime.start(self.controller, "X")
+        with task_runtime.state_lock(self.controller):
+            state = task_runtime.read_state(self.controller)
+            state["tasks"]["X"]["changed_paths"] = [
+                ".juno_task/scripts/merge_queue.py",
+                "juno-code/src/templates/scripts/merge_queue.py",
+                "src/feature.txt",
+            ]
+            task_runtime.write_state(self.controller, state)
+        contract = task_runtime.preimplementation_contract(self.controller, "X")
+        pairs = {json.dumps(pair, sort_keys=True) for pair in contract["parity_pairs"]}
+        self.assertIn(json.dumps(
+            {"runtime": ".juno_task/scripts/merge_queue.py",
+             "template": "juno-code/src/templates/scripts/merge_queue.py"}, sort_keys=True), pairs)
+        self.assertEqual(len(contract["parity_pairs"]), 1)
+        self.assertTrue(any("Parity:" in item for item in contract["reviewer_checklist"]))
+
     def test_recovery_plan_audit_requires_kanban_routing_policy(self) -> None:
         self.payload("start", "X")
         with mock.patch.dict(os.environ, {

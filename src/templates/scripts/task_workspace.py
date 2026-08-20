@@ -1759,10 +1759,10 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan"}
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "status", "hydrate", "preflight", "finish",
+            "start", "status", "hydrate", "preflight", "finish", "contract",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
@@ -2593,6 +2593,209 @@ def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[
     }
     closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
     return repository, worktree, head, changed, closure
+
+
+PREIMPLEMENTATION_CONTRACT_SCHEMA = "juno_preimplementation_acceptance.v1"
+CONTRACTS_ROOT = ".juno_task/runtime/contracts"
+
+
+def _contract_sections(body: str) -> dict[str, list[str]]:
+    """Split a canonical task body into bounded section bullet/line lists."""
+    sections: dict[str, list[str]] = {}
+    current: Optional[str] = None
+    for line in body.splitlines():
+        header = re.match(r"(?m)^##\s+(.{1,120})\s*$", line)
+        if header:
+            current = header.group(1).strip().lower()[:64]
+            sections.setdefault(current, [])
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped and len(stripped) <= 512 and not stripped.startswith("```"):
+            sections[current].append(stripped)
+    return {name: lines[:64] for name, lines in sections.items() if lines}
+
+
+def _parity_pairs(changed_paths: list[str]) -> list[dict[str, str]]:
+    """Runtime/template parity surfaces implied by changed paths."""
+    pairs: list[dict[str, str]] = []
+    runtime_prefix = ".juno_task/scripts/"
+    template_prefix = "juno-code/src/templates/scripts/"
+    for path in changed_paths:
+        if path.startswith(runtime_prefix):
+            twin = template_prefix + path[len(runtime_prefix):]
+            pairs.append({"runtime": path, "template": twin})
+        elif path.startswith(template_prefix):
+            twin = runtime_prefix + path[len(template_prefix):]
+            pairs.append({"runtime": twin, "template": path})
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for pair in pairs:
+        key = (pair["runtime"], pair["template"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(pair)
+    return unique[:16]
+
+
+def _likely_test_files(changed_paths: list[str], worktree: Optional[Path]) -> list[str]:
+    """Existing sibling test files for changed sources (read-only discovery)."""
+    likely: list[str] = []
+    for path in changed_paths:
+        if not path.endswith((".ts", ".tsx", ".py")) or ".test." in path:
+            continue
+        stem, suffix = path.rsplit(".", 1)
+        candidate = f"{stem}.test.{suffix}"
+        if worktree is not None and (worktree / candidate).is_file():
+            likely.append(candidate)
+    return likely[:16]
+
+
+def preimplementation_contract(controller: Path, task_id: str) -> dict[str, Any]:
+    """Build one versioned read-only acceptance contract for a task.
+
+    The contract is deterministic and read-only: it freezes the requirements
+    digest, base/target identities, validation surface, invariant parity pairs,
+    likely files, focused tests, and the final reviewer checklist derived from
+    the task's own acceptance sections. Implementation handoff is refused
+    (status blocked_handoff) while material owner decisions remain open. A new
+    contract supersedes its predecessor by reference and never rewrites it.
+    """
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    manifest_path, manifest_bytes = task_manifest(controller, task_id)
+    config = load_config(controller)
+    repository = product_repository(controller, config)
+    runtime_candidates = [controller / ".juno_task/scripts/task_workspace.py",
+                           repository / ".juno_task/scripts/task_workspace.py"]
+    runtime_sha: Optional[str] = None
+    for candidate in runtime_candidates:
+        try:
+            runtime_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            break
+        except OSError:
+            continue
+    try:
+        manifest = json.loads(manifest_bytes[: manifest_bytes.find(b"---", 4)] or b"{}")
+    except (UnicodeError, json.JSONDecodeError):
+        manifest = {}
+    body_match = re.search(rb"<!-- juno:body:start -->\n(.*?)<!-- juno:body:end -->",
+                           manifest_bytes, re.S)
+    body = body_match.group(1).decode("utf-8", errors="replace") if body_match else ""
+    sections = _contract_sections(body)
+    requirements_sha = hashlib.sha256(manifest_bytes).hexdigest()
+
+    record: dict[str, Any] = {}
+    try:
+        record = read_state(controller)["tasks"].get(task_id) or {}
+    except TaskWorkspaceError:
+        record = {}
+    worktree_value = record.get("worktree")
+    worktree = Path(worktree_value) if isinstance(worktree_value, str) and worktree_value else None
+    changed = sorted(set(record.get("changed_paths") or []))[:64]
+    target_ref = config.get("target_ref") or record.get("target_ref")
+    base_sha = record.get("base_sha")
+    source_identity: dict[str, Optional[str]] = {"head": None, "tree": None}
+    if worktree is not None and worktree.is_dir():
+        head = git(worktree, "rev-parse", "HEAD", check=False)
+        tree = git(worktree, "rev-parse", "HEAD^{tree}", check=False)
+        source_identity = {"head": head or None, "tree": tree or None}
+
+    profiles: list[dict[str, Any]] = []
+    changed_roots = {path.split("/")[0] for path in changed if path}
+    for profile in config.get("validation_profiles") or []:
+        if not isinstance(profile, dict):
+            continue
+        roots = set(profile.get("path_roots") or [])
+        if not changed or (roots & changed_roots):
+            profiles.append({
+                "id": profile.get("id"),
+                "path_roots": sorted(roots),
+                "commands": [row.get("id") for row in profile.get("commands") or []
+                             if isinstance(row, dict)],
+            })
+
+    owner_decisions: list[str] = [
+        line for line in sections.get("unresolved decisions", [])
+        if re.search(r"\b(must|should|needs)?\s*(owner|decision|authorize)\b", line)
+    ][:8]
+    acceptance = (sections.get("acceptance") or sections.get("acceptance criteria")
+                  or sections.get("required behavior") or [])
+    reviewer_checklist = [f"Acceptance: {line}" for line in acceptance[:24]]
+    for pair in _parity_pairs(changed):
+        reviewer_checklist.append(
+            f"Parity: {pair['runtime']} is byte-identical to {pair['template']}")
+    reviewer_checklist = reviewer_checklist[:32]
+
+    contracts_dir = controller / CONTRACTS_ROOT / task_id
+    contracts_dir.mkdir(parents=True, exist_ok=True)
+    predecessors = sorted(contracts_dir.glob("v*.json"))
+    predecessor: Optional[dict[str, str]] = None
+    if predecessors:
+        latest = predecessors[-1]
+        predecessor = {"path": str(latest),
+                       "sha256": hashlib.sha256(latest.read_bytes()).hexdigest()}
+
+    contract = {
+        "schema_version": PREIMPLEMENTATION_CONTRACT_SCHEMA,
+        "task_id": task_id,
+        "status": "blocked_handoff" if owner_decisions else "ready",
+        "version": len(predecessors) + 1,
+        "predecessor": predecessor,
+        "binding": {
+            "task_manifest_path": str(manifest_path),
+            "task_manifest_sha256": requirements_sha,
+            "task_last_modified": manifest.get("last_modified"),
+            "base_sha": base_sha, "target_ref": target_ref,
+            "source": source_identity,
+        },
+        "planner": {"mode": "deterministic-static", "runtime_sha256": runtime_sha,
+                    "package_version": None, "model": None, "session_id": None},
+        "requirements_sections": {name: lines for name, lines in sections.items()},
+        "changed_paths": changed,
+        "parity_pairs": _parity_pairs(changed),
+        "likely_test_files": _likely_test_files(changed, worktree),
+        "validation_profiles": profiles[:8],
+        "owner_decisions": owner_decisions,
+        "implementation_choices": [
+            line for line in sections.get("implementation choices", [])][:16],
+        "reviewer_checklist": reviewer_checklist,
+        "negative_cases": [f"Refuse: {line}" for line in
+                           (sections.get("exclusions") or sections.get("risks and constraints")
+                            or [])][:16],
+    }
+    destination = contracts_dir / f"v{contract['version']}.json"
+    if destination.exists():
+        raise TaskWorkspaceError("contract version already exists")
+    payload = (json.dumps(contract, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False) + "\n").encode()
+    with tempfile.NamedTemporaryFile(dir=contracts_dir, prefix=".contract-",
+                                     delete=False) as handle:
+        handle.write(payload); handle.flush(); os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.replace(temporary, destination)
+    return {**contract, "contract_path": str(destination),
+            "contract_sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def active_preimplementation_contract(controller: Path,
+                                      task_id: str) -> Optional[dict[str, Any]]:
+    """Latest non-superseded contract for a task, or None."""
+    contracts_dir = controller / CONTRACTS_ROOT / task_id
+    try:
+        versions = sorted(contracts_dir.glob("v*.json"))
+    except OSError:
+        return None
+    if not versions:
+        return None
+    try:
+        contract = json.loads(versions[-1].read_bytes())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(contract, dict) or contract.get("task_id") != task_id:
+        return None
+    return contract
 
 
 def preflight(controller: Path, task_id: str) -> dict[str, Any]:
@@ -3806,7 +4009,7 @@ def runtime_bootstrap(controller: Path, package_version: str,
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "status", "hydrate", "preflight", "finish",
+        "start", "status", "hydrate", "preflight", "finish", "contract",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -3883,8 +4086,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.umbrella_admission or args.plan or args.output or args.authorization_receipt:
                     raise TaskWorkspaceError(
                         "admission/recovery options are unsupported for this operation")
-                result = {"status": status, "hydrate": hydrate, "preflight": preflight,
-                          "finish": finish}[args.operation](controller, args.task)
+                if args.operation == "contract":
+                    result = preimplementation_contract(controller, args.task)
+                else:
+                    result = {"status": status, "hydrate": hydrate, "preflight": preflight,
+                              "finish": finish}[args.operation](controller, args.task)
             result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
