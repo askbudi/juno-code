@@ -11,7 +11,7 @@ vi.mock('../../utils/control-plane-router.js', () => ({
   routeControlPlane: (cwd: string) => ({ controllerRoot: controllerRoutes.get(cwd) ?? cwd }),
 }));
 
-import { wikiOutput } from '../commands/wiki.js';
+import { wikiOutput, wikiShowOutput } from '../commands/wiki.js';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -68,5 +68,37 @@ describe('wiki command', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wiki-missing-'));
     roots.push(root);
     await expect(wikiOutput(root)).rejects.toThrow('reviewed controller-wiki migration');
+  });
+
+  it('shows canonical pages identically from controller, integration, and task roles', async () => {
+    const controller = await fixture();
+    const integration = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wiki-integration-'));
+    const task = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-wiki-task-'));
+    roots.push(integration, task);
+    controllerRoutes.set(integration, controller);
+    controllerRoutes.set(task, controller);
+    await fs.writeFile(path.join(controller, '.juno_task/wiki/watching_progress.md'), 'progress bytes\n');
+    await fs.ensureDir(path.join(controller, '.juno_task/wiki/domain'));
+    await fs.writeFile(path.join(controller, '.juno_task/wiki/domain/runbook.md'), 'runbook bytes\n');
+
+    expect(await wikiShowOutput(controller, 'watching_progress')).toBe('progress bytes\n');
+    expect(await wikiShowOutput(controller, 'watching_progress.md')).toBe('progress bytes\n');
+    expect(await wikiShowOutput(task, 'watching_progress')).toBe('progress bytes\n');
+    expect(await wikiShowOutput(integration, 'domain/runbook')).toBe('runbook bytes\n');
+  });
+
+  it('refuses pages that escape, are not Markdown, or are missing', async () => {
+    const root = await fixture();
+    const outside = path.join(root, 'outside');
+    await fs.ensureDir(outside);
+    await fs.writeFile(path.join(outside, 'secret.md'), 'secret');
+    await fs.symlink(outside, path.join(root, '.juno_task/wiki/external'));
+    await fs.writeFile(path.join(root, '.juno_task/wiki/notes.txt'), 'notes');
+
+    await expect(wikiShowOutput(root, '../outside/secret')).rejects.toThrow('relative path inside the controller wiki');
+    await expect(wikiShowOutput(root, '/etc/passwd')).rejects.toThrow('relative path inside the controller wiki');
+    await expect(wikiShowOutput(root, 'external/secret')).rejects.toThrow();
+    await expect(wikiShowOutput(root, 'notes.txt')).rejects.toThrow('not a regular Markdown file');
+    await expect(wikiShowOutput(root, 'missing_page')).rejects.toThrow('Wiki page not found');
   });
 });

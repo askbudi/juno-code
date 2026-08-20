@@ -297,9 +297,15 @@ describe('canonical controller resolver', () => {
         resolution: { current_root: controller, role: 'controller' },
       });
 
-      // Environment role is assertion-only and cannot reclassify persisted task topology.
+      // Environment role is assertion-only: a controller-context shell inside a
+      // task worktree must not fatally misroute the read-only diagnostic; the
+      // persisted task topology still refuses implicit bootstrap.
       process.env.JUNO_WORKSPACE_ROLE = 'controller';
-      expect(() => resolveAutomaticProjectBootstrap(task)).toThrow();
+      expect(resolveAutomaticProjectBootstrap(task)).toMatchObject({
+        allowed: false,
+        reason: 'non-controller-worktree',
+        resolution: { role: 'task', current_root: task },
+      });
       process.env.JUNO_WORKSPACE_ROLE = '';
 
       git(task, 'config', '--local', 'juno.controller.path', path.join(sandbox, 'missing-controller'));

@@ -90,7 +90,13 @@ export interface AutomaticProjectBootstrapPolicy {
 export function resolveAutomaticProjectBootstrap(
   workingDirectory: string,
 ): AutomaticProjectBootstrapPolicy {
-  const resolution = resolveController(workingDirectory, 'diagnostic');
+  // Persisted registration decides identity; environment is routing/assertion
+  // only. A controller-context shell (the standard agent flow) carries
+  // JUNO_WORKSPACE_ROLE into task worktrees, and asserting it there would
+  // fatally misroute this read-only diagnostic before any command runs.
+  const resolution = resolveController(workingDirectory, 'diagnostic', {
+    ignoreEnvironmentAssertions: true,
+  });
   if (resolution.resolver !== 'installed') {
     return { allowed: false, resolution, reason: 'resolver-missing' };
   }
