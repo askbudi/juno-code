@@ -37,8 +37,11 @@ if (!allowNetwork) {
   // and every higher-level client (undici/http) because they all funnel new
   // outbound connections through Socket.prototype.connect. The module exports
   // themselves are read-only in ESM and cannot be reassigned.
-  const originalSocketConnect = net.Socket.prototype.connect;
-  net.Socket.prototype.connect = function hermeticConnect(
+  const prototype = net.Socket.prototype as unknown as Record<string,
+    (this: net.Socket, ...args: unknown[]) => unknown>;
+  const originalSocketConnect = prototype.connect as (
+    this: net.Socket, ...args: unknown[]) => unknown;
+  prototype.connect = function hermeticConnect(
     this: net.Socket,
     ...args: unknown[]
   ) {
@@ -47,7 +50,7 @@ if (!allowNetwork) {
       && options !== null
       && typeof (options as Record<string, unknown>).path === 'string';
     if (!isUnix) refuse('net.Socket.connect', describeTarget(options));
-    return (originalSocketConnect as (...a: unknown[]) => unknown).apply(this, args);
+    return originalSocketConnect.apply(this, args);
   };
 }
 
