@@ -1230,6 +1230,73 @@ def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any
     return best
 
 
+FULL_SUITE_RETRY_MAX_FILES = 4
+FULL_SUITE_RETRY_MAX_ATTEMPTS = 2
+FULL_SUITE_RETRY_TAIL_CHARS = 1200
+_VITEST_FAIL_LINE = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m|\s)*FAIL(?:\s|\x1b\[[0-9;]*m)+(\S+\.test\.[a-zA-Z0-9]+)(?:\s|$)")
+
+
+def _vitest_suite_row(row: dict[str, Any]) -> bool:
+    """Retry eligibility: only vitest suite invocations, never build/typecheck."""
+    return row["argv"][:2] == ["npm", "test"]
+
+
+def _vitest_failed_files(output: str) -> list[str]:
+    """Ordered unique failing test files from bounded vitest output."""
+    files: list[str] = []
+    for line in output.splitlines():
+        match = _VITEST_FAIL_LINE.match(line)
+        if match and match.group(1) not in files:
+            files.append(match.group(1))
+    return files
+
+
+def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
+                       candidate: Path,
+                       dependency_source: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Bounded isolated re-run of failing vitest files; joins verdict fail-closed.
+
+    One ambient-load flake must not restart a whole admission: when a vitest
+    suite command fails with a small parseable set of failing files, each file
+    re-runs alone up to FULL_SUITE_RETRY_MAX_ATTEMPTS times. The joined verdict
+    passes only if every failing file passes isolated; a file that also fails
+    alone is a real failure and the original verdict stands. Timeouts, broad
+    failures, and non-vitest commands are never retried.
+    """
+    if evidence["timed_out"] or not _vitest_suite_row(row):
+        return None
+    files = _vitest_failed_files("\n".join(
+        part for part in (evidence["stderr_tail"], evidence["stdout_tail"]) if part))
+    if not files or len(files) > FULL_SUITE_RETRY_MAX_FILES:
+        return None
+    entries: list[dict[str, Any]] = []
+    for suite_file in files:
+        attempts: list[dict[str, Any]] = []
+        passed = False
+        for attempt in range(1, FULL_SUITE_RETRY_MAX_ATTEMPTS + 1):
+            retry_row = {**row,
+                         "id": f"{row['id']}#retry{attempt}:{Path(suite_file).name}",
+                         "argv": [*row["argv"], "--", suite_file]}
+            with validation_dependencies(candidate, cwd, dependency_source):
+                run = task_runtime.run_validation(retry_row, cwd)
+            attempts.append({"exit_code": run["exit_code"], "timed_out": run["timed_out"]})
+            final_tail = run["stderr_tail"] or run["stdout_tail"]
+            if run["exit_code"] == 0 and not run["timed_out"]:
+                passed = True
+                break
+        entries.append({"file": suite_file, "passed": passed, "attempts": attempts,
+                        "final_tail": final_tail[-FULL_SUITE_RETRY_TAIL_CHARS:]})
+        if not passed:
+            break
+    return {
+        "policy": {"max_files": FULL_SUITE_RETRY_MAX_FILES,
+                   "max_attempts_per_file": FULL_SUITE_RETRY_MAX_ATTEMPTS},
+        "files": entries,
+        "absorbed": bool(entries) and all(entry["passed"] for entry in entries),
+    }
+
+
 def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                           plan: dict[str, Any], identity: dict[str, str],
                           receipt_paths: list[Path], claim: dict[str, Any],
@@ -1261,6 +1328,12 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
         started_at = risk_runtime.utc_now()
         with validation_dependencies(candidate, cwd, dependency_source):
             evidence = task_runtime.run_validation(row, cwd)
+        retry_evidence = None
+        if evidence["timed_out"] or evidence["exit_code"]:
+            retry_evidence = bounded_file_retry(row, cwd, evidence, candidate,
+                                                dependency_source)
+            if retry_evidence is not None and retry_evidence["absorbed"]:
+                evidence = {**evidence, "exit_code": 0, "timed_out": False}
         completed_at = risk_runtime.utc_now()
         receipt = {
             "schema_version": risk_runtime.FULL_SUITE_RECEIPT_V3_SCHEMA,
@@ -1283,7 +1356,8 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                                   "truncated_bytes": evidence["stdout_truncated_bytes"]},
                        "stderr": {"sha256": evidence["stderr_sha256"],
                                   "tail": evidence["stderr_tail"],
-                                  "truncated_bytes": evidence["stderr_truncated_bytes"]}},
+                                  "truncated_bytes": evidence["stderr_truncated_bytes"]},
+                       **({"retries": retry_evidence} if retry_evidence is not None else {})},
         }
         receipt = fit_full_suite_receipt(receipt, plan["evidence_limits"]["max_receipt_bytes"])
         write_canonical_exclusive(receipt_path, receipt,

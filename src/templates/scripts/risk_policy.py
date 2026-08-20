@@ -437,6 +437,55 @@ def _validate_full_suite_execution(receipt: dict[str, Any], command: dict[str, A
                 or isinstance(stream.get("truncated_bytes"), bool)
                 or stream["truncated_bytes"] < 0):
             raise RiskPolicyError("full-suite receipt stream provenance is invalid")
+    _validate_full_suite_retries(result.get("retries"))
+
+
+def _validate_full_suite_retries(retries: Any) -> None:
+    """Strictly validate optional bounded file-level retry evidence.
+
+    Absent retries are the historical shape. Present retries must bind the
+    bounded policy, one entry per retried file with ordered attempt evidence,
+    and a joined verdict that is exactly "every retried file passed isolated".
+    """
+    if retries is None:
+        return
+    attempt_keys = {"exit_code", "timed_out"}
+    if (not isinstance(retries, dict)
+            or set(retries) != {"policy", "files", "absorbed"}
+            or not isinstance(retries.get("policy"), dict)
+            or set(retries["policy"]) != {"max_files", "max_attempts_per_file"}
+            or not isinstance(retries["policy"].get("max_files"), int)
+            or isinstance(retries["policy"].get("max_files"), bool)
+            or not 1 <= retries["policy"]["max_files"] <= 8
+            or not isinstance(retries["policy"].get("max_attempts_per_file"), int)
+            or isinstance(retries["policy"].get("max_attempts_per_file"), bool)
+            or not 1 <= retries["policy"]["max_attempts_per_file"] <= 4
+            or not isinstance(retries.get("files"), list)
+            or not retries["files"]
+            or len(retries["files"]) > retries["policy"]["max_files"]
+            or not isinstance(retries.get("absorbed"), bool)):
+        raise RiskPolicyError("full-suite receipt retry provenance is invalid")
+    for entry in retries["files"]:
+        if (not isinstance(entry, dict)
+                or set(entry) != {"file", "passed", "attempts", "final_tail"}
+                or not isinstance(entry.get("file"), str) or not entry["file"]
+                or ".test." not in entry["file"]
+                or not isinstance(entry.get("passed"), bool)
+                or not isinstance(entry.get("final_tail"), str)
+                or len(entry["final_tail"].encode()) > 4096
+                or not isinstance(entry.get("attempts"), list)
+                or not 1 <= len(entry["attempts"]) <= retries["policy"]["max_attempts_per_file"]
+                or any(not isinstance(attempt, dict) or set(attempt) != attempt_keys
+                       or not isinstance(attempt.get("exit_code"), int)
+                       or isinstance(attempt.get("exit_code"), bool)
+                       or not isinstance(attempt.get("timed_out"), bool)
+                       for attempt in entry["attempts"])
+                or entry["passed"] != any(
+                    attempt["exit_code"] == 0 and not attempt["timed_out"]
+                    for attempt in entry["attempts"])):
+            raise RiskPolicyError("full-suite receipt retry provenance is invalid")
+    if retries["absorbed"] != all(entry["passed"] for entry in retries["files"]):
+        raise RiskPolicyError("full-suite receipt retry verdict is inconsistent")
 
 
 def verify_full_suite_receipt(reference: Any, plan: dict[str, Any],

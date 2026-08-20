@@ -3239,5 +3239,169 @@ raise SystemExit(2)
         self.assertEqual(tip, attempt["candidate_sha"])
 
 
+HEX64 = "0" * 64
+
+
+def _retry_timing() -> dict:
+    states = [{"state": name, "duration_ms": 1} for name in
+              ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN", "PASSED")]
+    return {"schema_version": "juno_validation_timing.v1", "states": states,
+            "wall_duration_ms": 5, "critical_path_contribution_ms": 5}
+
+
+def _retry_resource() -> dict:
+    return {"id": "test", "lock_identity_sha256": None,
+            "wait_timeout_seconds": 1, "owner_diagnostics": None}
+
+
+def _retry_evidence(row_id: str, argv: list[str], *, exit_code: int,
+                    timed_out: bool = False, stderr_tail: str = "") -> dict:
+    payload = (stderr_tail or "suite output").encode()
+    return {"id": row_id, "argv": argv, "exit_code": exit_code, "timed_out": timed_out,
+            "timing": _retry_timing(), "resource": _retry_resource(),
+            "identity": {"command_sha256": HEX64, "cwd_sha256": HEX64, "policy_sha256": HEX64,
+                         "candidate_sha": "1" * 40, "candidate_tree": "2" * 40},
+            "stdout_sha256": HEX64, "stdout_tail": "", "stdout_truncated_bytes": 0,
+            "stderr_sha256": HEX64, "stderr_tail": stderr_tail,
+            "stderr_truncated_bytes": max(0, len(payload) - 512)}
+
+
+class FullSuiteFileRetryTests(unittest.TestCase):
+    """Bounded file-level admission retry: flakes join, defects stay failing."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="juno-retry-"))
+        self.candidate = (self.root / "candidate").resolve()
+        (self.candidate / "pkg").mkdir(parents=True)
+        self.commands = [
+            {"id": "suite", "cwd": "pkg", "argv": ["npm", "test"],
+             "timeout_seconds": 60, "max_output_bytes": 8192},
+        ]
+        self.plan = {
+            "candidate": {"candidate_sha": "1" * 40, "candidate_tree": "2" * 40},
+            "policy_identity": HEX64,
+            "evidence_limits": {"max_receipt_bytes": 65536, "max_string_bytes": 4096},
+        }
+        self.identity = {"task_workspace_config_sha256": HEX64,
+                         "full_suite_config_sha256": HEX64,
+                         "task_validation_commands_sha256": HEX64}
+        self.claim = {"claim_path": str(self.root / "claim.json"), "claim_sha256": HEX64,
+                      "token": "t" * 48, "attempt_number": 1}
+        self.receipt_paths = [self.root / "receipt-0.json"]
+
+    def _run_suite(self, suite_calls: list[dict[str, Any]]) -> None:
+        calls: list[dict[str, Any]] = []
+        self.executed = calls
+
+        def fake_run_validation(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
+            calls.append(row)
+            spec = suite_calls[len(calls) - 1]
+            return _retry_evidence(row["id"], row["argv"],
+                                   exit_code=spec["exit_code"],
+                                   timed_out=spec.get("timed_out", False),
+                                   stderr_tail=spec.get("stderr_tail", ""))
+
+        with mock.patch.object(merge_runtime.task_runtime, "run_validation",
+                               side_effect=fake_run_validation):
+            merge_runtime.full_suite_validation(
+                self.commands, self.candidate, self.plan, self.identity,
+                self.receipt_paths, self.claim)
+        self.executed = calls
+
+    def test_single_flaky_file_is_absorbed_and_the_receipt_verifies(self) -> None:
+        flake_tail = ("\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > case\n"
+                      "\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > other\n")
+        self._run_suite([
+            {"exit_code": 1, "stderr_tail": flake_tail},
+            {"exit_code": 0},
+        ])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertEqual(receipt["result"]["exit_code"], 0)
+        retries = receipt["result"]["retries"]
+        self.assertTrue(retries["absorbed"])
+        self.assertEqual(retries["files"][0]["file"], "src/utils/__tests__/flake.test.ts")
+        self.assertTrue(retries["files"][0]["passed"])
+        self.assertEqual(len(retries["files"][0]["attempts"]), 1)
+        self.assertEqual(len(self.executed), 2)
+        self.assertEqual(self.executed[1]["argv"],
+                         ["npm", "test", "--", "src/utils/__tests__/flake.test.ts"])
+        reference = merge_runtime.evidence_reference(self.receipt_paths[0])
+        verified = risk_runtime.verify_full_suite_receipt_v3(
+            reference, self.plan, self.identity, self.commands, self.claim,
+            require_success=True)
+        self.assertEqual(verified["exit_code"], 0)
+
+    def test_deterministic_failure_keeps_failing_and_records_both_attempts(self) -> None:
+        tail = "FAIL  src/utils/__tests__/broken.test.ts > case\n"
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([
+                {"exit_code": 1, "stderr_tail": tail},
+                {"exit_code": 1, "stderr_tail": tail},
+                {"exit_code": 1, "stderr_tail": tail},
+            ])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertEqual(receipt["result"]["exit_code"], 1)
+        retries = receipt["result"]["retries"]
+        self.assertFalse(retries["absorbed"])
+        self.assertFalse(retries["files"][0]["passed"])
+        self.assertEqual(len(retries["files"][0]["attempts"]),
+                         merge_runtime.FULL_SUITE_RETRY_MAX_ATTEMPTS)
+        with self.assertRaisesRegex(risk_runtime.RiskPolicyError, "not successful"):
+            risk_runtime.verify_full_suite_receipt_v3(
+                merge_runtime.evidence_reference(self.receipt_paths[0]),
+                self.plan, self.identity, self.commands, self.claim,
+                require_success=True)
+
+    def test_timeout_is_never_retried(self) -> None:
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 124, "timed_out": True,
+                              "stderr_tail": "timeout"}])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertNotIn("retries", receipt["result"])
+        self.assertEqual(len(self.executed), 1)
+
+    def test_non_vitest_commands_stay_fail_closed(self) -> None:
+        self.commands = [
+            {"id": "typecheck", "cwd": "pkg", "argv": ["npm", "run", "typecheck"],
+             "timeout_seconds": 60, "max_output_bytes": 8192},
+        ]
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 2, "stderr_tail": "tsc error"}])
+        self.assertEqual(len(self.executed), 1)
+
+    def test_broad_failures_do_not_trigger_retries(self) -> None:
+        tail = "".join(f"FAIL  src/f{i}/broad{i}.test.ts > case\n" for i in range(5))
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 1, "stderr_tail": tail}])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertNotIn("retries", receipt["result"])
+
+    def test_verifier_rejects_a_tampered_joined_verdict(self) -> None:
+        flake_tail = "FAIL  src/utils/__tests__/flake.test.ts > case\n"
+        self._run_suite([
+            {"exit_code": 1, "stderr_tail": flake_tail},
+            {"exit_code": 0},
+        ])
+        receipt_path = self.receipt_paths[0]
+        receipt = json.loads(receipt_path.read_text())
+        receipt["result"]["retries"]["files"][0]["passed"] = False
+        receipt["result"]["retries"]["absorbed"] = True
+        tampered = self.root / "tampered.json"
+        tampered.write_bytes(risk_runtime.canonical(receipt))
+        with self.assertRaisesRegex(risk_runtime.RiskPolicyError, "retry"):
+            risk_runtime.verify_full_suite_receipt_v3(
+                merge_runtime.evidence_reference(tampered), self.plan,
+                self.identity, self.commands, self.claim, require_success=False)
+
+    def test_failed_file_list_parsing_is_ordered_unique_and_ansi_tolerant(self) -> None:
+        output = ("\u001b[2mstderr\u001b[22m\n"
+                  "\u001b[31m FAIL \u001b[39m b/second.test.ts > one\n"
+                  " FAIL  a/first.test.ts > two\n"
+                  "\u001b[31m FAIL \u001b[39m b/second.test.ts > three\n"
+                  "not a fail line\n")
+        self.assertEqual(merge_runtime._vitest_failed_files(output),
+                         ["b/second.test.ts", "a/first.test.ts"])
+
+
 if __name__ == "__main__":
     unittest.main()
