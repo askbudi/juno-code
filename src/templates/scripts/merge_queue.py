@@ -1235,6 +1235,8 @@ FULL_SUITE_RETRY_MAX_ATTEMPTS = 2
 FULL_SUITE_RETRY_TAIL_CHARS = 1200
 _VITEST_FAIL_LINE = re.compile(
     r"^\s*(?:\x1b\[[0-9;]*m|\s)*FAIL(?:\s|\x1b\[[0-9;]*m)+(\S+\.test\.[a-zA-Z0-9]+)(?:\s|$)")
+_VITEST_SUMMARY_FILES = re.compile(
+    r"(?:\x1b\[[0-9;]*m|\s)*Test Files(?:\s|\x1b\[[0-9;]*m)+(\d+)\s+failed")
 
 
 def _vitest_suite_row(row: dict[str, Any]) -> bool:
@@ -1263,12 +1265,24 @@ def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
     passes only if every failing file passes isolated; a file that also fails
     alone is a real failure and the original verdict stands. Timeouts, broad
     failures, and non-vitest commands are never retried.
+
+    Absorption is bound to the reporter's own terminal summary: both stream
+    tails must be untruncated, a "Test Files  N failed" summary must be
+    present, and its failed-file count must equal the parsed FAIL-line count.
+    Truncated or aborted reporter output therefore yields no retry instead of
+    silently absorbing an unseen failure.
     """
     if evidence["timed_out"] or not _vitest_suite_row(row):
         return None
-    files = _vitest_failed_files("\n".join(
-        part for part in (evidence["stderr_tail"], evidence["stdout_tail"]) if part))
+    if evidence["stdout_truncated_bytes"] or evidence["stderr_truncated_bytes"]:
+        return None
+    combined_output = "\n".join(
+        part for part in (evidence["stderr_tail"], evidence["stdout_tail"]) if part)
+    files = _vitest_failed_files(combined_output)
     if not files or len(files) > FULL_SUITE_RETRY_MAX_FILES:
+        return None
+    summary = _VITEST_SUMMARY_FILES.search(combined_output)
+    if summary is None or int(summary.group(1)) != len(files):
         return None
     entries: list[dict[str, Any]] = []
     for suite_file in files:

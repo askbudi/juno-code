@@ -3347,15 +3347,17 @@ def _retry_resource() -> dict:
 
 
 def _retry_evidence(row_id: str, argv: list[str], *, exit_code: int,
-                    timed_out: bool = False, stderr_tail: str = "") -> dict:
+                    timed_out: bool = False, stderr_tail: str = "",
+                    stderr_truncated_bytes: Optional[int] = None) -> dict:
     payload = (stderr_tail or "suite output").encode()
+    truncated = max(0, len(payload) - 512) if stderr_truncated_bytes is None else stderr_truncated_bytes
     return {"id": row_id, "argv": argv, "exit_code": exit_code, "timed_out": timed_out,
             "timing": _retry_timing(), "resource": _retry_resource(),
             "identity": {"command_sha256": HEX64, "cwd_sha256": HEX64, "policy_sha256": HEX64,
                          "candidate_sha": "1" * 40, "candidate_tree": "2" * 40},
             "stdout_sha256": HEX64, "stdout_tail": "", "stdout_truncated_bytes": 0,
             "stderr_sha256": HEX64, "stderr_tail": stderr_tail,
-            "stderr_truncated_bytes": max(0, len(payload) - 512)}
+            "stderr_truncated_bytes": truncated}
 
 
 class FullSuiteFileRetryTests(unittest.TestCase):
@@ -3391,7 +3393,8 @@ class FullSuiteFileRetryTests(unittest.TestCase):
             return _retry_evidence(row["id"], row["argv"],
                                    exit_code=spec["exit_code"],
                                    timed_out=spec.get("timed_out", False),
-                                   stderr_tail=spec.get("stderr_tail", ""))
+                                   stderr_tail=spec.get("stderr_tail", ""),
+                                   stderr_truncated_bytes=spec.get("stderr_truncated_bytes"))
 
         with mock.patch.object(merge_runtime.task_runtime, "run_validation",
                                side_effect=fake_run_validation):
@@ -3402,7 +3405,9 @@ class FullSuiteFileRetryTests(unittest.TestCase):
 
     def test_single_flaky_file_is_absorbed_and_the_receipt_verifies(self) -> None:
         flake_tail = ("\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > case\n"
-                      "\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > other\n")
+                      "\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > other\n"
+                      "\n Test Files  1 failed | 25 passed (26)\n"
+                      "      Tests  2 failed | 100 passed (102)\n")
         self._run_suite([
             {"exit_code": 1, "stderr_tail": flake_tail},
             {"exit_code": 0},
@@ -3424,7 +3429,9 @@ class FullSuiteFileRetryTests(unittest.TestCase):
         self.assertEqual(verified["exit_code"], 0)
 
     def test_deterministic_failure_keeps_failing_and_records_both_attempts(self) -> None:
-        tail = "FAIL  src/utils/__tests__/broken.test.ts > case\n"
+        tail = ("FAIL  src/utils/__tests__/broken.test.ts > case\n"
+                "\n Test Files  1 failed | 25 passed (26)\n"
+                "      Tests  1 failed | 100 passed (101)\n")
         with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
             self._run_suite([
                 {"exit_code": 1, "stderr_tail": tail},
@@ -3463,13 +3470,44 @@ class FullSuiteFileRetryTests(unittest.TestCase):
 
     def test_broad_failures_do_not_trigger_retries(self) -> None:
         tail = "".join(f"FAIL  src/f{i}/broad{i}.test.ts > case\n" for i in range(5))
+        tail += "\n Test Files  5 failed | 21 passed (26)\n"
         with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
             self._run_suite([{"exit_code": 1, "stderr_tail": tail}])
         receipt = json.loads(self.receipt_paths[0].read_text())
         self.assertNotIn("retries", receipt["result"])
 
+    def test_truncated_reporter_output_never_retries(self) -> None:
+        tail = ("FAIL  src/utils/__tests__/flake.test.ts > case\n"
+                "\n Test Files  1 failed | 25 passed (26)\n")
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 1, "stderr_tail": tail,
+                              "stderr_truncated_bytes": 4096}])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertNotIn("retries", receipt["result"])
+        self.assertEqual(len(self.executed), 1)
+
+    def test_missing_terminal_summary_never_retries(self) -> None:
+        tail = "FAIL  src/utils/__tests__/flake.test.ts > case\n"  # aborted reporter: no summary
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 1, "stderr_tail": tail}])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertNotIn("retries", receipt["result"])
+        self.assertEqual(len(self.executed), 1)
+
+    def test_summary_failed_count_mismatch_never_retries(self) -> None:
+        # Reporter says two files failed but only one FAIL line survived in the
+        # bounded tail: absorption would hide the unseen file, so no retry.
+        tail = ("FAIL  src/utils/__tests__/flake.test.ts > case\n"
+                "\n Test Files  2 failed | 24 passed (26)\n")
+        with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
+            self._run_suite([{"exit_code": 1, "stderr_tail": tail}])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertNotIn("retries", receipt["result"])
+        self.assertEqual(len(self.executed), 1)
+
     def test_verifier_rejects_a_tampered_joined_verdict(self) -> None:
-        flake_tail = "FAIL  src/utils/__tests__/flake.test.ts > case\n"
+        flake_tail = ("FAIL  src/utils/__tests__/flake.test.ts > case\n"
+                      "\n Test Files  1 failed | 25 passed (26)\n")
         self._run_suite([
             {"exit_code": 1, "stderr_tail": flake_tail},
             {"exit_code": 0},
