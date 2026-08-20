@@ -3515,6 +3515,26 @@ class FullSuiteFileRetryTests(unittest.TestCase):
         self.assertNotIn("retries", receipt["result"])
         self.assertEqual(len(self.executed), 1)
 
+    def test_multibyte_retry_tail_stays_within_the_verifier_byte_bound(self) -> None:
+        # A 4-byte-codepoint-heavy tail sliced by chars could exceed the
+        # verifier's 4096-byte final_tail bound; absorption must stay verifiable.
+        flake_tail = ("FAIL  src/utils/__tests__/flake.test.ts > case\n"
+                      "\n Test Files  1 failed | 25 passed (26)\n")
+        emoji_tail = "\U0001F600" * 2000
+        self._run_suite([
+            {"exit_code": 1, "stderr_tail": flake_tail},
+            {"exit_code": 0, "stderr_tail": emoji_tail},
+        ])
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        entry = receipt["result"]["retries"]["files"][0]
+        self.assertTrue(entry["passed"])
+        self.assertLessEqual(len(entry["final_tail"].encode("utf-8")), 4096)
+        verified = risk_runtime.verify_full_suite_receipt_v3(
+            merge_runtime.evidence_reference(self.receipt_paths[0]),
+            self.plan, self.identity, self.commands, self.claim,
+            require_success=True)
+        self.assertEqual(verified["exit_code"], 0)
+
     def test_verifier_rejects_a_tampered_joined_verdict(self) -> None:
         flake_tail = ("FAIL  src/utils/__tests__/flake.test.ts > case\n"
                       "\n Test Files  1 failed | 25 passed (26)\n")

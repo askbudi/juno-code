@@ -25,18 +25,44 @@ function describeTarget(options: unknown): string {
   return 'unknown target';
 }
 
-function refuse(kind: string, target: string): never {
-  const message = `[hermeticity] admission tests must not use the network: ${kind} -> ${target}. `
-    + 'Serve the fixture from the local filesystem or a loopback in-process fake. '
-    + 'Explicit override (never in admission lanes): JUNO_TEST_ALLOW_NETWORK=1.';
-  throw new Error(message);
+/**
+ * Normalize net connect overloads the way node's normalizeArgs does:
+ * connect(options[, listener]), connect(port[, host][, listener]),
+ * connect(path[, listener]). Returns one canonical options object so the
+ * unix/loopback exemptions apply to every call signature, fail-closed for
+ * unknown forms.
+ */
+function normalizedConnectOptions(args: unknown[]): Record<string, unknown> {
+  let first: unknown = args[0];
+  let second: unknown = args[1];
+  // node's internal call form passes one pre-normalized [options, listener]
+  // array (used by net.createConnection / net.connect): unwrap it first.
+  if (Array.isArray(first) && args.length === 1) {
+    second = first[1];
+    first = first[0];
+  }
+  if (typeof first === 'object' && first !== null) {
+    const record = first as Record<string, unknown>;
+    if (record.host === undefined && typeof record.port === 'number') {
+      return { ...record, host: 'localhost' };
+    }
+    return record;
+  }
+  if (typeof first === 'string') return { path: first };
+  if (typeof first === 'number') {
+    // connect(port) with no explicit host defaults to localhost.
+    return { port: first, host: typeof second === 'string' ? second : 'localhost' };
+  }
+  return {};
 }
 
 function isLoopbackTarget(options: unknown): boolean {
   if (typeof options !== 'object' || options === null) return false;
   const record = options as Record<string, unknown>;
   if (record.path !== undefined) return false; // unix domain socket: always local
-  const host = typeof record.host === 'string' ? record.host : null;
+  // An absent host means node's implicit localhost default (object or
+  // number form); only an explicit non-loopback host is external.
+  const host = typeof record.host === 'string' ? record.host : 'localhost';
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
@@ -53,12 +79,19 @@ if (!allowNetwork) {
     this: net.Socket,
     ...args: unknown[]
   ) {
-    const options = args.find((arg) => typeof arg === 'object' && arg !== null);
-    const isUnix = typeof options === 'object'
-      && options !== null
-      && typeof (options as Record<string, unknown>).path === 'string';
+    const options: unknown = normalizedConnectOptions(args);
+    const record = options as Record<string, unknown>;
+    const isUnix = typeof record.path === 'string';
     if (!isUnix && !isLoopbackTarget(options)) {
-      refuse('net.Socket.connect', describeTarget(options));
+      // Preserve node's asynchronous error contract: throwing synchronously
+      // through the native connect bridge aborts the process. Destroying with
+      // the error emits 'error' on the next turn, which fails the calling test.
+      const message = `[hermeticity] admission tests must not use the network: `
+        + `net.Socket.connect -> ${describeTarget(options)}. `
+        + 'Serve the fixture from the local filesystem or a loopback in-process fake. '
+        + 'Explicit override (never in admission lanes): JUNO_TEST_ALLOW_NETWORK=1.';
+      setImmediate(() => this.destroy(new Error(message)));
+      return this;
     }
     return originalSocketConnect.apply(this, args);
   };

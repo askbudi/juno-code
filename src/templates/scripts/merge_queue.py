@@ -1232,7 +1232,7 @@ def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any
 
 FULL_SUITE_RETRY_MAX_FILES = 4
 FULL_SUITE_RETRY_MAX_ATTEMPTS = 2
-FULL_SUITE_RETRY_TAIL_CHARS = 1200
+FULL_SUITE_RETRY_TAIL_BYTES = 4096  # verifier bound: _validate_full_suite_retries
 FULL_SUITE_RETRY_LOG_READ_BYTES = 1_048_576
 _VITEST_FAIL_LINE = re.compile(
     r"^\s*(?:\x1b\[[0-9;]*m|\s)*FAIL(?:\s|\x1b\[[0-9;]*m)+(\S+\.test\.[a-zA-Z0-9]+)(?:\s|$)")
@@ -1327,8 +1327,12 @@ def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
             if run["exit_code"] == 0 and not run["timed_out"]:
                 passed = True
                 break
+        # Slice by bytes, not chars: a multibyte-heavy tail sliced by chars can
+        # exceed the verifier's 4096-byte bound and be refused fail-closed.
+        tail_bytes = final_tail.encode("utf-8", errors="replace")
         entries.append({"file": suite_file, "passed": passed, "attempts": attempts,
-                        "final_tail": final_tail[-FULL_SUITE_RETRY_TAIL_CHARS:]})
+                        "final_tail": tail_bytes[-FULL_SUITE_RETRY_TAIL_BYTES:].decode(
+                            "utf-8", errors="ignore")})
         if not passed:
             break
     return {
