@@ -1233,6 +1233,7 @@ def fit_full_suite_receipt(receipt: dict[str, Any], limit: int) -> dict[str, Any
 FULL_SUITE_RETRY_MAX_FILES = 4
 FULL_SUITE_RETRY_MAX_ATTEMPTS = 2
 FULL_SUITE_RETRY_TAIL_CHARS = 1200
+FULL_SUITE_RETRY_LOG_READ_BYTES = 1_048_576
 _VITEST_FAIL_LINE = re.compile(
     r"^\s*(?:\x1b\[[0-9;]*m|\s)*FAIL(?:\s|\x1b\[[0-9;]*m)+(\S+\.test\.[a-zA-Z0-9]+)(?:\s|$)")
 _VITEST_SUMMARY_FILES = re.compile(
@@ -1254,6 +1255,33 @@ def _vitest_failed_files(output: str) -> list[str]:
     return files
 
 
+def _suite_failure_output(evidence: dict[str, Any]) -> Optional[str]:
+    """Authoritative bounded reporter output for retry parsing.
+
+    Admission rows cap receipt tails at max_output_bytes while real suites
+    emit far more, so the tail is routinely truncated. run_validation preserves
+    the complete combined stream in its long-run log: parse that instead. The
+    bounded log tail is rejected when the terminal summary is absent, and the
+    caller still reconciles the summary count against the parsed FAIL lines.
+    """
+    log_path = evidence.get("log_path")
+    if (isinstance(log_path, str) and log_path
+            and evidence.get("log_write_failed") is not True):
+        try:
+            with open(log_path, "rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - FULL_SUITE_RETRY_LOG_READ_BYTES))
+                data = stream.read()
+        except OSError:
+            return None
+        return data.decode("utf-8", errors="replace")
+    if evidence["stdout_truncated_bytes"] or evidence["stderr_truncated_bytes"]:
+        return None
+    return "\n".join(
+        part for part in (evidence["stderr_tail"], evidence["stdout_tail"]) if part)
+
+
 def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
                        candidate: Path,
                        dependency_source: Optional[Path] = None) -> Optional[dict[str, Any]]:
@@ -1266,18 +1294,18 @@ def bounded_file_retry(row: dict[str, Any], cwd: Path, evidence: dict[str, Any],
     alone is a real failure and the original verdict stands. Timeouts, broad
     failures, and non-vitest commands are never retried.
 
-    Absorption is bound to the reporter's own terminal summary: both stream
-    tails must be untruncated, a "Test Files  N failed" summary must be
-    present, and its failed-file count must equal the parsed FAIL-line count.
-    Truncated or aborted reporter output therefore yields no retry instead of
-    silently absorbing an unseen failure.
+    Absorption is bound to the reporter's own terminal summary read from the
+    preserved full run log (bounded to its last megabyte; untruncated tails are
+    the fallback): a "Test Files  N failed" summary must be present and its
+    failed-file count must equal the parsed unique FAIL-line count. Truncated
+    or aborted reporter output therefore yields no retry instead of silently
+    absorbing an unseen failure.
     """
     if evidence["timed_out"] or not _vitest_suite_row(row):
         return None
-    if evidence["stdout_truncated_bytes"] or evidence["stderr_truncated_bytes"]:
+    combined_output = _suite_failure_output(evidence)
+    if combined_output is None:
         return None
-    combined_output = "\n".join(
-        part for part in (evidence["stderr_tail"], evidence["stdout_tail"]) if part)
     files = _vitest_failed_files(combined_output)
     if not files or len(files) > FULL_SUITE_RETRY_MAX_FILES:
         return None

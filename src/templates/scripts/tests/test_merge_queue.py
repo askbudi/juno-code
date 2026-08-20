@@ -3348,7 +3348,9 @@ def _retry_resource() -> dict:
 
 def _retry_evidence(row_id: str, argv: list[str], *, exit_code: int,
                     timed_out: bool = False, stderr_tail: str = "",
-                    stderr_truncated_bytes: Optional[int] = None) -> dict:
+                    stderr_truncated_bytes: Optional[int] = None,
+                    log_path: Optional[str] = None,
+                    log_write_failed: bool = False) -> dict:
     payload = (stderr_tail or "suite output").encode()
     truncated = max(0, len(payload) - 512) if stderr_truncated_bytes is None else stderr_truncated_bytes
     return {"id": row_id, "argv": argv, "exit_code": exit_code, "timed_out": timed_out,
@@ -3357,7 +3359,8 @@ def _retry_evidence(row_id: str, argv: list[str], *, exit_code: int,
                          "candidate_sha": "1" * 40, "candidate_tree": "2" * 40},
             "stdout_sha256": HEX64, "stdout_tail": "", "stdout_truncated_bytes": 0,
             "stderr_sha256": HEX64, "stderr_tail": stderr_tail,
-            "stderr_truncated_bytes": truncated}
+            "stderr_truncated_bytes": truncated,
+            "log_path": log_path, "log_write_failed": log_write_failed}
 
 
 class FullSuiteFileRetryTests(unittest.TestCase):
@@ -3394,7 +3397,9 @@ class FullSuiteFileRetryTests(unittest.TestCase):
                                    exit_code=spec["exit_code"],
                                    timed_out=spec.get("timed_out", False),
                                    stderr_tail=spec.get("stderr_tail", ""),
-                                   stderr_truncated_bytes=spec.get("stderr_truncated_bytes"))
+                                   stderr_truncated_bytes=spec.get("stderr_truncated_bytes"),
+                                   log_path=spec.get("log_path"),
+                                   log_write_failed=spec.get("log_write_failed", False))
 
         with mock.patch.object(merge_runtime.task_runtime, "run_validation",
                                side_effect=fake_run_validation):
@@ -3408,8 +3413,12 @@ class FullSuiteFileRetryTests(unittest.TestCase):
                       "\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > other\n"
                       "\n Test Files  1 failed | 25 passed (26)\n"
                       "      Tests  2 failed | 100 passed (102)\n")
+        log_path = self.root / "suite-run.log"
+        log_path.write_text(
+            "noise\n" * 40000 + flake_tail + "\n Test Files  1 failed | 25 passed (26)\n")
         self._run_suite([
-            {"exit_code": 1, "stderr_tail": flake_tail},
+            {"exit_code": 1, "stderr_tail": flake_tail[:64],
+             "stderr_truncated_bytes": 235808, "log_path": str(log_path)},
             {"exit_code": 0},
         ])
         receipt = json.loads(self.receipt_paths[0].read_text())
@@ -3481,7 +3490,8 @@ class FullSuiteFileRetryTests(unittest.TestCase):
                 "\n Test Files  1 failed | 25 passed (26)\n")
         with self.assertRaisesRegex(merge_runtime.MergeValidationError, "full-suite validation failed"):
             self._run_suite([{"exit_code": 1, "stderr_tail": tail,
-                              "stderr_truncated_bytes": 4096}])
+                              "stderr_truncated_bytes": 4096,
+                              "log_write_failed": True}])
         receipt = json.loads(self.receipt_paths[0].read_text())
         self.assertNotIn("retries", receipt["result"])
         self.assertEqual(len(self.executed), 1)

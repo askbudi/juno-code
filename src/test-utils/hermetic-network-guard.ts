@@ -32,6 +32,14 @@ function refuse(kind: string, target: string): never {
   throw new Error(message);
 }
 
+function isLoopbackTarget(options: unknown): boolean {
+  if (typeof options !== 'object' || options === null) return false;
+  const record = options as Record<string, unknown>;
+  if (record.path !== undefined) return false; // unix domain socket: always local
+  const host = typeof record.host === 'string' ? record.host : null;
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
+
 if (!allowNetwork) {
   // Patching the prototype method covers net.createConnection, net.connect,
   // and every higher-level client (undici/http) because they all funnel new
@@ -49,7 +57,9 @@ if (!allowNetwork) {
     const isUnix = typeof options === 'object'
       && options !== null
       && typeof (options as Record<string, unknown>).path === 'string';
-    if (!isUnix) refuse('net.Socket.connect', describeTarget(options));
+    if (!isUnix && !isLoopbackTarget(options)) {
+      refuse('net.Socket.connect', describeTarget(options));
+    }
     return originalSocketConnect.apply(this, args);
   };
 }

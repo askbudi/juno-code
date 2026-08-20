@@ -6,6 +6,41 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { getInvocationTelemetryDirectory } from '../invocation-telemetry.js';
 import { InvocationLifecycle } from '../invocation-lifecycle.js';
+import { contentionBudgetMs } from '../../test-utils/contention-budget.js';
+
+/**
+ * Event-first bounded wait for subprocess-produced artifacts: a directory
+ * watcher fires as soon as the producer writes, and a short poll is only a
+ * missed-event fallback. The deadline scales with measured host contention
+ * (clamped [1,4]) so a loaded shared machine cannot turn child readiness into
+ * a phantom failure; like the historical fixed polls it resolves (never
+ * rejects) at its deadline, leaving assertions to the caller.
+ */
+async function waitUntil(predicate: () => Promise<boolean>, baseBudgetMs: number, watchDir?: string): Promise<void> {
+  if (await predicate()) return;
+  const startedAt = Date.now();
+  await new Promise<void>((resolve) => {
+    let watcher: import('node:fs').FSWatcher | undefined;
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(expire);
+      watcher?.close();
+      resolve();
+    };
+    const check = (): void => { void predicate().then((ready) => { if (ready) done(); }, () => undefined); };
+    const poll = setInterval(check, 10);
+    const expire = setTimeout(done, Math.max(1, contentionBudgetMs(baseBudgetMs) - (Date.now() - startedAt)));
+    if (watchDir) {
+      void import('node:fs').then((fs) => {
+        watcher = fs.watch(watchDir, check);
+        watcher.on('error', () => undefined);
+      });
+    }
+  });
+}
 
 const roots: string[] = [];
 const helper = path.resolve('src/core/__tests__/helpers/invocation-lifecycle-subprocess.ts');
@@ -41,9 +76,7 @@ async function createActualProject(root: string, piSource: string): Promise<{ pr
 }
 
 async function waitForEvent(root: string, stateRoot: string = root): Promise<void> {
-  for (let attempt = 0; attempt < 300 && (await events(root, stateRoot)).length === 0; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await waitUntil(async () => (await events(root, stateRoot)).length > 0, 10_000);
 }
 
 async function events(root: string, stateRoot: string = root): Promise<Record<string, any>[]> {
@@ -306,9 +339,7 @@ setInterval(() => {}, 1000);
       env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
       stdio: 'ignore',
     });
-    for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(root, 'runtime-pid'))); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitUntil(() => fs.pathExists(path.join(root, 'runtime-pid')), 10_000, root);
     expect(Number(await fs.readFile(path.join(root, 'runtime-pid'), 'utf8'))).toBe(child.pid);
     child.kill('SIGKILL');
     expect(await close(child)).toEqual({ code: null, signal: 'SIGKILL' });
@@ -501,9 +532,7 @@ sys.exit(1)
         env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
         stdio: 'ignore',
       });
-      for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(root, 'child-ready'))); attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      await waitUntil(() => fs.pathExists(path.join(root, 'child-ready')), 10_000, root);
       child.kill(signal);
       expect(await close(child)).toEqual({ code: 0, signal: null });
       const written = await events(root);
@@ -608,9 +637,7 @@ sys.exit(1)
     async (signal) => {
       const root = await temp(signal.toLowerCase());
       const child = spawn('wait', root);
-      for (let attempt = 0; attempt < 100 && (await events(root)).length === 0; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      await waitUntil(async () => (await events(root)).length > 0, 10_000);
       child.kill(signal);
       expect(await close(child)).toEqual({ code: 0, signal: null });
       const written = await events(root);

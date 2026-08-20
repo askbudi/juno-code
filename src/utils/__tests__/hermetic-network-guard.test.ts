@@ -18,6 +18,16 @@ describe('admission hermeticity guard', () => {
       .toThrow(/admission tests must not use the network: net\.Socket\.connect/);
   });
 
+  it('permits loopback connects for local fixtures while refusing external hosts', () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      const socket = new net.Socket();
+      socket.on('error', () => undefined);
+      expect(() => socket.connect({ host, port: 9 })).not.toThrow(
+        /admission tests must not use the network/);
+      socket.destroy();
+    }
+  });
+
   it('keeps unix domain socket connects available for local fixtures', () => {
     const socket = new net.Socket();
     socket.on('error', () => undefined);
