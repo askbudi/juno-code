@@ -3506,6 +3506,57 @@ def review_target_checkpoint(controller: Path, config: dict[str, Any], repositor
     return None
 
 
+def verify_standing_validation(record: dict[str, Any]) -> dict[str, Any]:
+    """Re-verify task-finish standing evidence before expensive queue work."""
+    closure = record.get("review_ready_closure")
+    standing = closure.get("standing_validation") if isinstance(closure, dict) else None
+    if not isinstance(standing, dict):
+        return {"status": "legacy_task_validation"}
+    if (standing.get("schema_version") != task_runtime.STANDING_EVIDENCE_SCHEMA
+            or standing.get("outcome") != "PASSED"
+            or standing.get("tip_sha") != record.get("tip_sha")
+            or not isinstance(standing.get("plan_sha256"), str)
+            or not isinstance(standing.get("receipts"), list)
+            or not standing["receipts"]):
+        raise MergeQueueError("standing validation closure is malformed or failed")
+    verified: list[dict[str, str]] = []
+    summary_parent: Optional[Path] = None
+    for reference in standing["receipts"]:
+        if (not isinstance(reference, dict) or set(reference) != {"path", "sha256", "command_id"}
+                or not isinstance(reference["path"], str)):
+            raise MergeQueueError("standing validation reference is malformed")
+        path = Path(reference["path"])
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                raise MergeQueueError("standing validation receipt exceeds the byte bound")
+            data = path.read_bytes(); receipt = json.loads(data)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MergeQueueError("standing validation receipt is unavailable") from exc
+        if (hashlib.sha256(data).hexdigest() != reference["sha256"]
+                or receipt.get("schema_version") != task_runtime.STANDING_EVIDENCE_SCHEMA
+                or receipt.get("task_id") != record.get("task_id")
+                or receipt.get("tip_sha") != standing["tip_sha"]
+                or receipt.get("plan_sha256") != standing["plan_sha256"]
+                or receipt.get("command", {}).get("id") != reference["command_id"]
+                or receipt.get("result", {}).get("exit_code") != 0
+                or receipt.get("result", {}).get("timed_out")):
+            raise MergeQueueError("standing validation receipt identity or verdict is invalid")
+        summary_parent = path.parent if summary_parent is None else summary_parent
+        if path.parent != summary_parent:
+            raise MergeQueueError("standing validation receipts do not share one plan root")
+        verified.append({"command_id": reference["command_id"], "sha256": reference["sha256"]})
+    try:
+        summary = json.loads((summary_parent / "summary.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MergeQueueError("standing validation summary is unavailable") from exc
+    if (task_runtime.stable_sha256(summary) != standing.get("summary_sha256")
+            or summary.get("outcome") != "PASSED"
+            or summary.get("plan_sha256") != standing["plan_sha256"]):
+        raise MergeQueueError("standing validation summary identity is invalid")
+    return {"status": "verified", "commands": verified,
+            "plan_sha256": standing["plan_sha256"]}
+
+
 def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None:
     """Fail the review before, not after, expensive validation.
 
@@ -3556,6 +3607,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         candidate_root = (task_runtime.exact_root(Path(checkout_value), "review candidate")
                           if checkout_value else validate_record(config, repository, record))
         assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
+        standing_validation = verify_standing_validation(record)
         claimed: Optional[dict[str, Any]] = None
         try:
             policy = risk_runtime.load_policy(risk_policy_path(controller))
@@ -3613,7 +3665,8 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                 config, plan["candidate"]["changed_paths"])
             legacy_command = full_suite_command(config)
             stored = {**stored, "review_progress": progress}
-            attempt = {**attempt, "risk": stored, "review": stored}
+            attempt = {**attempt, "risk": stored, "review": stored,
+                       "standing_validation": standing_validation}
             suite_admission = None
             prior_attempt = max(progress["attempt_counter"], progress["collision_floor"])
             existing_admission = progress["full_suite_admission"]

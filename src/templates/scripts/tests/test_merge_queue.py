@@ -3773,5 +3773,40 @@ class EvidenceReuseTests(unittest.TestCase):
         self.assertIn("source_receipt", row)
 
 
+class StandingValidationVerificationTests(unittest.TestCase):
+    def test_verifies_and_rejects_tampered_task_finish_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt_path = root / "plan" / "command.json"
+            receipt_path.parent.mkdir()
+            receipt = {"schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                       "task_id": "T1", "tip_sha": "a" * 40,
+                       "plan_sha256": "b" * 64,
+                       "command": {"id": "focused"},
+                       "result": {"exit_code": 0, "timed_out": False}}
+            data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            receipt_path.write_bytes(data)
+            reference = {"path": str(receipt_path),
+                         "sha256": hashlib.sha256(data).hexdigest(),
+                         "command_id": "focused"}
+            summary = {"schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                       "task_id": "T1", "plan_sha256": "b" * 64,
+                       "tip_sha": "a" * 40, "outcome": "PASSED",
+                       "executed": 1, "reused": 0, "receipts": [reference],
+                       "completed_at_unix_ns": 1}
+            (receipt_path.parent / "summary.json").write_text(json.dumps(summary))
+            record = {"task_id": "T1", "tip_sha": "a" * 40,
+                      "review_ready_closure": {"standing_validation": {
+                          "schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                          "tip_sha": "a" * 40, "plan_sha256": "b" * 64,
+                          "outcome": "PASSED", "receipts": [reference],
+                          "summary_sha256": task_runtime.stable_sha256(summary)}}}
+            verified = merge_runtime.verify_standing_validation(record)
+            self.assertEqual(verified["status"], "verified")
+            receipt_path.write_text("{}\n")
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "identity or verdict"):
+                merge_runtime.verify_standing_validation(record)
+
+
 if __name__ == "__main__":
     unittest.main()

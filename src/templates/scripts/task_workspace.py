@@ -3064,7 +3064,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     )
     routing = validation_profile_selection(config, changed)
     selected_focused = selected_focused_rows(config, changed)
-    validations = run_focused_validations(selected_focused, worktree)
+    checkpoint_plan = standing_checkpoint(controller, task_id)
+    standing = standing_evidence_run(controller, task_id, raise_on_failure=False)
+    if checkpoint_plan["plan_sha256"] != standing["plan_sha256"]:
+        raise TaskWorkspaceError("standing evidence plan changed during finish")
+    validations = [json.loads(Path(reference["path"]).read_text())["result"]
+                   for reference in standing["receipts"]]
+    closure_body = {key: value for key, value in closure.items() if key != "closure_sha256"}
+    closure_body["standing_validation"] = {
+        "schema_version": STANDING_EVIDENCE_SCHEMA,
+        "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
+        "outcome": standing["outcome"], "receipts": standing["receipts"],
+        "summary_sha256": stable_sha256(standing),
+    }
+    closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
     for row, evidence in zip(selected_focused, validations):
         if evidence["timed_out"] or evidence["exit_code"]:
             # Persist every terminal result from this one deterministic schedule.
