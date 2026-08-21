@@ -683,6 +683,45 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in retried["phases"]],
                          ["already_complete"])
 
+    def test_push_root_rechecks_remote_gitlinks_without_local_tracking_refs(self) -> None:
+        child_remote, child_base, child_advanced, root_target = (
+            self.unpublished_submodule_fixture()
+        )
+        git(child_remote, "update-ref", "refs/heads/main", child_advanced, child_base)
+        git(self.owner / "vendor/child", "update-ref", "refs/remotes/origin/main",
+            child_base)
+        self.assertEqual(
+            git(self.owner / "vendor/child", "rev-parse", "refs/remotes/origin/main"),
+            child_base)
+
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual([row["kind"] for row in planned["actions"]], ["push_root"])
+
+        applied, apply_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (0, "completed"), applied)
+        self.assertEqual([row["kind"] for row in applied["phases"]],
+                         ["verify_nested_gitlink_remote_closure", "push_root"])
+        self.assertEqual([row["outcome"] for row in applied["phases"]],
+                         ["verified", "pushed"])
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
+
+    def test_push_root_refuses_when_planned_child_remote_closure_changes(self) -> None:
+        child_remote, child_base, child_advanced, _ = self.unpublished_submodule_fixture()
+        git(child_remote, "update-ref", "refs/heads/main", child_advanced, child_base)
+        planned, plan_code = runtime.push(self.controller, dry_run=True, apply=None)
+        self.assertEqual((plan_code, planned["outcome"]), (0, "planned"), planned)
+        self.assertEqual([row["kind"] for row in planned["actions"]], ["push_root"])
+        git(child_remote, "update-ref", "refs/heads/main", child_base, child_advanced)
+
+        applied, apply_code = runtime.push(
+            self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
+        self.assertEqual((apply_code, applied["outcome"]), (2, "failed"), applied)
+        self.assertIn("nested gitlink remote closure changed", applied["error"])
+        self.assertEqual(applied["phases"][-1]["outcome"], "refused")
+        self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), self.base)
+
     def test_bare_push_plans_and_applies_with_bound_terminal_receipts(self) -> None:
         advanced = self.local_advance()
         runtime.register(self.controller, self.owner)
@@ -752,7 +791,7 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         original = runtime.run
 
         def fail_root_push(argv: list[str], cwd: Path, *, check: bool = True):
-            if "push" in argv and "--recurse-submodules=check" in argv:
+            if argv[:4] == ["git", "-C", str(self.owner.resolve()), "push"]:
                 raise runtime.IntegrationError("injected root publication failure")
             return original(argv, cwd, check=check)
 
@@ -764,13 +803,14 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(child_remote, "rev-parse", "refs/heads/main"), child_advanced)
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), self.base)
         persisted = json.loads(Path(failed["receipt"]["path"]).read_text())
-        self.assertEqual([row["kind"] for row in persisted["phases"]], ["push_submodule"])
+        self.assertEqual([row["kind"] for row in persisted["phases"]],
+                         ["push_submodule", "verify_nested_gitlink_remote_closure"])
 
         retried, retry_code = runtime.push(
             self.controller, dry_run=False, apply=Path(planned["receipt"]["path"]))
         self.assertEqual((retry_code, retried["outcome"]), (0, "completed"), retried)
         self.assertEqual([row["outcome"] for row in retried["phases"]],
-                         ["already_complete", "pushed"])
+                         ["already_complete", "verified", "pushed"])
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
 
 

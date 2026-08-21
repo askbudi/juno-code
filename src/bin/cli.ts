@@ -88,6 +88,8 @@ import { createAuthCommand } from '../cli/commands/auth.js';
 import { configureTaskWorkspaceCommand } from '../cli/commands/task.js';
 import { configureIntegrationCommand } from '../cli/commands/integration.js';
 import { configureMergeQueueCommand } from '../cli/commands/merge.js';
+import { configureWatchCommand } from '../cli/commands/watch.js';
+import { configureEvidenceCommand } from '../cli/commands/evidence.js';
 import { configureReleaseTrainCommand } from '../cli/commands/release.js';
 import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
@@ -414,6 +416,22 @@ function getForwardedUntilCompletionArgs(): string[] {
       continue;
     }
 
+    // --max-iterations (and its -i short form) is the OUTER run-until loop
+    // bound under until-completion. It is translated into the script's own
+    // --max-iterations argument below and must never reach inner agent
+    // sessions, where it previously bounded only the inner loop and let a
+    // completed one-pass session start a duplicate run.
+    if (arg === '--max-iterations' || arg === '-i') {
+      if (i + 1 < args.length && args[i + 1] && !args[i + 1]!.startsWith('-')) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--max-iterations=')) {
+      continue;
+    }
+
     forwardedArgs.push(arg);
   }
 
@@ -480,6 +498,30 @@ async function runUntilCompletionScriptIfRequested(
 
   // Forward all juno-code arguments except completion flags and pre-run-hook values
   scriptArgs.push(...getForwardedUntilCompletionArgs());
+
+  // The outer iteration bound is passed to the script explicitly and is never
+  // forwarded to inner agent sessions. Negative values mean unlimited, which
+  // the script expresses as 0.
+  const outerBound = typeof options.maxIterations === 'number'
+    && Number.isFinite(options.maxIterations)
+    ? Math.trunc(options.maxIterations)
+    : null;
+  if (outerBound !== null && outerBound > 0) {
+    scriptArgs.unshift('--max-iterations', String(outerBound));
+    console.log(
+      chalk.cyan(
+        `Until-completion scope: outer loop bounded at ${outerBound} iteration(s); `
+        + 'inner agent sessions are not bounded by --max-iterations.',
+      ),
+    );
+  } else if (outerBound !== null) {
+    console.log(
+      chalk.cyan(
+        'Until-completion scope: outer loop unlimited (--max-iterations <= 0); '
+        + 'inner agent sessions are not bounded by --max-iterations.',
+      ),
+    );
+  }
 
   // Execute and join the producer. The outer invocation must not report a
   // terminal event while this child is still running.
@@ -1992,6 +2034,8 @@ function configureCommandSurface(program: Command): void {
   configureTaskWorkspaceCommand(program);
   configureIntegrationCommand(program);
   configureMergeQueueCommand(program);
+  configureWatchCommand(program);
+  configureEvidenceCommand(program);
   configureReleaseTrainCommand(program);
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);

@@ -1,4 +1,5 @@
 import * as childProcess from 'node:child_process';
+import * as fsNode from 'node:fs';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 import { build } from 'esbuild';
@@ -41,9 +42,69 @@ async function createActualProject(root: string, piSource: string): Promise<{ pr
 }
 
 async function waitForEvent(root: string, stateRoot: string = root): Promise<void> {
-  for (let attempt = 0; attempt < 300 && (await events(root, stateRoot)).length === 0; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  const telemetry = telemetryDirectory(root, stateRoot);
+  await waitUntil(async () => (await events(root, stateRoot)).length > 0, [telemetry]);
+}
+
+/**
+ * Event-first bounded wait: subscribe to directory watchers before probing so
+ * child readiness observed through file creation/telemetry writes re-probes
+ * immediately, with a bounded poll fallback that guards against missed events.
+ * The overall deadline is a contention budget rather than a fixed retry count,
+ * so shared-host load extends the wait instead of producing phantom admission
+ * failures. Timeouts stay non-throwing (returns false) to preserve the
+ * historical poll-loop semantics.
+ */
+async function waitUntil(
+  probe: () => Promise<boolean>,
+  watchDirectories: readonly string[],
+  options: { contentionBudgetMs?: number; pollIntervalMs?: number } = {},
+): Promise<boolean> {
+  const contentionBudgetMs = options.contentionBudgetMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 25;
+  const deadline = Date.now() + contentionBudgetMs;
+  const watchers: fsNode.FSWatcher[] = [];
+  let wake: (() => void) | null = null;
+
+  const watchNearest = (directory: string): void => {
+    let candidate = directory;
+    let depth = 0;
+    // Watch the directory itself, or the nearest existing ancestor. Watching
+    // an ancestor is only a best-effort signal; the bounded poll remains the
+    // correctness guarantee.
+    while (depth < 8) {
+      try {
+        watchers.push(fsNode.watch(candidate, { persistent: false }, () => wake?.()));
+        return;
+      } catch {
+        const parent = path.dirname(candidate);
+        if (parent === candidate) return;
+        candidate = parent;
+        depth += 1;
+      }
+    }
+  };
+
+  for (const directory of new Set(watchDirectories)) watchNearest(directory);
+  try {
+    for (;;) {
+      if (await probe()) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      const event = new Promise<void>((resolve) => { wake = resolve; });
+      const slice = Math.max(1, Math.min(pollIntervalMs, remaining));
+      const timer = new Promise<'timer'>((resolve) => setTimeout(resolve, slice, 'timer'));
+      await Promise.race([event.then(() => 'event' as const), timer]);
+      wake = null;
+    }
+  } finally {
+    wake = null;
+    for (const watcher of watchers) watcher.close();
   }
+}
+
+function telemetryDirectory(root: string, stateRoot: string = root): string {
+  return getInvocationTelemetryDirectory(root, { XDG_STATE_HOME: path.join(stateRoot, 'state') });
 }
 
 async function events(root: string, stateRoot: string = root): Promise<Record<string, any>[]> {
@@ -306,9 +367,10 @@ setInterval(() => {}, 1000);
       env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
       stdio: 'ignore',
     });
-    for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(root, 'runtime-pid'))); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    expect(await waitUntil(
+      async () => fs.pathExists(path.join(root, 'runtime-pid')),
+      [root],
+    )).toBe(true);
     expect(Number(await fs.readFile(path.join(root, 'runtime-pid'), 'utf8'))).toBe(child.pid);
     child.kill('SIGKILL');
     expect(await close(child)).toEqual({ code: null, signal: 'SIGKILL' });
@@ -501,9 +563,10 @@ sys.exit(1)
         env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
         stdio: 'ignore',
       });
-      for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(root, 'child-ready'))); attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      expect(await waitUntil(
+        async () => fs.pathExists(path.join(root, 'child-ready')),
+        [root],
+      )).toBe(true);
       child.kill(signal);
       expect(await close(child)).toEqual({ code: 0, signal: null });
       const written = await events(root);
@@ -608,9 +671,11 @@ sys.exit(1)
     async (signal) => {
       const root = await temp(signal.toLowerCase());
       const child = spawn('wait', root);
-      for (let attempt = 0; attempt < 100 && (await events(root)).length === 0; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      expect(await waitUntil(
+        async () => (await events(root)).length > 0,
+        [telemetryDirectory(root)],
+        { contentionBudgetMs: 15_000 },
+      )).toBe(true);
       child.kill(signal);
       expect(await close(child)).toEqual({ code: 0, signal: null });
       const written = await events(root);
@@ -624,9 +689,13 @@ sys.exit(1)
   it('does not dispatch when a signal arrives during the bounded start write', async () => {
     const root = await temp('slow-start-signal');
     const child = spawn('slow-start', root);
-    for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(root, 'ready'))); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    // The child opens a 10ms signal grace window right after `ready` appears;
+    // keep the poll slice tight so the kill lands inside that window.
+    expect(await waitUntil(
+      async () => fs.pathExists(path.join(root, 'ready')),
+      [root],
+      { pollIntervalMs: 1 },
+    )).toBe(true);
     child.kill('SIGTERM');
     expect(await close(child)).toEqual({ code: 0, signal: null });
     expect(await fs.pathExists(path.join(root, 'dispatched'))).toBe(false);
@@ -662,9 +731,10 @@ while true; do sleep 0.05; done
       env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
       stdio: 'ignore',
     });
-    for (let attempt = 0; attempt < 200 && !(await fs.pathExists(path.join(project, 'child-ready'))); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    expect(await waitUntil(
+      async () => fs.pathExists(path.join(project, 'child-ready')),
+      [project],
+    )).toBe(true);
     child.kill('SIGTERM');
     expect(await close(child)).toEqual({ code: 0, signal: null });
     expect(await fs.readFile(path.join(project, 'child-finished'), 'utf8')).toBe('done\n');

@@ -10,6 +10,7 @@ import io
 import json
 import os
 import subprocess
+import shutil
 import sys
 import stat
 import tempfile
@@ -3147,6 +3148,62 @@ raise SystemExit(2)
         # Status is read-only: persisted WORKING truth remains the immutable A snapshot.
         self.assertEqual((self.controller / ".juno_task/state/tasks.json").read_bytes(), frozen_state)
 
+    def test_status_reports_committed_and_uncommitted_paths_separately(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X", "src/committed.txt")
+        worktree = self.workspaces / "X"
+        (worktree / "src/uncommitted.txt").write_text("dirty\n")
+        (worktree / "src/tracked-dirty.txt").write_text("base\n")
+        payload = self.payload("status", "X")
+        self.assertEqual(payload["tip_sha"], tip)
+        self.assertEqual(payload["changed_paths"], ["src/committed.txt"])
+        self.assertEqual(payload["uncommitted_paths"], ["src/tracked-dirty.txt", "src/uncommitted.txt"])
+        self.assertEqual(payload["changed_paths_scope"], "base_sha..tip committed diff")
+
+    def test_status_reports_uncommitted_only_and_clean_cases(self) -> None:
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "src/uncommitted-only.txt").write_text("dirty\n")
+        uncommitted_only = self.payload("status", "X")
+        self.assertEqual(uncommitted_only["changed_paths"], [])
+        self.assertEqual(uncommitted_only["uncommitted_paths"], ["src/uncommitted-only.txt"])
+        git(worktree, "add", "src/uncommitted-only.txt")
+        staged = self.payload("status", "X")
+        self.assertEqual(staged["changed_paths"], [])
+        self.assertEqual(staged["uncommitted_paths"], ["src/uncommitted-only.txt"])
+        git(worktree, "reset", "--hard", "HEAD")
+        clean = self.payload("status", "X")
+        self.assertEqual(clean["changed_paths"], [])
+        self.assertEqual(clean["uncommitted_paths"], [])
+
+    def test_status_reports_committed_paths_when_target_moved(self) -> None:
+        self.payload("start", "X")
+        tip = self.commit_task("X", "src/committed.txt")
+        self.advance_target()
+        payload = self.payload("status", "X")
+        self.assertTrue(payload["target_moved"])
+        self.assertEqual(payload["tip_sha"], tip)
+        self.assertEqual(payload["changed_paths"], ["src/committed.txt"])
+        self.assertEqual(payload["uncommitted_paths"], [])
+
+    def test_exact_root_accepts_platform_alias_spelling_of_same_worktree(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("darwin /var -> /private/var compatibility alias required")
+        raw = Path(tempfile.mkdtemp(prefix="alias-probe-"))
+        self.addCleanup(shutil.rmtree, raw, ignore_errors=True)
+        if raw.resolve() == raw:
+            self.skipTest("temp root is not reachable through a platform alias")
+        probe = raw / "repo"
+        probe.mkdir()
+        git(probe, "init", "-b", "probe")
+        # The alias spelling (for example /var/folders/...) must be accepted and
+        # normalize to the physical /private/... form that git rev-parse
+        # reports, instead of failing the lexical comparison.
+        normalized = task_runtime.exact_root(probe, "alias worktree", physical_identity=True)
+        self.assertEqual(normalized, probe.resolve())
+        # The physical spelling stays accepted and both forms agree.
+        self.assertEqual(task_runtime.exact_root(probe.resolve(), "physical worktree"), probe.resolve())
+
     def test_status_and_finish_refuse_moved_worktree_symlink_substitution(self) -> None:
         self.payload("start", "X")
         admitted = self.workspaces / "X"
@@ -3234,10 +3291,14 @@ raise SystemExit(2)
         self.payload("start", "X")
         worktree = self.workspaces / "X"
         (worktree / "src/dirty.txt").write_text("dirty\n")
-        for operation in ("status", "finish"):
-            failed = self.command(operation, "X", False)
-            self.assertEqual(failed.returncode, 2)
-            self.assertIn("worktree is dirty", failed.stderr)
+        # Status keeps reporting committed and uncommitted paths separately on a
+        # dirty tree; only finish refuses the unclean worktree before queueing.
+        live = self.payload("status", "X")
+        self.assertEqual(live["changed_paths"], [])
+        self.assertEqual(live["uncommitted_paths"], ["src/dirty.txt"])
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("worktree is dirty", failed.stderr)
         (worktree / "src/dirty.txt").unlink()
 
         git(worktree, "config", "--worktree", "juno.workspace.role", "integration-owner")
@@ -3342,7 +3403,17 @@ raise SystemExit(2)
         self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
                          "WORKING")
         queued = self.payload("finish", "X")
-        self.assertEqual(queued["review_ready_closure"], closure)
+        queued_closure = queued["review_ready_closure"]
+        for key, value in closure.items():
+            if key != "closure_sha256":
+                self.assertEqual(queued_closure[key], value)
+        standing = queued_closure["standing_validation"]
+        self.assertEqual(standing["outcome"], "PASSED")
+        self.assertEqual(standing["tip_sha"], tip)
+        queued_body = {key: value for key, value in queued_closure.items()
+                       if key != "closure_sha256"}
+        self.assertEqual(queued_closure["closure_sha256"],
+                         task_runtime.stable_sha256(queued_body))
 
     def test_finish_refuses_failed_focused_validation_without_state_advance(self) -> None:
         self.payload("start", "X")
@@ -3680,6 +3751,32 @@ finished = time.monotonic()
         self.assertEqual(finished["validation_routing"],
                          {"mode": "profile", "profile_ids": ["pkg-suite"],
                           "authored_path_count": 1})
+
+    def test_standing_evidence_replay_cuts_redundant_runs_by_eighty_percent(self) -> None:
+        counter = self.root / "standing-counter.txt"
+        code = f"from pathlib import Path; Path({str(counter)!r}).open('a').write('run\\n')"
+        self.write_policy(validation_code=code)
+        self.payload("start", "X")
+        self.commit_task("X")
+        first_plan = self.payload("checkpoint", "X")
+        runs = [self.payload("evidence-run", "X") for _ in range(5)]
+        self.assertEqual(first_plan["plan_sha256"], runs[0]["plan_sha256"])
+        self.assertEqual(runs[0]["executed"], 1)
+        self.assertTrue(all(item["reused"] == 1 for item in runs[1:]))
+        self.assertEqual(counter.read_text().splitlines(), ["run"])
+        baseline, actual = 5, len(counter.read_text().splitlines())
+        self.assertGreaterEqual((baseline - actual) / baseline, 0.8)
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/repair.txt").write_text("repair\n")
+        git(worktree, "add", "src/repair.txt")
+        git(worktree, "commit", "-m", "repair")
+        repaired = self.payload("checkpoint", "X")
+        self.assertNotEqual(repaired["plan_sha256"], first_plan["plan_sha256"])
+        superseded = (self.controller / task_runtime.STANDING_ROOT / "X" /
+                      first_plan["plan_sha256"] /
+                      f"superseded-by-{repaired['plan_sha256']}.json")
+        self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
 
 
 if __name__ == "__main__":

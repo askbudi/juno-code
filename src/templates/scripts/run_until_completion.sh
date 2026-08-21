@@ -87,6 +87,11 @@ declare -a PRE_RUN_CMDS=()
 declare -a PRE_RUN_HOOKS=()
 declare -a JUNO_ARGS=()
 
+# Outer run-until iteration bound. This is the OUTER loop limit only; it never
+# bounds inner agent sessions. 0 means unlimited. Precedence: explicit
+# --max-iterations argument, then JUNO_RUN_UNTIL_MAX_ITERATIONS, then 0.
+OUTER_MAX_ITERATIONS="${JUNO_RUN_UNTIL_MAX_ITERATIONS:-0}"
+
 # Configuration file path
 CONFIG_FILE=".juno_task/config.json"
 
@@ -116,6 +121,27 @@ parse_arguments() {
                 ;;
             --no-stale-check)
                 STALE_THRESHOLD=0
+                shift
+                ;;
+            --max-iterations)
+                if [[ -z "${2:-}" ]]; then
+                    echo "[ERROR] --max-iterations requires a number argument" >&2
+                    exit 1
+                fi
+                if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                    echo "[ERROR] --max-iterations must be a non-negative integer, got: $2" >&2
+                    exit 1
+                fi
+                OUTER_MAX_ITERATIONS="$2"
+                shift 2
+                ;;
+            --max-iterations=*)
+                local max_iterations_value="${1#--max-iterations=}"
+                if ! [[ "$max_iterations_value" =~ ^[0-9]+$ ]]; then
+                    echo "[ERROR] --max-iterations must be a non-negative integer, got: $max_iterations_value" >&2
+                    exit 1
+                fi
+                OUTER_MAX_ITERATIONS="$max_iterations_value"
                 shift
                 ;;
             --pre-run-hook|--pre-run-hooks|--run-pre-hook|--run-pre-hooks)
@@ -482,10 +508,11 @@ has_remaining_tasks() {
 # Main run loop
 main() {
     local iteration=0
-    local max_iterations="${JUNO_RUN_UNTIL_MAX_ITERATIONS:-0}"  # 0 = unlimited
 
-    # Parse arguments first to extract --pre-run commands
+    # Parse arguments first to extract --pre-run commands and the outer bound
     parse_arguments "$@"
+
+    local max_iterations="$OUTER_MAX_ITERATIONS"
 
     log_status "=== Run Until Completion ==="
     if [[ ${#PRE_RUN_HOOKS[@]} -gt 0 ]]; then
@@ -498,6 +525,7 @@ main() {
 
     if [ "$max_iterations" -gt 0 ]; then
         log_status "Maximum iterations: $max_iterations"
+        log_status "Iteration scope: outer run-until loop only; inner agent sessions are not bounded"
     else
         log_status "Maximum iterations: unlimited"
     fi
@@ -543,10 +571,10 @@ main() {
 
         # Check max iterations limit BEFORE running (prevents exceeding limit)
         if [ "$max_iterations" -gt 0 ] && [ "$iteration" -gt "$max_iterations" ]; then
-            log_warning ""
-            log_warning "=========================================="
-            log_warning "Maximum iterations ($max_iterations) reached. Exiting."
-            log_warning "=========================================="
+            log_success ""
+            log_success "=========================================="
+            log_success "Maximum iterations ($max_iterations) reached. Exiting normally after $((iteration - 1)) iteration(s)."
+            log_success "=========================================="
             exit 0
         fi
 

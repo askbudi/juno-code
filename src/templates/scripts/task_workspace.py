@@ -67,6 +67,9 @@ PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
 VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
 VALIDATION_PHASES = ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN")
 VALIDATION_TERMINALS = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
+STANDING_EVIDENCE_SCHEMA = "juno_standing_validation_evidence.v1"
+STANDING_PLAN_SCHEMA = "juno_standing_validation_plan.v1"
+STANDING_ROOT = ".juno_task/runtime/standing-evidence"
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -472,6 +475,30 @@ def lexical_absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
 
 
+# Platform-canonical alias prefixes: darwin exposes /var, /tmp, and /etc as
+# compatibility symlinks into /private. Git resolves those links when it
+# reports a worktree root, so the alias spelling of an already proven physical
+# worktree is identity-equivalent. Any other symlink component stays refused.
+DARWIN_ALIAS_PREFIXES = (("/var", "/private/var"), ("/tmp", "/private/tmp"),
+                         ("/etc", "/private/etc"))
+
+
+def platform_alias_normalize(path: Path) -> Path:
+    """Rewrite genuine platform alias prefixes; never touch other spellings."""
+    if sys.platform != "darwin":
+        return path
+    for alias, canonical in DARWIN_ALIAS_PREFIXES:
+        if path == Path(alias) or str(path).startswith(alias + "/"):
+            # Only rewrite when the alias is the operating system's own
+            # compatibility link. An attacker-created same-named directory
+            # must never inherit canonical identity.
+            alias_path = Path(alias)
+            if alias_path.is_symlink() and alias_path.resolve() == Path(canonical):
+                return Path(canonical + str(path)[len(alias):])
+            return path
+    return path
+
+
 def reject_symlink_components(path: Path, label: str) -> None:
     """Refuse an exact identity path if any existing component is a symlink."""
     current = Path(path.anchor)
@@ -488,13 +515,14 @@ def reject_symlink_components(path: Path, label: str) -> None:
 def exact_root(path: Path, label: str, *, physical_identity: bool = True) -> Path:
     lexical = lexical_absolute(path)
     if physical_identity:
-        reject_symlink_components(lexical, label)
-        candidate = lexical
+        candidate = platform_alias_normalize(lexical)
+        reject_symlink_components(candidate, label)
     else:
         candidate = lexical.resolve()
     actual = git(candidate, "rev-parse", "--show-toplevel", check=False)
-    actual_path = lexical_absolute(Path(actual)) if physical_identity and actual else (
-        Path(actual).resolve() if actual else None)
+    actual_path = (platform_alias_normalize(lexical_absolute(Path(actual)))
+                   if physical_identity and actual
+                   else (Path(actual).resolve() if actual else None))
     if not actual or actual_path != candidate:
         raise TaskWorkspaceError(f"{label} is not an exact Git worktree: {candidate}")
     return candidate
@@ -1759,10 +1787,11 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff"}
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
             "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+            "checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
@@ -2466,9 +2495,9 @@ def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str,
         write_state(controller, state)
 
 
-def observe_working_task(record: dict[str, Any], configured_repository: Path,
-                         config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str]]:
-    """Read one admitted WORKING task from live Git identity, never its start snapshot."""
+def observe_task_identity(record: dict[str, Any], configured_repository: Path,
+                           config: dict[str, Any], task_id: str) -> tuple[Path, Path, str]:
+    """Verify recorded identity and return (repository, worktree, tip head)."""
     creation_receipt = record.get("creation_receipt", {})
     identity = record.get("workspace_identity", {})
     expected_worktree = worktree_path(config, task_id)
@@ -2523,6 +2552,14 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
             or git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != branch
             or git(recorded_repository, "rev-parse", branch, check=False) != head):
         raise TaskWorkspaceError("task branch/worktree identity drifted")
+    return recorded_repository, worktree, head
+
+
+def observe_working_task(record: dict[str, Any], configured_repository: Path,
+                         config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str]]:
+    """Read one admitted WORKING task from live Git identity, never its start snapshot."""
+    recorded_repository, worktree, head = observe_task_identity(
+        record, configured_repository, config, task_id)
     if git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
         raise TaskWorkspaceError("task worktree is dirty; commit or remove all changes")
     if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
@@ -2533,6 +2570,47 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
         "-z", f"{record['base_sha']}..{head}"
     )
     return recorded_repository, worktree, head, changed
+
+
+def observe_task_diff(record: dict[str, Any], configured_repository: Path,
+                      config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str], list[str]]:
+    """Report committed base..tip and uncommitted paths without requiring a clean tree.
+
+    The result stays bound to the creation receipt base_sha and branch_ref and
+    fails closed on missing or moved identity, exactly like the strict WORKING
+    observation. Only the clean-tree requirement is lifted so mid-work status
+    reads keep reporting the committed diff.
+    """
+    recorded_repository, worktree, head = observe_task_identity(
+        record, configured_repository, config, task_id)
+    if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
+            record["base_sha"], head], recorded_repository, check=False).returncode:
+        raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
+    committed = git_pathnames(
+        worktree, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
+        "-z", f"{record['base_sha']}..{head}"
+    )
+    raw = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+    uncommitted: list[str] = []
+    entries = raw.split("\0") if raw else []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2] != " ":
+            raise TaskWorkspaceError("Git produced malformed porcelain status output")
+        value = entry[3:]
+        path = PurePosixPath(value)
+        if (path.is_absolute() or path.as_posix() != value or value == "."
+                or ".." in path.parts or ".git" in path.parts):
+            raise TaskWorkspaceError("Git produced an unsafe uncommitted path")
+        uncommitted.append(value)
+        if entry[0] in "RC" and index < len(entries):
+            index += 1  # porcelain v1 -z renames/copies append the original path
+    uncommitted = sorted(set(uncommitted))
+    return recorded_repository, worktree, head, committed, uncommitted
 
 
 def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[str, Any],
@@ -2798,6 +2876,207 @@ def active_preimplementation_contract(controller: Path,
     return contract
 
 
+def _standing_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(payload); handle.flush(); os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _standing_root(controller: Path, task_id: str) -> Path:
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    return controller / STANDING_ROOT / task_id
+
+
+def _git_blob(repository: Path, head: str, relative: str) -> Optional[str]:
+    value = git(repository, "rev-parse", f"{head}:{relative}", check=False)
+    return value if SHA_RE.fullmatch(value) else None
+
+
+def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
+                           config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+    cwd = str(row["cwd"]).strip("/")
+    tree = git(repository, "rev-parse", f"{head}:{cwd}" if cwd else f"{head}^{{tree}}",
+               check=False)
+    if not SHA_RE.fullmatch(tree):
+        tree = git(repository, "rev-parse", f"{head}^{{tree}}")
+    locks: dict[str, str] = {}
+    for name in ("package-lock.json", "npm-shrinkwrap.json", "pyproject.toml", "uv.lock", "poetry.lock"):
+        relative = f"{cwd}/{name}" if cwd else name
+        blob = _git_blob(repository, head, relative)
+        if blob:
+            locks[relative] = blob
+    policy_path = config.get("risk_policy_path") or ".juno_task/config/risk-policy.json"
+    policy_file = repository / str(policy_path)
+    policy_sha = hashlib.sha256(policy_file.read_bytes()).hexdigest() if policy_file.is_file() else None
+    body = {
+        "cwd": cwd, "cwd_tree": tree, "locks": locks,
+        "command_sha256": stable_sha256(row),
+        "task_workspace_config_sha256": stable_sha256(config),
+        "risk_policy_sha256": policy_sha,
+        "runtime_sha256": runtime["running_sha256"],
+        "runner_class": {"kind": "local", "platform": sys.platform,
+                         "python": list(sys.version_info[:3])},
+    }
+    return {**body, "input_closure_sha256": stable_sha256(body)}
+
+
+def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
+    config = load_config(controller)
+    require_task(controller, task_id)
+    repository = product_repository(controller, config)
+    runtime = require_current_runtime(repository, ref_sha(repository, config["target_ref"]), controller)
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("standing checkpoint requires a WORKING task")
+        frozen = json.loads(json.dumps(record))
+    verify_hydration_evidence(frozen, Path(frozen["worktree"]))
+    _repo, worktree, head, changed = observe_working_task(
+        frozen, repository, config, task_id)
+    if head == frozen["base_sha"] or not changed:
+        raise TaskWorkspaceError("standing checkpoint requires a committed product diff")
+    rows = selected_focused_rows(config, changed)
+    routing = validation_profile_selection(config, changed)
+    planned = [{"command": row,
+                "input_closure": _command_input_closure(repository, head, row, config, runtime),
+                "reason": ("single registered package profile" if routing["mode"] == "profile"
+                           else "conservative focused fallback")}
+               for row in rows]
+    body = {"schema_version": STANDING_PLAN_SCHEMA, "task_id": task_id,
+            "base_sha": frozen["base_sha"], "tip_sha": head,
+            "tree_sha": git(repository, "rev-parse", f"{head}^{{tree}}"),
+            "branch_ref": frozen["branch_ref"], "changed_paths": changed,
+            "selection": routing, "commands": planned,
+            "created_at_unix_ns": time.time_ns()}
+    identity_body = {key: value for key, value in body.items() if key != "created_at_unix_ns"}
+    plan_sha = stable_sha256(identity_body)
+    plan = {**body, "plan_sha256": plan_sha}
+    root = _standing_root(controller, task_id)
+    plan_path = root / plan_sha / "plan.json"
+    if not plan_path.exists():
+        _standing_atomic(plan_path, plan)
+    latest_path = root / "latest.json"
+    previous: Optional[dict[str, Any]] = None
+    if latest_path.exists():
+        try: previous = json.loads(latest_path.read_text())
+        except (OSError, json.JSONDecodeError): previous = None
+    if isinstance(previous, dict) and previous.get("plan_sha256") != plan_sha:
+        previous_sha = previous.get("plan_sha256")
+        if isinstance(previous_sha, str) and re.fullmatch(r"[0-9a-f]{64}", previous_sha):
+            supersession = {"schema_version": STANDING_EVIDENCE_SCHEMA,
+                            "outcome": "SUPERSEDED", "task_id": task_id,
+                            "plan_sha256": previous_sha, "superseded_by": plan_sha,
+                            "recorded_at_unix_ns": time.time_ns()}
+            old = root / previous_sha / f"superseded-by-{plan_sha}.json"
+            if not old.exists(): _standing_atomic(old, supersession)
+    _standing_atomic(latest_path, {"schema_version": STANDING_PLAN_SCHEMA,
+                                  "task_id": task_id, "plan_sha256": plan_sha,
+                                  "tip_sha": head})
+    return {**plan, "outcome": "CHECKPOINT_PLANNED", "plan_path": str(plan_path)}
+
+
+def _standing_plan(controller: Path, task_id: str) -> tuple[dict[str, Any], Path]:
+    root = _standing_root(controller, task_id)
+    try:
+        latest = json.loads((root / "latest.json").read_text())
+        plan_sha = latest["plan_sha256"]
+        plan_path = root / plan_sha / "plan.json"
+        plan = json.loads(plan_path.read_text())
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("standing evidence has no valid latest checkpoint") from exc
+    identity = {key: value for key, value in plan.items()
+                if key not in {"plan_sha256", "created_at_unix_ns"}}
+    if (plan.get("schema_version") != STANDING_PLAN_SCHEMA
+            or plan.get("task_id") != task_id
+            or plan.get("plan_sha256") != stable_sha256(identity)):
+        raise TaskWorkspaceError("standing checkpoint identity is malformed")
+    return plan, plan_path
+
+
+def standing_evidence_run(controller: Path, task_id: str,
+                          *, raise_on_failure: bool = True) -> dict[str, Any]:
+    plan, plan_path = _standing_plan(controller, task_id)
+    config = load_config(controller)
+    repository = product_repository(controller, config)
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+    if not isinstance(record, dict) or record.get("state") != "WORKING":
+        raise TaskWorkspaceError("standing evidence run requires a WORKING task")
+    _repo, worktree, head, changed = observe_working_task(record, repository, config, task_id)
+    if head != plan["tip_sha"] or changed != plan["changed_paths"]:
+        raise TaskWorkspaceError("standing checkpoint is stale; create a new task checkpoint")
+    lane = _standing_root(controller, task_id) / ".local-lane.lock"
+    lane.parent.mkdir(parents=True, exist_ok=True)
+    receipts: list[dict[str, Any]] = []
+    executed = reused = 0
+    failure: Optional[tuple[dict[str, Any], dict[str, Any]]] = None
+    with lane.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        for index, planned in enumerate(plan["commands"]):
+            row, closure = planned["command"], planned["input_closure"]
+            key = closure["input_closure_sha256"]
+            receipt_path = _standing_root(controller, task_id) / plan["plan_sha256"] / f"command-{index}-{key}.json"
+            receipt: Optional[dict[str, Any]] = None
+            if receipt_path.exists():
+                try: receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError): receipt = None
+                if (not isinstance(receipt, dict) or receipt.get("schema_version") != STANDING_EVIDENCE_SCHEMA
+                        or receipt.get("input_closure") != closure or receipt.get("command") != row
+                        or not isinstance(receipt.get("result"), dict)):
+                    raise TaskWorkspaceError("standing command receipt is malformed")
+            if receipt is None:
+                cwd = (worktree / row["cwd"]).resolve()
+                try: cwd.relative_to(worktree)
+                except ValueError as exc:
+                    raise TaskWorkspaceError("standing validation cwd escaped task worktree") from exc
+                evidence = run_validation(row, cwd)
+                receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
+                           "task_id": task_id, "plan_sha256": plan["plan_sha256"],
+                           "tip_sha": head, "command_index": index, "command": row,
+                           "input_closure": closure, "result": evidence,
+                           "recorded_at_unix_ns": time.time_ns()}
+                _standing_atomic(receipt_path, receipt); executed += 1
+            else: reused += 1
+            receipts.append({"path": str(receipt_path),
+                             "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                             "command_id": row["id"]})
+            if receipt["result"]["timed_out"] or receipt["result"]["exit_code"]:
+                failure = (row, receipt["result"]); break
+        summary = {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
+                   "plan_sha256": plan["plan_sha256"], "tip_sha": head,
+                   "outcome": "FAILED" if failure else "PASSED",
+                   "executed": executed, "reused": reused, "receipts": receipts,
+                   "completed_at_unix_ns": time.time_ns()}
+        _standing_atomic(plan_path.parent / "summary.json", summary)
+    if failure and raise_on_failure:
+        row, result = failure
+        if result["timed_out"]:
+            raise TaskWorkspaceError(
+                f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
+        detail = result["stderr_tail"] or result["stdout_tail"]
+        raise TaskWorkspaceError(
+            f"focused validation failed ({row['id']}, exit {result['exit_code']}): {detail}")
+    return summary
+
+
+def standing_evidence_status(controller: Path, task_id: str) -> dict[str, Any]:
+    plan, plan_path = _standing_plan(controller, task_id)
+    summary_path = plan_path.parent / "summary.json"
+    summary = None
+    if summary_path.exists():
+        try: summary = json.loads(summary_path.read_text())
+        except (OSError, json.JSONDecodeError): summary = None
+    return {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
+            "plan_sha256": plan["plan_sha256"], "tip_sha": plan["tip_sha"],
+            "state": "COMPLETE" if isinstance(summary, dict) and summary.get("outcome") == "PASSED" else "PENDING",
+            "summary": summary}
+
+
 def preflight(controller: Path, task_id: str) -> dict[str, Any]:
     """Run finish identity/admission checks without validation or queue mutation."""
     if not TASK_RE.fullmatch(task_id):
@@ -2859,7 +3138,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     )
     routing = validation_profile_selection(config, changed)
     selected_focused = selected_focused_rows(config, changed)
-    validations = run_focused_validations(selected_focused, worktree)
+    checkpoint_plan = standing_checkpoint(controller, task_id)
+    standing = standing_evidence_run(controller, task_id, raise_on_failure=False)
+    if checkpoint_plan["plan_sha256"] != standing["plan_sha256"]:
+        raise TaskWorkspaceError("standing evidence plan changed during finish")
+    validations = [json.loads(Path(reference["path"]).read_text())["result"]
+                   for reference in standing["receipts"]]
+    closure_body = {key: value for key, value in closure.items() if key != "closure_sha256"}
+    closure_body["standing_validation"] = {
+        "schema_version": STANDING_EVIDENCE_SCHEMA,
+        "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
+        "outcome": standing["outcome"], "receipts": standing["receipts"],
+        "summary_sha256": stable_sha256(standing),
+    }
+    closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
     for row, evidence in zip(selected_focused, validations):
         if evidence["timed_out"] or evidence["exit_code"]:
             # Persist every terminal result from this one deterministic schedule.
@@ -3115,10 +3407,12 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
                 "outcome": "status", "runtime_generation": generation}
     result = {**record, "outcome": "status", "runtime_generation": generation}
     if record.get("state") == "WORKING":
-        _, _, live_tip, live_paths = observe_working_task(
+        _, _, live_tip, committed_paths, uncommitted_paths = observe_task_diff(
             record, configured_repository, config, task_id
         )
-        result.update({"tip_sha": live_tip, "changed_paths": live_paths})
+        result.update({"tip_sha": live_tip, "changed_paths": committed_paths,
+                       "uncommitted_paths": uncommitted_paths,
+                       "changed_paths_scope": "base_sha..tip committed diff"})
     frozen_umbrella = (record.get("admission_supersessions", [{}])[-1].get("umbrella_admission")
                        if record.get("admission_supersessions")
                        else record.get("creation_receipt", {}).get("umbrella_admission"))
@@ -4184,6 +4478,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
         "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+        "checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -4264,6 +4559,15 @@ def main(argv: list[str] | None = None) -> int:
                     result = preimplementation_contract(controller, args.task)
                 elif args.operation == "handoff":
                     result = run_handoff(controller, args.task)
+                elif args.operation == "checkpoint":
+                    result = standing_checkpoint(controller, args.task)
+                elif args.operation == "evidence-run":
+                    result = standing_evidence_run(controller, args.task)
+                elif args.operation == "evidence-status":
+                    result = standing_evidence_status(controller, args.task)
+                elif args.operation == "evidence-await":
+                    current = standing_evidence_status(controller, args.task)
+                    result = current if current["state"] == "COMPLETE" else standing_evidence_run(controller, args.task)
                 else:
                     result = {"status": status, "hydrate": hydrate, "preflight": preflight,
                               "finish": finish}[args.operation](controller, args.task)

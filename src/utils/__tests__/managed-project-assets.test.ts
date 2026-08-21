@@ -199,9 +199,9 @@ describe('ManagedProjectAssets', {
       await fs.readFile(path.join(process.cwd(), 'src/templates/wiki/controller/yy_pi_progress.md')),
     );
     expect(installedWatchingWiki.toString()).toContain('juno.watch-footer.v1');
-    expect(installedWatchingWiki.toString()).toContain('juno.watch-event.v1');
-    expect(installedWatchingWiki.toString()).toContain('controller_root=$(yy where controller)');
-    expect(installedWatchingWiki.toString()).toContain('mktemp -d');
+    expect(installedWatchingWiki.toString()).toContain('juno.watch-run.v1');
+    expect(installedWatchingWiki.toString()).toContain('yy watch exec');
+    expect(installedWatchingWiki.toString()).toContain('yy task checkpoint TASK_ID');
 
     const canonicalImplementationReference = await fs.readFile(
       path.join(process.cwd(), 'src/templates/skills/canonical/ralph-loop/references/implement.md'),

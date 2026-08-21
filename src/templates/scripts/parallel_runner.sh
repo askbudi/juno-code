@@ -120,6 +120,40 @@ Arguments:
 
 from __future__ import annotations
 
+# Runtime guard: fail with actionable guidance before any later import or
+# runtime type evaluation can surface an opaque interpreter error. The guard
+# itself uses only syntax every supported-and-unsupported Python parses.
+import os as _os
+import sys as _sys
+
+_PYTHON_MINIMUM = (3, 10)
+
+if _sys.version_info < _PYTHON_MINIMUM:
+    _detected = ".".join(str(_part) for _part in _sys.version_info[:3])
+    _required = ".".join(str(_part) for _part in _PYTHON_MINIMUM)
+    _script = _os.path.abspath(__file__)
+    # Installed layout: <project>/.juno_task/scripts/parallel_runner.sh
+    _project_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_script)))
+    _venv_python = _os.path.join(_project_root, ".venv_juno", "bin", "python")
+    if _os.path.isfile(_venv_python):
+        _recommendation = (
+            "Recommended command:\n"
+            "  %s %s --help" % (_venv_python, _script)
+        )
+    else:
+        _recommendation = (
+            "No managed Python runtime was found at:\n  %s\n"
+            "Run `yy scripts update --force` (or .juno_task/scripts/install_requirements.sh)\n"
+            "to provision .venv_juno, then re-run through .venv_juno/bin/python."
+            % _venv_python
+        )
+    _sys.stderr.write(
+        "parallel_runner: unsupported Python %s; %s or newer is required.\n"
+        "Detected interpreter: %s\n%s\n"
+        % (_detected, _required, _sys.executable or "unknown", _recommendation)
+    )
+    _sys.exit(2)
+
 import argparse
 import copy
 import csv

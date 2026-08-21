@@ -7,7 +7,7 @@ import {
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
-  it.each(['start', 'status', 'hydrate', 'preflight', 'finish'] as const)(
+  it.each(['start', 'status', 'hydrate', 'preflight', 'checkpoint', 'finish'] as const)(
     'forwards task %s and its positional ID to one managed-runtime invoker',
     async (operation) => {
       const invoke = vi.fn(async () => undefined);
@@ -24,11 +24,11 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'start', 'preflight', 'hydrate', 'status', 'finish',
+      'start', 'preflight', 'checkpoint', 'hydrate', 'status', 'finish',
       'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 8).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[8]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 9).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[9]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -98,7 +98,7 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it.each(['status', 'preflight', 'recovery-plan'] as const)(
+  it.each(['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await'] as const)(
     'does not checkpoint after read-only task %s',
     async (operation) => {
     const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));

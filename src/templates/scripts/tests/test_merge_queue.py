@@ -1437,6 +1437,39 @@ raise SystemExit(2)
         self.assertEqual(record["last_queue_outcome"],
                          "POST_INTEGRATION_OWNER_FAILED")
 
+    def test_pre_cas_failure_persists_reason_and_actionable_recovery(self) -> None:
+        self.commit_feature("X", "docs/pre-cas.md", "recover\n")
+        original = merge_runtime.assert_frozen_candidate
+
+        def frozen_candidate_drift(controller: Path, config: dict, root: Path, sha: str) -> None:
+            frozen_candidate_drift.calls += 1  # type: ignore[attr-defined]
+            if frozen_candidate_drift.calls >= 2:  # type: ignore[attr-defined]
+                raise merge_runtime.MergeQueueError(
+                    "frozen candidate drifted before compare-and-swap")
+            return original(controller, config, root, sha)
+
+        frozen_candidate_drift.calls = 0  # type: ignore[attr-defined]
+        with mock.patch.object(merge_runtime, "assert_frozen_candidate",
+                               side_effect=frozen_candidate_drift):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "frozen candidate drifted"):
+                merge_runtime.merge_next(self.controller.resolve())
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        record = state["tasks"]["X"]
+        self.assertEqual(record["state"], "QUEUED")
+        self.assertEqual(record["last_queue_outcome"], "PRE_CAS_FAILED")
+        attempt = record["queue_attempt"]
+        self.assertEqual(attempt["outcome"], "PRE_CAS_FAILED")
+        self.assertEqual(attempt["failure"], "frozen candidate drifted before compare-and-swap")
+        self.assertEqual(attempt["recovery_command"], "yy merge next")
+        last_attempt = next(iter(state["queues"].values()))["last_attempt"]
+        self.assertEqual(last_attempt["outcome"], "PRE_CAS_FAILED")
+        self.assertEqual(last_attempt["recovery_command"], "yy merge next")
+        status_row = next(row for row in merge_runtime.status(self.controller.resolve())["tasks"]
+                          if row["task_id"] == "X")
+        self.assertEqual(status_row["outcome"], "PRE_CAS_FAILED")
+        self.assertEqual(status_row["recovery_command"], "yy merge next")
+
     def test_target_advanced_refresh_failure_retries_only_incomplete_post_integration_phases(self) -> None:
         candidate = self.commit_feature("X", "docs/post-integration.md", "recover\n")
         completed_refresh = {"schema_version": "juno_managed_controller_runtime.v1",
@@ -3771,6 +3804,41 @@ class EvidenceReuseTests(unittest.TestCase):
         self.assertEqual(row["command_id"], "suite")
         self.assertIn("evidence_key_sha256", row)
         self.assertIn("source_receipt", row)
+
+
+class StandingValidationVerificationTests(unittest.TestCase):
+    def test_verifies_and_rejects_tampered_task_finish_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt_path = root / "plan" / "command.json"
+            receipt_path.parent.mkdir()
+            receipt = {"schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                       "task_id": "T1", "tip_sha": "a" * 40,
+                       "plan_sha256": "b" * 64,
+                       "command": {"id": "focused"},
+                       "result": {"exit_code": 0, "timed_out": False}}
+            data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            receipt_path.write_bytes(data)
+            reference = {"path": str(receipt_path),
+                         "sha256": hashlib.sha256(data).hexdigest(),
+                         "command_id": "focused"}
+            summary = {"schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                       "task_id": "T1", "plan_sha256": "b" * 64,
+                       "tip_sha": "a" * 40, "outcome": "PASSED",
+                       "executed": 1, "reused": 0, "receipts": [reference],
+                       "completed_at_unix_ns": 1}
+            (receipt_path.parent / "summary.json").write_text(json.dumps(summary))
+            record = {"task_id": "T1", "tip_sha": "a" * 40,
+                      "review_ready_closure": {"standing_validation": {
+                          "schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
+                          "tip_sha": "a" * 40, "plan_sha256": "b" * 64,
+                          "outcome": "PASSED", "receipts": [reference],
+                          "summary_sha256": task_runtime.stable_sha256(summary)}}}
+            verified = merge_runtime.verify_standing_validation(record)
+            self.assertEqual(verified["status"], "verified")
+            receipt_path.write_text("{}\n")
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "identity or verdict"):
+                merge_runtime.verify_standing_validation(record)
 
 
 if __name__ == "__main__":
