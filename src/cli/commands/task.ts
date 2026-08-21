@@ -13,6 +13,10 @@ export type TaskWorkspaceOperation =
   | 'hydrate'
   | 'preflight'
   | 'finish'
+  | 'checkpoint'
+  | 'evidence-run'
+  | 'evidence-status'
+  | 'evidence-await'
   | 'recovery-plan'
   | 'recovery-authorize'
   | 'recovery-apply';
@@ -27,7 +31,7 @@ export type TaskRuntimeBootstrapOptions = { dryRun?: boolean; apply?: string };
 export type TaskRuntimeBootstrapInvoker = (options: TaskRuntimeBootstrapOptions) => Promise<void>;
 
 export function taskWorkspaceControlOperation(operation: TaskWorkspaceOperation): 'kanban' | 'orchestration' {
-  return ['status', 'preflight', 'recovery-plan'].includes(operation) ? 'kanban' : 'orchestration';
+  return ['status', 'preflight', 'recovery-plan', 'evidence-status'].includes(operation) ? 'kanban' : 'orchestration';
 }
 
 export function packagedTaskRuntimeCandidates(): string[] {
@@ -121,7 +125,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
   taskId?: string,
 ): Promise<void> {
-  if (['status', 'preflight', 'recovery-plan'].includes(operation)) return;
+  if (['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await'].includes(operation)) return;
   if (taskId) await checkpoint(controllerRoot, exitCode, taskId);
   else await checkpoint(controllerRoot, exitCode);
 }
@@ -176,6 +180,10 @@ export function configureTaskWorkspaceCommand(
     .description('Read-only finish/admission check before expensive validation')
     .argument('<task-id>', 'Canonical Juno Ledger task ID')
     .action((taskId: string) => invoke('preflight', taskId, []));
+  task.command('checkpoint')
+    .description('Plan affected validation for one clean coherent committed tip')
+    .argument('<task-id>', 'Canonical Juno Ledger task ID')
+    .action((taskId: string) => invoke('checkpoint', taskId, []));
   task.command('hydrate')
     .description('Rerun the frozen task hydration workflow on a clean task worktree')
     .argument('<task-id>', 'Canonical Juno Ledger task ID')

@@ -67,6 +67,9 @@ PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
 VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
 VALIDATION_PHASES = ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN")
 VALIDATION_TERMINALS = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
+STANDING_EVIDENCE_SCHEMA = "juno_standing_validation_evidence.v1"
+STANDING_PLAN_SCHEMA = "juno_standing_validation_plan.v1"
+STANDING_ROOT = ".juno_task/runtime/standing-evidence"
 
 
 class TaskWorkspaceError(RuntimeError):
@@ -1759,10 +1762,11 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff"}
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
             "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+            "checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
@@ -2796,6 +2800,207 @@ def active_preimplementation_contract(controller: Path,
     if not isinstance(contract, dict) or contract.get("task_id") != task_id:
         return None
     return contract
+
+
+def _standing_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(payload); handle.flush(); os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _standing_root(controller: Path, task_id: str) -> Path:
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    return controller / STANDING_ROOT / task_id
+
+
+def _git_blob(repository: Path, head: str, relative: str) -> Optional[str]:
+    value = git(repository, "rev-parse", f"{head}:{relative}", check=False)
+    return value if SHA_RE.fullmatch(value) else None
+
+
+def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
+                           config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+    cwd = str(row["cwd"]).strip("/")
+    tree = git(repository, "rev-parse", f"{head}:{cwd}" if cwd else f"{head}^{{tree}}",
+               check=False)
+    if not SHA_RE.fullmatch(tree):
+        tree = git(repository, "rev-parse", f"{head}^{{tree}}")
+    locks: dict[str, str] = {}
+    for name in ("package-lock.json", "npm-shrinkwrap.json", "pyproject.toml", "uv.lock", "poetry.lock"):
+        relative = f"{cwd}/{name}" if cwd else name
+        blob = _git_blob(repository, head, relative)
+        if blob:
+            locks[relative] = blob
+    policy_path = config.get("risk_policy_path") or ".juno_task/config/risk-policy.json"
+    policy_file = repository / str(policy_path)
+    policy_sha = hashlib.sha256(policy_file.read_bytes()).hexdigest() if policy_file.is_file() else None
+    body = {
+        "cwd": cwd, "cwd_tree": tree, "locks": locks,
+        "command_sha256": stable_sha256(row),
+        "task_workspace_config_sha256": stable_sha256(config),
+        "risk_policy_sha256": policy_sha,
+        "runtime_sha256": runtime["running_sha256"],
+        "runner_class": {"kind": "local", "platform": sys.platform,
+                         "python": list(sys.version_info[:3])},
+    }
+    return {**body, "input_closure_sha256": stable_sha256(body)}
+
+
+def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
+    config = load_config(controller)
+    require_task(controller, task_id)
+    repository = product_repository(controller, config)
+    runtime = require_current_runtime(repository, ref_sha(repository, config["target_ref"]), controller)
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("standing checkpoint requires a WORKING task")
+        frozen = json.loads(json.dumps(record))
+    verify_hydration_evidence(frozen, Path(frozen["worktree"]))
+    _repo, worktree, head, changed = observe_working_task(
+        frozen, repository, config, task_id)
+    if head == frozen["base_sha"] or not changed:
+        raise TaskWorkspaceError("standing checkpoint requires a committed product diff")
+    rows = selected_focused_rows(config, changed)
+    routing = validation_profile_selection(config, changed)
+    planned = [{"command": row,
+                "input_closure": _command_input_closure(repository, head, row, config, runtime),
+                "reason": ("single registered package profile" if routing["mode"] == "profile"
+                           else "conservative focused fallback")}
+               for row in rows]
+    body = {"schema_version": STANDING_PLAN_SCHEMA, "task_id": task_id,
+            "base_sha": frozen["base_sha"], "tip_sha": head,
+            "tree_sha": git(repository, "rev-parse", f"{head}^{{tree}}"),
+            "branch_ref": frozen["branch_ref"], "changed_paths": changed,
+            "selection": routing, "commands": planned,
+            "created_at_unix_ns": time.time_ns()}
+    identity_body = {key: value for key, value in body.items() if key != "created_at_unix_ns"}
+    plan_sha = stable_sha256(identity_body)
+    plan = {**body, "plan_sha256": plan_sha}
+    root = _standing_root(controller, task_id)
+    plan_path = root / plan_sha / "plan.json"
+    if not plan_path.exists():
+        _standing_atomic(plan_path, plan)
+    latest_path = root / "latest.json"
+    previous: Optional[dict[str, Any]] = None
+    if latest_path.exists():
+        try: previous = json.loads(latest_path.read_text())
+        except (OSError, json.JSONDecodeError): previous = None
+    if isinstance(previous, dict) and previous.get("plan_sha256") != plan_sha:
+        previous_sha = previous.get("plan_sha256")
+        if isinstance(previous_sha, str) and re.fullmatch(r"[0-9a-f]{64}", previous_sha):
+            supersession = {"schema_version": STANDING_EVIDENCE_SCHEMA,
+                            "outcome": "SUPERSEDED", "task_id": task_id,
+                            "plan_sha256": previous_sha, "superseded_by": plan_sha,
+                            "recorded_at_unix_ns": time.time_ns()}
+            old = root / previous_sha / f"superseded-by-{plan_sha}.json"
+            if not old.exists(): _standing_atomic(old, supersession)
+    _standing_atomic(latest_path, {"schema_version": STANDING_PLAN_SCHEMA,
+                                  "task_id": task_id, "plan_sha256": plan_sha,
+                                  "tip_sha": head})
+    return {**plan, "outcome": "CHECKPOINT_PLANNED", "plan_path": str(plan_path)}
+
+
+def _standing_plan(controller: Path, task_id: str) -> tuple[dict[str, Any], Path]:
+    root = _standing_root(controller, task_id)
+    try:
+        latest = json.loads((root / "latest.json").read_text())
+        plan_sha = latest["plan_sha256"]
+        plan_path = root / plan_sha / "plan.json"
+        plan = json.loads(plan_path.read_text())
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("standing evidence has no valid latest checkpoint") from exc
+    identity = {key: value for key, value in plan.items()
+                if key not in {"plan_sha256", "created_at_unix_ns"}}
+    if (plan.get("schema_version") != STANDING_PLAN_SCHEMA
+            or plan.get("task_id") != task_id
+            or plan.get("plan_sha256") != stable_sha256(identity)):
+        raise TaskWorkspaceError("standing checkpoint identity is malformed")
+    return plan, plan_path
+
+
+def standing_evidence_run(controller: Path, task_id: str,
+                          *, raise_on_failure: bool = True) -> dict[str, Any]:
+    plan, plan_path = _standing_plan(controller, task_id)
+    config = load_config(controller)
+    repository = product_repository(controller, config)
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+    if not isinstance(record, dict) or record.get("state") != "WORKING":
+        raise TaskWorkspaceError("standing evidence run requires a WORKING task")
+    _repo, worktree, head, changed = observe_working_task(record, repository, config, task_id)
+    if head != plan["tip_sha"] or changed != plan["changed_paths"]:
+        raise TaskWorkspaceError("standing checkpoint is stale; create a new task checkpoint")
+    lane = _standing_root(controller, task_id) / ".local-lane.lock"
+    lane.parent.mkdir(parents=True, exist_ok=True)
+    receipts: list[dict[str, Any]] = []
+    executed = reused = 0
+    failure: Optional[tuple[dict[str, Any], dict[str, Any]]] = None
+    with lane.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        for index, planned in enumerate(plan["commands"]):
+            row, closure = planned["command"], planned["input_closure"]
+            key = closure["input_closure_sha256"]
+            receipt_path = _standing_root(controller, task_id) / plan["plan_sha256"] / f"command-{index}-{key}.json"
+            receipt: Optional[dict[str, Any]] = None
+            if receipt_path.exists():
+                try: receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError): receipt = None
+                if (not isinstance(receipt, dict) or receipt.get("schema_version") != STANDING_EVIDENCE_SCHEMA
+                        or receipt.get("input_closure") != closure or receipt.get("command") != row
+                        or not isinstance(receipt.get("result"), dict)):
+                    raise TaskWorkspaceError("standing command receipt is malformed")
+            if receipt is None:
+                cwd = (worktree / row["cwd"]).resolve()
+                try: cwd.relative_to(worktree)
+                except ValueError as exc:
+                    raise TaskWorkspaceError("standing validation cwd escaped task worktree") from exc
+                evidence = run_validation(row, cwd)
+                receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
+                           "task_id": task_id, "plan_sha256": plan["plan_sha256"],
+                           "tip_sha": head, "command_index": index, "command": row,
+                           "input_closure": closure, "result": evidence,
+                           "recorded_at_unix_ns": time.time_ns()}
+                _standing_atomic(receipt_path, receipt); executed += 1
+            else: reused += 1
+            receipts.append({"path": str(receipt_path),
+                             "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+                             "command_id": row["id"]})
+            if receipt["result"]["timed_out"] or receipt["result"]["exit_code"]:
+                failure = (row, receipt["result"]); break
+        summary = {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
+                   "plan_sha256": plan["plan_sha256"], "tip_sha": head,
+                   "outcome": "FAILED" if failure else "PASSED",
+                   "executed": executed, "reused": reused, "receipts": receipts,
+                   "completed_at_unix_ns": time.time_ns()}
+        _standing_atomic(plan_path.parent / "summary.json", summary)
+    if failure and raise_on_failure:
+        row, result = failure
+        if result["timed_out"]:
+            raise TaskWorkspaceError(
+                f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
+        detail = result["stderr_tail"] or result["stdout_tail"]
+        raise TaskWorkspaceError(
+            f"focused validation failed ({row['id']}, exit {result['exit_code']}): {detail}")
+    return summary
+
+
+def standing_evidence_status(controller: Path, task_id: str) -> dict[str, Any]:
+    plan, plan_path = _standing_plan(controller, task_id)
+    summary_path = plan_path.parent / "summary.json"
+    summary = None
+    if summary_path.exists():
+        try: summary = json.loads(summary_path.read_text())
+        except (OSError, json.JSONDecodeError): summary = None
+    return {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
+            "plan_sha256": plan["plan_sha256"], "tip_sha": plan["tip_sha"],
+            "state": "COMPLETE" if isinstance(summary, dict) and summary.get("outcome") == "PASSED" else "PENDING",
+            "summary": summary}
 
 
 def preflight(controller: Path, task_id: str) -> dict[str, Any]:
@@ -4184,6 +4389,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
         "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+        "checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -4264,6 +4470,15 @@ def main(argv: list[str] | None = None) -> int:
                     result = preimplementation_contract(controller, args.task)
                 elif args.operation == "handoff":
                     result = run_handoff(controller, args.task)
+                elif args.operation == "checkpoint":
+                    result = standing_checkpoint(controller, args.task)
+                elif args.operation == "evidence-run":
+                    result = standing_evidence_run(controller, args.task)
+                elif args.operation == "evidence-status":
+                    result = standing_evidence_status(controller, args.task)
+                elif args.operation == "evidence-await":
+                    current = standing_evidence_status(controller, args.task)
+                    result = current if current["state"] == "COMPLETE" else standing_evidence_run(controller, args.task)
                 else:
                     result = {"status": status, "hydrate": hydrate, "preflight": preflight,
                               "finish": finish}[args.operation](controller, args.task)
