@@ -1,128 +1,96 @@
 # Watching managed progress
 
-Use the canonical controller-managed `watch_progress.py` for an already-running
-producer that owns three distinct files: a numeric PID file, a combined log, and
-an atomically published terminal footer. Resolve the controller from every
-controller, task, integration-owner, or nested invocation surface with the
-existing read-only `yy where controller` command; never select a watcher from the
-current checkout. The watcher observes only. Interrupting it never signals the
-producer.
+Use the first-class watch surface for commands that may outlive one ordinary
+shell tool call. It owns the child process group, bounded combined log, private
+run directory, terminal metadata, and the strict `juno.watch-footer.v1` footer.
+Do not assemble a producer with heredocs and do not use `sleep; tail` polling.
 
-## Safe producer and watcher
+## Decision rule
 
-This example binds Node 22.22.3, creates a private collision-resistant run
-directory, gives the command a five-minute bound, captures combined output, and
-atomically publishes both PID and footer. Replace the sample command only within
-the existing lifecycle/release authority.
-
-```bash
-set -eu
-source "$HOME/.nvm/nvm.sh"
-nvm use 22.22.3
-run_dir=$(mktemp -d "${TMPDIR:-/tmp}/yy-TASK_ID-run.XXXXXX")
-log="$run_dir/combined.log"
-pid_file="$run_dir/producer.pid"
-footer="$run_dir/terminal.footer"
-
-RUN_LOG="$log" RUN_FOOTER="$footer" node --input-type=module <<'NODE' \
-  >"$log" 2>&1 < /dev/null &
-import { spawn } from 'node:child_process';
-import { constants } from 'node:os';
-import { rename, writeFile } from 'node:fs/promises';
-const child = spawn('yy', ['pi', '-p', 'bounded task prompt'], {
-  stdio: 'inherit', signal: AbortSignal.timeout(300_000)
-});
-let spawnFailed = false;
-child.once('error', error => {
-  spawnFailed = true;
-  console.error(error);
-});
-const [value, sig] = await new Promise(resolve => child.once('close', (...args) => resolve(args)));
-const derived = Number.isInteger(value)
-  ? value
-  : sig && constants.signals[sig]
-    ? 128 + constants.signals[sig]
-    : spawnFailed ? 1 : 1;
-const code = Number.isInteger(derived) && derived >= 0 && derived <= 255 ? derived : 1;
-const completed = new Date().toISOString();
-const temporary = `${process.env.RUN_FOOTER}.tmp-${process.pid}`;
-await writeFile(temporary,
-  `schema_version=juno.watch-footer.v1\nexit_code=${code}\ncompleted_utc=${completed}\n`,
-  { encoding: 'ascii', mode: 0o600 });
-await rename(temporary, process.env.RUN_FOOTER);
-process.exitCode = code;
-NODE
-producer_pid=$!
-pid_tmp="$run_dir/producer.pid.tmp-$$"
-printf '%s\n' "$producer_pid" >"$pid_tmp"
-chmod 600 "$pid_tmp"
-mv "$pid_tmp" "$pid_file"
-
-controller_root=$(yy where controller)
-watcher="$controller_root/.juno_task/scripts/watch_progress.py"
-"$watcher" \
-  --pid-file "$pid_file" --log-file "$log" --footer-file "$footer" \
-  --poll-interval 1 --snapshot-interval 60 --tail-lines 40 --footer-grace 3
+```text
+new command you own       -> yy watch exec -- COMMAND...
+already detached watch run -> yy watch status RUN_ID / yy watch await RUN_ID
+coherent task checkpoint   -> yy task checkpoint TASK_ID; yy evidence run TASK_ID
+waiting for task evidence  -> yy evidence await TASK_ID
+external one-shot blocker  -> await_blocker.py --then ...
 ```
 
-`mktemp -d` creates a private mode-0700 directory and isolates simultaneous
-launches. Retain the printed `run_dir` path as evidence; deletion is a separate,
-explicit cleanup action.
+These commands grant no implementation, review, release, push, deployment, or
+production authority. They only execute an already-authorized argv.
 
-## Strict terminal footer
+## Foreground command
 
-The only supported footer is exact ASCII in this order, with one final newline:
+```bash
+yy watch exec --timeout 900 -- npm test -- src/cli/__tests__/main.test.ts
+```
+
+Foreground mode returns the command's canonical exit code and prints the
+terminal `juno.watch-run.v1` record. Combined output is retained in the run's
+private log rather than mixed with the machine record.
+
+## Detached command
+
+```bash
+start=$(yy watch exec --detach --timeout 900 -- npm test)
+run_id=$(printf '%s\n' "$start" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+yy watch status "$run_id"
+yy watch await "$run_id"
+```
+
+`status` is read-only. `await` observes the bound producer and returns its exit
+code. Timeout or interruption sends TERM and then bounded KILL only to the owned
+process group. Unrelated process groups are never cleanup targets.
+
+## Task validation evidence
+
+A task is the unit of intent and may contain several commits. A commit is not
+automatically a validation request.
+
+```text
+WIP commit                  -> no automatic validation
+coherent committed tip      -> yy task checkpoint TASK_ID
+run selected local evidence -> yy evidence run TASK_ID
+read/await evidence         -> yy evidence status|await TASK_ID
+final clean tip             -> yy task finish TASK_ID
+```
+
+Checkpoint planning selects registered focused validation and binds task, base,
+tip, tree, changed paths, command, dependency locks, controller policy, runtime,
+and local runner class. Unknown or mixed ownership falls back conservatively.
+A later tip reuses a command only when its complete input closure remains exact.
+`yy task finish` creates the final checkpoint, reuses valid receipts, runs only
+missing commands, and binds the receipts into the review-ready closure. The
+merge queue re-verifies those receipts before expensive admission.
+
+## Terminal files
+
+Runs live under the canonical controller's private
+`.juno_task/runtime/watch-runs/RUN_ID/` directory:
+
+```text
+run.json       juno.watch-run.v1 state and process identity
+pid            owned child/process-group ID
+combined.log   bounded observation source
+footer         strict atomic terminal footer
+```
+
+The footer remains exact ASCII:
 
 ```text
 schema_version=juno.watch-footer.v1
 exit_code=0
-completed_utc=2026-08-12T21:09:28.123Z
+completed_utc=2026-08-12T21:09:28Z
 ```
 
-`schema_version` must be exactly `juno.watch-footer.v1`. `exit_code` is one
-canonical base-10 integer in the intentionally supported Unix range 0 through
-255 (no sign, fraction, or leading zero). `completed_utc` is a real calendar
-instant in UTC using `YYYY-MM-DDTHH:MM:SSZ` or one to six fractional digits
-before `Z`. Empty, partial, reordered, duplicate, unknown-field, invalid-range,
-invalid-time, non-ASCII, and arbitrary footer bytes are malformed and never
-produce watcher success.
+A valid footer is terminal producer truth; it does not convert a nonzero command
+into success. Empty, partial, reordered, duplicate, unknown-field, invalid-time,
+and out-of-range bytes fail closed. `run.json` additionally records timeout and
+signal truth. Run directories and standing-evidence receipts are private runtime
+state; deletion is a separate cleanup action.
 
-The footer is checked before liveness every cycle, including late attachment.
-A valid existing footer remains terminal truth after process exit. The producer
-must publish by atomic rename as shown. To tolerate a mistaken non-atomic writer,
-a malformed footer observed while the bound producer remains live is reported
-once per changed payload and may become valid; it is not success. Once the
-producer exits, only `--footer-grace` remains. Grace expiry fails closed with a
-`malformed_footer` or `missing_footer` event, exact malformed bytes when present,
-and a bounded final tail. Watcher exit 0 means a schema-valid footer was
-observed, not that the producer exit code was zero.
+## Legacy attachment
 
-The watcher binds the OS process start identity where available and rejects an
-identity change. It also rejects a live process whose start time is newer than
-the atomically published PID file. Without a valid preexisting footer, systems
-that expose no process start identity cannot prove pre-attachment PID history
-and refuse attachment; supported Linux/macOS paths bind identity.
-
-## Output framing
-
-All metadata is compact JSONL with schema version `juno.watch-event.v1` and at
-least `event` and `utc`. JSON escaping applies to every value, including paths
-and macOS identities containing spaces, equals signs, newlines, or other control
-characters. Events include `watch_started`, `snapshot`, `process_exited`,
-`footer_malformed_waiting`, `footer_valid`, `malformed_footer`,
-`missing_footer`, `error`, and `interrupted`.
-
-Raw footer and tail bytes are never event records. They are framed by JSONL
-`payload_begin` and `payload_end` records carrying the same `payload_name` and
-`byte_length`. A machine reader must read exactly `byte_length` bytes after the
-newline ending `payload_begin`; `payload_end` starts immediately after those
-bytes, even when the payload has no trailing newline. This preserves footer
-bytes exactly and prevents footer or log content from injecting metadata.
-
-Polls use monotonic deadlines: identity and snapshot work consume the current
-interval rather than adding another full sleep. Snapshot and tail reads remain
-bounded, and missing or empty logs are safe. A quiet log is not hang evidence.
-
-This helper is not a workflow engine, command launcher, timeout owner, lifecycle
-authority, or substitute for `managed_agent_runner.py`, Workflow Runner,
-`yy task`, `yy merge`, or release/publication approval.
+`watch_progress.py --pid-file ... --log-file ... --footer-file ...` remains the
+strict observer for a pre-existing producer. It never signals that producer.
+New producers should use `yy watch exec` so PID publication, logging, footer
+publication, timeout handling, and descendant settlement are not hand-written.

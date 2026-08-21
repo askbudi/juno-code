@@ -3681,6 +3681,32 @@ finished = time.monotonic()
                          {"mode": "profile", "profile_ids": ["pkg-suite"],
                           "authored_path_count": 1})
 
+    def test_standing_evidence_replay_cuts_redundant_runs_by_eighty_percent(self) -> None:
+        counter = self.root / "standing-counter.txt"
+        code = f"from pathlib import Path; Path({str(counter)!r}).open('a').write('run\\n')"
+        self.write_policy(validation_code=code)
+        self.payload("start", "X")
+        self.commit_task("X")
+        first_plan = self.payload("checkpoint", "X")
+        runs = [self.payload("evidence-run", "X") for _ in range(5)]
+        self.assertEqual(first_plan["plan_sha256"], runs[0]["plan_sha256"])
+        self.assertEqual(runs[0]["executed"], 1)
+        self.assertTrue(all(item["reused"] == 1 for item in runs[1:]))
+        self.assertEqual(counter.read_text().splitlines(), ["run"])
+        baseline, actual = 5, len(counter.read_text().splitlines())
+        self.assertGreaterEqual((baseline - actual) / baseline, 0.8)
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/repair.txt").write_text("repair\n")
+        git(worktree, "add", "src/repair.txt")
+        git(worktree, "commit", "-m", "repair")
+        repaired = self.payload("checkpoint", "X")
+        self.assertNotEqual(repaired["plan_sha256"], first_plan["plan_sha256"])
+        superseded = (self.controller / task_runtime.STANDING_ROOT / "X" /
+                      first_plan["plan_sha256"] /
+                      f"superseded-by-{repaired['plan_sha256']}.json")
+        self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
+
 
 if __name__ == "__main__":
     if len(sys.argv) >= 6 and sys.argv[1] == "--resource-lock-guard-probe":
