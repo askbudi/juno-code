@@ -1,6 +1,6 @@
 # juno-code
 
-Juno Code orchestrates AI coding agents and structured development workflows. It works alongside [Juno Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [Juno Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
+Juno Code orchestrates AI coding agents and structured development workflows. It works alongside [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, and [Juno Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
 
 <p align="center">
   <img src="./Juno-code-icon.png" alt="juno-code logo" width="200" />
