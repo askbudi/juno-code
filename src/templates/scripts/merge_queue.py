@@ -4305,7 +4305,8 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
                      "target_sha": plan["target_sha"], "refreshed_tip": plan["refreshed_tip"],
                      "feasibility_plan_id": static["plan_id"]}
         updated = {key: value for key, value in record.items()
-                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
+                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt",
+                                  "review_ready_closure"}}
         updated.update({"state": "QUEUED", "tip_sha": plan["refreshed_tip"],
                         "changed_paths": plan["authored_paths"], "validation": validations,
                         "last_validation_outcome": "PASSED",
@@ -4487,13 +4488,22 @@ def merge_reopen(controller: Path, task_id: str,
                             or new_blob != candidate_blob):
                         raise MergeQueueError(
                             "dependency-lock refusal identity drifted before tip refresh")
-            # A findings/validation repair remains authored against the task's
-            # immutable creation base. Diffing it against a moved protected
-            # target would misclassify target-only paths as task deletions and
-            # persist them as admitted repair paths. A plain queued-tip refresh,
-            # however, may have deliberately merged the target and must exclude
-            # those inherited bytes with a target-relative diff.
-            changed_base = target_sha if queued_tip_refresh else record["base_sha"]
+            # A normal findings/validation repair remains authored against the
+            # task's immutable creation base. A receipt-bound target refresh,
+            # however, deliberately incorporated exact protected-target bytes;
+            # exclude those inherited bytes from the repaired feature admission.
+            refresh_evidence = _current_target_refresh_receipt(
+                controller, task_id, record, record["tip_sha"], target_sha)
+            target_refreshed_repair = (
+                source_state == "REVIEW_FINDINGS" and refresh_evidence["valid"])
+            if (source_state == "REVIEW_FINDINGS" and record.get("target_refreshes")
+                    and not refresh_evidence["valid"]):
+                raise MergeQueueError(
+                    "review repair target-refresh identity is invalid: "
+                    f"{refresh_evidence['reason']}")
+            changed_base = (target_sha
+                            if queued_tip_refresh or target_refreshed_repair
+                            else record["base_sha"])
             changed = sorted(set(task_runtime.git(
                 worktree, "diff", "--name-only", f"{changed_base}..{new_tip}"
             ).splitlines()))
