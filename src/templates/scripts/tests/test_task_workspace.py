@@ -3342,7 +3342,17 @@ raise SystemExit(2)
         self.assertEqual(task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
                          "WORKING")
         queued = self.payload("finish", "X")
-        self.assertEqual(queued["review_ready_closure"], closure)
+        queued_closure = queued["review_ready_closure"]
+        for key, value in closure.items():
+            if key != "closure_sha256":
+                self.assertEqual(queued_closure[key], value)
+        standing = queued_closure["standing_validation"]
+        self.assertEqual(standing["outcome"], "PASSED")
+        self.assertEqual(standing["tip_sha"], tip)
+        queued_body = {key: value for key, value in queued_closure.items()
+                       if key != "closure_sha256"}
+        self.assertEqual(queued_closure["closure_sha256"],
+                         task_runtime.stable_sha256(queued_body))
 
     def test_finish_refuses_failed_focused_validation_without_state_advance(self) -> None:
         self.payload("start", "X")
