@@ -4680,7 +4680,8 @@ def merge_reopen(controller: Path, task_id: str,
                     # intact for another identical retry.
                     marker.unlink()
         queued = {key: value for key, value in record.items()
-                  if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
+                  if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt",
+                                 "review_ready_closure"}}
         next_review_round = record.get("review_round", 1)
         if reopen_attempt.get("source_state") == "REVIEW_FINDINGS":
             if (not isinstance(next_review_round, int) or isinstance(next_review_round, bool)
