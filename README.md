@@ -1,6 +1,6 @@
 # juno-code
 
-Juno Code orchestrates AI coding agents and structured development workflows. It works alongside [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, and [Juno Benchmark](https://github.com/askbudi/juno-benchmark), the longitudinal evaluation and evidence system for agent runs.
+Juno Code orchestrates AI coding agents and structured development workflows. It works alongside [Juno Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [Juno Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
 
 <p align="center">
   <img src="./Juno-code-icon.png" alt="juno-code logo" width="200" />
@@ -12,7 +12,7 @@ Juno Code orchestrates AI coding agents and structured development workflows. It
 
 <p align="center">
   <a href="https://www.npmjs.com/package/juno-code"><img src="https://img.shields.io/npm/v/juno-code.svg" alt="npm version" /></a>
-  <a href="https://github.com/askbudi/juno-code"><img src="https://img.shields.io/github/stars/askbudi/juno-code?style=social" alt="GitHub stars" /></a>
+  <a href="https://github.com/yylo-dev/yylo"><img src="https://img.shields.io/github/stars/yylo-dev/yylo?style=social" alt="GitHub stars" /></a>
 </p>
 
 ## Installation
@@ -1760,8 +1760,8 @@ juno-code start -b shell -s claude -i 5 -v
 **Links:**
 
 - [npm package](https://www.npmjs.com/package/juno-code)
-- [GitHub repository](https://github.com/askbudi/juno-code)
-- [Report issues](https://github.com/askbudi/juno-code/issues)
+- [GitHub repository](https://github.com/yylo-dev/yylo)
+- [Report issues](https://github.com/yylo-dev/yylo/issues)
 
 ## License
 

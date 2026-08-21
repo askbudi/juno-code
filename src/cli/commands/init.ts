@@ -884,7 +884,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           // Add all files and create initial commit
           execSync('git add .', { cwd: targetDirectory, stdio: 'ignore' });
 
-          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-code using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-code](https://github.com/askbudi/juno-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-code using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-code](https://github.com/yylo-dev/yylo)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
 
           execSync(`git commit -m "${commitMessage}"`, {
             cwd: targetDirectory,

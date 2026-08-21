@@ -84,7 +84,7 @@ Ralph proved that AI works better in loops. juno-code adds the structure that ma
 - Any AI backend (not vendor locked)
 - Full audit trail (not blended changes)
 
-GitHub: https://github.com/askbudi/juno-code
+GitHub: https://github.com/yylo-dev/yylo
 npm: https://www.npmjs.com/package/juno-code
 
 Built with TypeScript. MIT licensed. Feedback welcome.

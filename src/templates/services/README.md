@@ -398,4 +398,4 @@ python3 --version
 ## Support
 
 For issues or feature requests related to service scripts, please visit:
-https://github.com/askbudi/juno-code/issues
+https://github.com/yylo-dev/yylo/issues

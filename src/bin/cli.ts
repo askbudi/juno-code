@@ -2292,7 +2292,7 @@ ${chalk.blue.bold('Examples:')}
   juno-code claude set-default-model :opus
 
   ${chalk.gray('# Setup Git repository')}
-  juno-code setup-git https://github.com/askbudi/juno-code
+  juno-code setup-git https://github.com/yylo-dev/yylo
 
   ${chalk.gray('# Verbose is ON by default. Disable with:')}
   juno-code -v false -s claude 'prompt'
@@ -2333,8 +2333,8 @@ ${chalk.blue.bold('Configuration:')}
   4. Built-in defaults (lowest priority)
 
 ${chalk.blue.bold('Support:')}
-  Documentation: https://github.com/askbudi/juno-code#readme
-  Issues: https://github.com/askbudi/juno-code/issues
+  Documentation: https://github.com/yylo-dev/yylo#readme
+  Issues: https://github.com/yylo-dev/yylo/issues
   Website: https://askbudi.ai
   License: MIT
 

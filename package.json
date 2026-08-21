@@ -131,10 +131,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/askbudi/juno-code.git"
+    "url": "https://github.com/yylo-dev/yylo.git"
   },
   "bugs": {
-    "url": "https://github.com/askbudi/juno-code/issues"
+    "url": "https://github.com/yylo-dev/yylo/issues"
   },
   "homepage": "https://askbudi.ai/juno-code#readme",
   "license": "MIT",
