@@ -1771,10 +1771,43 @@ def push(controller: Path, *, dry_run: bool, apply: Path | None,
                         f"remote changed for {action['kind']}:{action.get('path', '')}"
                     )
                 else:
-                    argv = ["git", "-C", str(action_root), "push", "--porcelain"]
                     if action["kind"] == "push_root":
-                        argv.append("--recurse-submodules=check")
-                    argv.extend([action["remote"], f"{action['after']}:{action['ref']}"])
+                        root_remote_url = git(repository, "remote", "get-url", policy["remote"])
+                        closure = task_workspace.nested_gitlink_remote_closure(
+                            repository, approved["target_sha"], root_remote_url)
+                        remote_refs = []
+                        for item in status["integration"]["owner"]["submodules"]:
+                            child = Path(approved["registered_owner"]) / item["path"]
+                            child_ref = remote_default_ref(child, "origin")
+                            remote_refs.append({
+                                "path": item["path"], "sha": item["sha"],
+                                "remote": "origin", "ref": child_ref,
+                                "observed": remote_ref_sha(child, "origin", child_ref),
+                            })
+                        refs_available = all(row["observed"] == row["sha"]
+                                             for row in remote_refs)
+                        if closure["gitlinks"] or remote_refs:
+                            result["phases"].append({
+                                "kind": "verify_nested_gitlink_remote_closure",
+                                "status": "complete",
+                                "outcome": "verified"
+                                if closure["available"] and refs_available else "refused",
+                                "result": {"closure": closure, "remote_refs": remote_refs},
+                            })
+                            reference = write_receipt(result_path, result)
+                        if not closure["available"] or not refs_available:
+                            unavailable = next((row for row in remote_refs
+                                                if row["observed"] != row["sha"]), None)
+                            if unavailable is None:
+                                unavailable = next((row for row in closure["gitlinks"]
+                                                    if not row.get("available")), {})
+                            raise IntegrationError(
+                                "nested gitlink remote closure changed before root push: "
+                                f"path={unavailable.get('path', '<unknown>')} "
+                                f"sha={unavailable.get('sha', '<unknown>')}"
+                            )
+                    argv = ["git", "-C", str(action_root), "push", "--porcelain",
+                            action["remote"], f"{action['after']}:{action['ref']}"]
                     run(argv, action_root)
                     if remote_ref_sha(action_root, action["remote"], action["ref"]) != action["after"]:
                         raise IntegrationError(
