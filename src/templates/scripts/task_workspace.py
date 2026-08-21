@@ -3145,12 +3145,13 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     validations = [json.loads(Path(reference["path"]).read_text())["result"]
                    for reference in standing["receipts"]]
     closure_body = {key: value for key, value in closure.items() if key != "closure_sha256"}
-    closure_body["standing_validation"] = {
-        "schema_version": STANDING_EVIDENCE_SCHEMA,
-        "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
-        "outcome": standing["outcome"], "receipts": standing["receipts"],
-        "summary_sha256": stable_sha256(standing),
-    }
+    if standing["receipts"]:
+        closure_body["standing_validation"] = {
+            "schema_version": STANDING_EVIDENCE_SCHEMA,
+            "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
+            "outcome": standing["outcome"], "receipts": standing["receipts"],
+            "summary_sha256": stable_sha256(standing),
+        }
     closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
     for row, evidence in zip(selected_focused, validations):
         if evidence["timed_out"] or evidence["exit_code"]:
