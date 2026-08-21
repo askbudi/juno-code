@@ -42,6 +42,8 @@ describe('Bolt task workspace managed runtime', () => {
     ];
     const runtimePaths = [
       '.juno_task/scripts/workflow_runner.sh',
+      '.juno_task/scripts/parallel_runner.sh',
+      '.juno_task/scripts/run_until_completion.sh',
       '.juno_task/scripts/risk_policy.py',
       '.juno_task/scripts/controller_registration.py',
       '.juno_task/scripts/metadata_controller.py',
