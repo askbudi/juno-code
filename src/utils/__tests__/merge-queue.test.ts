@@ -15,7 +15,12 @@ describe('Bolt merge queue managed runtime', () => {
     expect(source).toContain('def merge_resolve(');
     expect(source).not.toContain('integration_candidate');
     expect(source).not.toContain('controller-sync');
-    expect(source).not.toContain('managed_agent_runner');
+    // Orchestration coupling stays bounded: the engine may lazy-import the
+    // managed runner exactly once for the controller-identity review preflight
+    // (_assert_controller_clean_before_expensive_evidence), never as a
+    // module-scope dependency.
+    expect(source.match(/managed_agent_runner/g) ?? []).toHaveLength(1);
+    expect(source).not.toMatch(/^import managed_agent_runner\b/m);
     execFileSync('python3', [tests], {
       cwd: repository,
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-merge-queue-test-pycache' },

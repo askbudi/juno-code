@@ -2448,6 +2448,12 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
                 attempt["outcome"] = "MERGING_OWNER_ADVANCEMENT_FAILED"
                 attempt["readback_sha"] = task_runtime.ref_sha(repository, config["target_ref"])
                 attempt["recovery_command"] = "yy integration sync"
+            elif attempt["outcome"] == "PRE_CAS_FAILED":
+                # The task returned to QUEUED with no target mutation; record the
+                # exact refusal and the safe retry entrypoint so recovery is
+                # actionable instead of a bare requeue.
+                attempt["failure"] = str(exc)
+                attempt["recovery_command"] = "yy merge next"
             # MERGING is a crash-recovery window, not long-lived admission of a
             # clean composition checkout. Any ordinary pre-CAS refusal removes
             # the exact owned internal candidate before returning task truth to
