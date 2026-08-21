@@ -2027,6 +2027,41 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(output).not.toContain('--cwd');
     });
 
+    it('should pass --max-iterations to the until-completion script as the outer bound and never forward it to inner runs', async () => {
+      await createMockProject({
+        project: {
+          '.juno_task': {
+            scripts: {
+              'run_until_completion.sh': `#!/usr/bin/env bash
+set -euo pipefail
+
+echo "RUN_UNTIL_ARGS:$*"
+`,
+            },
+          },
+        },
+      });
+
+      const projectDir = path.join(tempDir, 'project');
+      await fs.chmod(path.join(projectDir, '.juno_task', 'scripts', 'run_until_completion.sh'), 0o755);
+
+      const result = await executeCLI(
+        ['pi', '--until-completion', '--cwd', 'project', '-p', 'alias prompt', '-i', '2'],
+        { expectError: false },
+      );
+      const output = result.all || `${result.stdout}\n${result.stderr}`;
+
+      expect(result.exitCode).toBe(0);
+      // The outer bound is passed to the script explicitly...
+      expect(output).toContain('RUN_UNTIL_ARGS:--max-iterations 2 pi -p alias prompt');
+      // ...and is stripped from the inner juno-code arguments (-i never forwards).
+      expect(output).not.toContain('RUN_UNTIL_ARGS:pi -p alias prompt -i 2');
+      expect(output).not.toMatch(/RUN_UNTIL_ARGS:.*-i 2/);
+      // The exact scope is printed before the loop starts.
+      expect(output).toContain('outer loop bounded at 2 iteration(s)');
+      expect(output).toContain('inner agent sessions are not bounded by --max-iterations');
+    });
+
     it('should read continue prompt from stdin without -p (heredoc/pipe flow)', async () => {
       const result = await executeCLI(['continue', '-i', 'invalid'], {
         expectError: true,

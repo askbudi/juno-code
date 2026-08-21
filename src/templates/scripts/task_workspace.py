@@ -472,6 +472,30 @@ def lexical_absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
 
 
+# Platform-canonical alias prefixes: darwin exposes /var, /tmp, and /etc as
+# compatibility symlinks into /private. Git resolves those links when it
+# reports a worktree root, so the alias spelling of an already proven physical
+# worktree is identity-equivalent. Any other symlink component stays refused.
+DARWIN_ALIAS_PREFIXES = (("/var", "/private/var"), ("/tmp", "/private/tmp"),
+                         ("/etc", "/private/etc"))
+
+
+def platform_alias_normalize(path: Path) -> Path:
+    """Rewrite genuine platform alias prefixes; never touch other spellings."""
+    if sys.platform != "darwin":
+        return path
+    for alias, canonical in DARWIN_ALIAS_PREFIXES:
+        if path == Path(alias) or str(path).startswith(alias + "/"):
+            # Only rewrite when the alias is the operating system's own
+            # compatibility link. An attacker-created same-named directory
+            # must never inherit canonical identity.
+            alias_path = Path(alias)
+            if alias_path.is_symlink() and alias_path.resolve() == Path(canonical):
+                return Path(canonical + str(path)[len(alias):])
+            return path
+    return path
+
+
 def reject_symlink_components(path: Path, label: str) -> None:
     """Refuse an exact identity path if any existing component is a symlink."""
     current = Path(path.anchor)
@@ -488,13 +512,14 @@ def reject_symlink_components(path: Path, label: str) -> None:
 def exact_root(path: Path, label: str, *, physical_identity: bool = True) -> Path:
     lexical = lexical_absolute(path)
     if physical_identity:
-        reject_symlink_components(lexical, label)
-        candidate = lexical
+        candidate = platform_alias_normalize(lexical)
+        reject_symlink_components(candidate, label)
     else:
         candidate = lexical.resolve()
     actual = git(candidate, "rev-parse", "--show-toplevel", check=False)
-    actual_path = lexical_absolute(Path(actual)) if physical_identity and actual else (
-        Path(actual).resolve() if actual else None)
+    actual_path = (platform_alias_normalize(lexical_absolute(Path(actual)))
+                   if physical_identity and actual
+                   else (Path(actual).resolve() if actual else None))
     if not actual or actual_path != candidate:
         raise TaskWorkspaceError(f"{label} is not an exact Git worktree: {candidate}")
     return candidate
@@ -2466,9 +2491,9 @@ def _persist_failed_validation(controller: Path, task_id: str, frozen: dict[str,
         write_state(controller, state)
 
 
-def observe_working_task(record: dict[str, Any], configured_repository: Path,
-                         config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str]]:
-    """Read one admitted WORKING task from live Git identity, never its start snapshot."""
+def observe_task_identity(record: dict[str, Any], configured_repository: Path,
+                           config: dict[str, Any], task_id: str) -> tuple[Path, Path, str]:
+    """Verify recorded identity and return (repository, worktree, tip head)."""
     creation_receipt = record.get("creation_receipt", {})
     identity = record.get("workspace_identity", {})
     expected_worktree = worktree_path(config, task_id)
@@ -2523,6 +2548,14 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
             or git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != branch
             or git(recorded_repository, "rev-parse", branch, check=False) != head):
         raise TaskWorkspaceError("task branch/worktree identity drifted")
+    return recorded_repository, worktree, head
+
+
+def observe_working_task(record: dict[str, Any], configured_repository: Path,
+                         config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str]]:
+    """Read one admitted WORKING task from live Git identity, never its start snapshot."""
+    recorded_repository, worktree, head = observe_task_identity(
+        record, configured_repository, config, task_id)
     if git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
         raise TaskWorkspaceError("task worktree is dirty; commit or remove all changes")
     if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
@@ -2533,6 +2566,47 @@ def observe_working_task(record: dict[str, Any], configured_repository: Path,
         "-z", f"{record['base_sha']}..{head}"
     )
     return recorded_repository, worktree, head, changed
+
+
+def observe_task_diff(record: dict[str, Any], configured_repository: Path,
+                      config: dict[str, Any], task_id: str) -> tuple[Path, Path, str, list[str], list[str]]:
+    """Report committed base..tip and uncommitted paths without requiring a clean tree.
+
+    The result stays bound to the creation receipt base_sha and branch_ref and
+    fails closed on missing or moved identity, exactly like the strict WORKING
+    observation. Only the clean-tree requirement is lifted so mid-work status
+    reads keep reporting the committed diff.
+    """
+    recorded_repository, worktree, head = observe_task_identity(
+        record, configured_repository, config, task_id)
+    if run(["git", "-C", str(recorded_repository), "merge-base", "--is-ancestor",
+            record["base_sha"], head], recorded_repository, check=False).returncode:
+        raise TaskWorkspaceError("task tip no longer descends from the exact recorded base")
+    committed = git_pathnames(
+        worktree, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
+        "-z", f"{record['base_sha']}..{head}"
+    )
+    raw = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+    uncommitted: list[str] = []
+    entries = raw.split("\0") if raw else []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2] != " ":
+            raise TaskWorkspaceError("Git produced malformed porcelain status output")
+        value = entry[3:]
+        path = PurePosixPath(value)
+        if (path.is_absolute() or path.as_posix() != value or value == "."
+                or ".." in path.parts or ".git" in path.parts):
+            raise TaskWorkspaceError("Git produced an unsafe uncommitted path")
+        uncommitted.append(value)
+        if entry[0] in "RC" and index < len(entries):
+            index += 1  # porcelain v1 -z renames/copies append the original path
+    uncommitted = sorted(set(uncommitted))
+    return recorded_repository, worktree, head, committed, uncommitted
 
 
 def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[str, Any],
@@ -3115,10 +3189,12 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
                 "outcome": "status", "runtime_generation": generation}
     result = {**record, "outcome": "status", "runtime_generation": generation}
     if record.get("state") == "WORKING":
-        _, _, live_tip, live_paths = observe_working_task(
+        _, _, live_tip, committed_paths, uncommitted_paths = observe_task_diff(
             record, configured_repository, config, task_id
         )
-        result.update({"tip_sha": live_tip, "changed_paths": live_paths})
+        result.update({"tip_sha": live_tip, "changed_paths": committed_paths,
+                       "uncommitted_paths": uncommitted_paths,
+                       "changed_paths_scope": "base_sha..tip committed diff"})
     frozen_umbrella = (record.get("admission_supersessions", [{}])[-1].get("umbrella_admission")
                        if record.get("admission_supersessions")
                        else record.get("creation_receipt", {}).get("umbrella_admission"))
