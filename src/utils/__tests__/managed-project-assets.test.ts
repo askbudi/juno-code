@@ -44,6 +44,24 @@ describe('ManagedProjectAssets', {
     await fs.remove(projectDir);
   });
 
+  it('keeps every checked-in managed destination bound to its inventory hash', async () => {
+    const productRoot = path.resolve(process.cwd(), '..');
+    const inventoryPath = path.join(productRoot, '.juno_task/managed-assets.json');
+    if (!(await fs.pathExists(inventoryPath))) return;
+
+    const inventory = await fs.readJson(inventoryPath);
+    expect(inventory.packageName).toBe('@yylo/cli');
+    for (const [destination, identity] of Object.entries(
+      inventory.assets as Record<string, { sourceSha256: string; installedSha256: string }>,
+    )) {
+      const destinationPath = path.join(productRoot, destination);
+      expect(await fs.pathExists(destinationPath), destination).toBe(true);
+      const actual = sha256(await fs.readFile(destinationPath, 'utf8'));
+      expect(identity.installedSha256, destination).toBe(actual);
+      expect(identity.sourceSha256, destination).toBe(actual);
+    }
+  });
+
   it('installs every managed asset and registers resolvable file-backed macros', async () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(result.installed).toHaveLength(MANAGED_ASSETS.length);
