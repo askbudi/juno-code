@@ -1,4 +1,4 @@
-# Show HN: YYLO - Ralph Method for AI coding, but with guard rails
+# Show HN: juno-code - Ralph Method for AI coding, but with guard rails
 
 I've been using Geoffrey Huntley's "Ralph Method" (https://ghuntley.com/ralph/) for AI-assisted development. The core idea is brilliant: run your AI coding assistant in a loop and let it iterate until the job is done.
 
@@ -22,9 +22,9 @@ But Ralph has problems when you move beyond one-off tasks:
 
 **5. Vendor lock-in**: Ralph was built for Claude Code. Switching to Codex or Gemini means rewriting your workflow.
 
-So I built YYLO to fix these problems.
+So I built juno-code to fix these problems.
 
-## What YYLO does differently
+## What juno-code does differently
 
 **Iteration control**: Instead of `while :; do`, you get `-i 5` for exactly 5 iterations, or `run_until_completion.sh` that stops when kanban tasks are done.
 
@@ -37,9 +37,9 @@ So I built YYLO to fix these problems.
 **Backend agnostic**: Switch between Claude, Codex, Gemini, or Cursor with one flag:
 
 ```bash
-yylo -b shell -s claude -m :opus -i 5 -v
-yylo -b shell -s codex -m :codex -i 5 -v
-yylo -b shell -s gemini -m :flash -i 5 -v
+juno-code -b shell -s claude -m :opus -i 5 -v
+juno-code -b shell -s codex -m :codex -i 5 -v
+juno-code -b shell -s gemini -m :flash -i 5 -v
 ```
 
 Stuck on a bug? Try a different model's perspective with one word change.
@@ -60,7 +60,7 @@ Stuck on a bug? Try a different model's perspective with one word change.
 **Real-time feedback**: Send feedback to the running AI without stopping it:
 
 ```bash
-yylo feedback "found a bug in the auth flow"
+juno-code feedback "found a bug in the auth flow"
 ```
 
 ## Quick start
@@ -69,7 +69,7 @@ yylo feedback "found a bug in the auth flow"
 npm install -g @yylo/cli@0.1.0-rc.1
 
 cd your-project
-yylo init --task "Migrate from JavaScript to TypeScript" --subagent claude
+juno-code init --task "Migrate from JavaScript to TypeScript" --subagent claude
 
 # Run until kanban tasks are complete
 ./.juno_task/scripts/run_until_completion.sh -s claude -i 10 -v
@@ -77,7 +77,7 @@ yylo init --task "Migrate from JavaScript to TypeScript" --subagent claude
 
 ## The key insight
 
-Ralph proved that AI works better in loops. YYLO adds the structure that makes loops sustainable:
+Ralph proved that AI works better in loops. juno-code adds the structure that makes loops sustainable:
 
 - Controlled cooking time (not infinite)
 - Strict task format (not corruptible markdown)

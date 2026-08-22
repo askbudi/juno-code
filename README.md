@@ -3,7 +3,7 @@
 YYLO orchestrates AI coding agents and structured development workflows. It works alongside [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [YYLO Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
 
 <p align="center">
-  <img src="./yylo-icon.png" alt="YYLO logo" width="200" />
+  <img src="./Juno-code-icon.png" alt="yylo logo" width="200" />
 </p>
 
 <p align="center">
@@ -452,10 +452,10 @@ yylo -b shell -s claude -m :opus -i 5 -v
 yylo -b shell -s claude
 ```
 
-### Task Tracking with YYLO Ledger: Structured, Not Prose
+### Task Tracking with Juno Ledger: Structured, Not Prose
 
-Built-in task tracking uses **YYLO Ledger**, distributed as
-[`yylo-ledger`](https://pypi.org/project/yylo-ledger/). Hot current state uses
+Built-in task tracking uses **Juno Ledger**, distributed as
+[`juno-ledger`](https://pypi.org/project/juno-ledger/). Hot current state uses
 safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use
 immutable NDJSON packs. `yy ledger` is the preferred command; `yy kanban`
 remains a behaviorally identical compatibility alias.
@@ -1364,7 +1364,7 @@ Use as a pre-run hook so the agent finds and fixes errors automatically:
 }
 ```
 
-## YYLO Ledger Commands
+## Juno Ledger Commands
 
 Use `yy ledger` for task operations. Existing `yy kanban`, `kanban.sh`, and
 `juno-kanban` invocations remain supported for backward compatibility.

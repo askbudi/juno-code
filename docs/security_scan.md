@@ -55,7 +55,7 @@ No real API keys are embedded in the code.
 **File:** `src/core/config.ts`
 
 Environment variables properly categorized:
-- `YYLO_*` prefix for application settings (non-sensitive); `JUNO_CODE_*` is read only by the bounded compatibility migration
+- `JUNO_CODE_*` prefix for application settings (non-sensitive)
 - `JUNO_TASK_*` prefix for legacy compatibility (non-sensitive)
 - Service-specific: `GEMINI_API_KEY`, `CODEX_MODEL` (user-provided)
 
