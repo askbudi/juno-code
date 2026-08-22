@@ -18,6 +18,12 @@ describe('YYLO launch identity', () => {
     });
   }
 
+  it('advertises only the canonical YYLO website in active help', async () => {
+    const source = await fs.readFile(path.resolve('src/bin/cli.ts'), 'utf8');
+    expect(source).toContain('Website: https://yylo.dev');
+    expect(source).not.toContain('Website: https://askbudi.ai');
+  });
+
   it('maps a legacy-only environment value to the canonical name', async () => {
     const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy' });
     expect(result.exitCode).toBe(0);

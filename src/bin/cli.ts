@@ -2389,7 +2389,7 @@ ${chalk.blue.bold('Configuration:')}
 ${chalk.blue.bold('Support:')}
   Documentation: https://github.com/yylo-dev/yylo#readme
   Issues: https://github.com/yylo-dev/yylo/issues
-  Website: https://askbudi.ai
+  Website: https://yylo.dev
   License: MIT
 
 `,
