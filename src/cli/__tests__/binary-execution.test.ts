@@ -1111,15 +1111,54 @@ exit 1
       )).toBe('');
     });
 
-    it('maps canonical YYLO environment names to valid options without overriding CLI options', async () => {
-      const result = await executeCLI(['--subagent', 'fixture-provider', '--help'], {
-        env: { YYLO_SUBAGENT: 'pi', YYLO_MODEL: 'ignored-by-explicit-help' },
+    it('preserves an explicit short subagent over YYLO_SUBAGENT', async () => {
+      const result = await executeCLI(['-s', 'invalid-explicit-provider', '-p', 'precedence check'], {
+        expectError: true,
+        env: { YYLO_SUBAGENT: 'pi' },
       });
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stderr).not.toContain('unknown option');
+      expect(result.exitCode).not.toBe(0);
+      expect(result.all).toContain('Invalid subagent: invalid-explicit-provider');
       expect(result.all).not.toContain('--yylo-subagent');
-      expect(result.all).not.toContain('--yylo-model');
+    });
+
+    it('preserves an explicit --model=value over YYLO_MODEL', async () => {
+      await createMockProject({
+        '.juno_task': {
+          'config.json': '{}\n',
+          scripts: {
+            'install_requirements.sh': '#!/bin/sh\nexit 0\n',
+            'cleanup_feedback.sh': '#!/bin/sh\nexit 0\n',
+          },
+        },
+        bin: {
+          codex: '#!/bin/sh\necho "FAKE_CODEX_ARGS:$*" >&2\nexit 7\n',
+        },
+      });
+      for (const executable of [
+        '.juno_task/scripts/install_requirements.sh',
+        '.juno_task/scripts/cleanup_feedback.sh',
+        'bin/codex',
+      ]) await fs.chmod(path.join(tempDir, executable), 0o755);
+      execFileSync('git', ['init', '-q', '-b', 'fixture'], { cwd: tempDir });
+      execFileSync('git', ['config', 'user.name', 'YYLO Test'], { cwd: tempDir });
+      execFileSync('git', ['config', 'user.email', 'yylo@example.invalid'], { cwd: tempDir });
+      execFileSync('git', ['config', 'juno.controller.path', tempDir], { cwd: tempDir });
+      execFileSync('git', ['config', 'juno.controller.branch', 'fixture'], { cwd: tempDir });
+      execFileSync('git', ['add', '.'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: tempDir });
+
+      const result = await executeCLI(['-s', 'codex', '--model=:sonnet', '-p', 'precedence check'], {
+        expectError: true,
+        env: { YYLO_MODEL: ':codex', PATH: `${path.join(tempDir, 'bin')}:${process.env.PATH ?? ''}` },
+      });
+      const logs = await fs.readdir(path.join(tempDir, '.juno_task', 'logs'));
+      const log = await fs.readFile(path.join(tempDir, '.juno_task', 'logs', logs[0]), 'utf8');
+
+      expect(result.exitCode).not.toBe(0);
+      expect(log).toContain('"model":":sonnet"');
+      expect(log).not.toContain('"model":":codex"');
+      expect(log).toContain('FAKE_CODEX_ARGS:');
     });
 
     it('fails closed for unknown explicit commands before fixture initialization', async () => {

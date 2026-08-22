@@ -140,7 +140,7 @@ export function configureMergeQueueCommand(
   merge
     .command('plan')
     .description('Compute an offline, non-mutating candidate feasibility report')
-    .argument('<task-id>', 'Canonical Juno Ledger task ID')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .option('--against <ref>', 'Plan against an exact alternate Git ref')
     .option('--json', 'Emit the stable versioned JSON projection')
     .action((taskId: string, options: { against?: string; json?: boolean }) => {
@@ -162,7 +162,7 @@ export function configureMergeQueueCommand(
       return args.length ? invoke('next', taskId, args)
         : taskId === undefined ? invoke('next') : invoke('next', taskId);
     });
-  merge.command('resolve').argument('<task-id>', 'Canonical Juno Ledger task ID')
+  merge.command('resolve').argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
     .option('--train-plan <path>', 'Require this exact current release-train/FIFO identity')
     .action((taskId: string, options: { planId?: string; trainPlan?: string }) => {
@@ -170,7 +170,7 @@ export function configureMergeQueueCommand(
         ...(options.trainPlan ? ['--train-plan', options.trainPlan] : [])];
       return args.length ? invoke('resolve', taskId, args) : invoke('resolve', taskId);
     });
-  merge.command('review').argument('<task-id>', 'Canonical Juno Ledger task ID').action((taskId: string) => invoke('review', taskId));
+  merge.command('review').argument('<task-id>', 'Canonical YYLO Ledger task ID').action((taskId: string) => invoke('review', taskId));
   merge.command('reopen').argument('<task-id>', 'Task with review findings and a new committed tip')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
     .action((taskId: string, options: { planId?: string }) => options.planId
@@ -179,7 +179,7 @@ export function configureMergeQueueCommand(
   merge
     .command('withdraw')
     .description('Withdraw one queued task after proving no live producer owns its claims')
-    .argument('<task-id>', 'Canonical Juno Ledger task ID')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .option('--reason <text>', 'Bounded operator reason recorded in the withdraw receipt')
     .action((taskId: string, options: { reason?: string }) => options.reason
       ? invoke('withdraw', taskId, ['--reason', options.reason])

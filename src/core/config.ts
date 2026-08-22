@@ -395,7 +395,7 @@ const GLOBAL_CONFIG_FILE_NAMES = [
   'yylo.config.js',
   '.yylorc.json',
   '.yylorc.js',
-  'package.json', // Will look for 'junoCode' field
+  'package.json', // Looks for canonical 'yylo', then legacy 'junoCode'
 ] as const;
 
 /**
@@ -647,7 +647,8 @@ async function loadYamlConfig(filePath: string): Promise<Partial<JunoTaskConfig>
 
 /**
  * Load configuration from package.json
- * Looks for configuration in the 'junoCode' field
+ * Looks for configuration in the canonical 'yylo' field and then the legacy
+ * 'junoCode' compatibility field
  *
  * @param filePath - Path to package.json
  * @returns Parsed configuration object
@@ -656,7 +657,7 @@ async function loadPackageJsonConfig(filePath: string): Promise<Partial<JunoTask
   try {
     const content = await fsPromises.readFile(filePath, 'utf-8');
     const packageJson = JSON.parse(content);
-    return packageJson.junoCode || {};
+    return packageJson.yylo ?? packageJson.junoCode ?? {};
   } catch (error) {
     throw new Error(`Failed to load package.json config from ${filePath}: ${error}`);
   }

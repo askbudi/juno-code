@@ -644,11 +644,11 @@ describe('Configuration Module', () => {
       expect(config.defaultSubagent).toBe('claude');
     });
 
-    it('should load from package.json junoTask field', async () => {
+    it('should load from the canonical package.json yylo field', async () => {
       const packageJson = {
         name: 'test-package',
         version: '1.0.0',
-        junoCode: {
+        yylo: {
           defaultSubagent: 'gemini',
           logLevel: 'trace',
           verbose: 1,
@@ -667,7 +667,24 @@ describe('Configuration Module', () => {
       expect(config.verbose).toBe(1);
     });
 
-    it('should handle package.json without junoCode field', async () => {
+    it('should retain the legacy package.json junoCode field as a fallback', async () => {
+      const packagePath = path.join(tempDir, 'package.json');
+      await fs.writeJson(packagePath, {
+        yylo: { defaultSubagent: 'pi' },
+        junoCode: { defaultSubagent: 'gemini' },
+      });
+
+      const canonicalLoader = new ConfigLoader(tempDir);
+      await canonicalLoader.fromFile(packagePath);
+      expect(canonicalLoader.merge().defaultSubagent).toBe('pi');
+
+      await fs.writeJson(packagePath, { junoCode: { defaultSubagent: 'gemini' } });
+      const legacyLoader = new ConfigLoader(tempDir);
+      await legacyLoader.fromFile(packagePath);
+      expect(legacyLoader.merge().defaultSubagent).toBe('gemini');
+    });
+
+    it('should handle package.json without yylo or legacy junoCode fields', async () => {
       const packageJson = {
         name: 'test-package',
         version: '1.0.0',
@@ -680,7 +697,7 @@ describe('Configuration Module', () => {
       await loader.fromFile(packagePath);
       const config = loader.merge();
 
-      // Should use defaults since no junoCode field
+      // Should use defaults since no canonical or legacy package field exists
       expect(config.defaultSubagent).toBe(DEFAULT_CONFIG.defaultSubagent);
     });
   });

@@ -97,7 +97,7 @@ function resolveJunoCodeVersion(command: Command): string {
     if (configuredVersion) return configuredVersion;
     current = current.parent;
   }
-  throw new ConfigurationError('Juno CLI version is not configured');
+  throw new ConfigurationError('YYLO CLI version is not configured');
 }
 
 interface SessionHistoryEntry {

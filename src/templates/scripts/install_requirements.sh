@@ -13,7 +13,7 @@
 #    - If inside venv: installs into venv
 #    - If externally managed Python detected: uses pipx or creates temporary venv
 #    - If outside venv (non-managed): uses --system flag for system-wide installation
-# 6. Installs the Juno CLI and script runtime dependencies, including PyYAML
+# 6. Installs the YYLO CLI and script runtime dependencies, including PyYAML
 # 7. Reports if requirements are already satisfied
 #
 # Usage: ./install_requirements.sh

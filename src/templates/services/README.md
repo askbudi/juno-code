@@ -1,4 +1,4 @@
-# Juno-Code Service Scripts
+# YYLO Service Scripts
 
 This directory contains service scripts that extend yylo functionality. These scripts are Python-based utilities that can be customized by users.
 

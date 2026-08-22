@@ -42,6 +42,30 @@ describe('YYLO launch identity', () => {
     expect(packageReadme).not.toContain('release `v2.1.3-rc.1`');
   });
 
+  it('keeps active product, command, hook, and launch-copy identities canonical', async () => {
+    const activePublicSurfaces = await Promise.all([
+      fs.readFile(path.resolve('docs/hackernews_post.md'), 'utf8'),
+      fs.readFile(path.resolve('docs/bolt-package-acceptance.md'), 'utf8'),
+      fs.readFile(path.resolve('hooks/check-file-sizes.sh'), 'utf8'),
+      fs.readFile(path.resolve('src/templates/services/README.md'), 'utf8'),
+      fs.readFile(path.resolve('src/cli/commands/task.ts'), 'utf8'),
+      fs.readFile(path.resolve('src/cli/commands/merge.ts'), 'utf8'),
+    ]);
+    const [rootReadme, packageReadme, cliSource, securityGuidance] = await Promise.all([
+      fs.readFile(path.resolve('../README.md'), 'utf8'),
+      fs.readFile(path.resolve('README.md'), 'utf8'),
+      fs.readFile(path.resolve('src/bin/cli.ts'), 'utf8'),
+      fs.readFile(path.resolve('docs/security_scan.md'), 'utf8'),
+    ]);
+
+    expect(activePublicSurfaces.join('\n')).not.toMatch(/juno[-_ ](?:code|ledger|benchmark)/i);
+    expect(rootReadme).not.toMatch(/Juno (?:Code|Ledger|Benchmark)/);
+    expect(packageReadme).not.toMatch(/Juno (?:Code|Ledger|Benchmark)/);
+    expect(packageReadme).not.toContain('pypi.org/project/juno-ledger');
+    expect(cliSource).not.toContain('Juno Ledger');
+    expect(securityGuidance).toContain('`YYLO_*` prefix for application settings');
+  });
+
   it('maps a legacy-only environment value to the canonical name', async () => {
     const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy' });
     expect(result.exitCode).toBe(0);

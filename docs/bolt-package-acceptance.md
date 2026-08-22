@@ -1,6 +1,6 @@
 # Bolt package acceptance canary
 
-`npm run test:bolt-package-canary` packs the built Juno Code distribution, extracts that immutable npm artifact, and runs selected real-Git tests from the packaged runtime. It reuses the shipped task-workspace, merge-queue, metadata-controller, and CLI engines; the harness contains no alternate executor.
+`npm run test:bolt-package-canary` packs the built YYLO distribution, extracts that immutable npm artifact, and runs selected real-Git tests from the packaged runtime. It reuses the shipped task-workspace, merge-queue, metadata-controller, and CLI engines; the harness contains no alternate executor.
 
 The selected contract covers concurrent X/Y exact-base worktrees and moved-target composition; concurrent A/B conflict preservation and in-place resolution; failed affected validation; stale expected-SHA CAS; queue-worker collision; dirty and unreachable cleanup refusal; disposable metadata prepare, verification, cutover plan, rollback plan, and controller-mutation independence; and hard refusal of retired lifecycle and controller-copy entrypoints.
 

@@ -309,7 +309,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
     .option(
       '--til-completion',
-      'Run yylo in a loop until all Juno Ledger tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
+      'Run yylo in a loop until all YYLO Ledger tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
     )
     .option('--until-completion', 'Alias for --til-completion')
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
@@ -1956,16 +1956,35 @@ function configureEnvironment(): void {
     'YYLO_ENABLE_FEEDBACK',
   ];
 
+  const optionAliases: Record<string, string[]> = {
+    subagent: ['-s'],
+    prompt: ['-p'],
+    cwd: ['-w'],
+    'max-iterations': ['-i'],
+    model: ['-m'],
+    'log-file': ['-l'],
+    verbose: ['-v'],
+    quiet: ['-q'],
+    config: ['-c'],
+  };
+
+  const hasExplicitOption = (option: string): boolean => {
+    const delimiter = process.argv.indexOf('--');
+    const args = process.argv.slice(2, delimiter === -1 ? undefined : delimiter);
+    const names = [`--${option}`, ...(optionAliases[option] ?? [])];
+    return args.some((arg) => names.some((name) =>
+      arg === name || arg.startsWith(`${name}=`) ||
+      (name.startsWith('-') && !name.startsWith('--') && arg.startsWith(name) && arg.length > name.length),
+    ));
+  };
+
   // Helper function to process environment variables
   const processEnvVar = (envVar: string, prefix: string) => {
     const value = process.env[envVar];
-    if (
-      value &&
-      !process.argv.includes(`--${envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-')}`)
-    ) {
-      // Environment variable is set but not overridden by CLI argument
-      const option = envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-');
-
+    const option = envVar.toLowerCase().replace(prefix, '').replace(/_/g, '-');
+    if (value && !hasExplicitOption(option)) {
+      // Environment variable is set but not overridden by a long, short, or
+      // --name=value CLI argument.
       switch (option) {
         case 'verbose':
           // YYLO_VERBOSE supports true/false/0/1/no/yes — pass value through for normalization
@@ -2088,8 +2107,8 @@ async function main(): Promise<void> {
   if (process.env.YYLO_PREFLIGHT_ONLY === '1') return;
 
   // Benchmark is an independent product. Delegate its untouched argument tail
-  // before Commander can consume --help or the `--` delimiter and before Juno
-  // Code loads configuration, installs assets, or touches session state.
+  // before Commander can consume --help or the `--` delimiter and before YYLO
+  // loads configuration, installs assets, or touches session state.
   const initialArgs = process.argv.slice(2);
   const initialLeading = classifyLeadingCommand(initialArgs);
   if (initialArgs[initialLeading.index] === 'benchmark') {
