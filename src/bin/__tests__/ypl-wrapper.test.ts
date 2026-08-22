@@ -591,9 +591,11 @@ describe('ypl wrapper', () => {
       await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), '#!/bin/sh\nexit 91', { mode: 0o755 });
       const callerPath = `${preferredBin}${path.delimiter}${runtimeBin}${path.delimiter}${process.env.PATH ?? ''}`;
 
+      const callerEnv = { ...process.env, PATH: callerPath, DELEGATE_MARKER: 'exact caller value' };
+      delete callerEnv.YYLO_NODE_EXECUTABLE;
       const result = await execa(path.join(binDir, 'yy'), ['benchmark', 'probe'], {
         cwd: tempDir,
-        env: { PATH: callerPath, DELEGATE_MARKER: 'exact caller value', YYLO_NODE_EXECUTABLE: undefined },
+        env: callerEnv,
         reject: false,
       });
 
