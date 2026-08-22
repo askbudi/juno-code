@@ -24,6 +24,18 @@ describe('YYLO launch identity', () => {
     expect(source).not.toContain('Website: https://askbudi.ai');
   });
 
+  it('keeps active release guidance on canonical YYLO coordinates', async () => {
+    const [rootReadme, packageReadme] = await Promise.all([
+      fs.readFile(path.resolve('../README.md'), 'utf8'),
+      fs.readFile(path.resolve('README.md'), 'utf8'),
+    ]);
+    expect(rootReadme).toContain('https://www.npmjs.com/package/%40yylo%2Fcli');
+    expect(rootReadme).not.toContain('https://www.npmjs.com/package/juno-code');
+    expect(rootReadme).toContain('`v0.1.0-rc.1`');
+    expect(packageReadme).toContain('`--set v0.1.0-rc.1`');
+    expect(packageReadme).not.toContain('release `v2.1.3-rc.1`');
+  });
+
   it('maps a legacy-only environment value to the canonical name', async () => {
     const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy' });
     expect(result.exitCode).toBe(0);
