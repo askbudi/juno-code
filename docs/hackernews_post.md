@@ -66,7 +66,7 @@ juno-code feedback "found a bug in the auth flow"
 ## Quick start
 
 ```bash
-npm install -g juno-code
+npm install -g @yylo/cli@0.1.0-rc.1
 
 cd your-project
 juno-code init --task "Migrate from JavaScript to TypeScript" --subagent claude
@@ -85,6 +85,6 @@ Ralph proved that AI works better in loops. juno-code adds the structure that ma
 - Full audit trail (not blended changes)
 
 GitHub: https://github.com/yylo-dev/yylo
-npm: https://www.npmjs.com/package/juno-code
+npm: https://www.npmjs.com/package/%40yylo%2Fcli
 
 Built with TypeScript. MIT licensed. Feedback welcome.
