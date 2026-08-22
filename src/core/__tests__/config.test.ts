@@ -28,16 +28,16 @@ describe('Configuration Module', () => {
 
   beforeEach(async () => {
     // Create temporary directory for test files
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-config-test-'));
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-config-test-'));
 
     // Save original environment variables
     originalEnv = { ...process.env };
 
-    // Clear juno-code environment variables
+    // Clear yylo environment variables
     for (const envVar of Object.keys(ENV_VAR_MAPPING)) {
       delete process.env[envVar];
-      // Also clear JUNO_CODE variants for testing
-      const junoCodeVar = envVar.replace('JUNO_TASK_', 'JUNO_CODE_');
+      // Also clear YYLO variants for testing
+      const junoCodeVar = envVar.replace('JUNO_TASK_', 'YYLO_');
       delete process.env[junoCodeVar];
     }
   });
@@ -63,7 +63,7 @@ describe('Configuration Module', () => {
       expect(DEFAULT_CONFIG.headlessMode).toBe(false);
       expect(DEFAULT_CONFIG.workingDirectory).toBe(process.cwd());
       expect(DEFAULT_CONFIG.sessionDirectory).toBe(path.join(process.cwd(), '.juno_task'));
-      expect(DEFAULT_CONFIG.envFilePath).toBe('.env.juno');
+      expect(DEFAULT_CONFIG.envFilePath).toBe('.env.yylo');
       expect(DEFAULT_CONFIG.envFileCopied).toBe(false);
       expect(DEFAULT_CONFIG.kanbanRegistry).toEqual({
         enabled: false,
@@ -151,7 +151,7 @@ describe('Configuration Module', () => {
         headlessMode: true,
         workingDirectory: '/test/path',
         sessionDirectory: '/test/sessions',
-        envFilePath: '.env.juno',
+        envFilePath: '.env.yylo',
         envFileCopied: true,
         hooks: {},
         onHourlyLimit: 'raise',
@@ -275,12 +275,12 @@ describe('Configuration Module', () => {
         ...DEFAULT_CONFIG,
         kanbanRegistry: {
           enabled: true,
-          allowedProjects: ['juno-code', 'convert_if_chat'],
+          allowedProjects: ['yylo', 'convert_if_chat'],
         },
       });
       expect(config.kanbanRegistry).toEqual({
         enabled: true,
-        allowedProjects: ['juno-code', 'convert_if_chat'],
+        allowedProjects: ['yylo', 'convert_if_chat'],
       });
     });
 
@@ -494,9 +494,9 @@ describe('Configuration Module', () => {
   });
 
   describe('Environment variable parsing', () => {
-    it('should parse boolean environment variables (JUNO_CODE)', () => {
-      process.env.JUNO_CODE_VERBOSE = 'true';
-      process.env.JUNO_CODE_QUIET = 'false';
+    it('should parse boolean environment variables (YYLO)', () => {
+      process.env.YYLO_VERBOSE = 'true';
+      process.env.YYLO_QUIET = 'false';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -507,7 +507,7 @@ describe('Configuration Module', () => {
     });
 
     it('should parse boolean environment variables (JUNO_TASK backward compatibility)', () => {
-      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.YYLO_VERBOSE = 'true';
       process.env.JUNO_TASK_QUIET = 'false';
 
       const loader = new ConfigLoader(tempDir);
@@ -518,10 +518,10 @@ describe('Configuration Module', () => {
       expect(config.quiet).toBe(false);
     });
 
-    it('should parse numeric environment variables (JUNO_CODE)', () => {
-      process.env.JUNO_CODE_DEFAULT_MAX_ITERATIONS = '75';
-      process.env.JUNO_CODE_MCP_TIMEOUT = '45000';
-      process.env.JUNO_CODE_MCP_RETRIES = '5';
+    it('should parse numeric environment variables (YYLO)', () => {
+      process.env.YYLO_DEFAULT_MAX_ITERATIONS = '75';
+      process.env.YYLO_MCP_TIMEOUT = '45000';
+      process.env.YYLO_MCP_RETRIES = '5';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -532,10 +532,10 @@ describe('Configuration Module', () => {
       expect(config.mcpRetries).toBe(5);
     });
 
-    it('should parse string environment variables (JUNO_CODE)', () => {
-      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
-      process.env.JUNO_CODE_WORKING_DIRECTORY = '/custom/path';
+    it('should parse string environment variables (YYLO)', () => {
+      process.env.YYLO_DEFAULT_SUBAGENT = 'cursor';
+      process.env.YYLO_LOG_LEVEL = 'debug';
+      process.env.YYLO_WORKING_DIRECTORY = '/custom/path';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -547,8 +547,8 @@ describe('Configuration Module', () => {
     });
 
     it('should handle case-insensitive boolean values', () => {
-      process.env.JUNO_CODE_VERBOSE = 'TRUE';
-      process.env.JUNO_CODE_QUIET = 'False';
+      process.env.YYLO_VERBOSE = 'TRUE';
+      process.env.YYLO_QUIET = 'False';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -559,7 +559,7 @@ describe('Configuration Module', () => {
     });
 
     it('should ignore invalid numeric values', () => {
-      process.env.JUNO_CODE_DEFAULT_MAX_ITERATIONS = 'not-a-number';
+      process.env.YYLO_DEFAULT_MAX_ITERATIONS = 'not-a-number';
 
       const loader = new ConfigLoader(tempDir);
       loader.fromEnvironment();
@@ -579,7 +579,7 @@ describe('Configuration Module', () => {
         mcpTimeout: 60000,
       };
 
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, configData);
 
       const loader = new ConfigLoader(tempDir);
@@ -615,7 +615,7 @@ describe('Configuration Module', () => {
       };
 
       // Test multiple file formats in order of preference
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, configData);
 
       const loader = new ConfigLoader(tempDir);
@@ -628,11 +628,11 @@ describe('Configuration Module', () => {
 
     it('should prefer files in order of precedence', async () => {
       // Create multiple config files
-      await fs.writeJson(path.join(tempDir, 'juno-code.config.json'), {
+      await fs.writeJson(path.join(tempDir, 'yylo.config.json'), {
         defaultSubagent: 'claude',
       });
 
-      await fs.writeJson(path.join(tempDir, '.juno-coderc.json'), {
+      await fs.writeJson(path.join(tempDir, '.yylorc.json'), {
         defaultSubagent: 'cursor',
       });
 
@@ -640,7 +640,7 @@ describe('Configuration Module', () => {
       await loader.autoDiscoverFile();
       const config = loader.merge();
 
-      // Should prefer the first one found (juno-code.config.json)
+      // Should prefer the first one found (yylo.config.json)
       expect(config.defaultSubagent).toBe('claude');
     });
 
@@ -743,12 +743,12 @@ logLevel: info
         logLevel: 'info',
         verbose: 0,
       };
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment config
-      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.YYLO_DEFAULT_SUBAGENT = 'cursor';
+      process.env.YYLO_VERBOSE = 'true';
 
       // Setup CLI config
       const cliConfig = {
@@ -794,7 +794,7 @@ logLevel: info
           },
         },
       };
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       const loader = new ConfigLoader(tempDir);
@@ -875,11 +875,11 @@ logLevel: info
         defaultSubagent: 'claude',
         logLevel: 'info',
       };
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, fileConfig);
 
       // Setup environment
-      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.YYLO_VERBOSE = 'true';
 
       // Setup CLI
       const cliConfig = {
@@ -955,7 +955,7 @@ logLevel: info
       });
 
       // New behavior: always bootstrap project env file on load
-      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(true);
+      expect(await fs.pathExists(path.join(tempDir, '.env.yylo'))).toBe(true);
     });
 
     it('additively migrates a legacy project config and is byte-idempotent', async () => {
@@ -1043,7 +1043,7 @@ logLevel: info
       await expect(loadConfig({ baseDir: tempDir })).rejects.toThrow(/defaultMaxIterations/);
 
       expect(await fs.readFile(configPath)).toEqual(before);
-      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+      expect(await fs.pathExists(path.join(tempDir, '.env.yylo'))).toBe(false);
     });
 
     it('validates CLI overrides before migrating valid project bytes', async () => {
@@ -1057,7 +1057,7 @@ logLevel: info
       ).rejects.toThrow(/defaultMaxIterations/);
 
       expect(await fs.readFile(configPath)).toEqual(before);
-      expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+      expect(await fs.pathExists(path.join(tempDir, '.env.yylo'))).toBe(false);
     });
 
     it('leaves original config bytes intact when atomic replacement fails', async () => {
@@ -1067,7 +1067,7 @@ logLevel: info
       delete legacy.configVersion;
       legacy.envFileCopied = true;
       await fs.writeJson(configPath, legacy, { spaces: 4 });
-      await fs.writeFile(path.join(tempDir, '.env.juno'), '');
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), '');
       const before = await fs.readFile(configPath);
       await expect(
         writeProjectConfigAtomic(
@@ -1113,25 +1113,25 @@ logLevel: info
       const configPath = path.join(tempDir, '.juno_task', 'config.json');
       await fs.ensureDir(path.dirname(configPath));
       await fs.writeJson(configPath, { defaultSubagent: 'pi' });
-      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_LOG_LEVEL=debug\n');
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), 'YYLO_LOG_LEVEL=debug\n');
       const beforeConfig = await fs.readFile(configPath);
-      const beforeEnv = await fs.readFile(path.join(tempDir, '.env.juno'));
+      const beforeEnv = await fs.readFile(path.join(tempDir, '.env.yylo'));
 
-      process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = '0';
+      process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '0';
       try {
         const config = await loadConfig({ baseDir: tempDir });
         expect(config.defaultSubagent).toBe('pi');
         expect(config.logLevel).toBe('debug');
         expect(await fs.readFile(configPath)).toEqual(beforeConfig);
-        expect(await fs.readFile(path.join(tempDir, '.env.juno'))).toEqual(beforeEnv);
+        expect(await fs.readFile(path.join(tempDir, '.env.yylo'))).toEqual(beforeEnv);
         expect(await fs.pathExists(path.join(tempDir, '.env.custom'))).toBe(false);
       } finally {
-        delete process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES;
+        delete process.env.YYLO_PROJECT_BOOTSTRAP_WRITES;
       }
     });
 
-    it('should load env values from .env.juno before reading environment mapping', async () => {
-      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_DEFAULT_MAX_ITERATIONS=12\n');
+    it('should load env values from .env.yylo before reading environment mapping', async () => {
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), 'YYLO_DEFAULT_MAX_ITERATIONS=12\n');
 
       const config = await loadConfig({
         baseDir: tempDir,
@@ -1144,16 +1144,16 @@ logLevel: info
       const snapshot = JSON.stringify({ version: 1, subagent: 'pi', model: ':api-codex' });
       const escapedSnapshot = snapshot.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       await fs.writeFile(
-        path.join(tempDir, '.env.juno'),
-        `JUNO_CODE_LAST_EXECUTION_SETTINGS="${escapedSnapshot}"\n`,
+        path.join(tempDir, '.env.yylo'),
+        `YYLO_LAST_EXECUTION_SETTINGS="${escapedSnapshot}"\n`,
       );
 
       await loadConfig({
         baseDir: tempDir,
       });
 
-      expect(process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBe(snapshot);
-      expect(JSON.parse(process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS || '{}')).toEqual({
+      expect(process.env.YYLO_LAST_EXECUTION_SETTINGS).toBe(snapshot);
+      expect(JSON.parse(process.env.YYLO_LAST_EXECUTION_SETTINGS || '{}')).toEqual({
         version: 1,
         subagent: 'pi',
         model: ':api-codex',
@@ -1171,7 +1171,7 @@ logLevel: info
         hooks: DEFAULT_CONFIG.hooks,
       });
 
-      await fs.writeFile(path.join(tempDir, '.env.juno'), 'JUNO_CODE_LOG_LEVEL=debug\n');
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), 'YYLO_LOG_LEVEL=debug\n');
 
       const config = await loadConfig({
         baseDir: tempDir,
@@ -1224,7 +1224,7 @@ logLevel: info
       const configPath = path.join(tempDir, 'test.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_CODE_LOG_LEVEL = 'debug';
+      process.env.YYLO_LOG_LEVEL = 'debug';
 
       const loader = new ConfigLoader(tempDir);
       await loader.fromFile(configPath);
@@ -1240,10 +1240,10 @@ logLevel: info
 
     it('should handle loadAll convenience method', async () => {
       const fileConfig = { defaultSubagent: 'cursor' };
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_CODE_VERBOSE = 'true';
+      process.env.YYLO_VERBOSE = 'true';
 
       const loader = new ConfigLoader(tempDir);
       const config = await loader.loadAll({ logLevel: 'error' });
@@ -1447,7 +1447,7 @@ logLevel: info
           case '.mjs':
             return 'js';
           default:
-            // For files like .juno-coderc (no extension), assume JSON
+            // For files like .yylorc (no extension), assume JSON
             return 'json';
         }
       };
@@ -1464,7 +1464,7 @@ logLevel: info
       expect(getConfigFileFormat('config.JS')).toBe('js');
       expect(getConfigFileFormat('config.mjs')).toBe('js');
       expect(getConfigFileFormat('config.MJS')).toBe('js');
-      expect(getConfigFileFormat('.juno-coderc')).toBe('json');
+      expect(getConfigFileFormat('.yylorc')).toBe('json');
       expect(getConfigFileFormat('config')).toBe('json');
       expect(getConfigFileFormat('config.unknown')).toBe('json');
     });
@@ -1509,9 +1509,9 @@ logLevel: info
       await fs.writeJson(configPath, fileConfig);
 
       // Set some environment variables
-      process.env.JUNO_CODE_DEFAULT_SUBAGENT = 'cursor';
-      process.env.JUNO_CODE_VERBOSE = 'true';
-      process.env.JUNO_CODE_MCP_RETRIES = '5';
+      process.env.YYLO_DEFAULT_SUBAGENT = 'cursor';
+      process.env.YYLO_VERBOSE = 'true';
+      process.env.YYLO_MCP_RETRIES = '5';
 
       // Create CLI config
       const cliConfig = {
@@ -1675,11 +1675,11 @@ mcpServerPath: "/usr/local/bin/mcp-server"
         defaultSubagent: 'gemini',
         logLevel: 'warn',
       };
-      const configPath = path.join(tempDir, 'juno-code.config.json');
+      const configPath = path.join(tempDir, 'yylo.config.json');
       await fs.writeJson(configPath, fileConfig);
 
-      process.env.JUNO_CODE_VERBOSE = 'true';
-      process.env.JUNO_CODE_MCP_TIMEOUT = '50000';
+      process.env.YYLO_VERBOSE = 'true';
+      process.env.YYLO_MCP_TIMEOUT = '50000';
 
       const cliOverrides = {
         quiet: true,

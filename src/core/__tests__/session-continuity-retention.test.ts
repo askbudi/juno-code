@@ -24,14 +24,14 @@ import {
 } from '../session-continuity-state.js';
 
 const roots: string[] = [];
-const originalMetadata = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+const originalMetadata = process.env.YYLO_SESSION_METADATA_DIRECTORY;
 const NOW = new Date('2026-07-30T12:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1_000;
 
 async function fixture(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-retention-'));
   roots.push(root);
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
   return root;
 }
 function hash(index: number): string {
@@ -61,8 +61,8 @@ async function seed(root: string, scopes: Record<string, SessionContinuityScope>
 }
 afterEach(async () => {
   for (const root of roots.splice(0)) await fs.remove(root);
-  if (originalMetadata === undefined) delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
-  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = originalMetadata;
+  if (originalMetadata === undefined) delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
+  else process.env.YYLO_SESSION_METADATA_DIRECTORY = originalMetadata;
 });
 
 describe('automatic session continuity retention', () => {
@@ -131,7 +131,7 @@ describe('automatic session continuity retention', () => {
       scopes[hash(index)] = scope(new Date(NOW.getTime() - index * 1_000));
     }
     await seed(root, scopes);
-    const current = resolveContinueScopeContext({ JUNO_CODE_CONTINUE_SCOPE: 'automatic' }, 1, root);
+    const current = resolveContinueScopeContext({ YYLO_CONTINUE_SCOPE: 'automatic' }, 1, root);
 
     await persistContinueScopeSnapshot({
       workingDirectory: root,
@@ -148,8 +148,8 @@ describe('automatic session continuity retention', () => {
 
   it('proves live protection from the shared runtime marker without inspecting provider files', async () => {
     const root = await fixture();
-    const live = resolveContinueScopeContext({ JUNO_CODE_CONTINUE_SCOPE: 'live' }, 1, root);
-    const current = resolveContinueScopeContext({ JUNO_CODE_CONTINUE_SCOPE: 'current-live-test' }, 1, root);
+    const live = resolveContinueScopeContext({ YYLO_CONTINUE_SCOPE: 'live' }, 1, root);
+    const current = resolveContinueScopeContext({ YYLO_CONTINUE_SCOPE: 'current-live-test' }, 1, root);
     await seed(root, { [live.scopeHash]: scope(new Date(NOW.getTime() - 40 * DAY)) });
     await markContinueScopeRunning(root, live, process.pid);
 
@@ -164,8 +164,8 @@ describe('automatic session continuity retention', () => {
 
   it('does not auto-pin an explicit override and serializes retention with a concurrent writer', async () => {
     const root = await fixture();
-    const override = resolveContinueScopeContext({ JUNO_CODE_CONTINUE_SCOPE: 'temporary-name' }, 1, root);
-    const current = resolveContinueScopeContext({ JUNO_CODE_CONTINUE_SCOPE: 'current' }, 1, root);
+    const override = resolveContinueScopeContext({ YYLO_CONTINUE_SCOPE: 'temporary-name' }, 1, root);
+    const current = resolveContinueScopeContext({ YYLO_CONTINUE_SCOPE: 'current' }, 1, root);
     await persistContinueScopeSnapshot({
       workingDirectory: root,
       context: override,
@@ -202,13 +202,13 @@ describe('automatic session continuity retention', () => {
     const ambientPath = process.env.PATH ?? '/usr/bin';
     const env: NodeJS.ProcessEnv = {
       PATH: ambientPath,
-      JUNO_CODE_LAST_SESSION_ID: 'HIDDEN_LEGACY_SESSION',
-      JUNO_CODE_LAST_EXECUTION_SETTINGS: 'HIDDEN_LEGACY_SETTINGS',
+      YYLO_LAST_SESSION_ID: 'HIDDEN_LEGACY_SESSION',
+      YYLO_LAST_EXECUTION_SETTINGS: 'HIDDEN_LEGACY_SETTINGS',
     };
     for (let index = 1; index <= 2_500; index += 1) {
       scopes[hash(index)] = scope(new Date(NOW.getTime() - index * 1_000));
-      env[`JUNO_CODE_LAST_SESSION_ID_${hash(index)}`] = 'HIDDEN';
-      env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${hash(index)}`] = 'HIDDEN';
+      env[`YYLO_LAST_SESSION_ID_${hash(index)}`] = 'HIDDEN';
+      env[`YYLO_LAST_EXECUTION_SETTINGS_${hash(index)}`] = 'HIDDEN';
     }
     await seed(root, scopes);
 
@@ -229,8 +229,8 @@ describe('automatic session continuity retention', () => {
 
     expect(Object.keys(retained.scopes)).toHaveLength(CONTINUITY_INACTIVE_SCOPE_LIMIT + 1);
     expect(sourceContinuityNames).toHaveLength(2_500 * 2 + 2);
-    expect(sourceContinuityNames).toContain('JUNO_CODE_LAST_SESSION_ID');
-    expect(sourceContinuityNames).toContain('JUNO_CODE_LAST_EXECUTION_SETTINGS');
+    expect(sourceContinuityNames).toContain('YYLO_LAST_SESSION_ID');
+    expect(sourceContinuityNames).toContain('YYLO_LAST_EXECUTION_SETTINGS');
     expect(childContinuityNames).toEqual([]);
     expect(childContinuityNames).toHaveLength(0);
     expect(childContinuitySerializedBytes).toBe(0);

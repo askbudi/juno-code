@@ -24,7 +24,7 @@
 #   JUNO_VERBOSE=true  - Show [KANBAN] informational messages
 #   (Both default to false for silent operation)
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
@@ -138,7 +138,7 @@ ensure_python_environment() {
     # Check if install_requirements.sh exists
     if [ ! -f "$INSTALL_SCRIPT" ]; then
         log_error "Install script not found: $INSTALL_SCRIPT"
-        log_error "Please run 'juno-code init' to initialize the project"
+        log_error "Please run 'yylo init' to initialize the project"
         return 1
     fi
 

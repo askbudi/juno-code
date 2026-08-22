@@ -20,9 +20,9 @@ export function createAuthCommand(): Command {
       'after',
       `
 Examples:
-  $ juno-code auth import-codex
-  $ juno-code auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
-  $ juno-code auth import-codex --provider openai-codex
+  $ yylo auth import-codex
+  $ yylo auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
+  $ yylo auth import-codex --provider openai-codex
       `,
     );
 

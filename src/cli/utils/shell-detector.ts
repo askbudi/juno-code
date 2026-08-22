@@ -1,5 +1,5 @@
 /**
- * Shell Detection Utility for juno-code
+ * Shell Detection Utility for yylo
  *
  * Detects available shells and manages shell-specific configuration paths.
  * Supports bash, zsh, fish, and other common shells.
@@ -138,19 +138,19 @@ export class ShellDetector {
       case 'bash':
         // Use user completion directory
         if (process.platform === 'darwin') {
-          return path.join('/usr/local/etc/bash_completion.d', 'juno-code');
+          return path.join('/usr/local/etc/bash_completion.d', 'yylo');
         }
-        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'juno-code');
+        return path.join(homeDir, '.local', 'share', 'bash-completion', 'completions', 'yylo');
 
       case 'zsh':
         // Use user site-functions directory
-        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_juno-code');
+        return path.join(homeDir, '.local', 'share', 'zsh', 'site-functions', '_yylo');
 
       case 'fish':
-        return path.join(homeDir, '.config', 'fish', 'completions', 'juno-code.fish');
+        return path.join(homeDir, '.config', 'fish', 'completions', 'yylo.fish');
 
       case 'powershell':
-        return path.join(homeDir, '.config', 'powershell', 'completions', 'juno-code.ps1');
+        return path.join(homeDir, '.config', 'powershell', 'completions', 'yylo.ps1');
 
       default:
         throw new Error(`Unsupported shell: ${shell}`);
@@ -175,19 +175,19 @@ export class ShellDetector {
   getSourceCommand(shell: ShellType, completionPath: string): string {
     switch (shell) {
       case 'bash':
-        return `# juno-code completion\n[ -f "${completionPath}" ] && source "${completionPath}"`;
+        return `# yylo completion\n[ -f "${completionPath}" ] && source "${completionPath}"`;
 
       case 'zsh':
         // Add to fpath and enable completion
         const zshDir = path.dirname(completionPath);
-        return `# juno-code completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit && compinit`;
+        return `# yylo completion\nfpath=("${zshDir}" $fpath)\nautoload -U compinit && compinit`;
 
       case 'fish':
         // Fish automatically loads completions from ~/.config/fish/completions/
-        return `# juno-code completion (automatically loaded)`;
+        return `# yylo completion (automatically loaded)`;
 
       case 'powershell':
-        return `# juno-code completion\n. "${completionPath}"`;
+        return `# yylo completion\n. "${completionPath}"`;
 
       default:
         throw new Error(`Unsupported shell: ${shell}`);
@@ -205,7 +205,7 @@ export class ShellDetector {
 
       const content = await fs.readFile(configPath, 'utf-8');
       // Check for the marker comment
-      return content.includes('juno-code completion');
+      return content.includes('yylo completion');
     } catch {
       return false;
     }

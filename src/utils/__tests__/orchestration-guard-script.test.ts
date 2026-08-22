@@ -29,7 +29,7 @@ async function fixture(): Promise<{ controller: string; state: string; env: Node
     env: {
       ...process.env,
       JUNO_TASK_ROOT: controller,
-      JUNO_CODE_SESSION_METADATA_DIRECTORY: state,
+      YYLO_SESSION_METADATA_DIRECTORY: state,
       JUNO_WORKSPACE_ROLE: 'controller',
       JUNO_CONTROLLER_BRANCH: 'fixture-controller',
       JUNO_WORKSPACE_ENFORCEMENT: 'strict',
@@ -65,7 +65,7 @@ describe('orchestration guard', () => {
     const lock = path.join(state, 'orchestration_locks', `${digest}.lock`);
     await fs.ensureDir(lock);
     await fs.writeJson(path.join(lock, 'owner.json'), { pid: 99999999 });
-    const result = childProcess.spawnSync('python3', [script, '--key', key, '--', 'python3', '-c', 'import os; print(os.environ["JUNO_TASK_ROOT"]); print(os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"])'], {
+    const result = childProcess.spawnSync('python3', [script, '--key', key, '--', 'python3', '-c', 'import os; print(os.environ["JUNO_TASK_ROOT"]); print(os.environ["YYLO_SESSION_METADATA_DIRECTORY"])'], {
       cwd: controller, env, encoding: 'utf8',
     });
     expect(result.status).toBe(0);

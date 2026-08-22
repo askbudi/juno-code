@@ -70,7 +70,7 @@ describe('ManagedProjectAssets', {
     expect(dictionary.life_cycle).toContain('controller_root=$(yy where controller)');
     expect(dictionary.life_cycle).toContain('$controller_root/.juno_task/scripts/watch_progress.py');
     expect(dictionary.life_cycle).toContain('yy task preflight TASK_ID');
-    expect(dictionary.life_cycle).toContain('sole owner');
+    expect(dictionary.life_cycle).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.life_cycle).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.life_cycle).not.toContain('launch a fresh read-only independent `yy pi` review');
     expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
@@ -98,7 +98,7 @@ describe('ManagedProjectAssets', {
     expect(dictionary.run_workflow).toContain('read-only doctor support');
     expect(dictionary.run_workflow).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.run_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
-    expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a Juno Code v1 project');
+    expect(dictionary.migrate_juno_code_v1_to_v2).toContain('# Migrate a YYLO v1 project');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('# Migrate juno-kanban v1 storage');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain('resolve its latest reviewed commit');
     expect(dictionary.migrate_juno_kanban_v1_to_v2).toContain(
@@ -322,7 +322,7 @@ describe('ManagedProjectAssets', {
     }
   });
 
-  it('runs the documented Juno Code command for fresh, lock-changed, and failed installs', async () => {
+  it('runs the documented YYLO command for fresh, lock-changed, and failed installs', async () => {
     const wiki = await fs.readFile(
       path.join(process.cwd(), 'src/templates/wiki/controller/task_dependency_hydration.md'),
       'utf8',
@@ -737,7 +737,7 @@ describe('ManagedProjectAssets', {
     await fs.writeFile(path.join(projectDir, retiredCustomized), customizedBytes);
     await fs.writeJson(path.join(projectDir, '.juno_task/managed-assets.json'), {
       schemaVersion: 1,
-      packageName: 'juno-code',
+      packageName: '@yylo/cli',
       packageVersion: '2.0.31',
       assets: {
         [retiredManaged]: {
@@ -773,7 +773,7 @@ describe('ManagedProjectAssets', {
     await fs.writeFile(destinationPath, firstBytes);
     await fs.writeJson(path.join(projectDir, '.juno_task/managed-assets.json'), {
       schemaVersion: 1,
-      packageName: 'juno-code',
+      packageName: '@yylo/cli',
       packageVersion: '2.0.31',
       assets: {
         [destination]: {

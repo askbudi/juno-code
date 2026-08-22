@@ -141,7 +141,7 @@ def load_policy(path: Path) -> dict[str, Any]:
         raise WorkspaceError("metadata-controller .gitignore must be selected and required")
     generation = value["generation"]
     if (not isinstance(generation, dict) or set(generation) != {"package_name", "package_version", "managed_assets_schema"}
-            or generation["package_name"] != "juno-code" or not isinstance(generation["package_version"], str)
+            or generation["package_name"] != "@yylo/cli" or not isinstance(generation["package_version"], str)
             or generation["managed_assets_schema"] != 1):
         raise WorkspaceError("invalid managed generation identity")
     return {**value, "ownership": {"schema_version": OWNERSHIP_SCHEMA, **normalized},

@@ -206,24 +206,24 @@ def load_package_bound_test_fixture(test_file: str, fixture_name: str) -> Any:
             valid = (
                 isinstance(identity, dict) and set(identity) == {
                     "package", "version", "executable", "executable_sha256", "source", "tracked"}
-                and identity.get("package") == "juno-code"
+                and identity.get("package") == "@yylo/cli"
                 and identity.get("source") == "installed-release" and identity.get("tracked") is False
                 and is_valid_semver(version)
                 and executable_hash == identity.get("executable_sha256")
                 and isinstance(inventory, dict) and inventory.get("schemaVersion") == 1
-                and inventory.get("packageName") == "juno-code"
+                and inventory.get("packageName") == "@yylo/cli"
                 and inventory.get("packageVersion") == version
                 and isinstance(inventory.get("assets"), dict)
-                and isinstance(package, dict) and package.get("name") == "juno-code"
+                and isinstance(package, dict) and package.get("name") == "@yylo/cli"
                 and package.get("version") == version)
             if not valid:
                 raise TaskWorkspaceError(
                     f"package-bound test fixture unavailable: {fixture_name}; run `yy scripts update --force` "
-                    "from the controller's bound juno-code installation, then retry")
+                    "from the controller's bound yylo installation, then retry")
             return load(package_root / "dist/templates/scripts/tests" / fixture_name)
 
     # Development execution is the only fallback. Its identity is an actual
-    # Git worktree plus exact tracked juno-code paths, never a guessed sibling.
+    # Git worktree plus exact tracked yylo paths, never a guessed sibling.
     discovered = run(["git", "-C", str(test_path.parent), "rev-parse", "--show-toplevel"],
                      test_path.parent, check=False)
     if discovered.returncode == 0:
@@ -241,12 +241,12 @@ def load_package_bound_test_fixture(test_file: str, fixture_name: str) -> Any:
         except (OSError, json.JSONDecodeError):
             source_package = None
         if (test_path in allowed_tests and tracked.returncode == 0 and
-                isinstance(source_package, dict) and source_package.get("name") == "juno-code"):
+                isinstance(source_package, dict) and source_package.get("name") == "@yylo/cli"):
             return load(canonical)
 
     raise TaskWorkspaceError(
         f"package-bound test fixture unavailable: {fixture_name}; run `yy scripts update --force` "
-        "from the controller's bound juno-code installation, then retry")
+        "from the controller's bound yylo installation, then retry")
 
 
 def normalized_relative(value: Any, label: str) -> str:
@@ -1337,7 +1337,7 @@ def _consumer_runtime_provenance(repository: Path, target_sha: str,
         isinstance(inventory, dict)
         and set(inventory) == {"schemaVersion", "packageName", "packageVersion", "assets"}
         and inventory.get("schemaVersion") == 1
-        and inventory.get("packageName") == "juno-code"
+        and inventory.get("packageName") == "@yylo/cli"
         and is_valid_semver(inventory.get("packageVersion"))
         and isinstance(entry, dict)
         and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
@@ -3607,14 +3607,14 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
 def cli_version_output_valid(result: subprocess.CompletedProcess[str],
                              version: str, cwd: Path) -> bool:
     """Accept only the current or compatible canonical --version contracts."""
-    if result.stdout in {f"{version}\n", f"juno-code {version}\n"} and result.stderr == "":
+    if result.stdout in {f"{version}\n", f"yylo {version}\n"} and result.stderr == "":
         return True
     if result.stdout != f"{version}\n":
         return False
     node_version = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     node_platform = r"(?:aix|android|darwin|freebsd|linux|openbsd|sunos|win32)"
     historical_banner = (
-        rf"\n🎯 Juno Code v{re.escape(version)} - TypeScript CLI\n"
+        rf"\n🎯 YYLO v{re.escape(version)} - TypeScript CLI\n"
         rf"   Node\.js {node_version} on {node_platform}\n"
         rf"   Working directory: {re.escape(str(cwd))}\n\n"
     )
@@ -3636,7 +3636,7 @@ def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: 
             "consumer target installed runtime identity is missing or invalid") from exc
     required = {"package", "version", "executable", "executable_sha256", "source", "tracked"}
     if (not isinstance(identity, dict) or set(identity) != required
-            or identity.get("package") != "juno-code"
+            or identity.get("package") != "@yylo/cli"
             or identity.get("source") != "installed-release"
             or identity.get("tracked") is not False
             or not is_valid_semver(identity.get("version"))
@@ -3681,7 +3681,7 @@ def _legacy_installed_runtime_prior(controller: Path, prior: bytes, prior_mode: 
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise TaskWorkspaceError(
             "consumer target installed runtime package/template identity is missing") from exc
-    if (not isinstance(manifest, dict) or manifest.get("name") != "juno-code"
+    if (not isinstance(manifest, dict) or manifest.get("name") != "@yylo/cli"
             or manifest.get("version") != identity["version"] or template.is_symlink()
             or template_bytes != prior):
         raise TaskWorkspaceError(
@@ -3721,7 +3721,7 @@ def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
         raise TaskWorkspaceError("target package identity is invalid; refusing bootstrap") from exc
     source_repository = package_bytes is not None or source is not None
     if source_repository and (not isinstance(package, dict)
-                              or package.get("name") != "juno-code"
+                              or package.get("name") != "@yylo/cli"
                               or not is_valid_semver(package.get("version"))):
         raise TaskWorkspaceError("Juno source target package identity is invalid")
     if prior is None:
@@ -3765,7 +3765,7 @@ def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
         if (not isinstance(inventory, dict) or set(inventory) != {
                 "schemaVersion", "packageName", "packageVersion", "assets"}
                 or inventory.get("schemaVersion") != 1
-                or inventory.get("packageName") != "juno-code"
+                or inventory.get("packageName") != "@yylo/cli"
                 or not is_valid_semver(prior_version) or not all_entries_valid
                 or not entry_valid
                 or (prior_version != recovery_package_version
@@ -3806,7 +3806,7 @@ def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
         isinstance(inventory, dict) and set(inventory) == {
             "schemaVersion", "packageName", "packageVersion", "assets"}
         and inventory.get("schemaVersion") == 1
-        and inventory.get("packageName") == "juno-code"
+        and inventory.get("packageName") == "@yylo/cli"
         and is_valid_semver(inventory_package_version)
         and all_entries_valid
         and isinstance(entry, dict)
@@ -3860,7 +3860,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
         raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
     encoded = prior.get("inventory_bytes_base64")
     if encoded is None:
-        inventory = {"schemaVersion": 1, "packageName": "juno-code",
+        inventory = {"schemaVersion": 1, "packageName": "@yylo/cli",
                      "packageVersion": package_version, "assets": {}}
         inventory_mode = "100644"
     else:
@@ -3872,7 +3872,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
         if (not isinstance(inventory, dict)
                 or set(inventory) != {"schemaVersion", "packageName", "packageVersion", "assets"}
                 or inventory.get("schemaVersion") != 1
-                or inventory.get("packageName") != "juno-code"
+                or inventory.get("packageName") != "@yylo/cli"
                 or not isinstance(inventory.get("assets"), dict)
                 or inventory_mode not in {"100644", "100755"}):
             raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
@@ -3915,7 +3915,7 @@ def _runtime_bootstrap_plan(controller: Path, package_version: str,
         "operation": "plan",
         "controller_identity": {**_controller_bootstrap_identity(controller),
                                 "controller_class": controller_class},
-        "package": {"name": "juno-code", "version": package_version,
+        "package": {"name": "@yylo/cli", "version": package_version,
                     "task_runtime_sha256": running_sha},
         "target": {"repository": str(repository), "ref": target_ref,
                    "sha": target_sha, "tree": target_tree},
@@ -3961,7 +3961,7 @@ def _load_runtime_bootstrap_plan(controller: Path, receipt_path: Path,
     if (not isinstance(plan, dict) or set(plan) != required
             or plan.get("schema_version") != RUNTIME_BOOTSTRAP_SCHEMA
             or plan.get("operation") != "plan" or plan.get("path") != RUNTIME_PATH
-            or plan.get("package") != {"name": "juno-code", "version": package_version,
+            or plan.get("package") != {"name": "@yylo/cli", "version": package_version,
                                        "task_runtime_sha256": package_runtime_sha256}
             or not isinstance(plan.get("controller_identity"), dict)
             or not isinstance(plan.get("target"), dict)

@@ -1,10 +1,7 @@
 {
-  "name": "juno-code",
-  "version": "2.1.3-rc.4",
-  "description": "Ralph Wiggum meet Kanban! Ralph style execution for [Claude Code, Codex, Gemini, Cursor]. One task per iteration, automatic progress tracking, and git commits. Set it and let it run.",
-  "junoBenchmark": {
-    "version": "0.1.1"
-  },
+  "name": "@yylo/cli",
+  "version": "0.1.0-rc.1",
+  "description": "YYLO (why-lo): task-driven AI subagent orchestration.",
   "keywords": [
     "Ralph",
     "Ralph Wiggum",
@@ -33,10 +30,10 @@
     }
   },
   "bin": {
-    "juno-code": "./dist/bin/juno-code.sh",
-    "yy": "./dist/bin/juno-code.sh",
+    "yylo": "./dist/bin/yylo.sh",
+    "yy": "./dist/bin/yylo.sh",
     "ypl": "./dist/bin/ypl.sh",
-    "feedback-juno-code": "./dist/bin/feedback-collector.mjs"
+    "feedback-yylo": "./dist/bin/feedback-collector.mjs"
   },
   "files": [
     "dist",
@@ -52,7 +49,7 @@
     "build:copy-services": "node -e \"const fs = require('fs-extra'); const path = require('path'); const src = 'src/templates/services'; const dest = 'dist/templates/services'; fs.copySync(src, dest, { recursive: true }); const required = ['codex.py','claude.py','gemini.py','pi.py','environment_boundary.py']; const missing = required.filter(file => !fs.existsSync(path.join(dest, file))); if (missing.length) { throw new Error('Missing required service scripts in dist: ' + missing.join(', ')); } required.forEach(file => fs.chmodSync(path.join(dest, file), 0o755));\"",
     "build:copy-skills": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/skills'; const dest = 'dist/templates/skills'; fs.copySync(src, dest, { recursive: true, dereference: true });\"",
     "build:copy-extensions": "node -e \"const fs = require('fs-extra'); const src = 'src/templates/extensions'; const dest = 'dist/templates/extensions'; if (fs.existsSync(src)) { fs.copySync(src, dest, { recursive: true }); }\"",
-    "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/juno-code.sh', 'dist/bin/juno-code.sh'); fs.copySync('src/bin/ypl.sh', 'dist/bin/ypl.sh'); fs.chmodSync('dist/bin/juno-code.sh', 0o755); fs.chmodSync('dist/bin/ypl.sh', 0o755);\"",
+    "build:copy-wrapper": "node -e \"const fs = require('fs-extra'); fs.copySync('src/bin/yylo.sh', 'dist/bin/yylo.sh'); fs.copySync('src/bin/ypl.sh', 'dist/bin/ypl.sh'); fs.chmodSync('dist/bin/yylo.sh', 0o755); fs.chmodSync('dist/bin/ypl.sh', 0o755);\"",
     "build:watch": "tsup --watch",
     "test": "vitest run -c ./vitest.fast.config.ts",
     "test:full": "vitest run",
@@ -88,7 +85,8 @@
     "deploy": "bash scripts/publish-all.sh patch",
     "deploy:minor": "bash scripts/publish-all.sh minor",
     "deploy:major": "bash scripts/publish-all.sh major",
-    "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run"
+    "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run",
+    "test:ledger-release-artifacts": "node scripts/verify-ledger-release-artifacts.mjs"
   },
   "dependencies": {
     "chalk": "^5.3.0",
@@ -136,13 +134,19 @@
   "bugs": {
     "url": "https://github.com/yylo-dev/yylo/issues"
   },
-  "homepage": "https://askbudi.ai/juno-code#readme",
+  "homepage": "https://yylo.dev",
   "license": "MIT",
   "author": {
-    "name": "Juno AI INC.",
-    "email": "golchin@askdev.ai"
+    "name": "JUNO AI INC.",
+    "email": "support@yylo.dev"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "yyloBenchmark": {
+    "version": "0.1.0-rc.1"
+  },
+  "yyloLedger": {
+    "version": "0.1.0rc1"
   }
 }

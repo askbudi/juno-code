@@ -1,5 +1,5 @@
 /**
- * Execution type definitions for juno-code
+ * Execution type definitions for yylo
  *
  * This module provides comprehensive TypeScript types for task execution,
  * including progress tracking, tool calls, subagent integration,

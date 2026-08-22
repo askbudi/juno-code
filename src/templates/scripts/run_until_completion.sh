@@ -2,14 +2,14 @@
 
 # run_until_completion.sh
 #
-# Purpose: Continuously run juno-code until all kanban tasks are completed
+# Purpose: Continuously run yylo until all kanban tasks are completed
 #
 # This script uses a while loop pattern: it ALWAYS runs pre-run hooks/commands,
-# then checks the kanban board for tasks BEFORE running juno-code. If no tasks
-# exist, juno-code is NOT executed. This allows pre-run hooks (e.g., Slack sync,
-# GitHub sync) to create tasks that will then be processed by juno-code.
+# then checks the kanban board for tasks BEFORE running yylo. If no tasks
+# exist, yylo is NOT executed. This allows pre-run hooks (e.g., Slack sync,
+# GitHub sync) to create tasks that will then be processed by yylo.
 #
-# Usage: ./.juno_task/scripts/run_until_completion.sh [options] [juno-code arguments]
+# Usage: ./.juno_task/scripts/run_until_completion.sh [options] [yylo arguments]
 # Example: ./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
 # Example: ./.juno_task/scripts/run_until_completion.sh -b shell -s claude -m :opus
 # Example: ./.juno_task/scripts/run_until_completion.sh --pre-run "./slack/sync.sh" -s claude -i 5
@@ -20,7 +20,7 @@
 # Options (for run_until_completion.sh):
 #   --pre-run <cmd>         - Execute command before entering the main loop
 #                             Can be specified multiple times for multiple commands
-#                             Commands are executed in order before juno-code starts
+#                             Commands are executed in order before yylo starts
 #   --pre-run-hook <name>   - Execute a named hook from .juno_task/config.json
 #   --pre-run-hooks <name>    (alias for --pre-run-hook)
 #   --run-pre-hook <name>     (alias for --pre-run-hook)
@@ -36,8 +36,8 @@
 #                             Set to 0 to disable stale detection
 #   --no-stale-check        - Alias for --stale-threshold 0
 #
-# All other arguments are forwarded to juno-code.
-# The script shows all stdout/stderr from juno-code in real-time.
+# All other arguments are forwarded to yylo.
+# The script shows all stdout/stderr from yylo in real-time.
 #
 # Environment Variables:
 #   JUNO_DEBUG=true     - Show [DEBUG] diagnostic messages
@@ -54,7 +54,7 @@
 #   the script will exit to prevent infinite loops where the agent doesn't
 #   process any tasks.
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
@@ -82,7 +82,7 @@ STALE_THRESHOLD="${JUNO_STALE_THRESHOLD:-3}"
 STALE_COUNTER=0
 PREVIOUS_KANBAN_STATE=""
 
-# Arrays to store pre-run commands, hooks, and juno-code arguments
+# Arrays to store pre-run commands, hooks, and yylo arguments
 declare -a PRE_RUN_CMDS=()
 declare -a PRE_RUN_HOOKS=()
 declare -a JUNO_ARGS=()
@@ -334,7 +334,7 @@ execute_pre_run_commands() {
             log_error "Pre-run [$idx/$cmd_count] failed with exit code $exit_code"
             log_error "Command was: $cmd"
             # Continue with next pre-run command even if one fails
-            # This allows partial execution like Slack sync failing but still running juno-code
+            # This allows partial execution like Slack sync failing but still running yylo
         fi
     done
 
@@ -471,7 +471,7 @@ has_remaining_tasks() {
     # Check if kanban script exists
     if [ ! -f "$KANBAN_SCRIPT" ]; then
         log_error "Kanban script not found: $KANBAN_SCRIPT"
-        log_error "Please run 'juno-code init' to initialize the project"
+        log_error "Please run 'yylo init' to initialize the project"
         return 1
     fi
 
@@ -521,7 +521,7 @@ main() {
     if [[ ${#PRE_RUN_CMDS[@]} -gt 0 ]]; then
         log_status "Pre-run commands: ${#PRE_RUN_CMDS[@]}"
     fi
-    log_status "Arguments to juno-code: ${JUNO_ARGS[*]:-<none>}"
+    log_status "Arguments to yylo: ${JUNO_ARGS[*]:-<none>}"
 
     if [ "$max_iterations" -gt 0 ]; then
         log_status "Maximum iterations: $max_iterations"
@@ -539,14 +539,14 @@ main() {
     # Capture initial kanban state before first iteration
     PREVIOUS_KANBAN_STATE=$(get_kanban_state_snapshot)
 
-    # Check if we have any arguments for juno-code
+    # Check if we have any arguments for yylo
     if [[ ${#JUNO_ARGS[@]} -eq 0 ]]; then
-        log_warning "No arguments provided. Running juno-code with no arguments."
+        log_warning "No arguments provided. Running yylo with no arguments."
     fi
 
     # ALWAYS execute pre-run hooks and commands before checking for tasks
     # This ensures hooks (e.g., Slack sync, GitHub sync) can create tasks
-    # that will then be processed by juno-code
+    # that will then be processed by yylo
     execute_pre_run_hooks
     execute_pre_run_commands
 
@@ -555,12 +555,12 @@ main() {
     if ! has_remaining_tasks; then
         log_success ""
         log_success "=========================================="
-        log_success "No tasks found in kanban. Pre-run hooks executed, juno-code skipped."
+        log_success "No tasks found in kanban. Pre-run hooks executed, yylo skipped."
         log_success "=========================================="
         exit 0
     fi
 
-    # While loop pattern: Only run juno-code if there are tasks to process
+    # While loop pattern: Only run yylo if there are tasks to process
     while true; do
         iteration=$((iteration + 1))
 
@@ -578,16 +578,16 @@ main() {
             exit 0
         fi
 
-        log_status "Running juno-code with args: ${JUNO_ARGS[*]:-<none>}"
+        log_status "Running yylo with args: ${JUNO_ARGS[*]:-<none>}"
         log_status "------------------------------------------"
 
-        # Run juno-code with parsed arguments (excluding --pre-run which was already processed)
-        if juno-code "${JUNO_ARGS[@]}"; then
-            log_success "juno-code completed successfully"
+        # Run yylo with parsed arguments (excluding --pre-run which was already processed)
+        if yylo "${JUNO_ARGS[@]}"; then
+            log_success "yylo completed successfully"
         else
             local exit_code=$?
-            log_warning "juno-code exited with code $exit_code"
-            # Continue the loop even if juno-code fails - it might succeed next iteration
+            log_warning "yylo exited with code $exit_code"
+            # Continue the loop even if yylo fails - it might succeed next iteration
             # Some failures are expected (e.g., partial task completion)
         fi
 
@@ -647,7 +647,7 @@ main() {
             fi
         fi
 
-        # Check for remaining tasks AFTER running juno-code
+        # Check for remaining tasks AFTER running yylo
         if ! has_remaining_tasks; then
             log_success ""
             log_success "=========================================="

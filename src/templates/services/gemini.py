@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gemini Service Script for juno-code
+Gemini Service Script for yylo
 Headless wrapper around the Gemini CLI with JSON streaming and shorthand model support.
 """
 

@@ -28,7 +28,7 @@
 #                             (default: *.log,*.log.*,*.err)
 #   JUNO_DEBUG                Enable debug output when set to "true"
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail
@@ -641,7 +641,7 @@ create_kanban_tasks() {
 
     if [[ ! -f "$KANBAN_SCRIPT" ]]; then
         log_error "kanban.sh not found at: $KANBAN_SCRIPT"
-        log_error "Cannot create tasks. Run 'juno-code init' first."
+        log_error "Cannot create tasks. Run 'yylo init' first."
         return 1
     fi
 

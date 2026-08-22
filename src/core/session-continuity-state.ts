@@ -93,7 +93,7 @@ export class SessionContinuityCorruptStateError extends SessionContinuityStateEr
   constructor(filePath: string, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(
-      `Unable to read session continuity state from ${filePath}: ${detail}. Move or remove ${SESSION_CONTINUITY_FILE_NAME} to let juno-code recreate it.`,
+      `Unable to read session continuity state from ${filePath}: ${detail}. Move or remove ${SESSION_CONTINUITY_FILE_NAME} to let yylo recreate it.`,
     );
     this.name = 'SessionContinuityCorruptStateError';
   }

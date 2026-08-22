@@ -37,21 +37,21 @@ from workflow_run_evidence import WorkflowRunEvidenceError, resolve_workflow_man
 from invocation_correlation import child_invocation_environment
 
 
-JUNO_COMMANDS = {"juno-code", "yy", "ypl"}
+JUNO_COMMANDS = {"yylo", "yy", "ypl"}
 TEMPLATE_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 ANSI_RESET = "\033[0m"
 STEP_COLORS = [196, 39, 208, 35, 201, 220, 27, 118, 163, 45, 214, 99]
 
-STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
-TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
+STALE_CHECK_ENV = "YYLO_SKIP_SCRIPT_STALE_CHECK"
+TEMPLATE_DIR_ENV = "YYLO_SCRIPT_TEMPLATE_DIR"
 SCOPED_CONTINUITY_KEY_PREFIXES = (
-    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
-    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
+    "YYLO_LAST_SESSION_ID_SCOPE_",
+    "YYLO_LAST_EXECUTION_SETTINGS_SCOPE_",
 )
 LEGACY_CONTINUITY_KEYS = {
-    "JUNO_CODE_LAST_SESSION_ID",
-    "JUNO_CODE_LAST_EXECUTION_SETTINGS",
+    "YYLO_LAST_SESSION_ID",
+    "YYLO_LAST_EXECUTION_SETTINGS",
 }
 
 
@@ -249,7 +249,7 @@ def _installed_template_candidates(script_name: str) -> list[Path]:
     if env_template_dir:
         candidates.append(Path(env_template_dir).expanduser() / script_name)
 
-    for command_name in ("yy", "juno-code", "ypl"):
+    for command_name in ("yy", "yylo", "ypl"):
         command_path = shutil.which(command_name)
         if not command_path:
             continue
@@ -289,7 +289,7 @@ def warn_if_runtime_script_is_stale(script_name: str) -> None:
             installed_hash = hashlib.sha256(template_path.read_bytes()).hexdigest()
             if runtime_hash != installed_hash:
                 print(
-                    f"{script_name}: warning: this runtime script differs from the installed juno-code template.\n"
+                    f"{script_name}: warning: this runtime script differs from the installed yylo template.\n"
                     f"  runtime: {_display_path(runtime_path)}\n"
                     f"  installed template: {installed_path}\n"
                     "  update with: yy scripts update --force",
@@ -826,7 +826,7 @@ def validate_workflow(workflow: dict[str, Any], policy: dict[str, Any] | None = 
         if summary_has_command or workflow.get("continue_from_step"):
             raise WorkflowError("task_hydration workflows cannot launch summary commands or continuation")
         forbidden = re.compile(
-            r"(?:^|\s)(?:yy|juno-code|ypl)\s+(?:task|merge|ledger|kanban|release|pi|codex|claude|gemini)|"
+            r"(?:^|\s)(?:yy|yylo|ypl)\s+(?:task|merge|ledger|kanban|release|pi|codex|claude|gemini)|"
             r"JUNO_TASK_ROOT|\.juno_task/(?:state|tasks|ledger|receipts|runtime/merge)", re.IGNORECASE)
         for hydration_step in steps:
             step_id = str(hydration_step["id"])
@@ -1147,7 +1147,7 @@ def juno_subagent_name(command: Any) -> str | None:
     executable = Path(parts[0]).name
     if executable == "ypl":
         return "pi"
-    if executable not in {"juno-code", "yy"}:
+    if executable not in {"yylo", "yy"}:
         return None
     boolean_options = {
         "--quiet", "--silent", "-q", "--live", "--no-color", "--enable-feedback",
@@ -1472,12 +1472,12 @@ def resolve_continue_scope_from_juno(
 ) -> dict[str, str]:
     """Ask the selected Juno executable for its TypeScript-owned scope identity."""
     parts = command_argv(command)
-    executable = parts[0] if parts and Path(parts[0]).name in {"yy", "juno-code"} else None
+    executable = parts[0] if parts and Path(parts[0]).name in {"yy", "yylo"} else None
     if not executable:
-        # ypl is a prompt shortcut (`juno-code pi --live`), not a control-command API.
-        executable = next((path for name in ("yy", "juno-code") if (path := shutil.which(name))), None)
+        # ypl is a prompt shortcut (`yylo pi --live`), not a control-command API.
+        executable = next((path for name in ("yy", "yylo") if (path := shutil.which(name))), None)
     if not executable:
-        raise WorkflowError("cannot resolve continue scope: yy or juno-code was not found")
+        raise WorkflowError("cannot resolve continue scope: yy or yylo was not found")
 
     completed = subprocess.run(
         [
@@ -1499,21 +1499,21 @@ def resolve_continue_scope_from_juno(
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unknown error").strip()
-        raise WorkflowError(f"juno-code continue-scope failed: {detail}")
+        raise WorkflowError(f"yylo continue-scope failed: {detail}")
     try:
         payload = json.loads(completed.stdout)
     except Exception as error:
-        raise WorkflowError("juno-code continue-scope returned invalid JSON") from error
+        raise WorkflowError("yylo continue-scope returned invalid JSON") from error
 
     scope_hash = str(payload.get("fullHash") or "") if isinstance(payload, dict) else ""
     session_key = str(payload.get("sessionEnvKey") or "") if isinstance(payload, dict) else ""
     settings_key = str(payload.get("settingsEnvKey") or "") if isinstance(payload, dict) else ""
     if not re.fullmatch(r"SCOPE_[A-F0-9]{16}", scope_hash):
-        raise WorkflowError("juno-code continue-scope returned an invalid fullHash")
-    if not re.fullmatch(r"JUNO_CODE_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}", session_key):
-        raise WorkflowError("juno-code continue-scope returned an invalid sessionEnvKey")
-    if not re.fullmatch(r"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_[A-F0-9]{16}", settings_key):
-        raise WorkflowError("juno-code continue-scope returned an invalid settingsEnvKey")
+        raise WorkflowError("yylo continue-scope returned an invalid fullHash")
+    if not re.fullmatch(r"YYLO_LAST_SESSION_ID_SCOPE_[A-F0-9]{16}", session_key):
+        raise WorkflowError("yylo continue-scope returned an invalid sessionEnvKey")
+    if not re.fullmatch(r"YYLO_LAST_EXECUTION_SETTINGS_SCOPE_[A-F0-9]{16}", settings_key):
+        raise WorkflowError("yylo continue-scope returned an invalid settingsEnvKey")
     return {
         "scope_hash": scope_hash,
         "session_env_key": session_key,
@@ -1535,7 +1535,7 @@ def build_continue_settings(command: Any) -> dict[str, Any] | None:
 
 
 def read_child_continue_session(project_root: Path, command: Any) -> str | None:
-    # Top-level yy/juno-code commands persist their own continue snapshot, but when
+    # Top-level yy/yylo commands persist their own continue snapshot, but when
     # launched by this runner without terminal markers their PPID fallback is the
     # workflow_runner process. Adopt that child snapshot, then persist it to the
     # caller's shell scope so `workflow_runner.sh ... ; yy cc` works.
@@ -1565,7 +1565,7 @@ def persist_continue_context(project_root: Path, session_id: str, command: Any) 
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unknown error").strip()
-        raise WorkflowError(f"juno-code continuity handoff failed: {detail}")
+        raise WorkflowError(f"yylo continuity handoff failed: {detail}")
     return {**context, "metadata_file": "session_continuity.v2.json", "settings": serialized_settings}
 
 
@@ -2334,7 +2334,7 @@ def build_command_env(
     if is_juno_command:
         metadata_dir = capture_path.parent / "session_metadata"
         metadata_dir.mkdir(parents=True, exist_ok=True)
-        env["JUNO_CODE_SESSION_METADATA_DIRECTORY"] = str(metadata_dir)
+        env["YYLO_SESSION_METADATA_DIRECTORY"] = str(metadata_dir)
     if capture_enabled:
         env["JUNO_TOOL_ID"] = tool_id
         env["JUNO_SUBAGENT_CAPTURE_PATH"] = str(capture_path)
@@ -4647,12 +4647,12 @@ def build_parser() -> argparse.ArgumentParser:
   Commands execute from --run-root/--project-root (default: current directory).
   Step failures continue and final process exit is 0 by default.
   Set fail_workflow: true on a step to make that failed command fail the workflow process.
-  juno-code, yy, and ypl commands automatically receive JUNO_TOOL_ID and
+  yylo, yy, and ypl commands automatically receive JUNO_TOOL_ID and
   JUNO_SUBAGENT_CAPTURE_PATH so steps.<id>.session_id can be used by later steps.
   The runner does not inject --quiet; agent stdout is the canonical response while
   stderr is kept as an artifact and printed only when the step fails.
   Detected agent commands that exit 0 with an empty response are marked failed.
-  At the end, juno-code/yy/ypl step and summary.command session IDs are listed;
+  At the end, yylo/yy/ypl step and summary.command session IDs are listed;
   the final successful agent command is persisted so `yy cc` continues it in the same shell scope.
   Set top-level continue_from_step: <step-id-or-name-or-summary> to persist a specific agent command;
   explicit continue_from_step is strict and fails if that command has no session id.
@@ -4727,7 +4727,7 @@ Example boilerplates (written only when explicitly requested):
 
 
 def resolve_session_metadata_directory(controller_root: str) -> str:
-    override = os.environ.get("JUNO_CODE_SESSION_METADATA_DIRECTORY", "").strip()
+    override = os.environ.get("YYLO_SESSION_METADATA_DIRECTORY", "").strip()
     if override:
         candidate = Path(override)
         return str(candidate if candidate.is_absolute() else (Path(controller_root) / candidate).resolve())
@@ -4739,7 +4739,7 @@ def resolve_session_metadata_directory(controller_root: str) -> str:
         return str(Path(completed.stdout.strip()).resolve() / "juno" / "session_metadata")
     identity = hashlib.sha256(str(Path(controller_root).resolve()).encode()).hexdigest()[:16]
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
-    return str(state_home / "juno-code" / "session_metadata" / identity)
+    return str(state_home / "@yylo/cli" / "session_metadata" / identity)
 
 
 def resolve_controller_environment() -> dict[str, str]:
@@ -4760,7 +4760,7 @@ def resolve_controller_environment() -> dict[str, str]:
         "JUNO_TASK_ROOT": controller_root,
         "JUNO_CONTROLLER_SOURCE": resolution["source"],
         "JUNO_WORKSPACE_ROLE": resolution["role"],
-        "JUNO_CODE_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
+        "YYLO_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
     }
 
 

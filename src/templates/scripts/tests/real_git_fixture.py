@@ -36,7 +36,7 @@ def install_juno_admission_fixture(repository: Path, runtime_bytes: bytes,
     managed_destination.parent.mkdir(parents=True, exist_ok=True)
     managed_source.write_bytes(runtime_bytes)
     managed_destination.write_bytes(runtime_bytes)
-    _write_json(repository / JUNO_PACKAGE, {"name": "juno-code", "version": version})
+    _write_json(repository / JUNO_PACKAGE, {"name": "@yylo/cli", "version": version})
     _write_json(repository / GENERATED_DECLARATION, {
         "schema_version": "juno_generated_output_contract.v1",
         "source": GENERATED_SOURCE,
@@ -65,7 +65,7 @@ def assert_juno_admission_fixture(repository: Path) -> None:
     generated = json.loads((repository / GENERATED_DECLARATION).read_text())
     managed = json.loads((repository / MANAGED_DECLARATION).read_text())
     valid = (
-        package.get("name") == "juno-code"
+        package.get("name") == "@yylo/cli"
         and generated.get("schema_version") == "juno_generated_output_contract.v1"
         and generated.get("source") == GENERATED_SOURCE
         and generated.get("destinations") == [GENERATED_DESTINATION]

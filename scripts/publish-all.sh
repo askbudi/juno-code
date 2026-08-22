@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ###############################################################################
-# NPM Package Publishing Script for juno-code
+# NPM Package Publishing Script for yylo
 #
-# This script automates the process of publishing the juno-code NPM package.
+# This script automates the process of publishing the yylo NPM package.
 #
 # Features:
 # - Automated version bumping (patch/minor/major)
@@ -165,27 +165,27 @@ build_project() {
 ###############################################################################
 
 publish_package() {
-  print_step "Publishing juno-code..."
+  print_step "Publishing yylo..."
 
   cd "$ROOT_DIR"
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_warning "DRY RUN: Would publish juno-code"
+    print_warning "DRY RUN: Would publish yylo"
     npm pack --dry-run
   else
     # Publish to NPM
     npm publish --access public
-    print_success "Published juno-code"
+    print_success "Published yylo"
   fi
 }
 
 publish_all_variants() {
-  print_step "Publishing juno-code package..."
+  print_step "Publishing yylo package..."
 
   # Publish directly from main directory
   publish_package
 
-  print_success "juno-code package published"
+  print_success "yylo package published"
 }
 
 ###############################################################################
@@ -243,7 +243,7 @@ cleanup() {
 ###############################################################################
 
 main() {
-  print_header "🚀 NPM Package Publishing - juno-code"
+  print_header "🚀 NPM Package Publishing - yylo"
 
   if [[ "$DRY_RUN" == true ]]; then
     print_warning "Running in DRY RUN mode - no actual publishing will occur"
@@ -270,7 +270,7 @@ main() {
   # Publish
   if [[ "$DRY_RUN" == false ]]; then
     echo -e "\n${YELLOW}⚠ About to publish the following package to NPM:${NC}"
-    echo "  • juno-code@$new_version"
+    echo "  • yylo@$new_version"
     echo ""
     read -p "Continue with publishing? (y/N) " -n 1 -r
     echo
@@ -295,16 +295,16 @@ main() {
 
   if [[ "$DRY_RUN" == false ]]; then
     echo -e "\n${GREEN}Successfully published:${NC}"
-    echo "  • juno-code@$new_version"
+    echo "  • yylo@$new_version"
     echo ""
     echo -e "${BLUE}Next steps:${NC}"
     echo "  1. Verify package on npmjs.com"
-    echo "  2. Test installation: npm install -g juno-code@$new_version"
+    echo "  2. Test installation: npm install -g yylo@$new_version"
     echo "  3. Update documentation if needed"
   else
     echo -e "\n${YELLOW}DRY RUN Summary:${NC}"
     echo "  • Would bump version: $VERSION_TYPE"
-    echo "  • Would publish juno-code package directly from main directory"
+    echo "  • Would publish yylo package directly from main directory"
     echo "  • Package available in: $ROOT_DIR"
     echo ""
     echo "Run without --dry-run to actually publish"

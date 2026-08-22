@@ -1,5 +1,5 @@
 /**
- * Help command implementation for juno-code CLI
+ * Help command implementation for yylo CLI
  *
  * Enhanced help system with interactive tutorials, contextual assistance,
  * and comprehensive documentation access.
@@ -53,26 +53,26 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'init',
         description: 'Initialize new project',
-        usage: 'juno-code init [--interactive]',
+        usage: 'yylo init [--interactive]',
       },
       {
         name: 'start',
         description: 'Execute task',
-        usage: 'juno-code start [--max-iterations N]',
+        usage: 'yylo start [--max-iterations N]',
       },
       {
         name: 'logs',
         description: 'View application logs',
-        usage: 'juno-code logs [--interactive]',
+        usage: 'yylo logs [--interactive]',
       },
       {
         name: 'session',
         description: 'Manage execution sessions',
-        usage: 'juno-code session <list|info|remove>',
+        usage: 'yylo session <list|info|remove>',
       },
       {
         name: 'ledger',
-        description: 'Manage tasks with Juno Ledger',
+        description: 'Manage tasks with YYLO Ledger',
         usage: 'yy ledger <list|create|get|update|mark>',
       },
     ],
@@ -83,22 +83,22 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'claude',
         description: 'Execute with Claude subagent',
-        usage: 'juno-code claude "task description"',
+        usage: 'yylo claude "task description"',
       },
       {
         name: 'cursor',
         description: 'Execute with Cursor subagent',
-        usage: 'juno-code cursor "task description"',
+        usage: 'yylo cursor "task description"',
       },
       {
         name: 'codex',
         description: 'Execute with Codex subagent',
-        usage: 'juno-code codex "task description"',
+        usage: 'yylo codex "task description"',
       },
       {
         name: 'gemini',
         description: 'Execute with Gemini subagent',
-        usage: 'juno-code gemini "task description"',
+        usage: 'yylo gemini "task description"',
       },
     ],
   },
@@ -108,27 +108,27 @@ const QUICK_REFERENCE: QuickReference[] = [
       {
         name: 'feedback',
         description: 'Collect user feedback',
-        usage: 'juno-code feedback [--interactive]',
+        usage: 'yylo feedback [--interactive]',
       },
       {
         name: 'setup-git',
         description: 'Initialize Git repository',
-        usage: 'juno-code setup-git <repository-url>',
+        usage: 'yylo setup-git <repository-url>',
       },
       {
         name: 'completion',
         description: 'Shell completion setup',
-        usage: 'juno-code completion <install|uninstall>',
+        usage: 'yylo completion <install|uninstall>',
       },
       {
         name: 'services',
         description: 'Manage service scripts (use --force to refresh codex.py/claude.py)',
-        usage: 'juno-code services install --force',
+        usage: 'yylo services install --force',
       },
       {
         name: 'help',
         description: 'Show help information',
-        usage: 'juno-code help [--interactive]',
+        usage: 'yylo help [--interactive]',
       },
     ],
   },
@@ -142,7 +142,7 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 
 **Issue**: "init.md not found"
 **Cause**: No project initialized in current directory
-**Solution**: Run \`juno-code init\` to create project structure
+**Solution**: Run \`yylo init\` to create project structure
 
 **Issue**: "Permission denied"
 **Cause**: Insufficient file permissions
@@ -169,19 +169,19 @@ const TROUBLESHOOTING_GUIDE = `# Troubleshooting Guide
 Get detailed debug information:
 \`\`\`bash
 # Verbose execution with debug logging
-juno-code start --verbose --log-level debug
+yylo start --verbose --log-level debug
 
 # View recent error logs
-juno-code logs --level error --tail 50
+yylo logs --level error --tail 50
 
 # Export logs for analysis
-juno-code logs --export debug.json --level debug
+yylo logs --export debug.json --level debug
 \`\`\`
 
 ## Getting More Help
 
-1. **Interactive Help**: \`juno-code help --interactive\`
-2. **View Logs**: \`juno-code logs --interactive\`
+1. **Interactive Help**: \`yylo help --interactive\`
+2. **View Logs**: \`yylo logs --interactive\`
 3. **Check Configuration**: Review .juno_task/config.json
 4. **Report Issues**: Include debug logs when reporting problems
 
@@ -189,8 +189,8 @@ juno-code logs --export debug.json --level debug
 
 Useful for debugging:
 \`\`\`bash
-export JUNO_CODE_VERBOSE=true
-export JUNO_CODE_LOG_LEVEL=debug
+export YYLO_VERBOSE=true
+export YYLO_LOG_LEVEL=debug
 export NO_COLOR=true  # Disable colors for log analysis
 \`\`\`
 `;
@@ -205,9 +205,9 @@ export NO_COLOR=true  # Disable colors for log analysis
 function displayQuickReference(formatter: RichFormatter): void {
   console.log(
     formatter.panel(
-      'Welcome to juno-code! This quick reference shows the most commonly used commands.',
+      'Welcome to yylo! This quick reference shows the most commonly used commands.',
       {
-        title: '🚀 juno-code Quick Reference',
+        title: '🚀 yylo Quick Reference',
         border: 'rounded',
         style: 'success',
         padding: 1,
@@ -228,7 +228,7 @@ function displayQuickReference(formatter: RichFormatter): void {
 
   console.log(
     formatter.panel(
-      `Use ${chalk.cyan('juno-code help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('juno-code <command> --help')} for detailed command information.`,
+      `Use ${chalk.cyan('yylo help --interactive')} for comprehensive help with search and tutorials.\nUse ${chalk.cyan('yylo <command> --help')} for detailed command information.`,
       {
         title: '💡 Next Steps',
         border: 'rounded',
@@ -290,10 +290,10 @@ function listHelpTopics(): void {
   });
 
   console.log(
-    chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view a specific topic`),
+    chalk.yellow(`\nUse ${chalk.cyan('yylo help --topic <id>')} to view a specific topic`),
   );
   console.log(
-    chalk.yellow(`Use ${chalk.cyan('juno-code help --interactive')} for full interactive help`),
+    chalk.yellow(`Use ${chalk.cyan('yylo help --interactive')} for full interactive help`),
   );
 }
 
@@ -319,7 +319,7 @@ function searchHelpTopics(searchTerm: string): void {
     console.log(chalk.cyan(`• ${topicId}`));
   });
 
-  console.log(chalk.yellow(`\nUse ${chalk.cyan('juno-code help --topic <id>')} to view details`));
+  console.log(chalk.yellow(`\nUse ${chalk.cyan('yylo help --topic <id>')} to view details`));
 }
 
 // ============================================================================
@@ -413,12 +413,12 @@ export function configureHelpCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code help                                    # Quick reference guide
-  $ juno-code help --interactive                      # Interactive help system
-  $ juno-code help --topic quickstart                 # Specific topic
-  $ juno-code help --search "session"                  # Search topics
-  $ juno-code help --list                             # List all topics
-  $ juno-code help --troubleshooting                  # Troubleshooting guide
+  $ yylo help                                    # Quick reference guide
+  $ yylo help --interactive                      # Interactive help system
+  $ yylo help --topic quickstart                 # Specific topic
+  $ yylo help --search "session"                  # Search topics
+  $ yylo help --list                             # List all topics
+  $ yylo help --troubleshooting                  # Troubleshooting guide
 
 Help Features:
   - Browse help by category
@@ -436,7 +436,7 @@ Available Topics:
 Notes:
   - Use --interactive to display all help topics at once
   - Use --verbose with any command for detailed output
-  - Check logs with 'juno-code logs' for debugging
+  - Check logs with 'yylo logs' for debugging
     `,
     );
 }

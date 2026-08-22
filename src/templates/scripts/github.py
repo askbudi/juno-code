@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-GitHub Integration for juno-code - Bidirectional workflow between GitHub Issues and Kanban.
+GitHub Integration for yylo - Bidirectional workflow between GitHub Issues and Kanban.
 
-This script provides a unified interface for syncing GitHub Issues with the juno-code
+This script provides a unified interface for syncing GitHub Issues with the yylo
 kanban system. It uses tag-based identification (tag_id) for reliable task-to-issue mapping.
 
 Features:
@@ -27,7 +27,7 @@ Environment Variables:
     JUNO_MAX_ATTACHMENT_SIZE    Max file size in bytes (default: 50MB)
 
 Version: 1.0.0
-Package: juno-code@1.x.x
+Package: yylo@1.x.x
 Auto-installed by: ScriptInstaller
 """
 
@@ -2494,7 +2494,7 @@ def handle_push(args: argparse.Namespace) -> int:
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='GitHub integration for juno-code - Bidirectional sync between GitHub Issues and Kanban',
+        description='GitHub integration for yylo - Bidirectional sync between GitHub Issues and Kanban',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

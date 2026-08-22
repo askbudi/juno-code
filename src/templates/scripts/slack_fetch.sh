@@ -20,7 +20,7 @@
 #   JUNO_DEBUG=true         Show debug messages
 #   JUNO_VERBOSE=true       Show informational messages
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail
@@ -123,7 +123,7 @@ ensure_python_environment() {
 
     if [ ! -f "$INSTALL_SCRIPT" ]; then
         log_error "Install script not found: $INSTALL_SCRIPT"
-        log_error "Please run 'juno-code init' to initialize the project"
+        log_error "Please run 'yylo init' to initialize the project"
         return 1
     fi
 

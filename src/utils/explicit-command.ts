@@ -132,7 +132,7 @@ export function formatExplicitInvocationError(
     ? `unknown explicit option '${classification.token}'`
     : `unknown explicit command '${classification.token}'`;
   return [
-    `juno-code: ${subject}; refusing to reinterpret it as an agent prompt`,
+    `yylo: ${subject}; refusing to reinterpret it as an agent prompt`,
     `effective executable: ${executable}`,
     `effective version: ${version}`,
     'Use -- <prompt>, -p <prompt>, or -f <path> for intentional prompt input.',

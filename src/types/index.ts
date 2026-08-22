@@ -1,5 +1,5 @@
 /**
- * Core type definitions for juno-code
+ * Core type definitions for yylo
  */
 
 // Subagent types
@@ -128,7 +128,7 @@ export interface JunoTaskConfig {
   // Project environment bootstrap
   /** Path to project env file loaded on startup (relative to workingDirectory or absolute) */
   envFilePath?: string;
-  /** Tracks whether the configured env file has been initialized from .env.juno */
+  /** Tracks whether the configured env file has been initialized from .env.yylo */
   envFileCopied?: boolean;
 
   // Hooks configuration

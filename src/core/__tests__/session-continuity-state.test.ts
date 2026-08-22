@@ -18,18 +18,18 @@ import {
 } from '../session-continuity-state.js';
 
 const roots: string[] = [];
-const originalMetadataDirectory = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+const originalMetadataDirectory = process.env.YYLO_SESSION_METADATA_DIRECTORY;
 async function temporaryRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-continuity-v2-'));
   roots.push(root);
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
   return root;
 }
 afterEach(async () => {
   for (const root of roots.splice(0)) await fs.remove(root);
   if (originalMetadataDirectory === undefined)
-    delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
-  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = originalMetadataDirectory;
+    delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
+  else process.env.YYLO_SESSION_METADATA_DIRECTORY = originalMetadataDirectory;
 });
 function context(root: string, name: string) {
   return resolveContinueScopeContext({ [CONTINUE_SCOPE_OVERRIDE_ENV_KEY]: name }, 1, root);
@@ -60,13 +60,13 @@ describe('session continuity state service', () => {
     expect(Date.parse(stored.createdAt)).not.toBeNaN();
     expect(Date.parse(stored.lastUsedAt)).not.toBeNaN();
     expect(await fs.readFile(path.join(root, '.env.custom'), 'utf8')).toBe('SECRET=unchanged\n');
-    expect(await fs.pathExists(path.join(root, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(root, '.env.yylo'))).toBe(false);
     expect((await fs.stat(getSessionContinuityFilePath(root))).mode & 0o777).toBe(0o600);
   });
 
   it('serializes concurrent writers without losing unrelated scopes or branch updates', async () => {
     const root = await temporaryRoot();
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'custom-metadata');
+    process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'custom-metadata');
     const a = context(root, 'writer-a');
     const b = context(root, 'writer-b');
     await Promise.all([
@@ -106,7 +106,7 @@ describe('session continuity state service', () => {
 
   it('reclaims a stale continuity lock before writing', async () => {
     const root = await temporaryRoot();
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
+    process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
     const lock = `${getSessionContinuityFilePath(root)}.lock`;
     await fs.ensureDir(lock);
     await fs.writeJson(path.join(lock, 'owner.json'), { pid: 99_999_999, token: 'dead' });
@@ -127,7 +127,7 @@ describe('session continuity state service', () => {
 
   it('fails closed on malformed or unsupported documents', async () => {
     const root = await temporaryRoot();
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
+    process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
     await fs.ensureDir(path.dirname(getSessionContinuityFilePath(root)));
     await fs.writeFile(getSessionContinuityFilePath(root), '{bad');
     await expect(loadSessionContinuityDocument(root)).rejects.toThrow(

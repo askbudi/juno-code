@@ -10,8 +10,8 @@ const require = createRequire(import.meta.url);
 const { loadConfig } = require('../dist/index.js');
 const roots = [];
 let tarball;
-const previousWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES;
-process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = '1';
+const previousWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES;
+process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '1';
 
 try {
   const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts'], { encoding: 'utf8' }));
@@ -62,8 +62,8 @@ try {
 
   console.log('Verified compiled/npm project-config migration and preservation contracts.');
 } finally {
-  if (previousWrites === undefined) delete process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES;
-  else process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = previousWrites;
+  if (previousWrites === undefined) delete process.env.YYLO_PROJECT_BOOTSTRAP_WRITES;
+  else process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = previousWrites;
   if (tarball) await rm(tarball, { force: true });
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 }

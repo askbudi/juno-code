@@ -1,4 +1,4 @@
-# Migrate an existing Juno Code 2.0 project to the 2.1 architecture
+# Migrate an existing YYLO 2.0 project to the 2.1 architecture
 
 Treat inventory, policy approval, preparation, registration, product evacuation,
 and cleanup as separate authorities. This prompt authorizes read-only inventory
@@ -18,7 +18,7 @@ cleanup.
    installation cannot pass the import/preflight. Stop with repair guidance if
    the identity, metadata, clean import, or CLI smoke differs; never continue
    merely because `ruamel.yaml` leaked from an existing environment.
-2. Build or select one immutable Juno Code 2.1 artifact and record its version,
+2. Build or select one immutable YYLO 2.1 artifact and record its version,
    source commit, tree, package SHA-256, and executable identity.
 3. Write the inventory outside the inspected repository:
 

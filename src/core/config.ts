@@ -1,5 +1,5 @@
 /**
- * Core configuration module for juno-code
+ * Core configuration module for yylo
  *
  * Provides comprehensive configuration management with multi-source loading,
  * validation, and environment variable support.
@@ -17,44 +17,45 @@ import fs from 'fs-extra';
 import type { JunoTaskConfig, PromptMacroConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 import { SUBAGENT_DEFAULT_MODELS } from './subagent-models.js';
+import { migrateLegacyEnvironment } from './identity-migration.js';
 
 /**
  * Environment variable mapping for configuration options
- * All config options can be set via JUNO_CODE_* environment variables
- * Uses JUNO_CODE_* environment variables
+ * All config options can be set via YYLO_* environment variables
+ * Uses YYLO_* environment variables
  */
 export const ENV_VAR_MAPPING = {
   // Core settings
-  JUNO_CODE_DEFAULT_SUBAGENT: 'defaultSubagent',
-  JUNO_CODE_DEFAULT_BACKEND: 'defaultBackend',
-  JUNO_CODE_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
-  JUNO_CODE_DEFAULT_MODEL: 'defaultModel',
+  YYLO_DEFAULT_SUBAGENT: 'defaultSubagent',
+  YYLO_DEFAULT_BACKEND: 'defaultBackend',
+  YYLO_DEFAULT_MAX_ITERATIONS: 'defaultMaxIterations',
+  YYLO_DEFAULT_MODEL: 'defaultModel',
 
   // Logging settings
-  JUNO_CODE_LOG_LEVEL: 'logLevel',
-  JUNO_CODE_LOG_FILE: 'logFile',
-  JUNO_CODE_VERBOSE: 'verbose',
-  JUNO_CODE_QUIET: 'quiet',
+  YYLO_LOG_LEVEL: 'logLevel',
+  YYLO_LOG_FILE: 'logFile',
+  YYLO_VERBOSE: 'verbose',
+  YYLO_QUIET: 'quiet',
 
   // MCP settings
-  JUNO_CODE_MCP_TIMEOUT: 'mcpTimeout',
-  JUNO_CODE_MCP_RETRIES: 'mcpRetries',
-  JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
-  JUNO_CODE_MCP_SERVER_NAME: 'mcpServerName',
+  YYLO_MCP_TIMEOUT: 'mcpTimeout',
+  YYLO_MCP_RETRIES: 'mcpRetries',
+  YYLO_MCP_SERVER_PATH: 'mcpServerPath',
+  YYLO_MCP_SERVER_NAME: 'mcpServerName',
 
   // Hook settings
-  JUNO_CODE_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
+  YYLO_HOOK_COMMAND_TIMEOUT: 'hookCommandTimeout',
 
   // Quota/hourly limit settings
-  JUNO_CODE_ON_HOURLY_LIMIT: 'onHourlyLimit',
+  YYLO_ON_HOURLY_LIMIT: 'onHourlyLimit',
 
   // TUI settings
-  JUNO_CODE_INTERACTIVE: 'interactive',
-  JUNO_CODE_HEADLESS_MODE: 'headlessMode',
+  YYLO_INTERACTIVE: 'interactive',
+  YYLO_HEADLESS_MODE: 'headlessMode',
 
   // Paths
-  JUNO_CODE_WORKING_DIRECTORY: 'workingDirectory',
-  JUNO_CODE_SESSION_DIRECTORY: 'sessionDirectory',
+  YYLO_WORKING_DIRECTORY: 'workingDirectory',
+  YYLO_SESSION_DIRECTORY: 'sessionDirectory',
 } as const;
 
 /**
@@ -323,7 +324,7 @@ export const JunoTaskConfigSchema = z
     envFileCopied: z
       .boolean()
       .optional()
-      .describe('Tracks whether configured env file has been initialized from .env.juno'),
+      .describe('Tracks whether configured env file has been initialized from .env.yylo'),
 
     // Hooks configuration
     hooks: HooksSchema.describe(
@@ -373,7 +374,7 @@ export function createPersistedProjectConfigDefaults(baseDir: string): Record<st
     sessionDirectory: path.join(baseDir, '.juno_task'),
     kanbanRegistry: { enabled: false, allowedProjects: [] },
     gitCheckpoint: { include: [...DEFAULT_GIT_CHECKPOINT_INCLUDE] },
-    envFilePath: '.env.juno',
+    envFilePath: '.env.yylo',
     envFileCopied: false,
     hooks: getDefaultHooks(),
     autoDependencyUpdate: true,
@@ -390,10 +391,10 @@ export const DEFAULT_CONFIG = createPersistedProjectConfigDefaults(
  * Searched in order of preference (after project-specific config)
  */
 const GLOBAL_CONFIG_FILE_NAMES = [
-  'juno-code.config.json',
-  'juno-code.config.js',
-  '.juno-coderc.json',
-  '.juno-coderc.js',
+  'yylo.config.json',
+  'yylo.config.js',
+  '.yylorc.json',
+  '.yylorc.js',
   'package.json', // Will look for 'junoCode' field
 ] as const;
 
@@ -405,7 +406,8 @@ const PROJECT_CONFIG_FILE = '.juno_task/config.json';
 /**
  * Default project env file created and loaded on startup
  */
-const DEFAULT_PROJECT_ENV_FILE = '.env.juno';
+const DEFAULT_PROJECT_ENV_FILE = '.env.yylo';
+const LEGACY_PROJECT_ENV_FILE = '.env.juno'; // bounded 0.1 RC migration input
 
 /**
  * Supported configuration file formats
@@ -501,11 +503,12 @@ function parseEnvValue(value: string): string | number | boolean {
 
 /**
  * Load configuration from environment variables
- * Maps JUNO_CODE_* environment variables to config properties
+ * Maps YYLO_* environment variables to config properties
  *
  * @returns Partial configuration from environment variables
  */
 function loadConfigFromEnv(): Partial<JunoTaskConfig> {
+  migrateLegacyEnvironment();
   const config: Partial<JunoTaskConfig> = {};
 
   for (const [envVar, configKey] of Object.entries(ENV_VAR_MAPPING) as [string, string][]) {
@@ -680,7 +683,7 @@ function getConfigFileFormat(filePath: string): ConfigFileFormat {
     case '.mjs':
       return 'js';
     default:
-      // For files like .juno-coderc (no extension), assume JSON
+      // For files like .yylorc (no extension), assume JSON
       return 'json';
   }
 }
@@ -1073,10 +1076,10 @@ async function loadEnvFileIntoProcess(envFilePath: string): Promise<void> {
  * Ensure project env files exist and load them before config/env precedence is evaluated.
  *
  * Behavior:
- * - Always ensure `.env.juno` exists in project root.
+ * - Always ensure `.env.yylo` exists in project root.
  * - Read `.juno_task/config.json` for optional `envFilePath` and `envFileCopied`.
- * - If a custom env path is configured and not initialized yet, copy `.env.juno` once.
- * - Load `.env.juno`, then custom env file (if different) so custom values can override defaults.
+ * - If a custom env path is configured and not initialized yet, copy `.env.yylo` once.
+ * - Load `.env.yylo`, then custom env file (if different) so custom values can override defaults.
  */
 async function ensureAndLoadProjectEnv(
   baseDir: string,
@@ -1086,7 +1089,14 @@ async function ensureAndLoadProjectEnv(
   const defaultEnvPath = resolvePath(DEFAULT_PROJECT_ENV_FILE, baseDir);
 
   const allowProjectWrites =
-    allowWritesOverride ?? process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
+    allowWritesOverride ?? process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0';
+
+  // Bounded 0.1 RC migration: preserve the legacy file byte-for-byte while
+  // seeding the canonical name. Re-running is idempotent and rollback-safe.
+  const legacyEnvPath = resolvePath(LEGACY_PROJECT_ENV_FILE, baseDir);
+  if (allowProjectWrites && !(await fs.pathExists(defaultEnvPath)) && await fs.pathExists(legacyEnvPath)) {
+    await fsPromises.copyFile(legacyEnvPath, defaultEnvPath);
+  }
 
   // Agent startup in task/candidate worktrees is read-only. Controller startup
   // and direct loadConfig callers retain normal initialization by default.
@@ -1402,7 +1412,7 @@ export async function loadConfig(
 ): Promise<JunoTaskConfig> {
   const { baseDir = process.cwd(), configFile, cliConfig } = options;
 
-  const allowProjectWrites = process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES !== '0';
+  const allowProjectWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0';
 
   const resolveConfig = async (): Promise<JunoTaskConfig> => {
     const loader = new ConfigLoader(baseDir);

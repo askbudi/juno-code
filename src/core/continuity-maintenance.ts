@@ -22,12 +22,12 @@ import {
 
 const PLAN_VERSION = 1;
 const RECEIPT_VERSION = 1;
-const DEFAULT_ENV = '.env.juno';
+const DEFAULT_ENV = '.env.yylo';
 const CONFIG = path.join('.juno_task', 'config.json');
-const SESSION_PREFIX = 'JUNO_CODE_LAST_SESSION_ID_SCOPE_';
-const SETTINGS_PREFIX = 'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_';
-const LEGACY_SESSION = 'JUNO_CODE_LAST_SESSION_ID';
-const LEGACY_SETTINGS = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
+const SESSION_PREFIX = 'YYLO_LAST_SESSION_ID_SCOPE_';
+const SETTINGS_PREFIX = 'YYLO_LAST_EXECUTION_SETTINGS_SCOPE_';
+const LEGACY_SESSION = 'YYLO_LAST_SESSION_ID';
+const LEGACY_SETTINGS = 'YYLO_LAST_EXECUTION_SETTINGS';
 const SCOPE = /^SCOPE_[A-F0-9]{16}$/;
 const TTL_MS = CONTINUITY_SCOPE_TTL_DAYS * 24 * 60 * 60 * 1000;
 const MAX_INACTIVE = CONTINUITY_INACTIVE_SCOPE_LIMIT;
@@ -228,7 +228,7 @@ async function parseEnv(filePath: string): Promise<ParsedEnv> {
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(text);
     if (!match) {
       if (
-        /^\s*(?:export\s+)?JUNO_CODE_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)(?:_SCOPE_\S+)?/.test(
+        /^\s*(?:export\s+)?YYLO_LAST_(?:SESSION_ID|EXECUTION_SETTINGS)(?:_SCOPE_\S+)?/.test(
           text,
         )
       )

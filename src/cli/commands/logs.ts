@@ -1,5 +1,5 @@
 /**
- * Logs command implementation for juno-code CLI
+ * Logs command implementation for yylo CLI
  *
  * The logger writes to stderr in real-time and does not store entries in memory.
  * This command informs users how to capture logs via stderr redirection.
@@ -52,7 +52,7 @@ export async function logsCommandHandler(
       '\nLog history is not available - the logger writes to stderr in real-time and does not store entries in memory.',
     ),
   );
-  console.log(chalk.gray('Redirect stderr to a file to capture logs: juno-code start 2> logs.txt'));
+  console.log(chalk.gray('Redirect stderr to a file to capture logs: yylo start 2> logs.txt'));
 }
 
 // ============================================================================
@@ -76,7 +76,7 @@ export function configureLogsCommand(program: Command): void {
       `
 Notes:
   - The logger writes to stderr in real-time
-  - Redirect stderr to capture logs: juno-code start 2> logs.txt
+  - Redirect stderr to capture logs: yylo start 2> logs.txt
     `,
     );
 }

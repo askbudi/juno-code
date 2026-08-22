@@ -9,7 +9,7 @@ const codeRoot = path.resolve(process.cwd());
 const repositoryRoot = path.resolve(codeRoot, '..');
 const tool = path.join(codeRoot, 'scripts/juno-002-source-toolchain.sh');
 const tempDirs: string[] = [];
-const realGitIntegrationIt = process.env.JUNO_CODE_REAL_GIT_INTEGRATION === '1' ? it : it.skip;
+const realGitIntegrationIt = process.env.YYLO_REAL_GIT_INTEGRATION === '1' ? it : it.skip;
 
 function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
   return spawnSync(command, args, {

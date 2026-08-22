@@ -11,7 +11,7 @@ function attempt(id, identity, versions) {
   const fixed = digest('installed-pair-fixture');
   return {
     schema_version: 'juno_benchmark_attempt.v1', attempt_id: id, experiment_id: fixed,
-    case_input_hash: fixed, snapshot_hash: fixed, prompt_hash: fixed, agent: 'juno-code',
+    case_input_hash: fixed, snapshot_hash: fixed, prompt_hash: fixed, agent: 'yylo',
     provider: identity.provider, model: identity.exact, tool_policy_hash: fixed, budget_hash: fixed,
     package_version: versions.benchmark, juno_version: versions.juno, session_topology: 'fresh',
   };
@@ -20,8 +20,8 @@ function attempt(id, identity, versions) {
 /** Exercise the packed public pair without provider, network, or production access. */
 export async function verifyInstalledExecutionEnvelope(options) {
   const { fixtureRoot, prefix, cleanEnvironment, versions } = options;
-  const api = await import(join(prefix, 'node_modules/@juno-ai/juno-benchmark/dist/index.js'));
-  const installedJunoEntry = join(prefix, 'node_modules/juno-code/dist/bin/cli.mjs');
+  const api = await import(join(prefix, 'node_modules/@yylo/benchmark/dist/index.js'));
+  const installedJunoEntry = join(prefix, 'node_modules/@yylo/cli/dist/bin/cli.mjs');
   const fakeBin = join(fixtureRoot, 'offline-provider-bin');
   const home = join(fixtureRoot, 'offline-home');
   const project = join(fixtureRoot, 'offline-project');
@@ -59,7 +59,7 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
   const baseEnvironment = {
     ...offlineEnvironment, HOME: home, XDG_CONFIG_HOME: join(home, '.config'),
     PATH: `${fakeBin}${delimiter}${cleanEnvironment.PATH ?? ''}`,
-    JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata, NO_COLOR: '1', CI: '1', OFFLINE_CALLS: calls,
+    YYLO_SESSION_METADATA_DIRECTORY: metadata, NO_COLOR: '1', CI: '1', OFFLINE_CALLS: calls,
   };
   const runner = api.createJunoRunner({ executable: process.execPath, leadingArguments: [installedJunoEntry], versionTimeoutMs: 30_000 });
   const spend = (selected) => {
@@ -82,7 +82,7 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
     const selected = attempt(`installed-${identity.name.toLowerCase()}`, identity, versions);
     const repository = await prepareProject(identity.name.toLowerCase());
     const evidence = await runner({ attempt: selected, repository, prompt: 'offline candidate fixture',
-      environment: { ...baseEnvironment, JUNO_CODE_SESSION_METADATA_DIRECTORY: join(metadata, identity.name.toLowerCase()),
+      environment: { ...baseEnvironment, YYLO_SESSION_METADATA_DIRECTORY: join(metadata, identity.name.toLowerCase()),
         OFFLINE_PROVIDER: identity.provider, OFFLINE_MODEL: identity.model, OFFLINE_COST: identity.cost }, timeoutMs: 30_000,
       spendAuthorization: spend(selected) });
     const patchHash = index === identities.length - 1 ? digest('successful installed patch') : null;
@@ -106,7 +106,7 @@ if (process.env.OFFLINE_FAILURE === '1') process.exitCode = 1;
   const failedIdentity = identities[0];
   const failedAttempt = attempt('installed-failure', failedIdentity, versions); const failureProject = await prepareProject('failure');
   const failedEvidence = await runner({ attempt: failedAttempt, repository: failureProject, prompt: 'offline failure fixture',
-    environment: { ...baseEnvironment, JUNO_CODE_SESSION_METADATA_DIRECTORY: join(metadata, 'failure'), OFFLINE_PROVIDER: failedIdentity.provider, OFFLINE_MODEL: failedIdentity.model,
+    environment: { ...baseEnvironment, YYLO_SESSION_METADATA_DIRECTORY: join(metadata, 'failure'), OFFLINE_PROVIDER: failedIdentity.provider, OFFLINE_MODEL: failedIdentity.model,
       OFFLINE_COST: 'missing', OFFLINE_FAILURE: '1' }, timeoutMs: 30_000, spendAuthorization: spend(failedAttempt) });
   const failed = api.reconcileJunoTelemetry(failedEvidence);
   if (failed.candidateSucceeded || failed.result.resolved || failed.result.terminal_class !== 'model_failure' || failed.result.cost.completeness !== 'unavailable') {

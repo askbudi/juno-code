@@ -121,14 +121,14 @@ vi.mock('../../core/session-continuity-state.js', () => ({
     }
   },
   getSessionMetadataDirectory: vi.fn().mockImplementation((workingDirectory: string) =>
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`),
+    process.env.YYLO_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`),
   getActiveSessionBranch: vi.fn().mockResolvedValue(null),
   resolveScopedContinueSessionState: vi.fn().mockImplementation(async () => {
-    const sessionKey = Object.keys(process.env).find((key) => key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'));
-    const settingsKey = sessionKey?.replace('JUNO_CODE_LAST_SESSION_ID_', 'JUNO_CODE_LAST_EXECUTION_SETTINGS_');
+    const sessionKey = Object.keys(process.env).find((key) => key.startsWith('YYLO_LAST_SESSION_ID_SCOPE_'));
+    const settingsKey = sessionKey?.replace('YYLO_LAST_SESSION_ID_', 'YYLO_LAST_EXECUTION_SETTINGS_');
     const resolvedSessionId = sessionKey ? process.env[sessionKey]?.trim() || '' : '';
     return {
-      context: { scopeHash: sessionKey?.slice('JUNO_CODE_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
+      context: { scopeHash: sessionKey?.slice('YYLO_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
       activeBranch: null,
       resolvedSessionId,
       settings: settingsKey && process.env[settingsKey] ? JSON.parse(process.env[settingsKey]!) : null,
@@ -151,10 +151,10 @@ vi.mock('../../core/session-continuity-state.js', () => ({
 }));
 
 vi.mock('../../core/session-metadata.js', () => ({
-  SESSION_METADATA_DIRECTORY_ENV: 'JUNO_CODE_SESSION_METADATA_DIRECTORY',
+  SESSION_METADATA_DIRECTORY_ENV: 'YYLO_SESSION_METADATA_DIRECTORY',
   SESSION_CONTINUITY_SHARED_LOCK_NAME: 'session_continuity.v2.json',
   getSessionMetadataDirectory: (workingDirectory: string) =>
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`,
+    process.env.YYLO_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`,
   withSessionMetadataLock: async (_directory: string, _name: string, operation: () => Promise<unknown>) => operation(),
   writeSessionMetadataFileAtomic: vi.fn().mockResolvedValue(undefined),
 }));
@@ -275,13 +275,13 @@ describe('Main Command', () => {
 
     vi.mocked(getCurrentGitBranch).mockResolvedValue(null);
     vi.mocked(getSessionMetadataDirectory).mockImplementation((workingDirectory: string) =>
-      process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`);
+      process.env.YYLO_SESSION_METADATA_DIRECTORY || `${workingDirectory}/.juno_task`);
     vi.mocked(getActiveSessionBranch).mockResolvedValue(null as any);
     vi.mocked(resolveScopedContinueSessionState).mockImplementation(async () => {
-      const sessionKey = Object.keys(process.env).find((key) => key.startsWith('JUNO_CODE_LAST_SESSION_ID_SCOPE_'));
-      const settingsKey = sessionKey?.replace('JUNO_CODE_LAST_SESSION_ID_', 'JUNO_CODE_LAST_EXECUTION_SETTINGS_');
+      const sessionKey = Object.keys(process.env).find((key) => key.startsWith('YYLO_LAST_SESSION_ID_SCOPE_'));
+      const settingsKey = sessionKey?.replace('YYLO_LAST_SESSION_ID_', 'YYLO_LAST_EXECUTION_SETTINGS_');
       return {
-        context: { scopeHash: sessionKey?.slice('JUNO_CODE_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
+        context: { scopeHash: sessionKey?.slice('YYLO_LAST_SESSION_ID_'.length) || 'SCOPE_0000000000000000', scopeSource: 'test' },
         activeBranch: null,
         resolvedSessionId: sessionKey ? process.env[sessionKey]?.trim() || '' : '',
         settings: settingsKey && process.env[settingsKey] ? JSON.parse(process.env[settingsKey]!) : null,
@@ -319,10 +319,10 @@ describe('Main Command', () => {
   afterEach(() => {
     for (const key of Object.keys(process.env)) {
       if (
-        key.startsWith('JUNO_CODE_LAST_SESSION_ID') ||
-        key.startsWith('JUNO_CODE_LAST_EXECUTION_SETTINGS') ||
-        key === 'JUNO_CODE_CONTINUE_SCOPE' ||
-        key === 'JUNO_CODE_SESSION_METADATA_DIRECTORY' ||
+        key.startsWith('YYLO_LAST_SESSION_ID') ||
+        key.startsWith('YYLO_LAST_EXECUTION_SETTINGS') ||
+        key === 'YYLO_CONTINUE_SCOPE' ||
+        key === 'YYLO_SESSION_METADATA_DIRECTORY' ||
         key === 'TMUX_PANE'
       ) {
         delete process.env[key];
@@ -398,7 +398,7 @@ describe('Main Command', () => {
           .flat()
           .join('\n');
         expect(stderrOutput).toContain('--live is only supported with the pi subagent');
-        expect(stderrOutput).toContain('Use: juno-code pi --live');
+        expect(stderrOutput).toContain('Use: yylo pi --live');
       });
 
       it('should accept --live for pi and forward live=true into execution request', async () => {
@@ -663,8 +663,8 @@ describe('Main Command', () => {
       });
 
       it('should expand ##task-id prompt references with kanban task payloads', async () => {
-        process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical';
-        process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = 'legacy';
+        process.env.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical';
+        process.env.YYLO_LAST_EXECUTION_SETTINGS = 'legacy';
         vi.mocked(fs.pathExists)
           .mockResolvedValueOnce(false as any)
           .mockResolvedValueOnce(true as any);
@@ -710,8 +710,8 @@ describe('Main Command', () => {
         );
         const kanbanEnvironment = vi.mocked(childProcess.execFile).mock.calls[0]?.[2]?.env;
         expect(kanbanEnvironment?.JUNO_TASK_ROOT).toBe('/test/dir');
-        expect(kanbanEnvironment?.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
-        expect(kanbanEnvironment?.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
+        expect(kanbanEnvironment?.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+        expect(kanbanEnvironment?.YYLO_LAST_EXECUTION_SETTINGS).toBeUndefined();
 
         const { createExecutionRequest } = await import('../../core/engine.js');
         expect(createExecutionRequest).toHaveBeenCalledWith(
@@ -1350,7 +1350,7 @@ describe('Main Command', () => {
         });
 
         it('should read stdin when -p flag used with heredoc (prompt=true)', async () => {
-          // When using `juno-code -p << 'EOF'`, Commander sets prompt=true (no string arg)
+          // When using `yylo -p << 'EOF'`, Commander sets prompt=true (no string arg)
           // The fix: treat prompt=true same as prompt=undefined, fall through to stdin
           Object.defineProperty(process.stdin, 'isTTY', { value: undefined, writable: true, configurable: true });
 
@@ -1425,7 +1425,7 @@ describe('Main Command', () => {
 
       describe('positional prompt (no -p flag)', () => {
         it('should use positional prompt text as options.prompt', async () => {
-          // Simulates: juno-code -s claude "my positional prompt"
+          // Simulates: yylo -s claude "my positional prompt"
           // After CLI merging, options.prompt = "my positional prompt"
           const options: MainCommandOptions = {
             subagent: 'claude',
@@ -1451,7 +1451,7 @@ describe('Main Command', () => {
         });
 
         it('should handle multi-word positional prompt joined with spaces', async () => {
-          // Simulates: juno-code -s claude "analyze" "this" "codebase"
+          // Simulates: yylo -s claude "analyze" "this" "codebase"
           // After CLI merging, options.prompt = "analyze this codebase"
           const options: MainCommandOptions = {
             subagent: 'claude',
@@ -1476,7 +1476,7 @@ describe('Main Command', () => {
         });
 
         it('should prefer -p flag over positional prompt', async () => {
-          // Simulates: juno-code -s claude -p "explicit" "positional"
+          // Simulates: yylo -s claude -p "explicit" "positional"
           // CLI merging only sets options.prompt from positional if prompt is undefined
           // Since -p sets it first, positional is ignored
           const options: MainCommandOptions = {
@@ -1912,7 +1912,7 @@ describe('Main Command', () => {
         } as any);
 
         vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
-          candidate.endsWith('.env.juno'),
+          candidate.endsWith('.env.yylo'),
         );
         vi.mocked(fs.readFile).mockResolvedValueOnce('FOO=bar\n');
 
@@ -1938,19 +1938,19 @@ describe('Main Command', () => {
           sessionId: 'session-continue-123',
           serializedSettings: expect.stringContaining('"subagent":"codex"'),
         }));
-        expect(fs.writeFile).not.toHaveBeenCalledWith('/test/dir/.env.juno', expect.anything(), expect.anything());
+        expect(fs.writeFile).not.toHaveBeenCalledWith('/test/dir/.env.yylo', expect.anything(), expect.anything());
       });
 
       it('should hydrate resume and runtime options from scoped env snapshot when continueFromLatest is set', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-a';
+        process.env.YYLO_CONTINUE_SCOPE = 'pane-a';
         const scopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:pane-a')
+          .update('YYLO_CONTINUE_SCOPE:pane-a')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'resume-me-001';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`] = 'resume-me-001';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           model: ':api-codex',
@@ -1990,15 +1990,15 @@ describe('Main Command', () => {
       });
 
       it('should continue the active named branch and update only that branch after success', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-active-c';
+        process.env.YYLO_CONTINUE_SCOPE = 'pane-active-c';
         const scopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:pane-active-c')
+          .update('YYLO_CONTINUE_SCOPE:pane-active-c')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_C';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_C';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           model: ':api-codex',
@@ -2253,14 +2253,14 @@ describe('Main Command', () => {
 
         vi.mocked(resetMainSessionBranch).mockClear();
         vi.mocked(updateActiveSessionBranch).mockClear();
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'failed-branch-pane';
+        process.env.YYLO_CONTINUE_SCOPE = 'failed-branch-pane';
         const failedScopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:failed-branch-pane')
+          .update('YYLO_CONTINUE_SCOPE:failed-branch-pane')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${failedScopeHash}`] = 'OLD_C';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${failedScopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${failedScopeHash}`] = 'OLD_C';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${failedScopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
         });
@@ -2324,15 +2324,15 @@ describe('Main Command', () => {
       });
 
       it('should allow continueFromLatest Pi live sessions without an initial prompt', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-live';
+        process.env.YYLO_CONTINUE_SCOPE = 'pane-live';
         const scopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:pane-live')
+          .update('YYLO_CONTINUE_SCOPE:pane-live')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'resume-live-001';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`] = 'resume-live-001';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           model: ':api-codex',
@@ -2391,15 +2391,15 @@ describe('Main Command', () => {
       });
 
       it('should clone from the current continue scope and persist the returned clone session', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'clone-pane';
+        process.env.YYLO_CONTINUE_SCOPE = 'clone-pane';
         const scopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:clone-pane')
+          .update('YYLO_CONTINUE_SCOPE:clone-pane')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'source-session-scope';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`] = 'source-session-scope';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           model: ':api-codex',
@@ -2447,7 +2447,7 @@ describe('Main Command', () => {
         } as any);
 
         vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
-          candidate.endsWith('.env.juno'),
+          candidate.endsWith('.env.yylo'),
         );
         vi.mocked(fs.readFile).mockResolvedValueOnce('FOO=bar\n');
 
@@ -2478,25 +2478,25 @@ describe('Main Command', () => {
       });
 
       it('should clone --name C from main and store the returned session without switching active branch or poisoning active continue env', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'named-clone-keeps-active-main';
+        process.env.YYLO_CONTINUE_SCOPE = 'named-clone-keeps-active-main';
         const scopeHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:named-clone-keeps-active-main')
+          .update('YYLO_CONTINUE_SCOPE:named-clone-keeps-active-main')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_MAIN';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`] = 'SESSION_MAIN';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
           version: 1,
           subagent: 'pi',
           maxIterations: 5,
         });
 
         vi.mocked(fs.pathExists).mockImplementation(async (candidate: string) =>
-          candidate.endsWith('.env.juno'),
+          candidate.endsWith('.env.yylo'),
         );
         vi.mocked(fs.readFile).mockResolvedValueOnce(
-          `JUNO_CODE_LAST_SESSION_ID_${scopeHash}="SESSION_MAIN"\n` +
-            `JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}='{"version":1,"subagent":"pi","maxIterations":5}'\n`,
+          `YYLO_LAST_SESSION_ID_${scopeHash}="SESSION_MAIN"\n` +
+            `YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}='{"version":1,"subagent":"pi","maxIterations":5}'\n`,
         );
         vi.mocked(listSessionBranches).mockResolvedValue([
           {
@@ -2579,9 +2579,9 @@ describe('Main Command', () => {
           }),
         );
         expect(updateActiveSessionBranch).not.toHaveBeenCalled();
-        expect(process.env[`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]).toBe('SESSION_MAIN');
+        expect(process.env[`YYLO_LAST_SESSION_ID_${scopeHash}`]).toBe('SESSION_MAIN');
         const envWrites = vi.mocked(fs.writeFile).mock.calls
-          .filter(([candidate]) => String(candidate).endsWith('.env.juno'))
+          .filter(([candidate]) => String(candidate).endsWith('.env.yylo'))
           .map(([, content]) => String(content));
         expect(envWrites).toEqual([]);
       });
@@ -2688,7 +2688,7 @@ describe('Main Command', () => {
       });
 
       it('should fail fast when clone is requested without resume or continue scope', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-clone-pane';
+        process.env.YYLO_CONTINUE_SCOPE = 'missing-clone-pane';
 
         await mainCommandHandler(
           [],
@@ -2708,7 +2708,7 @@ describe('Main Command', () => {
       });
 
       it('should fail fast when continueFromLatest is requested without snapshot env vars', async () => {
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'missing-pane';
+        process.env.YYLO_CONTINUE_SCOPE = 'missing-pane';
 
         await mainCommandHandler(
           [],
@@ -2731,20 +2731,20 @@ describe('Main Command', () => {
 
       it('should not leak continue snapshots across different shell scopes', async () => {
         const paneAHash = `SCOPE_${createHash('sha256')
-          .update('JUNO_CODE_CONTINUE_SCOPE:pane-a')
+          .update('YYLO_CONTINUE_SCOPE:pane-a')
           .digest('hex')
           .slice(0, 16)
           .toUpperCase()}`;
 
-        process.env[`JUNO_CODE_LAST_SESSION_ID_${paneAHash}`] = 'pane-a-session';
-        process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneAHash}`] = JSON.stringify({
+        process.env[`YYLO_LAST_SESSION_ID_${paneAHash}`] = 'pane-a-session';
+        process.env[`YYLO_LAST_EXECUTION_SETTINGS_${paneAHash}`] = JSON.stringify({
           version: 1,
           subagent: 'claude',
           model: ':sonnet',
           maxIterations: 2,
         });
 
-        process.env.JUNO_CODE_CONTINUE_SCOPE = 'pane-b';
+        process.env.YYLO_CONTINUE_SCOPE = 'pane-b';
         vi.mocked(resolveScopedContinueSessionState).mockResolvedValueOnce({
           context: { scopeHash: 'SCOPE_B000000000000000', scopeSource: 'test' },
           activeBranch: null,
@@ -3281,7 +3281,7 @@ describe('Positional Prompt CLI Parsing', () => {
         capturedOptions = options;
       });
 
-    // Shell passes quoted string as single arg: juno-code -s pi "my positional prompt"
+    // Shell passes quoted string as single arg: yylo -s pi "my positional prompt"
     await program.parseAsync(['-s', 'pi', 'my positional prompt'], { from: 'user' });
 
     expect(capturedArgs).toEqual(['my positional prompt']);
@@ -3290,7 +3290,7 @@ describe('Positional Prompt CLI Parsing', () => {
   });
 
   it('should join multiple unquoted positional words', async () => {
-    // Shell passes unquoted words as separate args: juno-code -s pi my positional prompt
+    // Shell passes unquoted words as separate args: yylo -s pi my positional prompt
     const program = new Command();
     let capturedOptions: any = null;
 
@@ -3403,7 +3403,7 @@ describe('Verbose/Quiet Output Modes', () => {
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
   let originalIsTTY: boolean | undefined;
 
-  const mockCommand = new Command('juno-code');
+  const mockCommand = new Command('yylo');
 
   beforeEach(async () => {
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -3793,12 +3793,12 @@ describe('Verbose/Quiet Output Modes', () => {
   it('should show active named branch in completion statistics for branch continues', async () => {
     const scope = 'summary-active-branch';
     const scopeHash = `SCOPE_${createHash('sha256')
-      .update(`JUNO_CODE_CONTINUE_SCOPE:${scope}`)
+      .update(`YYLO_CONTINUE_SCOPE:${scope}`)
       .digest('hex')
       .slice(0, 16)
       .toUpperCase()}`;
-    process.env.JUNO_CODE_CONTINUE_SCOPE = scope;
-    process.env[`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
+    process.env.YYLO_CONTINUE_SCOPE = scope;
+    process.env[`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`] = JSON.stringify({
       version: 1,
       subagent: 'pi',
       maxIterations: 1,

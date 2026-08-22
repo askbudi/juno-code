@@ -34,10 +34,10 @@ except task_runtime.TaskWorkspaceError as exc:
 assert_juno_admission_fixture = _fixture.assert_juno_admission_fixture
 install_juno_admission_fixture = _fixture.install_juno_admission_fixture
 PACKAGE_ROOT = Path(_fixture.__file__).resolve().parents[4]
-PUBLIC_YY = PACKAGE_ROOT / "dist/bin/juno-code.sh"
+PUBLIC_YY = PACKAGE_ROOT / "dist/bin/yylo.sh"
 
 
-DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "juno-code-real-git-managed-install.lock"
+DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "yylo-real-git-managed-install.lock"
 _RESOURCE_LOCK_TOKEN: Optional[str] = None
 _RESOURCE_LOCK_WORKLOAD = f"Python real-Git task workspace suite: {Path(__file__).resolve()}"
 
@@ -514,7 +514,7 @@ class TaskWorkspaceTests(unittest.TestCase):
             "schemaVersion": 1, "admissionOutputs": [], "assets": [],
         }) + "\n")
         package = self.repository / "juno-code/package.json"
-        package.write_text(json.dumps({"name": "juno-code", "version": "9.0.0"}) + "\n")
+        package.write_text(json.dumps({"name": "@yylo/cli", "version": "9.0.0"}) + "\n")
         unadmitted_source = self.repository / "juno-code/unadmitted-canonical.txt"
         unadmitted_output = self.repository / ".agents/unadmitted-output.txt"
         unadmitted_source.parent.mkdir(parents=True, exist_ok=True)
@@ -636,7 +636,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         stale_hash = hashlib.sha256(stale).hexdigest()
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": version,
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": version,
             "assets": {task_runtime.RUNTIME_PATH: {
                 "type": "script", "templateVersion": version,
                 "sourceSha256": stale_hash, "installedSha256": stale_hash,
@@ -660,18 +660,18 @@ class TaskWorkspaceTests(unittest.TestCase):
         git(self.repository, "add", task_runtime.RUNTIME_PATH)
         git(self.repository, "commit", "-m", "legacy consumer runtime without managed inventory")
 
-        package_root = self.root / "installed-runtimes" / version / "node_modules/juno-code"
+        package_root = self.root / "installed-runtimes" / version / "node_modules/yylo"
         executable = package_root / "dist/bin/cli.mjs"
         executable.parent.mkdir(parents=True)
         if output_shape == "historical":
             stdout = f"{version}\n"
             stderr = (
-                f"\n🎯 Juno Code v{version} - TypeScript CLI\n"
+                f"\n🎯 YYLO v{version} - TypeScript CLI\n"
                 "   Node.js v22.22.3 on darwin\n"
                 f"   Working directory: {executable.parent.resolve()}\n\n"
             )
         elif output_shape == "release":
-            stdout, stderr = f"juno-code {version}\n", ""
+            stdout, stderr = f"yylo {version}\n", ""
         elif output_shape == "machine":
             stdout, stderr = f"{version}\n", ""
         else:
@@ -685,12 +685,12 @@ class TaskWorkspaceTests(unittest.TestCase):
         template.parent.mkdir(parents=True)
         template.write_bytes(legacy)
         (package_root / "package.json").write_text(json.dumps({
-            "name": "juno-code", "version": version,
+            "name": "@yylo/cli", "version": version,
         }) + "\n")
         identity_path = self.controller / ".juno_task/runtime/identity.json"
         identity_path.parent.mkdir(parents=True, exist_ok=True)
         identity_path.write_text(json.dumps({
-            "package": "juno-code", "version": version,
+            "package": "@yylo/cli", "version": version,
             "executable": str(executable.resolve()),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
             "source": "installed-release", "tracked": False,
@@ -1802,7 +1802,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.parent.mkdir(parents=True, exist_ok=True)
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "2.1.2",
             "assets": {
                 task_runtime.RUNTIME_PATH: {
                     "type": "script", "templateVersion": "2.1.2",
@@ -1831,7 +1831,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.parent.mkdir(parents=True, exist_ok=True)
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "2.1.2",
             "assets": {"unrelated": {"type": "script"}},
         }) + "\n")
         git(self.repository, "add", task_runtime.MANAGED_INVENTORY_PATH)
@@ -1952,7 +1952,7 @@ class TaskWorkspaceTests(unittest.TestCase):
     def test_missing_newer_source_runtime_directs_matching_controller_generation(self) -> None:
         git(self.repository, "rm", task_runtime.RUNTIME_PATH)
         package = self.repository / "juno-code/package.json"
-        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.4"}) + "\n")
+        package.write_text(json.dumps({"name": "@yylo/cli", "version": "2.1.4"}) + "\n")
         source = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
         source.write_bytes(b"#!/usr/bin/env python3\n# newer source template\n")
         git(self.repository, "add", "juno-code/package.json",
@@ -1973,10 +1973,10 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.parent.mkdir(parents=True, exist_ok=True)
         package = self.repository / "juno-code/package.json"
-        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.2"}) + "\n")
+        package.write_text(json.dumps({"name": "@yylo/cli", "version": "2.1.2"}) + "\n")
         stale_hash = hashlib.sha256(stale).hexdigest()
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "2.1.2",
             "assets": {task_runtime.RUNTIME_PATH: {
                 "type": "script", "templateVersion": "2.1.2",
                 "sourceSha256": stale_hash, "installedSha256": stale_hash,
@@ -2012,11 +2012,11 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         runtime.write_bytes(newer)
         source.write_bytes(newer)
-        package.write_text(json.dumps({"name": "juno-code", "version": "2.1.4"}) + "\n")
+        package.write_text(json.dumps({"name": "@yylo/cli", "version": "2.1.4"}) + "\n")
         newer_hash = hashlib.sha256(newer).hexdigest()
         inventory.parent.mkdir(parents=True, exist_ok=True)
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.4",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "2.1.4",
             "assets": {task_runtime.RUNTIME_PATH: {
                 "type": "script", "templateVersion": "2.1.4",
                 "sourceSha256": newer_hash, "installedSha256": newer_hash,
@@ -2043,7 +2043,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         inventory = self.repository / task_runtime.MANAGED_INVENTORY_PATH
         inventory.parent.mkdir(parents=True, exist_ok=True)
         inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "2.1.2",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "2.1.2",
             "assets": {task_runtime.RUNTIME_PATH: {
                 "type": "script", "templateVersion": "2.1.2",
                 "sourceSha256": claimed, "installedSha256": claimed,
@@ -2455,7 +2455,7 @@ class TaskWorkspaceTests(unittest.TestCase):
                          ["branch_exact", "product_absent", "role", "tracked_boundary"])
 
     def test_consumer_runtime_provenance_plan_apply_unblocks_start_and_preserves_controller_dirt(self) -> None:
-        package_root = self.root / "installed/node_modules/juno-code"
+        package_root = self.root / "installed/node_modules/yylo"
         executable = package_root / "dist/bin/cli.mjs"
         package_runtime = package_root / "dist/templates/scripts/task_workspace.py"
         manifest = package_root / "dist/templates/managed-assets.json"
@@ -2469,13 +2469,13 @@ class TaskWorkspaceTests(unittest.TestCase):
             "installClass": "script", "type": "script",
         }]}) + "\n")
         (package_root / "package.json").write_text(json.dumps({
-            "name": "juno-code", "version": "2.1.2",
+            "name": "@yylo/cli", "version": "2.1.2",
         }) + "\n")
         identity = self.controller / task_runtime.IDENTITY_PATH if hasattr(
             task_runtime, "IDENTITY_PATH") else self.controller / ".juno_task/runtime/identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text(json.dumps({
-            "package": "juno-code", "version": "2.1.2",
+            "package": "@yylo/cli", "version": "2.1.2",
             "executable": str(executable),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
             "source": "installed-release", "tracked": False,
@@ -2530,13 +2530,13 @@ class TaskWorkspaceTests(unittest.TestCase):
         identity_value["executable_sha256"] = "f" * 64
         identity.write_text(json.dumps(identity_value) + "\n")
         with self.assertRaisesRegex(provenance_runtime.ProvenanceError,
-                                    "installed juno-code executable"):
+                                    "installed yylo executable"):
             provenance_runtime.apply_command(plan_path, self.root / "identity-apply.json")
         identity.write_bytes(identity_bytes)
 
         controller_inventory = self.controller / task_runtime.MANAGED_INVENTORY_PATH
         controller_inventory.write_text(json.dumps({
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": "9.9.9",
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": "9.9.9",
             "assets": {},
         }) + "\n")
         with self.assertRaisesRegex(provenance_runtime.ProvenanceError,
@@ -2639,14 +2639,14 @@ class TaskWorkspaceTests(unittest.TestCase):
         fixture = self.install_legacy_consumer_runtime()
         executable = Path(fixture["executable"])
         canonical_banner = (
-            "\n🎯 Juno Code v2.1.2 - TypeScript CLI\n"
+            "\n🎯 YYLO v2.1.2 - TypeScript CLI\n"
             "   Node.js v22.22.3 on darwin\n"
             f"   Working directory: {executable.parent.resolve()}\n\n"
         )
         cases = {
             "wrong version": ("2.1.1\n", canonical_banner.replace("v2.1.2", "v2.1.1")),
             "malformed banner": ("2.1.2\n", canonical_banner.replace("Node.js", "Node")),
-            "ambiguous stdout": ("2.1.2\njuno-code 2.1.2\n", canonical_banner),
+            "ambiguous stdout": ("2.1.2\nyylo 2.1.2\n", canonical_banner),
             "unexpected stderr": ("2.1.2\n", canonical_banner + "unexpected\n"),
         }
         package_hash = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
@@ -2820,7 +2820,7 @@ raise SystemExit(17)
         identity = self.controller / ".juno_task/runtime/identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text(json.dumps({
-            "package": "juno-code", "version": package["version"],
+            "package": "@yylo/cli", "version": package["version"],
             "executable": str(packaged_executable),
             "executable_sha256": hashlib.sha256(packaged_executable.read_bytes()).hexdigest(),
             "source": "installed-release", "tracked": False,
@@ -2934,7 +2934,7 @@ raise SystemExit(2)
 
     def build_required_public_cli_recovers_missing_target_runtime_then_starts_task(self) -> None:
         package = json.loads((PACKAGE_ROOT / "package.json").read_text())
-        self.assertEqual(package.get("name"), "juno-code")
+        self.assertEqual(package.get("name"), "@yylo/cli")
         self.assertTrue(PUBLIC_YY.is_file(), f"public yy binary is missing: {PUBLIC_YY}")
 
         self.remove_runtime_for_consumer()
@@ -2984,14 +2984,14 @@ raise SystemExit(2)
 
     def build_required_public_cli_migrates_legacy_provenance_then_starts_task(self) -> None:
         package = json.loads((PACKAGE_ROOT / "package.json").read_text())
-        self.assertEqual(package.get("name"), "juno-code")
+        self.assertEqual(package.get("name"), "@yylo/cli")
         self.assertTrue(PUBLIC_YY.is_file())
         run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
         packaged_executable = PACKAGE_ROOT / "dist/bin/cli.mjs"
         identity = self.controller / ".juno_task/runtime/identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text(json.dumps({
-            "package": "juno-code", "version": package["version"],
+            "package": "@yylo/cli", "version": package["version"],
             "executable": str(packaged_executable),
             "executable_sha256": hashlib.sha256(packaged_executable.read_bytes()).hexdigest(),
             "source": "installed-release", "tracked": False,

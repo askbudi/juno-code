@@ -11,7 +11,7 @@
 #
 # Usage: ./clean_logs_folder.sh
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure

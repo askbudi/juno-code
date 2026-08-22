@@ -1,7 +1,7 @@
 /**
- * Start command implementation for juno-code CLI
+ * Start command implementation for yylo CLI
  *
- * Acts as a shortcut for: juno-code -p "$(cat .juno_task/init.md)" {args}
+ * Acts as a shortcut for: yylo -p "$(cat .juno_task/init.md)" {args}
  * Delegates to the main command handler with .juno_task/init.md as the prompt.
  */
 
@@ -27,7 +27,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
   // Check if .juno_task directory exists
   if (!(await fs.pathExists(junoTaskDir))) {
     throw new RuntimeError(
-      'No .juno_task directory found. Run "juno-code init" first.',
+      'No .juno_task directory found. Run "yylo init" first.',
       junoTaskDir,
     );
   }
@@ -58,7 +58,7 @@ async function loadInitPrompt(directory: string): Promise<string> {
 /**
  * Start command handler - delegates to mainCommandHandler with init.md as prompt
  *
- * This implements: juno-code start {args} = juno-code -p "$(cat .juno_task/init.md)" {args}
+ * This implements: yylo start {args} = yylo -p "$(cat .juno_task/init.md)" {args}
  */
 export async function startCommandHandler(
   _args: any,
@@ -245,20 +245,20 @@ export function configureStartCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code start                                   # Start execution in current directory
-  $ juno-code start -s claude                        # Use claude subagent
-  $ juno-code start --subagent cursor                # Use cursor subagent
-  $ juno-code start -s codex --max-iterations 10     # Use codex with 10 iterations
-  $ juno-code start --model sonnet-4                 # Use specific model
-  $ juno-code start --directory ./my-project         # Execute in specific directory
-  $ juno-code start --enable-feedback                # Enable feedback collection while running
-  $ juno-code start --verbose                        # Show detailed progress
-  $ juno-code start --quiet                          # Minimize output
-  $ juno-code start --show-metrics                   # Display performance summary
-  $ juno-code start --show-dashboard                 # Interactive performance dashboard
-  $ juno-code start --show-trends                    # Show historical performance trends
-  $ juno-code start --save-metrics                   # Save metrics to .juno_task/metrics.json
-  $ juno-code start --save-metrics custom.json       # Save metrics to custom file
+  $ yylo start                                   # Start execution in current directory
+  $ yylo start -s claude                        # Use claude subagent
+  $ yylo start --subagent cursor                # Use cursor subagent
+  $ yylo start -s codex --max-iterations 10     # Use codex with 10 iterations
+  $ yylo start --model sonnet-4                 # Use specific model
+  $ yylo start --directory ./my-project         # Execute in specific directory
+  $ yylo start --enable-feedback                # Enable feedback collection while running
+  $ yylo start --verbose                        # Show detailed progress
+  $ yylo start --quiet                          # Minimize output
+  $ yylo start --show-metrics                   # Display performance summary
+  $ yylo start --show-dashboard                 # Interactive performance dashboard
+  $ yylo start --show-trends                    # Show historical performance trends
+  $ yylo start --save-metrics                   # Save metrics to .juno_task/metrics.json
+  $ yylo start --save-metrics custom.json       # Save metrics to custom file
 
 Feedback Collection:
   --enable-feedback             Enable concurrent feedback collection
@@ -274,13 +274,13 @@ Performance Options:
   --metrics-file <path>         Custom metrics file path
 
 Environment Variables:
-  JUNO_CODE_BACKEND            Backend type (default: shell)
-  JUNO_CODE_MAX_ITERATIONS     Default maximum iterations
-  JUNO_CODE_MODEL              Default model to use
-  JUNO_CODE_MCP_TIMEOUT        Operation timeout in milliseconds
+  YYLO_BACKEND            Backend type (default: shell)
+  YYLO_MAX_ITERATIONS     Default maximum iterations
+  YYLO_MODEL              Default model to use
+  YYLO_MCP_TIMEOUT        Operation timeout in milliseconds
 
 Notes:
-  - Requires .juno_task/init.md file (created by 'juno-code init')
+  - Requires .juno_task/init.md file (created by 'yylo init')
   - Creates a new session for tracking execution
   - Progress is displayed in real-time
   - Performance metrics are collected automatically
@@ -289,7 +289,7 @@ Notes:
 
 Backend:
   shell                        Shell script backend (default)
-                               Executes scripts from ~/.juno_code/services/
+                               Executes scripts from ~/.yylo/services/
                                Supports subagent.py, subagent.sh, or subagent-specific scripts
     `,
     );

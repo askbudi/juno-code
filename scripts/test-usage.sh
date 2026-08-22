@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-all}"
 
 echo ""
-echo "Juno Code – Test Runner Usage"
+echo "YYLO – Test Runner Usage"
 echo "---------------------------------"
 echo ""
 

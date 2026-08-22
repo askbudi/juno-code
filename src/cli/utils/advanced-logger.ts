@@ -1,5 +1,5 @@
 /**
- * Advanced Log Formatting System for juno-code
+ * Advanced Log Formatting System for yylo
  *
  * Provides structured, colorized logging with multiple log levels and contexts.
  * All output goes to stderr to keep stdout clean for structured results.

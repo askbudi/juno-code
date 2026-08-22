@@ -2,7 +2,7 @@
 
 # install_requirements.sh
 #
-# Purpose: Install Python dependencies required for juno-code
+# Purpose: Install Python dependencies required for yylo
 #
 # This script:
 # 1. Checks if 'pipx' (recommended for app installations) is installed
@@ -18,7 +18,7 @@
 #
 # Usage: ./install_requirements.sh
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
@@ -164,7 +164,7 @@ default_version_check_cache_dir() {
         printf '%s\n' "$common_dir/juno/version-checks"
         return
     fi
-    cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/juno-code/version-checks"
+    cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}/yylo/version-checks"
     cache_key=$(printf '%s' "$PWD" | cksum | awk '{print $1}')
     printf '%s\n' "$cache_root/$cache_key"
 }

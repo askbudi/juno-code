@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from typing import Mapping
 
-CHILD_MARKER = "JUNO_CODE_INVOCATION_CHILD"
+CHILD_MARKER = "YYLO_INVOCATION_CHILD"
 CHILD_KEYS = {
-    "trace_id": "JUNO_CODE_TRACE_ID",
-    "parent_span_id": "JUNO_CODE_PARENT_SPAN_ID",
-    "task_id": "JUNO_CODE_TASK_ID",
-    "workflow_run_id": "JUNO_CODE_WORKFLOW_RUN_ID",
-    "workflow_step_id": "JUNO_CODE_WORKFLOW_STEP_ID",
-    "launch_surface": "JUNO_CODE_LAUNCH_SURFACE",
+    "trace_id": "YYLO_TRACE_ID",
+    "parent_span_id": "YYLO_PARENT_SPAN_ID",
+    "task_id": "YYLO_TASK_ID",
+    "workflow_run_id": "YYLO_WORKFLOW_RUN_ID",
+    "workflow_step_id": "YYLO_WORKFLOW_STEP_ID",
+    "launch_surface": "YYLO_LAUNCH_SURFACE",
 }
 ACTIVE_KEYS = {
-    "trace_id": "JUNO_CODE_ACTIVE_TRACE_ID",
-    "span_id": "JUNO_CODE_ACTIVE_SPAN_ID",
-    "task_id": "JUNO_CODE_ACTIVE_TASK_ID",
-    "workflow_run_id": "JUNO_CODE_ACTIVE_WORKFLOW_RUN_ID",
-    "workflow_step_id": "JUNO_CODE_ACTIVE_WORKFLOW_STEP_ID",
+    "trace_id": "YYLO_ACTIVE_TRACE_ID",
+    "span_id": "YYLO_ACTIVE_SPAN_ID",
+    "task_id": "YYLO_ACTIVE_TASK_ID",
+    "workflow_run_id": "YYLO_ACTIVE_WORKFLOW_RUN_ID",
+    "workflow_step_id": "YYLO_ACTIVE_WORKFLOW_STEP_ID",
 }
 ALL_KEYS = {CHILD_MARKER, *CHILD_KEYS.values(), *ACTIVE_KEYS.values()}
 

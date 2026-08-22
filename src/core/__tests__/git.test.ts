@@ -621,7 +621,7 @@ describe('GitManager', () => {
       expect(mockExeca).toHaveBeenCalledWith('git', ['add', '.'], { cwd: tempDir });
       expect(mockExeca).toHaveBeenCalledWith(
         'git',
-        ['commit', '-m', 'Initial commit - juno-code project setup'],
+        ['commit', '-m', 'Initial commit - yylo project setup'],
         { cwd: tempDir },
       );
     });
@@ -809,7 +809,7 @@ EXISTING_CONFIG: value
       await gitManager.updateJunoTaskConfig(gitUrl);
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Warning: Failed to update juno-code configuration'),
+        expect.stringContaining('Warning: Failed to update yylo configuration'),
       );
 
       consoleSpy.mockRestore();

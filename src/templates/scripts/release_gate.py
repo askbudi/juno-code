@@ -15,7 +15,7 @@ from typing import Any
 AUTH_SCHEMA = "juno_bolt_release_authorization.v1"
 RECEIPT_SCHEMA = "juno_bolt_release_gate.v1"
 PRODUCER_SCHEMA = "juno_bolt_release_gate_producer.v1"
-TOOL_ID = "juno-code.release-gate"
+TOOL_ID = "yylo.release-gate"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_BYTES = 65536

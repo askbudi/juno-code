@@ -1,7 +1,7 @@
 /**
- * View-log command implementation for juno-code CLI
+ * View-log command implementation for yylo CLI
  *
- * Parses and displays log files produced by juno-code.
+ * Parses and displays log files produced by yylo.
  * Extracts content between [thinking] and | metadata:, formats JSON content
  * with jq-style coloring, and displays non-JSON content as plain text.
  */
@@ -349,7 +349,7 @@ function formatBytes(bytes: number): string {
 export function configureViewLogCommand(program: Command): void {
   program
     .command('view-log <logFilePath>')
-    .description('View and parse juno-code log files with formatted output')
+    .description('View and parse yylo log files with formatted output')
     .option('-r, --raw', 'Output without paging (no less)')
     .option('-l, --limit <number>', 'Maximum number of entries to show', parseInt)
     .option('-f, --filter <pattern>', 'Filter entries by regex pattern')
@@ -362,15 +362,15 @@ export function configureViewLogCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code view-log log_file.log                    # View log with pager
-  $ juno-code view-log log_file.log --raw              # Output without pager
-  $ juno-code view-log log_file.log --limit 100        # Show first 100 entries
-  $ juno-code view-log log_file.log --filter "error"   # Filter by pattern
-  $ juno-code view-log log_file.log --output json-only # Show only JSON entries
-  $ juno-code view-log log_file.log --line-numbers     # Show line numbers
+  $ yylo view-log log_file.log                    # View log with pager
+  $ yylo view-log log_file.log --raw              # Output without pager
+  $ yylo view-log log_file.log --limit 100        # Show first 100 entries
+  $ yylo view-log log_file.log --filter "error"   # Filter by pattern
+  $ yylo view-log log_file.log --output json-only # Show only JSON entries
+  $ yylo view-log log_file.log --line-numbers     # Show line numbers
 
 Description:
-  This command parses juno-code log files and extracts content between
+  This command parses yylo log files and extracts content between
   [thinking] and | metadata: markers. JSON content is formatted with
   jq-style colorization for easy reading.
 

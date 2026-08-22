@@ -129,7 +129,7 @@ describe('repository-local Juno 2 source installer', () => {
     const codeSource = path.join(temp, 'code source');
     const kanbanSource = path.join(temp, 'kanban source');
     const fakeBin = path.join(temp, 'fake bin');
-    await fs.outputJson(path.join(codeSource, 'package.json'), { name: 'juno-code', version: '2.0.1' });
+    await fs.outputJson(path.join(codeSource, 'package.json'), { name: '@yylo/cli', version: '2.0.1' });
     await fs.outputFile(path.join(kanbanSource, 'setup.py'), '# fixture\n');
 
     const fakePython = path.join(fakeBin, 'python fixture');

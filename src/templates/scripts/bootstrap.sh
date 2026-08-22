@@ -2,9 +2,9 @@
 
 # bootstrap.sh
 #
-# Purpose: Pre-flight Python environment setup for juno-code
+# Purpose: Pre-flight Python environment setup for yylo
 #
-# This script runs before the main juno-code entrypoint and ensures:
+# This script runs before the main yylo entrypoint and ensures:
 # 1. Python virtual environment (.venv_juno) exists
 # 2. Required Python packages are installed
 # 3. Virtual environment is activated if needed
@@ -12,7 +12,7 @@
 #
 # Usage: ./bootstrap.sh [main-entrypoint-command] [args...]
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
@@ -129,7 +129,7 @@ ensure_python_environment() {
     # Check if install_requirements.sh exists
     if [ ! -f "$INSTALL_SCRIPT" ]; then
         log_error "Install script not found: $INSTALL_SCRIPT"
-        log_error "Please run 'juno-code init' to initialize the project"
+        log_error "Please run 'yylo init' to initialize the project"
         return 1
     fi
 
@@ -154,7 +154,7 @@ ensure_python_environment() {
 
 # Main bootstrap logic
 main() {
-    log_info "=== juno-code Bootstrap ==="
+    log_info "=== yylo Bootstrap ==="
     echo ""
 
     # Ensure Python environment is ready

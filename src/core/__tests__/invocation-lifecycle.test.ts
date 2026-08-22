@@ -11,7 +11,7 @@ import { InvocationLifecycle } from '../invocation-lifecycle.js';
 const roots: string[] = [];
 const helper = path.resolve('src/core/__tests__/helpers/invocation-lifecycle-subprocess.ts');
 const cliSource = path.resolve('src/bin/cli.ts');
-const wrapperSource = path.resolve('src/bin/juno-code.sh');
+const wrapperSource = path.resolve('src/bin/yylo.sh');
 const yplSource = path.resolve('src/bin/ypl.sh');
 const tsxLoader = path.resolve('node_modules/tsx/dist/loader.mjs');
 let wrapperFixtureRoot: string;
@@ -29,7 +29,7 @@ async function temp(name: string): Promise<string> {
 async function createActualProject(root: string, piSource: string): Promise<{ project: string; home: string }> {
   const project = path.join(root, 'project');
   const home = path.join(root, 'home');
-  const services = path.join(home, '.juno_code', 'services');
+  const services = path.join(home, '.yylo', 'services');
   await fs.ensureDir(path.join(project, '.juno_task'));
   await fs.ensureDir(services);
   const packageJson = await fs.readJson(path.resolve('package.json'));
@@ -117,7 +117,7 @@ async function events(root: string, stateRoot: string = root): Promise<Record<st
 function spawn(mode: string, root: string): childProcess.ChildProcess {
   return childProcess.spawn(process.execPath, ['--import', tsxLoader, helper, mode], {
     cwd: root,
-    env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state'), JUNO_CODE_LAUNCH_SURFACE: 'yy' },
+    env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state'), YYLO_LAUNCH_SURFACE: 'yy' },
     stdio: 'ignore',
   });
 }
@@ -134,19 +134,19 @@ beforeAll(async () => {
   const bin = path.join(wrapperFixtureRoot, 'bin');
   await fs.ensureDir(bin);
   await fs.symlink(path.resolve('node_modules'), path.join(wrapperFixtureRoot, 'node_modules'));
-  canonicalWrapper = path.join(bin, 'juno-code');
+  canonicalWrapper = path.join(bin, 'yylo');
   canonicalYy = path.join(bin, 'yy');
   canonicalYpl = path.join(bin, 'ypl');
   await Promise.all([
     fs.copy(wrapperSource, canonicalWrapper),
     fs.copy(wrapperSource, canonicalYy),
-    fs.copy(wrapperSource, path.join(bin, 'juno-code.sh')),
+    fs.copy(wrapperSource, path.join(bin, 'yylo.sh')),
     fs.copy(yplSource, canonicalYpl),
   ]);
   await Promise.all([
     fs.chmod(canonicalWrapper, 0o755),
     fs.chmod(canonicalYy, 0o755),
-    fs.chmod(path.join(bin, 'juno-code.sh'), 0o755),
+    fs.chmod(path.join(bin, 'yylo.sh'), 0o755),
     fs.chmod(canonicalYpl, 0o755),
   ]);
   const packageJson = await fs.readJson(path.resolve('package.json'));
@@ -167,9 +167,9 @@ beforeAll(async () => {
     define: { __VERSION__: JSON.stringify(packageJson.version), __DEV__: 'false' },
   });
   await fs.writeFile(path.join(bin, 'cli.mjs'), `
-// JUNO_CODE_PREFLIGHT_ONLY capability fixture
-if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' && process.env[['JUNO', 'CODE', 'WRAPPER', 'LIFECYCLE'].join('_')]) process.exit(70);
-if (process.argv.includes('--version')) console.log('juno-code ${packageJson.version}');
+// YYLO_PREFLIGHT_ONLY capability fixture
+if (process.env.YYLO_PREFLIGHT_ONLY === '1' && process.env[['JUNO', 'CODE', 'WRAPPER', 'LIFECYCLE'].join('_')]) process.exit(70);
+if (process.argv.includes('--version')) console.log('yylo ${packageJson.version}');
 else if (process.argv.includes('--definitely-invalid')) process.exit(2);
 else process.exit(0);
 `);
@@ -190,7 +190,7 @@ describe('direct CLI invocation lifecycle', () => {
     const root = await temp(`actual-${expectedStatus}`);
     const result = childProcess.spawnSync(process.execPath, ['--import', tsxLoader, cliSource, ...args], {
       cwd: root,
-      env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state'), JUNO_CODE_LAUNCH_SURFACE: 'ypl' },
+      env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state'), YYLO_LAUNCH_SURFACE: 'ypl' },
       encoding: 'utf8',
       timeout: 10_000,
     });
@@ -198,7 +198,7 @@ describe('direct CLI invocation lifecycle', () => {
     const written = await events(root);
     expect(written).toHaveLength(2);
     expect(written.find((event) => event.event_type === 'invocation_finished')).toMatchObject({
-      launch_surface: 'juno-code',
+      launch_surface: 'yylo',
       juno_code_version: expect.any(String),
       status: expectedStatus,
       exit_code: expectedCode,
@@ -211,7 +211,7 @@ describe('direct CLI invocation lifecycle', () => {
       cwd: root,
       env: {
         ...process.env,
-        JUNO_CODE_WRAPPER_OBSERVATION: path.join(root, 'private-observation'),
+        YYLO_WRAPPER_OBSERVATION: path.join(root, 'private-observation'),
       },
       stdio: 'ignore',
     });
@@ -231,8 +231,8 @@ describe('direct CLI invocation lifecycle', () => {
         env: {
           ...process.env,
           XDG_STATE_HOME: path.join(root, 'state'),
-          JUNO_CODE_WRAPPER_LIFECYCLE: '9',
-          JUNO_CODE_WRAPPER_OBSERVATION: victim,
+          YYLO_WRAPPER_LIFECYCLE: '9',
+          YYLO_WRAPPER_OBSERVATION: victim,
         },
         stdio: ['ignore', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', descriptor],
         encoding: 'utf8', timeout: 10_000,
@@ -264,7 +264,7 @@ describe('direct CLI invocation lifecycle', () => {
   });
 
   it.each([
-    ['juno-code', () => canonicalWrapper],
+    ['yylo', () => canonicalWrapper],
     ['yy', () => canonicalYy],
     ['ypl', () => canonicalYpl],
   ] as const)('records exactly one lifecycle for the canonical %s wrapper', async (surface, executable) => {
@@ -297,7 +297,7 @@ describe('direct CLI invocation lifecycle', () => {
     const written = await events(root);
     expect(written.filter((event) => event.event_type === 'invocation_started')).toHaveLength(1);
     expect(written.filter((event) => event.event_type === 'invocation_finished')).toEqual([
-      expect.objectContaining({ status: 'failure', exit_code: 2, launch_surface: 'juno-code' }),
+      expect.objectContaining({ status: 'failure', exit_code: 2, launch_surface: 'yylo' }),
     ]);
   });
 
@@ -305,7 +305,7 @@ describe('direct CLI invocation lifecycle', () => {
     const root = await temp('boundary-module-failure');
     const bin = path.join(root, 'bin');
     await fs.ensureDir(bin);
-    const wrapper = path.join(bin, 'juno-code');
+    const wrapper = path.join(bin, 'yylo');
     await fs.copy(wrapperSource, wrapper);
     await fs.chmod(wrapper, 0o755);
     await fs.copy(path.join(wrapperFixtureRoot, 'bin', 'cli.mjs'), path.join(bin, 'cli.mjs'));
@@ -315,19 +315,19 @@ describe('direct CLI invocation lifecycle', () => {
       env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('juno-code');
+    expect(result.stdout).toContain('yylo');
   });
 
   it.each([
-    ['juno-code', false],
+    ['yylo', false],
     ['ypl', true],
   ] as const)('preserves piped stdin through the canonical %s wrapper', async (name, useYpl) => {
     const root = await temp(`stdin-${name}`);
     const bin = path.join(root, 'bin');
     await fs.ensureDir(bin);
-    await fs.copy(wrapperSource, path.join(bin, 'juno-code.sh'));
-    await fs.chmod(path.join(bin, 'juno-code.sh'), 0o755);
-    const executable = useYpl ? path.join(bin, 'ypl') : path.join(bin, 'juno-code');
+    await fs.copy(wrapperSource, path.join(bin, 'yylo.sh'));
+    await fs.chmod(path.join(bin, 'yylo.sh'), 0o755);
+    const executable = useYpl ? path.join(bin, 'ypl') : path.join(bin, 'yylo');
     if (useYpl) await fs.copy(yplSource, executable);
     else await fs.copy(wrapperSource, executable);
     await fs.chmod(executable, 0o755);
@@ -352,12 +352,12 @@ process.stdin.on('end', () => process.stdout.write(data));
     const bin = path.join(root, 'bin');
     await fs.ensureDir(bin);
     await fs.symlink(path.resolve('node_modules'), path.join(root, 'node_modules'));
-    const wrapper = path.join(bin, 'juno-code');
+    const wrapper = path.join(bin, 'yylo');
     await fs.copy(wrapperSource, wrapper);
     await fs.chmod(wrapper, 0o755);
     await fs.copy(path.join(wrapperFixtureRoot, 'bin', 'invocation-boundary.mjs'), path.join(bin, 'invocation-boundary.mjs'));
     await fs.writeFile(path.join(bin, 'cli.mjs'), `
-// JUNO_CODE_WRAPPER_LIFECYCLE capability fixture
+// YYLO_WRAPPER_LIFECYCLE capability fixture
 import { writeFileSync } from 'node:fs';
 writeFileSync('runtime-pid', String(process.pid));
 setInterval(() => {}, 1000);
@@ -433,7 +433,7 @@ setInterval(() => {}, 1000);
     expect(git(['config', '--worktree', 'juno.workspace.roleAuthority', 'protected-integration.v1'], product).status).toBe(0);
     const packageJson = await fs.readJson(path.resolve('package.json'));
     const runtime = path.join(controller, 'pinned-runtime.mjs');
-    await fs.writeFile(runtime, `if (process.argv.includes('--version')) console.log('juno-code ${packageJson.version}'); else process.exitCode = 0;\n`);
+    await fs.writeFile(runtime, `if (process.argv.includes('--version')) console.log('yylo ${packageJson.version}'); else process.exitCode = 0;\n`);
     expect(git(['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], controller).status).toBe(0);
 
     const yy = path.join(wrapperFixtureRoot, 'bin', 'yy');
@@ -476,7 +476,7 @@ sys.exit(1)
     expect(written).toHaveLength(2);
     for (const event of written) {
       expect(event).toMatchObject({
-        launch_surface: 'juno-code',
+        launch_surface: 'yylo',
         service: 'pi',
         requested_model: 'openai/gpt-5.2',
       });
@@ -609,7 +609,7 @@ sys.exit(1)
     const started = written.find((event) => event.event_type === 'invocation_started')!;
     const finished = written.find((event) => event.event_type === 'invocation_finished')!;
     expect(written).toHaveLength(2);
-    expect(started).toMatchObject({ launch_surface: 'yy', service: 'juno-code', juno_code_version: '9.8.7-test' });
+    expect(started).toMatchObject({ launch_surface: 'yy', service: 'yylo', juno_code_version: '9.8.7-test' });
     expect(finished).toMatchObject({
       request_id: started.request_id,
       trace_id: started.trace_id,
@@ -789,24 +789,24 @@ while true; do sleep 0.05; done
   it('consumes child transport before runtime/provider descendants can inherit it', () => {
     const root = new InvocationLifecycle({ workingDirectory: '/tmp', junoCodeVersion: 'test', env: {} });
     const env: NodeJS.ProcessEnv = {
-      JUNO_CODE_INVOCATION_CHILD: '1',
-      JUNO_CODE_TRACE_ID: 'stale-trace',
-      JUNO_CODE_PARENT_SPAN_ID: 'stale-span',
-      JUNO_CODE_TASK_ID: 'stale-task',
-      JUNO_CODE_LAUNCH_SURFACE: 'workflow_runner',
+      YYLO_INVOCATION_CHILD: '1',
+      YYLO_TRACE_ID: 'stale-trace',
+      YYLO_PARENT_SPAN_ID: 'stale-span',
+      YYLO_TASK_ID: 'stale-task',
+      YYLO_LAUNCH_SURFACE: 'workflow_runner',
     };
     new InvocationLifecycle({
       workingDirectory: '/tmp', junoCodeVersion: 'test', env,
       continuation: root.continuation(),
     });
-    expect(env).not.toHaveProperty('JUNO_CODE_INVOCATION_CHILD');
-    expect(env).not.toHaveProperty('JUNO_CODE_TRACE_ID');
-    expect(env).not.toHaveProperty('JUNO_CODE_PARENT_SPAN_ID');
-    expect(env).not.toHaveProperty('JUNO_CODE_TASK_ID');
-    expect(env).not.toHaveProperty('JUNO_CODE_LAUNCH_SURFACE');
+    expect(env).not.toHaveProperty('YYLO_INVOCATION_CHILD');
+    expect(env).not.toHaveProperty('YYLO_TRACE_ID');
+    expect(env).not.toHaveProperty('YYLO_PARENT_SPAN_ID');
+    expect(env).not.toHaveProperty('YYLO_TASK_ID');
+    expect(env).not.toHaveProperty('YYLO_LAUNCH_SURFACE');
     expect(env).toMatchObject({
-      JUNO_CODE_ACTIVE_TRACE_ID: root.continuation().identity.trace_id,
-      JUNO_CODE_ACTIVE_SPAN_ID: root.continuation().identity.span_id,
+      YYLO_ACTIVE_TRACE_ID: root.continuation().identity.trace_id,
+      YYLO_ACTIVE_SPAN_ID: root.continuation().identity.span_id,
     });
   });
 
@@ -816,7 +816,7 @@ while true; do sleep 0.05; done
       workingDirectory: '/invocation',
       junoCodeVersion: 'test',
       launchSurface: 'ypl',
-      env: { JUNO_CODE_LAUNCH_SURFACE: 'yy' },
+      env: { YYLO_LAUNCH_SURFACE: 'yy' },
       writeEvent: async (cwd, event) => { written.push({ cwd, event }); },
     });
     await lifecycle.start({
@@ -885,13 +885,13 @@ while true; do sleep 0.05; done
       junoCodeVersion: 'test',
       writeEvent: async (_cwd, event) => { written.push(event); },
     });
-    await lifecycle.start({ service: 'juno-code' });
+    await lifecycle.start({ service: 'yylo' });
     await lifecycle.finish(1);
     expect(written.at(-1)).toMatchObject({
       status: 'failure',
       provider_observations: {
         status: 'unavailable',
-        execution_service: 'juno-code',
+        execution_service: 'yylo',
         observations: [],
         usage: { status: 'unavailable', input_tokens: null, output_tokens: null },
         estimated_cost: { status: 'unavailable', amount: null, currency: null },

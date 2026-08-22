@@ -10,9 +10,9 @@ import {
   writeSessionMetadataFileAtomic,
 } from './session-metadata.js';
 
-export const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
-export const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
-export const CONTINUE_SCOPE_OVERRIDE_ENV_KEY = 'JUNO_CODE_CONTINUE_SCOPE';
+export const CONTINUE_SESSION_ENV_KEY_BASE = 'YYLO_LAST_SESSION_ID';
+export const CONTINUE_SETTINGS_ENV_KEY_BASE = 'YYLO_LAST_EXECUTION_SETTINGS';
+export const CONTINUE_SCOPE_OVERRIDE_ENV_KEY = 'YYLO_CONTINUE_SCOPE';
 
 const CONTINUE_SCOPE_RUNTIME_FILE_NAME = 'continue_scope_runtime.json';
 const CONTINUE_SCOPE_RUNTIME_VERSION = 1;
@@ -311,7 +311,7 @@ function resolveTargetScopeHash(
     }
 
     throw new Error(
-      `Unknown continue scope hash '${requestedHash}'. Run 'juno-code continue-scope --json' to list the current scope hash.`,
+      `Unknown continue scope hash '${requestedHash}'. Run 'yylo continue-scope --json' to list the current scope hash.`,
     );
   }
 

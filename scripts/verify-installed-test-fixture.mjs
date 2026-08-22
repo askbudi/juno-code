@@ -48,12 +48,12 @@ try {
   const executableBytes = await readFile(executable);
   const inventory = {
     schemaVersion: 1,
-    packageName: 'juno-code',
+    packageName: '@yylo/cli',
     packageVersion: packageJson.version,
     assets: {},
   };
   const identity = {
-    package: 'juno-code', version: packageJson.version, executable,
+    package: '@yylo/cli', version: packageJson.version, executable,
     executable_sha256: createHash('sha256').update(executableBytes).digest('hex'),
     source: 'installed-release', tracked: false,
   };

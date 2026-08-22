@@ -1,32 +1,32 @@
 # Juno-Code Service Scripts
 
-This directory contains service scripts that extend juno-code functionality. These scripts are Python-based utilities that can be customized by users.
+This directory contains service scripts that extend yylo functionality. These scripts are Python-based utilities that can be customized by users.
 
 ## Installation
 
-Service scripts are automatically installed to `~/.juno_code/services/` when you run:
+Service scripts are automatically installed to `~/.yylo/services/` when you run:
 
 ```bash
-juno-code init
+yylo init
 ```
 
 Or you can manually install/manage them:
 
 ```bash
 # Install services
-juno-code services install
+yylo services install
 
 # List installed services
-juno-code services list
+yylo services list
 
 # Check installation status
-juno-code services status
+yylo services status
 
 # Show services directory path
-juno-code services path
+yylo services path
 
 # Uninstall services
-juno-code services uninstall --yes
+yylo services uninstall --yes
 ```
 
 ## Available Services
@@ -49,28 +49,28 @@ A wrapper for OpenAI Codex CLI with configurable options.
 
 ```bash
 # Basic usage with inline prompt
-~/.juno_code/services/codex.py -p "Write a hello world function"
+~/.yylo/services/codex.py -p "Write a hello world function"
 
 # Using a prompt file
-~/.juno_code/services/codex.py -pp /path/to/prompt.txt
+~/.yylo/services/codex.py -pp /path/to/prompt.txt
 
 # Specify project directory
-~/.juno_code/services/codex.py -p "Add tests" --cd /path/to/project
+~/.yylo/services/codex.py -p "Add tests" --cd /path/to/project
 
 # Override default model
-~/.juno_code/services/codex.py -p "Refactor code" -m gpt-4-turbo
+~/.yylo/services/codex.py -p "Refactor code" -m gpt-4-turbo
 
 # Custom auto-instruction
-~/.juno_code/services/codex.py -p "Fix bugs" --auto-instruction "You are a debugging expert"
+~/.yylo/services/codex.py -p "Fix bugs" --auto-instruction "You are a debugging expert"
 
 # Add custom codex config
-~/.juno_code/services/codex.py -p "Write code" -c custom_option=value
+~/.yylo/services/codex.py -p "Write code" -c custom_option=value
 
 # Enable verbose output
-~/.juno_code/services/codex.py -p "Analyze code" --verbose
+~/.yylo/services/codex.py -p "Analyze code" --verbose
 
 # JSON output
-~/.juno_code/services/codex.py -p "Generate function" --json
+~/.yylo/services/codex.py -p "Generate function" --json
 ```
 
 #### Arguments
@@ -96,7 +96,7 @@ You can override these by providing the same config key with `-c`:
 
 ```bash
 # Override sandbox mode
-~/.juno_code/services/codex.py -p "Safe operation" -c sandbox_mode=safe
+~/.yylo/services/codex.py -p "Safe operation" -c sandbox_mode=safe
 ```
 
 ### claude.py
@@ -119,37 +119,37 @@ A wrapper for Anthropic Claude CLI with configurable options.
 
 ```bash
 # Basic usage with inline prompt
-~/.juno_code/services/claude.py -p "Write a hello world function"
+~/.yylo/services/claude.py -p "Write a hello world function"
 
 # Using a prompt file
-~/.juno_code/services/claude.py -pp /path/to/prompt.txt
+~/.yylo/services/claude.py -pp /path/to/prompt.txt
 
 # Specify project directory
-~/.juno_code/services/claude.py -p "Add tests" --cd /path/to/project
+~/.yylo/services/claude.py -p "Add tests" --cd /path/to/project
 
 # Override default model
-~/.juno_code/services/claude.py -p "Refactor code" -m claude-opus-4-20250514
+~/.yylo/services/claude.py -p "Refactor code" -m claude-opus-4-20250514
 
 # Use model aliases
-~/.juno_code/services/claude.py -p "Fix bugs" -m sonnet
+~/.yylo/services/claude.py -p "Fix bugs" -m sonnet
 
 # Custom auto-instruction
-~/.juno_code/services/claude.py -p "Fix bugs" --auto-instruction "You are a debugging expert"
+~/.yylo/services/claude.py -p "Fix bugs" --auto-instruction "You are a debugging expert"
 
 # Specify allowed tools
-~/.juno_code/services/claude.py -p "Write code" --tool Bash --tool Edit --tool Write
+~/.yylo/services/claude.py -p "Write code" --tool Bash --tool Edit --tool Write
 
 # Change permission mode
-~/.juno_code/services/claude.py -p "Review code" --permission-mode plan
+~/.yylo/services/claude.py -p "Review code" --permission-mode plan
 
 # Continue previous conversation
-~/.juno_code/services/claude.py -p "Continue working" --continue
+~/.yylo/services/claude.py -p "Continue working" --continue
 
 # Enable verbose output
-~/.juno_code/services/claude.py -p "Analyze code" --verbose
+~/.yylo/services/claude.py -p "Analyze code" --verbose
 
 # JSON output
-~/.juno_code/services/claude.py -p "Generate function" --json
+~/.yylo/services/claude.py -p "Generate function" --json
 ```
 
 #### Arguments
@@ -179,7 +179,7 @@ You can override these by providing the `--tool` argument:
 
 ```bash
 # Use only specific tools
-~/.juno_code/services/claude.py -p "Safe operation" --tool Read --tool Write
+~/.yylo/services/claude.py -p "Safe operation" --tool Read --tool Write
 ```
 
 ### gemini.py
@@ -199,16 +199,16 @@ Headless wrapper for Gemini CLI with shorthand model support and JSON/text outpu
 
 ```bash
 # Basic headless run with shorthand model (stream-json output is default)
-~/.juno_code/services/gemini.py -p "Summarize the README" -m :pro-3
+~/.yylo/services/gemini.py -p "Summarize the README" -m :pro-3
 
 # Include project context and enable debug logging
-~/.juno_code/services/gemini.py -p "Audit the project" --include-directories src,docs --debug
+~/.yylo/services/gemini.py -p "Audit the project" --include-directories src,docs --debug
 
 # Auto-approve actions explicitly (default when no approval mode provided)
-~/.juno_code/services/gemini.py -p "Refactor the code" --yolo
+~/.yylo/services/gemini.py -p "Refactor the code" --yolo
 
 # Emit non-streaming JSON if needed
-~/.juno_code/services/gemini.py -p "Quick JSON response" --output-format json
+~/.yylo/services/gemini.py -p "Quick JSON response" --output-format json
 ```
 
 #### Arguments
@@ -250,29 +250,29 @@ npm install -g @mariozechner/pi-coding-agent
 
 ```bash
 # Basic headless JSON-mode usage with Anthropic model
-~/.juno_code/services/pi.py -p "Write a hello world function" -m :sonnet
+~/.yylo/services/pi.py -p "Write a hello world function" -m :sonnet
 
 # Use with Codex Sol shortcut (:gpt aliases to :sol)
-~/.juno_code/services/pi.py -p "Refactor code" -m :gpt
+~/.yylo/services/pi.py -p "Refactor code" -m :gpt
 
 # Use with Codex Terra or older Codex GPT 5.5 shortcuts
-~/.juno_code/services/pi.py -p "Implement focused fix" -m :mini
-~/.juno_code/services/pi.py -p "Refactor code" -m :gpt5.5
+~/.yylo/services/pi.py -p "Implement focused fix" -m :mini
+~/.yylo/services/pi.py -p "Refactor code" -m :gpt5.5
 
 # Use with OpenAI model
-~/.juno_code/services/pi.py -p "Refactor code" -m :gpt-5
+~/.yylo/services/pi.py -p "Refactor code" -m :gpt-5
 
 # Use with Gemini model
-~/.juno_code/services/pi.py -p "Add tests" -m :gemini-pro
+~/.yylo/services/pi.py -p "Add tests" -m :gemini-pro
 
 # Live interactive mode (Pi TUI + auto-exit extension on non-aborted completion)
-~/.juno_code/services/pi.py --live -p "Summarize this repo" -m :api-codex
+~/.yylo/services/pi.py --live -p "Summarize this repo" -m :api-codex
 
 # Specify project directory
-~/.juno_code/services/pi.py -p "Fix bugs" --cd /path/to/project
+~/.yylo/services/pi.py -p "Fix bugs" --cd /path/to/project
 
 # Enable verbose output
-~/.juno_code/services/pi.py -p "Analyze code" --verbose
+~/.yylo/services/pi.py -p "Analyze code" --verbose
 ```
 
 #### Arguments
@@ -286,39 +286,39 @@ npm install -g @mariozechner/pi-coding-agent
 - `--no-extensions`: Disable Pi extensions (incompatible with `--live`)
 - `--verbose`: Enable verbose output
 
-#### Via juno-code
+#### Via yylo
 
 ```bash
-# Run Pi through juno-code (headless default)
-juno-code -b shell -s pi -m :sonnet -i 1 -v -p "your task"
+# Run Pi through yylo (headless default)
+yylo -b shell -s pi -m :sonnet -i 1 -v -p "your task"
 
 # Run Pi in live interactive mode (auto-exits on non-aborted completion)
-juno-code pi --live -p '/skill:ralph-loop' -i 1
+yylo pi --live -p '/skill:ralph-loop' -i 1
 
 # Override the :gpt default when a different provider or model is required
-juno-code pi --live -m :sonnet -p "your task" -i 1
+yylo pi --live -m :sonnet -p "your task" -i 1
 
 # Quick shortcut
-juno-code pi "your task"
+yylo pi "your task"
 ```
 
 Notes:
 - `--live` is Pi-only and expects an interactive terminal for clean TUI rendering.
 - Esc interruptions do not auto-exit Pi: interrupted (`stopReason=aborted`) turns keep the live session open.
-- To manually exit Pi and return control to juno-code, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
+- To manually exit Pi and return control to yylo, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
 - Pi TUI should run on a modern Node runtime (Node 20+ recommended).
 
 ## Customization
 
-All service scripts installed in `~/.juno_code/services/` can be modified to suit your needs. This directory is designed for user customization.
+All service scripts installed in `~/.yylo/services/` can be modified to suit your needs. This directory is designed for user customization.
 
 ### Adding Custom Services
 
-You can add your own service scripts to `~/.juno_code/services/`:
+You can add your own service scripts to `~/.yylo/services/`:
 
 1. Create a new Python script (e.g., `my-service.py`)
-2. Make it executable: `chmod +x ~/.juno_code/services/my-service.py`
-3. Use it from anywhere: `~/.juno_code/services/my-service.py`
+2. Make it executable: `chmod +x ~/.yylo/services/my-service.py`
+3. Use it from anywhere: `~/.yylo/services/my-service.py`
 
 ### Service Script Template
 
@@ -353,9 +353,9 @@ if __name__ == "__main__":
 
 ## Future Extensions
 
-These service scripts are part of juno-code's extensibility model. In future versions, you'll be able to:
+These service scripts are part of yylo's extensibility model. In future versions, you'll be able to:
 
-- Use these scripts as alternative backends for juno-code subagents
+- Use these scripts as alternative backends for yylo subagents
 - Create custom subagent implementations without MCP server dependency
 - Share and install community-created service scripts
 - Integrate with other AI coding tools and CLIs
@@ -376,7 +376,7 @@ Service scripts require Python 3.6+ to be installed on your system. Individual s
 If services are not installed, run:
 
 ```bash
-juno-code services install
+yylo services install
 ```
 
 ### Permission denied
@@ -384,7 +384,7 @@ juno-code services install
 Make sure scripts are executable:
 
 ```bash
-chmod +x ~/.juno_code/services/*.py
+chmod +x ~/.yylo/services/*.py
 ```
 
 ### Python not found

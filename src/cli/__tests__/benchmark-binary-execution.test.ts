@@ -6,18 +6,18 @@ import { execa } from 'execa';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 const projectRoot = path.resolve(__dirname, '../../..');
-const wrapper = path.join(projectRoot, 'dist/bin/juno-code.sh');
+const wrapper = path.join(projectRoot, 'dist/bin/yylo.sh');
 const fixtures: string[] = [];
 
-async function makeFixture(version = 'juno-benchmark 0.1.0'): Promise<{
+async function makeFixture(version = 'yylo-benchmark 0.1.0-rc.1'): Promise<{
   root: string; env: NodeJS.ProcessEnv; record: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-built-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-built-'));
   fixtures.push(root);
   const bin = path.join(root, 'bin');
   const record = path.join(root, 'record.json');
   await mkdir(bin);
-  const executable = path.join(bin, 'juno-benchmark');
+  const executable = path.join(bin, 'yylo-benchmark');
   await writeFile(executable, `#!/usr/bin/env node
 const fs = require('node:fs');
 if (process.argv[2] === '--version') { console.log(process.env.FAKE_VERSION); process.exit(0); }
@@ -52,7 +52,16 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe('built yy benchmark delegate', () => {
+describe('built yy/yylo benchmark delegate', () => {
+  it.each(['yy', 'yylo'])('preserves the %s launch surface and standalone help tail', async (surface) => {
+    const fixture = await makeFixture();
+    const launcher = path.join(fixture.root, surface);
+    await import('node:fs/promises').then(({ symlink }) => symlink(wrapper, launcher));
+    const result = await execa(launcher, ['benchmark', '--help'], { cwd: fixture.root, env: fixture.env, reject: false });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(fixture.record, 'utf8')).argv).toEqual(['--help']);
+  });
+
   it('preserves args including dry-run, stdio, cwd, environment, and success status', async () => {
     const fixture = await makeFixture();
     const args = ['benchmark', 'plan', '--task', 'T1', '--models', ':mini,:sol', '--dry-run'];
@@ -96,7 +105,7 @@ describe('built yy benchmark delegate', () => {
   });
 
   it('fails closed when the executable is missing or incompatible', async () => {
-    const missingRoot = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-missing-'));
+    const missingRoot = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-missing-'));
     fixtures.push(missingRoot);
     const missing = await execa(process.execPath, [path.join(projectRoot, 'dist/bin/cli.mjs'), 'benchmark', 'plan'], {
       cwd: missingRoot, env: { ...process.env, PATH: missingRoot }, reject: false,
@@ -104,12 +113,12 @@ describe('built yy benchmark delegate', () => {
     expect(missing.exitCode).toBe(127);
     expect(missing.stderr).toContain('independently installed');
 
-    const incompatible = await makeFixture('juno-benchmark 0.1.1');
+    const incompatible = await makeFixture('yylo-benchmark 0.1.1');
     const rejected = await execa(wrapper, ['benchmark', 'plan'], {
       cwd: incompatible.root, env: incompatible.env, reject: false,
     });
     expect(rejected.exitCode).toBe(69);
-    expect(rejected.stderr).toContain('incompatible juno-benchmark version');
+    expect(rejected.stderr).toContain('incompatible YYLO Benchmark version');
   });
 
   it('mirrors canonical signal termination', async () => {

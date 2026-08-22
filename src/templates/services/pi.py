@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pi Agent Service Script for juno-code
+Pi Agent Service Script for yylo
 Headless wrapper around the Pi coding agent CLI with JSON streaming and shorthand model support.
 """
 
@@ -161,7 +161,7 @@ class PiService:
         return max(configured_limit, MIN_LIVE_PROMPT_ARG_MAX_BYTES)
 
     def _create_managed_prompt_path(self) -> Path:
-        prompt_dir = Path("/tmp/juno-code")
+        prompt_dir = Path("/tmp/yylo")
         prompt_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         path = prompt_dir / f"{timestamp}-prompt.md"
@@ -646,7 +646,7 @@ Model shorthands:
         if is_live_mode:
             # Live mode normally uses positional prompt input (no -p and no stdin piping).
             # For oversized prompts, keep the beginning in argv for live context and
-            # write only the continuation to /tmp/juno-code/{timestamp}-prompt.md.
+            # write only the continuation to /tmp/yylo/{timestamp}-prompt.md.
             if full_prompt:
                 if self._is_prompt_oversized(full_prompt):
                     full_prompt = self._split_live_prompt_to_file(full_prompt)
@@ -2096,7 +2096,7 @@ Model shorthands:
     def _build_hide_types(self) -> set:
         """Build the set of event types to suppress from output."""
         hide_types = set(self.DEFAULT_HIDDEN_STREAM_TYPES)
-        for env_name in ("PI_HIDE_STREAM_TYPES", "JUNO_CODE_HIDE_STREAM_TYPES"):
+        for env_name in ("PI_HIDE_STREAM_TYPES", "YYLO_HIDE_STREAM_TYPES"):
             env_val = os.environ.get(env_name, "")
             if env_val:
                 parts = [p.strip() for p in env_val.split(",") if p.strip()]
@@ -3189,7 +3189,7 @@ export default function (pi: ExtensionAPI) {
         pretty = args.pretty.lower() != "false"
         capture_path = os.environ.get("JUNO_SUBAGENT_CAPTURE_PATH")
         if not os.environ.get("JUNO_TOOL_ID"):
-            # Ignore inherited capture paths outside juno-code shell-backend execution.
+            # Ignore inherited capture paths outside yylo shell-backend execution.
             capture_path = None
         if capture_path:
             # Each invocation should start with a clean capture file. This avoids
@@ -3233,7 +3233,7 @@ export default function (pi: ExtensionAPI) {
                     else:
                         filtered.append(part)
                 display_cmd = filtered
-            # Only show Executing once: skip when running under juno-code shell backend
+            # Only show Executing once: skip when running under yylo shell backend
             # (shell backend already logs the command in debug mode)
             if not capture_path:
                 print(f"Executing: {' '.join(display_cmd)}", file=sys.stderr)

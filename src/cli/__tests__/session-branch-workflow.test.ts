@@ -21,20 +21,20 @@ import {
 import type { MainCommandOptions } from '../types.js';
 
 const tempDirs: string[] = [];
-const ORIGINAL_SCOPE = process.env.JUNO_CODE_CONTINUE_SCOPE;
-const ORIGINAL_METADATA_DIRECTORY = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+const ORIGINAL_SCOPE = process.env.YYLO_CONTINUE_SCOPE;
+const ORIGINAL_METADATA_DIRECTORY = process.env.YYLO_SESSION_METADATA_DIRECTORY;
 const ORIGINAL_SESSION_ENV = new Map<string, string | undefined>();
 const ORIGINAL_SETTINGS_ENV = new Map<string, string | undefined>();
 
 async function createTempDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-branch-workflow-'));
   tempDirs.push(dir);
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
   return dir;
 }
 
 function setScope(scope: string) {
-  process.env.JUNO_CODE_CONTINUE_SCOPE = scope;
+  process.env.YYLO_CONTINUE_SCOPE = scope;
   const context = resolveContinueScopeContext();
   ORIGINAL_SESSION_ENV.set(context.sessionEnvKey, process.env[context.sessionEnvKey]);
   ORIGINAL_SETTINGS_ENV.set(context.settingsEnvKey, process.env[context.settingsEnvKey]);
@@ -80,12 +80,12 @@ async function seedBranches(workingDirectory: string, scope = resolveContinueSco
 
 afterEach(async () => {
   if (ORIGINAL_SCOPE === undefined) {
-    delete process.env.JUNO_CODE_CONTINUE_SCOPE;
+    delete process.env.YYLO_CONTINUE_SCOPE;
   } else {
-    process.env.JUNO_CODE_CONTINUE_SCOPE = ORIGINAL_SCOPE;
+    process.env.YYLO_CONTINUE_SCOPE = ORIGINAL_SCOPE;
   }
-  if (ORIGINAL_METADATA_DIRECTORY === undefined) delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
-  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = ORIGINAL_METADATA_DIRECTORY;
+  if (ORIGINAL_METADATA_DIRECTORY === undefined) delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
+  else process.env.YYLO_SESSION_METADATA_DIRECTORY = ORIGINAL_METADATA_DIRECTORY;
   for (const [key, value] of ORIGINAL_SESSION_ENV.entries()) restoreEnvKey(key, value);
   for (const [key, value] of ORIGINAL_SETTINGS_ENV.entries()) restoreEnvKey(key, value);
   ORIGINAL_SESSION_ENV.clear();

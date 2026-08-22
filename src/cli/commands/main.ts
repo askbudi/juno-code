@@ -1,5 +1,5 @@
 /**
- * Main command implementation for juno-code CLI
+ * Main command implementation for yylo CLI
  *
  * Comprehensive main execution command with full specification compliance.
  * Handles direct subagent execution with support for:
@@ -535,7 +535,7 @@ async function persistContinueContext(
     if (isNamedCloneRun) {
       // Named clones intentionally do not switch the active branch. The cloned session is
       // persisted by syncSessionBranchExecutionResult under its branch name; writing it
-      // here into the shell-scoped env snapshot would make `.env.juno` disagree with the
+      // here into the shell-scoped env snapshot would make `.env.yylo` disagree with the
       // still-active branch and cause the next `yy cc` to fail the mismatch guard.
       return;
     }
@@ -900,7 +900,7 @@ class PromptProcessor {
     }
 
     // Normalize prompt: Commander sets prompt=true when -p is used without an argument
-    // (e.g. `juno-code -p << 'EOF'` where heredoc redirects stdin)
+    // (e.g. `yylo -p << 'EOF'` where heredoc redirects stdin)
     const promptText = typeof prompt === 'string' ? prompt : undefined;
 
     if (!promptText) {
@@ -927,12 +927,12 @@ class PromptProcessor {
           return await this.loadPromptFromFile(defaultPromptPath);
         } else {
           throw new ValidationError('Prompt is required for execution', [
-            "Provide prompt text: juno-code claude 'your prompt here'",
-            'Use file input: juno-code claude prompt.txt',
-            "Pipe via stdin: echo 'prompt' | juno-code claude",
-            'Use heredoc: juno-code claude -p << \'EOF\'\\nyour prompt\\nEOF',
+            "Provide prompt text: yylo claude 'your prompt here'",
+            'Use file input: yylo claude prompt.txt',
+            "Pipe via stdin: echo 'prompt' | yylo claude",
+            'Use heredoc: yylo claude -p << \'EOF\'\\nyour prompt\\nEOF',
             'Shell safety: use single quotes (or -f/stdin) when prompt contains backticks or $()',
-            'Use interactive mode: juno-code claude --interactive',
+            'Use interactive mode: yylo claude --interactive',
             'Create default prompt file: .juno_task/prompt.md',
           ]);
         }
@@ -1034,8 +1034,8 @@ class PromptProcessor {
           reject(
             new ValidationError('Empty stdin input', [
               'Provide prompt text via stdin',
-              "Example: echo 'your prompt' | juno-code claude",
-              "Example: juno-code claude << 'EOF'\\nyour prompt\\nEOF",
+              "Example: echo 'your prompt' | yylo claude",
+              "Example: yylo claude << 'EOF'\\nyour prompt\\nEOF",
             ]),
           );
         } else {
@@ -1753,7 +1753,7 @@ class MainExecutionCoordinator {
     // Initialize feedback collector if enabled
     if (this.enableFeedback) {
       this.feedbackCollector = new ConcurrentFeedbackCollector({
-        command: 'juno-code',
+        command: 'yylo',
         commandArgs: ['feedback'],
         verbose: this.config.verbose,
         showHeader: true,
@@ -1917,7 +1917,7 @@ export async function mainCommandHandler(
     if (!validSubagents.includes(options.subagent)) {
       throw new ValidationError(`Invalid subagent: ${options.subagent}`, [
         `Use one of: ${validSubagents.join(', ')}`,
-        'Example: juno-code claude "your prompt"',
+        'Example: yylo claude "your prompt"',
         'Use --help for more information',
       ]);
     }
@@ -1925,14 +1925,14 @@ export async function mainCommandHandler(
     // Validate --live usage (pi-only)
     if (options.live && options.subagent !== 'pi') {
       throw new ValidationError('--live is only supported with the pi subagent', [
-        'Use: juno-code pi --live -p "your prompt"',
+        'Use: yylo pi --live -p "your prompt"',
         'Remove --live for non-pi subagents',
       ]);
     }
 
     if (options.cloneSession && options.subagent !== 'pi') {
       throw new ValidationError('Pi session cloning is only supported with the pi subagent', [
-        'Use: juno-code --resume <session-id> --clone "your prompt"',
+        'Use: yylo --resume <session-id> --clone "your prompt"',
         'Or pass --subagent pi when cloning from a continue scope',
       ]);
     }
@@ -2122,8 +2122,8 @@ export async function mainCommandHandler(
       console.error(chalk.red.bold('\n❌ Branch Registry Error'));
       console.error(chalk.red(`   ${error.message}`));
       console.error(chalk.yellow('\n💡 Suggestions:'));
-      console.error(chalk.yellow("   • Run ypl 'init' or juno-code pi 'init' to create/refresh the main branch"));
-      console.error(chalk.yellow('   • Inspect branches with: juno-code branches'));
+      console.error(chalk.yellow("   • Run ypl 'init' or yylo pi 'init' to create/refresh the main branch"));
+      console.error(chalk.yellow('   • Inspect branches with: yylo branches'));
       process.exit(1);
       return;
     } else {

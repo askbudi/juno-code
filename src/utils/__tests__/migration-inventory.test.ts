@@ -28,7 +28,7 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     await fs.outputFile(path.join(project, prompt), 'managed\n');
     const installedSha = spawnSync('shasum', ['-a', '256', path.join(project, prompt)], { encoding: 'utf8' }).stdout.split(' ')[0];
     await fs.outputJson(path.join(project, '.juno_task/managed-assets.json'), {
-      schemaVersion: 1, packageName: 'juno-code', packageVersion: '2.0.31',
+      schemaVersion: 1, packageName: '@yylo/cli', packageVersion: '2.0.31',
       assets: { [prompt]: { type: 'prompt', templateVersion: '2.0.31', sourceSha256: installedSha, installedSha256: installedSha } },
     });
     await fs.outputJson(path.join(project, '.juno_task/config.json'), {

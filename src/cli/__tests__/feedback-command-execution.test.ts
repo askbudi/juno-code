@@ -96,7 +96,7 @@ async function executeFeedbackCommandWithArgs(
     ...process.env,
     NO_COLOR: '1',
     NODE_ENV: 'development',
-    JUNO_CODE_CONFIG: '',
+    YYLO_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env,
   };

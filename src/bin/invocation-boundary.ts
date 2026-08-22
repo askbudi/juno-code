@@ -12,7 +12,7 @@ import { version } from '../version.js';
 
 function launchSurface(): string {
   const executable = basename(process.argv0);
-  return executable === 'yy' || executable === 'ypl' ? executable : 'juno-code';
+  return executable === 'yy' || executable === 'ypl' ? executable : 'yylo';
 }
 
 function validState(value: unknown): value is InvocationContinuation {
@@ -58,6 +58,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  console.error(`[juno-code telemetry] invocation boundary failed: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[yylo telemetry] invocation boundary failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

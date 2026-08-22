@@ -34,7 +34,7 @@ def write(path: Path, value: str) -> None:
     path.write_text(value)
 
 
-def npm_pack(path: Path, version: str, name: str = "juno-code") -> None:
+def npm_pack(path: Path, version: str, name: str = "@yylo/cli") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest = json.dumps({"name": name, "version": version}).encode()
     with tarfile.open(path, "w:gz") as archive:
@@ -77,7 +77,7 @@ class MetadataControllerTest(unittest.TestCase):
         self.old_head = command("git", "rev-parse", "HEAD", cwd=self.repo)
 
         self.runtime = self.temp / "installed/dist/bin/yy"
-        write(self.runtime, "#!/bin/sh\nprintf 'juno-code 2.0.32\\n'\n")
+        write(self.runtime, "#!/bin/sh\nprintf 'yylo 2.0.32\\n'\n")
         self.runtime.chmod(self.runtime.stat().st_mode | stat.S_IXUSR)
         write(self.temp / "installed/dist/templates/scripts/controller_resolver.py", "# runtime resolver\n")
         write(self.temp / "installed/dist/templates/scripts/task_workspace.py", "# task workspace\n")
@@ -130,7 +130,7 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertTrue(payload["root_commit"])
         self.assertEqual(command("git", "rev-list", "--count", "HEAD", cwd=self.new_controller), "1")
         self.assertFalse((self.new_controller / "README.md").exists())
-        self.assertFalse((self.new_controller / "juno-code").exists())
+        self.assertFalse((self.new_controller / "yylo").exists())
         self.assertTrue((self.new_controller / ".juno_task/tasks/TASK.md").is_file())
         self.assertFalse((self.new_controller / ".juno_task/specs/workflows").exists())
         self.assertTrue((self.new_controller / ".juno_task/runtime/identity.json").is_file())
@@ -723,7 +723,7 @@ class MetadataControllerTest(unittest.TestCase):
 
     def canonical_runtime_banner(self, version: str) -> str:
         return (
-            f"\n🎯 Juno Code v{version} - TypeScript CLI\n"
+            f"\n🎯 YYLO v{version} - TypeScript CLI\n"
             "   Node.js v22.22.3 on darwin\n"
             f"   Working directory: {self.runtime.parent.resolve()}\n\n"
         )
@@ -733,7 +733,7 @@ class MetadataControllerTest(unittest.TestCase):
         accepted = {
             "bare machine": (f"{version}\n", ""),
             "canonical human": (f"{version}\n", self.canonical_runtime_banner(version)),
-            "prefixed machine": (f"juno-code {version}\n", ""),
+            "prefixed machine": (f"yylo {version}\n", ""),
         }
         for label, (stdout, stderr) in accepted.items():
             with self.subTest(label=label):
@@ -751,7 +751,7 @@ class MetadataControllerTest(unittest.TestCase):
                 self.canonical_runtime_banner("2.1.3-rc.0.10"),
             ),
             "malformed banner": (f"{version}\n", banner.replace("Node.js", "Node")),
-            "ambiguous stdout": (f"{version}\njuno-code {version}\n", banner),
+            "ambiguous stdout": (f"{version}\nyylo {version}\n", banner),
             "unexpected stderr": (f"{version}\n", banner + "unexpected\n"),
         }
         for label, (stdout, stderr) in cases.items():
@@ -765,7 +765,7 @@ class MetadataControllerTest(unittest.TestCase):
         command("git", "worktree", "add", "--detach", str(linked), self.product_head, cwd=self.repo)
         mutable_runtime = linked / "bin/yy"
         execution_marker = self.temp / "mutable-runtime-executed"
-        write(mutable_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.32\\n'\n")
+        write(mutable_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'yylo 2.0.32\\n'\n")
         mutable_runtime.chmod(mutable_runtime.stat().st_mode | stat.S_IXUSR)
         with self.assertRaisesRegex(mc.BoundaryError, "linked worktree|mutable Git worktree"):
             mc.runtime_identity(mutable_runtime, "2.0.32", self.repo)
@@ -776,11 +776,11 @@ class MetadataControllerTest(unittest.TestCase):
         nvm = self.temp / "home/.nvm"
         nvm.mkdir(parents=True)
         command("git", "init", cwd=nvm)
-        nvm_runtime = nvm / "versions/node/v22/lib/node_modules/juno-code/dist/bin/cli.mjs"
-        write(nvm_runtime, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
+        nvm_runtime = nvm / "versions/node/v22/lib/node_modules/@yylo/cli/dist/bin/cli.mjs"
+        write(nvm_runtime, "#!/bin/sh\nprintf 'yylo 2.0.33-rc.0.10\\n'\n")
         nvm_runtime.chmod(nvm_runtime.stat().st_mode | stat.S_IXUSR)
         execution_marker = self.temp / "nvm-runtime-executed"
-        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
+        write(nvm_runtime, f"#!/bin/sh\ntouch '{execution_marker}'\nprintf 'yylo 2.0.33-rc.0.10\\n'\n")
         with self.assertRaisesRegex(mc.BoundaryError, "runtime-install-rebind --help"):
             mc.runtime_identity(nvm_runtime, "2.0.33-rc.0.10", self.new_controller)
         self.assertFalse(execution_marker.exists())
@@ -796,7 +796,7 @@ class MetadataControllerTest(unittest.TestCase):
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm) and "pack" in argv:
                 destination = Path(argv[argv.index("--pack-destination") + 1])
-                tarball = destination / "juno-code-2.0.33-rc.0.10.tgz"
+                tarball = destination / "yylo-2.0.33-rc.0.10.tgz"
                 tarball.write_bytes(b"exact fixture artifact")
                 data = tarball.read_bytes()
                 evidence = [{"version": "2.0.33-rc.0.10", "filename": tarball.name,
@@ -804,10 +804,10 @@ class MetadataControllerTest(unittest.TestCase):
                              "shasum": mc.hashlib.sha1(data).hexdigest()}]
                 return subprocess.CompletedProcess(argv, 0, json.dumps(evidence), "")
             if argv and argv[0] == str(fake_npm):
-                installed = prefix / "node_modules/juno-code"
-                write(installed / "package.json", json.dumps({"name": "juno-code", "version": "2.0.33-rc.0.10"}) + "\n")
+                installed = prefix / "node_modules/@yylo/cli"
+                write(installed / "package.json", json.dumps({"name": "@yylo/cli", "version": "2.0.33-rc.0.10"}) + "\n")
                 executable = installed / "dist/bin/cli.mjs"
-                write(executable, "#!/bin/sh\nprintf 'juno-code 2.0.33-rc.0.10\\n'\n")
+                write(executable, "#!/bin/sh\nprintf 'yylo 2.0.33-rc.0.10\\n'\n")
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
                 return subprocess.CompletedProcess(argv, 0, "installed\n", "")
             return original_run(argv, cwd, check, **kwargs)
@@ -826,7 +826,7 @@ class MetadataControllerTest(unittest.TestCase):
             mc.shutil.which = original_which
             mc.run = original_run
 
-        expected_runtime = (prefix / "node_modules/juno-code/dist/bin/cli.mjs").resolve()
+        expected_runtime = (prefix / "node_modules/@yylo/cli/dist/bin/cli.mjs").resolve()
         self.assertEqual(receipt["runtime"]["executable"], str(expected_runtime))
         self.assertEqual(receipt["operation"], "runtime-install-rebind")
         self.assertRegex(receipt["artifact"]["integrity"], r"^sha512-")
@@ -871,7 +871,7 @@ class MetadataControllerTest(unittest.TestCase):
     def test_local_runtime_artifact_success_replay_and_receipt_provenance(self) -> None:
         self.prepare()
         version = "2.0.33-rc.0.33"
-        artifact = self.temp / f"release/juno-code-{version}.tgz"
+        artifact = self.temp / f"release/yylo-{version}.tgz"
         npm_pack(artifact, version)
         prefix = self.temp / "local-runtime"
         receipt_path = self.temp / "local-runtime.json"
@@ -884,10 +884,10 @@ class MetadataControllerTest(unittest.TestCase):
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm):
                 install_argv.extend(argv)
-                installed = prefix / "node_modules/juno-code"
-                write(installed / "package.json", json.dumps({"name": "juno-code", "version": version}) + "\n")
+                installed = prefix / "node_modules/@yylo/cli"
+                write(installed / "package.json", json.dumps({"name": "@yylo/cli", "version": version}) + "\n")
                 executable = installed / "dist/bin/cli.mjs"
-                write(executable, f"#!/bin/sh\nprintf 'juno-code {version}\\n'\n")
+                write(executable, f"#!/bin/sh\nprintf 'yylo {version}\\n'\n")
                 executable.chmod(0o755)
                 return subprocess.CompletedProcess(argv, 0, "installed\n", "")
             return original_run(argv, cwd, check, **kwargs)
@@ -909,7 +909,7 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(receipt["artifact"]["path"], str(artifact.resolve()))
         self.assertEqual(receipt["artifact"]["sha256"], mc.file_digest(artifact))
         self.assertEqual(receipt["artifact"]["size_bytes"], artifact.stat().st_size)
-        self.assertEqual(receipt["installation"]["package"], "juno-code")
+        self.assertEqual(receipt["installation"]["package"], "@yylo/cli")
         self.assertEqual(receipt["runtime"]["executable_sha256"], mc.file_digest(Path(receipt["runtime"]["executable"])))
         self.assertIn("--offline", install_argv)
         self.assertNotIn(str(artifact.resolve()), install_argv)
@@ -991,10 +991,10 @@ class MetadataControllerTest(unittest.TestCase):
 
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm):
-                package = prefix / "node_modules/juno-code"
-                write(package / "package.json", json.dumps({"name": "juno-code", "version": version}))
+                package = prefix / "node_modules/@yylo/cli"
+                write(package / "package.json", json.dumps({"name": "@yylo/cli", "version": version}))
                 executable = package / "dist/bin/cli.mjs"
-                write(executable, f"#!/bin/sh\nprintf 'juno-code {version}\\n'\n"); executable.chmod(0o755)
+                write(executable, f"#!/bin/sh\nprintf 'yylo {version}\\n'\n"); executable.chmod(0o755)
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return original_run(argv, cwd, check, **kwargs)
         try:
@@ -1020,12 +1020,12 @@ class MetadataControllerTest(unittest.TestCase):
         # Managed-asset acceptance installs runtime bytes without a surrounding
         # npm package. Materialize a private exact package layout so these tests
         # still exercise package/source binding rather than weakening it.
-        package = self.temp / "juno-code-policy-test-package"
+        package = self.temp / "yylo-policy-test-package"
         templates = package / "src/templates"
         (templates / "scripts").mkdir(parents=True, exist_ok=True)
         (templates / "config").mkdir(parents=True, exist_ok=True)
         (package / "src/bin").mkdir(parents=True, exist_ok=True)
-        (package / "package.json").write_text('{"name":"juno-code","version":"0.0.0-test"}\n')
+        (package / "package.json").write_text('{"name":"@yylo/cli","version":"0.0.0-test"}\n')
         for name in ("metadata_controller.py", "task_workspace.py", "risk_policy.py", "integration_workspace.py"):
             shutil.copyfile(SCRIPT.with_name(name), templates / "scripts" / name)
         shutil.copyfile(POLICY.parent / "integration-workspace.json",
@@ -1493,7 +1493,7 @@ class MetadataControllerTest(unittest.TestCase):
         before_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
         before_tree = command("git", "write-tree", cwd=self.new_controller)
         newer = self.temp / "installed-2033/bin/yy"
-        write(newer, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        write(newer, "#!/bin/sh\nprintf 'yylo 2.0.33\\n'\n")
         newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
         receipt = mc.runtime_rebind(
             argparse.Namespace(
@@ -1537,7 +1537,7 @@ class MetadataControllerTest(unittest.TestCase):
     def test_runtime_rebind_accepts_exact_semver_prerelease(self) -> None:
         self.prepare()
         newer = self.temp / "installed-prerelease/bin/yy"
-        write(newer, "#!/bin/sh\nprintf 'juno-code 2.1.3-rc.0.10\\n'\n")
+        write(newer, "#!/bin/sh\nprintf 'yylo 2.1.3-rc.0.10\\n'\n")
         newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
         receipt = mc.runtime_rebind(argparse.Namespace(
             root=self.new_controller,
@@ -1558,7 +1558,7 @@ class MetadataControllerTest(unittest.TestCase):
         old_version = command("git", "config", "--worktree", "--get", "juno.controller.runtimeVersion", cwd=self.new_controller)
         old_executable = command("git", "config", "--worktree", "--get", "juno.controller.runtimeExecutable", cwd=self.new_controller)
         newer = self.temp / "installed-transaction/bin/yy"
-        write(newer, "#!/bin/sh\nprintf 'juno-code 2.0.33\\n'\n")
+        write(newer, "#!/bin/sh\nprintf 'yylo 2.0.33\\n'\n")
         newer.chmod(newer.stat().st_mode | stat.S_IXUSR)
 
         args = argparse.Namespace(

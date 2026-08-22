@@ -688,7 +688,7 @@ describe('ScriptInstaller', {
             JUNO_WORKSPACE_ROLE: 'controller',
             JUNO_WORKSPACE_ENFORCEMENT: 'strict',
             JUNO_CONTROLLER_BRANCH: 'fixture-controller',
-            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
+            YYLO_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
           },
         },
       );
@@ -738,7 +738,7 @@ describe('ScriptInstaller', {
             JUNO_WORKSPACE_ROLE: 'controller',
             JUNO_WORKSPACE_ENFORCEMENT: 'strict',
             JUNO_CONTROLLER_BRANCH: 'fixture-controller',
-            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
+            YYLO_SESSION_METADATA_DIRECTORY: path.join(testDir, 'metadata'),
           },
         },
       );
@@ -1148,7 +1148,7 @@ describe('ScriptInstaller', {
 
       expect(updated).toBe(true);
       expect(await fs.readFile(path.join(testDir, 'scripts/git-flow.sh'), 'utf8')).toContain(
-        '# juno-code-managed: root-git-flow.v1',
+        '# yylo-managed: root-git-flow.v1',
       );
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git-flow.sh'))).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/git_flow.py'))).toBe(true);

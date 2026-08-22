@@ -1,5 +1,5 @@
 /**
- * Setup-git command implementation for juno-code CLI
+ * Setup-git command implementation for yylo CLI
  *
  * Provides Git repository configuration and setup with URL management,
  * branch setup, remote configuration, and integration with project templates.
@@ -162,7 +162,7 @@ class GitDisplayFormatter {
     }
 
     console.log('   3. Start working on your project:');
-    console.log(chalk.gray('      juno-code start'));
+    console.log(chalk.gray('      yylo start'));
   }
 
   private formatStatus(status: GitRepositoryInfo['status']): string {
@@ -324,7 +324,7 @@ export async function setupGitCommandHandler(
         console.log(`   Web URL: ${chalk.blue(webUrl)}`);
       } else {
         console.log(chalk.yellow('\n🔗 No upstream repository configured'));
-        console.log(chalk.gray('   Use: juno-code setup-git <url> to configure'));
+        console.log(chalk.gray('   Use: yylo setup-git <url> to configure'));
       }
 
       return;
@@ -336,7 +336,7 @@ export async function setupGitCommandHandler(
 
       if (!info.isRepository) {
         console.log(chalk.yellow('❌ Not a Git repository'));
-        console.log(chalk.gray('   Initialize with: juno-code setup-git --init'));
+        console.log(chalk.gray('   Initialize with: yylo setup-git --init'));
         return;
       }
 
@@ -481,10 +481,10 @@ export function configureSetupGitCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code setup-git                                    # Interactive setup
-  $ juno-code setup-git https://github.com/owner/repo     # Set specific URL
-  $ juno-code setup-git --show                            # Show current config
-  $ juno-code setup-git --remove                          # Remove upstream URL
+  $ yylo setup-git                                    # Interactive setup
+  $ yylo setup-git https://github.com/owner/repo     # Set specific URL
+  $ yylo setup-git --show                            # Show current config
+  $ yylo setup-git --remove                          # Remove upstream URL
 
 Git URL Examples:
   https://github.com/owner/repo.git                       # GitHub HTTPS

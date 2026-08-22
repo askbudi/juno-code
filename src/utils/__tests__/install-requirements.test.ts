@@ -693,7 +693,7 @@ exit 2
     expect(output).toContain('Project virtual environment missing: .venv_juno');
     expect(output).toContain('Created virtual environment at .venv_juno');
     expect(await fs.pathExists(path.join(tempDir, '.venv_juno', 'bin', 'activate'))).toBe(true);
-    expect(await fs.pathExists(path.join(tempDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(tempDir, '.env.yylo'))).toBe(false);
     expect(await fs.pathExists(path.join(tempDir, '.env_juno'))).toBe(false);
     expect(await fs.readFile(uvLogPath, 'utf8')).toContain('juno-kanban>=2.0.5,<3.0.0');
   });

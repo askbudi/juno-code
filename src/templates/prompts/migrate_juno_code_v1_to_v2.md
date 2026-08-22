@@ -1,4 +1,4 @@
-# Migrate a Juno Code v1 project
+# Migrate a YYLO v1 project
 
 Treat migration as an explicit, reversible boundary. Do not silently adopt an
 existing environment, mutate production data, move product refs, publish, or
@@ -7,7 +7,7 @@ delete the previous controller.
 ## 1. Inventory and freeze
 
 Record the current controller path/ref/HEAD, product target ref/HEAD, installed
-Juno Code executable/version, Kanban storage identity, worktrees, dirty state,
+YYLO executable/version, Kanban storage identity, worktrees, dirty state,
 and rollback owner. Resolve each required dependency to an exact reviewed source
 commit and executable. A compatible but older binary is stale.
 

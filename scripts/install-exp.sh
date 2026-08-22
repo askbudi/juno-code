@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# install-exp.sh — Build juno-code from source and install as "exp-juno-code"
+# install-exp.sh — Build yylo from source and install as "exp-yylo"
 #
-# This lets you run your local development build as "exp-juno-code"
-# while keeping the stable npm-installed "juno-code" untouched.
+# This lets you run your local development build as "exp-yylo"
+# while keeping the stable npm-installed "yylo" untouched.
 #
 # Usage:
-#   npm run build:exp          # build + install exp-juno-code
-#   npm run uninstall:exp      # remove exp-juno-code symlink
+#   npm run build:exp          # build + install exp-yylo
+#   npm run uninstall:exp      # remove exp-yylo symlink
 
 set -euo pipefail
 
@@ -18,19 +18,19 @@ ACTION="${1:-install}"
 # Determine the global bin directory via npm prefix
 GLOBAL_BIN="$(npm config get prefix)/bin"
 
-EXP_BINARY="$GLOBAL_BIN/exp-juno-code"
-TARGET="$PROJECT_DIR/dist/bin/juno-code.sh"
+EXP_BINARY="$GLOBAL_BIN/exp-yylo"
+TARGET="$PROJECT_DIR/dist/bin/yylo.sh"
 
 case "$ACTION" in
   install)
     # Build from source to ensure we have the latest code
-    echo "Building juno-code from source..."
+    echo "Building yylo from source..."
     (cd "$PROJECT_DIR" && npm run build)
     echo ""
 
     # Verify build output exists
     if [ ! -f "$TARGET" ]; then
-      echo "Error: dist/bin/juno-code.sh not found. Build failed."
+      echo "Error: dist/bin/yylo.sh not found. Build failed."
       exit 1
     fi
 
@@ -39,8 +39,8 @@ case "$ACTION" in
 
     # Create symlink (overwrite if exists)
     ln -sf "$TARGET" "$EXP_BINARY"
-    echo "Installed: exp-juno-code -> $TARGET"
-    echo "Run 'exp-juno-code --help' to verify."
+    echo "Installed: exp-yylo -> $TARGET"
+    echo "Run 'exp-yylo --help' to verify."
     ;;
 
   uninstall)

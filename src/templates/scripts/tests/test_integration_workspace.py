@@ -868,7 +868,7 @@ class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
             assets[destination] = {"type": kind, "templateVersion": version,
                                    "sourceSha256": digest, "installedSha256": digest}
         self.write(runtime.MANAGED_INSTALLED_MANIFEST_PATH, {
-            "schemaVersion": 1, "packageName": "juno-code",
+            "schemaVersion": 1, "packageName": "@yylo/cli",
             "packageVersion": version, "assets": assets,
         })
 
@@ -1117,7 +1117,7 @@ class ManagedRuntimeTests(unittest.TestCase):
                        "repository": ".", "workspace_root": "/tmp/default",
                        "allowed_paths": ["src"]}
         self.write("juno-code/src/templates/managed-assets.json", assets)
-        self.write("juno-code/package.json", {"name": "juno-code", "version": "9.0.0"})
+        self.write("juno-code/package.json", {"name": "@yylo/cli", "version": "9.0.0"})
         self.write(runtime.MANAGED_POLICY_PATH, self.policy)
         self.write(".juno_task/scripts/one.py", "old one\n")
         self.write(".juno_task/scripts/two.py", "old two\n")
@@ -1161,7 +1161,7 @@ class ManagedRuntimeTests(unittest.TestCase):
             assets[relative] = {"type": kind, "templateVersion": "9.1.0",
                                 "sourceSha256": digest, "installedSha256": digest}
         self.write(runtime.MANAGED_INSTALLED_MANIFEST_PATH, {
-            "schemaVersion": 1, "packageName": "juno-code",
+            "schemaVersion": 1, "packageName": "@yylo/cli",
             "packageVersion": "9.1.0", "assets": assets,
         })
         git(self.repo, "add", "-A")

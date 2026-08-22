@@ -42,7 +42,7 @@ interface ManagedAssetRecord {
 
 interface ManagedAssetManifest {
   schemaVersion: 1;
-  packageName: 'juno-code';
+  packageName: '@yylo/cli';
   packageVersion: string;
   assets: Record<string, ManagedAssetRecord>;
 }
@@ -115,7 +115,7 @@ async function writeAtomic(
 function emptyManifest(): ManagedAssetManifest {
   return {
     schemaVersion: 1,
-    packageName: 'juno-code',
+    packageName: '@yylo/cli',
     packageVersion,
     assets: {},
   };
@@ -165,7 +165,7 @@ export class ManagedProjectAssets {
 
     const templatesDir = this.getTemplatesDirectory();
     if (!templatesDir) {
-      throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
+      throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
     let manifest = emptyManifest();
@@ -270,7 +270,7 @@ export class ManagedProjectAssets {
     }
     const templatesDir = this.getTemplatesDirectory();
     if (!templatesDir) {
-      throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
+      throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
 
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
@@ -620,7 +620,7 @@ export class ManagedProjectAssets {
   static async inspectGeneration(projectDir: string): Promise<ManagedAssetGenerationReport> {
     const templatesDir = this.getTemplatesDirectory();
     if (!templatesDir) {
-      throw new Error('Juno Code managed prompt/wiki templates are missing from this package');
+      throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
     const manifestPath = path.join(projectDir, '.juno_task', 'managed-assets.json');
     let manifest = emptyManifest();

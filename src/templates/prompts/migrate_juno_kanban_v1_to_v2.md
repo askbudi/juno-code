@@ -4,7 +4,7 @@ Own a safety-gated migration of this project's canonical juno-kanban board from 
 
 ## Mandatory sources and boundaries
 
-1. Read project `AGENTS.md` when present. If project wiki or installed/source v2 Kanban operational docs are available, use them as additional constraints, but do not assume a `juno-code/` source tree or README exists. This prompt is the portable baseline. If the exact v2 executable and its `convert --help` contract cannot be identified, stop.
+1. Read project `AGENTS.md` when present. If project wiki or installed/source v2 Kanban operational docs are available, use them as additional constraints, but do not assume a `yylo/` source tree or README exists. This prompt is the portable baseline. If the exact v2 executable and its `convert --help` contract cannot be identified, stop.
 2. Resolve and record the canonical controller checkout. If no v2 resolver is installed yet, derive it from explicit owner confirmation plus Git facts and record that limitation. All board reads/writes and durable receipts belong to that controller. Do not use a task or integration-owner checkout as an alternate board.
 3. Keep these operations separate: source checkout selection, executable selection, project script installation, board conversion, rollback, Git integration, push, deployment, and post-deploy E2E. Approval for one never authorizes another.
 4. Never edit generated v2 task/ledger/cutover files manually, run a force/dirty conversion, replace the legacy source before accepted cutover, silently switch refs, auto-stash/reset/clean, or discard unknown work.
@@ -41,7 +41,7 @@ reading the board:
 
 Never repair dependencies mid-conversion, use `--no-deps` for the selected
 runtime, or mutate the canonical board to diagnose packaging. This package
-identity/dependency preflight is shared with the Juno Code migration prompt.
+identity/dependency preflight is shared with the YYLO migration prompt.
 
 ## Required flow
 

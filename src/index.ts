@@ -1,5 +1,5 @@
 /**
- * juno-code - TypeScript implementation of juno-code CLI tool
+ * yylo - TypeScript implementation of yylo CLI tool
  *
  * Main entry point for the library exports
  */

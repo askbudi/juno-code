@@ -699,7 +699,7 @@ def agent_groups(root: Path, frozen: dict[str, Any], config: dict[str, Any]) -> 
     else:
         service = str(config.get("service", "pi"))
         model = str(config.get("model", ":luna"))
-        command = ["juno-code", service, "--no-hooks", "--allowed-tools", "Read,Grep,Glob", "--model", model, "-p", json.dumps(context)]
+        command = ["yylo", service, "--no-hooks", "--allowed-tools", "Read,Grep,Glob", "--model", model, "-p", json.dumps(context)]
     env = dict(os.environ)
     env["JUNO_CONTROLLER_CHECKPOINT_ACTIVE"] = "1"
     try:

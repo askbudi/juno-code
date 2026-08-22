@@ -9,7 +9,7 @@ const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/cont
 const policyTemplate = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
 const kanbanSource = path.resolve(process.cwd(), '..', 'juno_kanban', 'src');
 // This package-boundary test requires an explicitly hydrated sibling checkout.
-const crossProjectIntegrationIt = process.env.JUNO_CODE_CROSS_PROJECT_KANBAN_INTEGRATION === '1' ? it : it.skip;
+const crossProjectIntegrationIt = process.env.YYLO_CROSS_PROJECT_KANBAN_INTEGRATION === '1' ? it : it.skip;
 
 describe('cross-project Kanban wrapper routing', () => {
   let sandbox = '';

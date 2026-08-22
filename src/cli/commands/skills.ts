@@ -1,6 +1,6 @@
 /**
  * Skills Command
- * Manages juno-code agent skill files (install, list, status)
+ * Manages yylo agent skill files (install, list, status)
  *
  * Skills are collections of files installed into agent-specific directories:
  *   - Codex skills  -> {projectDir}/.agents/skills/
@@ -16,12 +16,12 @@ export function createSkillsCommand(): Command {
     'after',
     `
 Examples:
-  $ juno-code skills install            Install skill files to project directories
-  $ juno-code skills install --force    Force reinstall all skill files
-  $ juno-code skills list               List skill groups and their files
-  $ juno-code skills status             Check installation status
+  $ yylo skills install            Install skill files to project directories
+  $ yylo skills install --force    Force reinstall all skill files
+  $ yylo skills list               List skill groups and their files
+  $ yylo skills status             Check installation status
 
-Skill files are copied from the juno-code package into the project:
+Skill files are copied from the yylo package into the project:
   - Codex skills  -> .agents/skills/
   - Claude skills -> .claude/skills/
 
@@ -167,7 +167,7 @@ Existing files in the destination directories are preserved.
         }
 
         if (needsUpdate) {
-          console.log(chalk.dim('\n  Run: juno-code skills install'));
+          console.log(chalk.dim('\n  Run: yylo skills install'));
         }
       } catch (error) {
         console.error(chalk.red('✗ Failed to check status:'));

@@ -115,7 +115,7 @@ export function configureMigrationCommand(
     .description('Install one exact release into a fresh non-Git prefix and rebind a clean metadata controller')
     .requiredOption('--root <path>', 'Exact metadata-controller worktree')
     .requiredOption('--branch <ref>', 'Exact controller branch ref')
-    .requiredOption('--runtime-version <version>', 'Exact released juno-code version to install')
+    .requiredOption('--runtime-version <version>', 'Exact released yylo version to install')
     .requiredOption('--install-prefix <path>', 'Fresh absent prefix outside every Git worktree/ancestor')
     .option('--artifact <path>', 'Exact local npm pack .tgz outside every Git worktree (bypasses registry lookup)')
     .requiredOption('--output <path>', 'New local receipt outside the controller worktree')

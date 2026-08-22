@@ -8,14 +8,14 @@ const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const PACKAGE_JSON = path.join(PROJECT_ROOT, 'package.json');
 const PACKAGE_LOCK_JSON = path.join(PROJECT_ROOT, 'package-lock.json');
 const YPL_SOURCE = path.join(PROJECT_ROOT, 'src/bin/ypl.sh');
-const JUNO_CODE_SOURCE = path.join(PROJECT_ROOT, 'src/bin/juno-code.sh');
+const YYLO_SOURCE = path.join(PROJECT_ROOT, 'src/bin/yylo.sh');
 describe('ypl wrapper', () => {
   it('is exposed as an npm binary beside yy', async () => {
     const pkg = await fs.readJson(PACKAGE_JSON);
 
     const lock = await fs.readJson(PACKAGE_LOCK_JSON);
 
-    expect(pkg.bin.yy).toBe('./dist/bin/juno-code.sh');
+    expect(pkg.bin.yy).toBe('./dist/bin/yylo.sh');
     expect(pkg.bin.ypl).toBe('./dist/bin/ypl.sh');
     expect(lock.packages[''].bin.ypl).toBe('dist/bin/ypl.sh');
     expect(pkg.scripts['build:copy-wrapper']).toContain('src/bin/ypl.sh');
@@ -30,8 +30,8 @@ describe('ypl wrapper', () => {
       const bootstrapMarker = path.join(tempDir, 'bootstrap-ran');
       await fs.ensureDir(binDir);
       await fs.ensureDir(scriptsDir);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
         'console.log(JSON.stringify(process.argv.slice(2)))\n',
@@ -43,7 +43,7 @@ describe('ypl wrapper', () => {
         { mode: 0o755 },
       );
 
-      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+      const result = await execa(path.join(binDir, 'yylo.sh'), ['--version'], {
         cwd: tempDir,
         reject: false,
       });
@@ -73,8 +73,8 @@ describe('ypl wrapper', () => {
       const lifecycleMarker = path.join(tempDir, 'lifecycle-ran');
       await fs.ensureDir(binDir);
       await fs.ensureDir(scriptsDir);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))\n');
       await fs.writeFile(
         path.join(binDir, 'invocation-boundary.mjs'),
@@ -86,7 +86,7 @@ describe('ypl wrapper', () => {
         { mode: 0o755 },
       );
 
-      const result = await execa(path.join(binDir, 'juno-code.sh'), args, { cwd: tempDir, reject: false });
+      const result = await execa(path.join(binDir, 'yylo.sh'), args, { cwd: tempDir, reject: false });
 
       expect(result.exitCode, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(args);
@@ -107,11 +107,11 @@ describe('ypl wrapper', () => {
         const marker = path.join(tempDir, 'bootstrap-ran');
         await fs.ensureDir(binDir);
         await fs.ensureDir(scriptsDir);
-        await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-        await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+        await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+        await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
         await fs.writeFile(path.join(binDir, 'cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))\n');
         await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), `#!/usr/bin/env bash\ntouch "${marker}"\nexit 91\n`);
-        const result = await execa(path.join(binDir, 'juno-code.sh'), args, { cwd: tempDir, reject: false });
+        const result = await execa(path.join(binDir, 'yylo.sh'), args, { cwd: tempDir, reject: false });
         expect(result.exitCode).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual(args);
         expect(await fs.pathExists(marker)).toBe(false);
@@ -134,11 +134,11 @@ describe('ypl wrapper', () => {
       const marker = path.join(tempDir, 'bootstrap-ran');
       await fs.ensureDir(binDir);
       await fs.ensureDir(scriptsDir);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))\n');
       await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), `#!/usr/bin/env bash\ntouch "${marker}"\nexit 91\n`);
-      const result = await execa(path.join(binDir, 'juno-code.sh'), args, { cwd: tempDir, reject: false });
+      const result = await execa(path.join(binDir, 'yylo.sh'), args, { cwd: tempDir, reject: false });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(args);
       expect(await fs.pathExists(marker)).toBe(false);
@@ -157,11 +157,11 @@ describe('ypl wrapper', () => {
     try {
       const binDir = path.join(tempDir, 'bin');
       await fs.ensureDir(binDir);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
       await fs.chmod(path.join(binDir, 'yy'), 0o755);
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
-        `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.env.JUNO_CODE_PREFLIGHT_ONLY !== '1') console.log(JSON.stringify(process.argv.slice(2)));\n`,
+        `// YYLO_PREFLIGHT_ONLY\nif (process.env.YYLO_PREFLIGHT_ONLY !== '1') console.log(JSON.stringify(process.argv.slice(2)));\n`,
       );
 
       const result = await execa(path.join(binDir, 'yy'), args, { cwd: tempDir, reject: false });
@@ -179,7 +179,7 @@ describe('ypl wrapper', () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       await fs.ensureDir(binDir);
       await fs.ensureDir(scriptsDir);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
       await fs.chmod(path.join(binDir, 'yy'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'unused\n');
       await fs.writeFile(
@@ -233,7 +233,7 @@ describe('ypl wrapper', () => {
         path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
         path.join(packagedScripts, 'controller_resolver.py'),
       );
-      await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
       await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
       await fs.writeFile(
@@ -308,7 +308,7 @@ describe('ypl wrapper', () => {
       const staleRuntimeMarker = path.join(tempDir, 'stale-runtime-ran');
       await fs.writeFile(
         path.join(launcherBin, 'cli.mjs'),
-        `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
+        `// YYLO_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
       );
       await fs.writeFile(
         runtime,
@@ -385,11 +385,11 @@ describe('ypl wrapper', () => {
         );
         const launcher = path.join(launcherBin, 'yy');
         const launcherCli = path.join(launcherBin, 'cli.mjs');
-        await fs.copy(JUNO_CODE_SOURCE, launcher);
+        await fs.copy(YYLO_SOURCE, launcher);
         await fs.chmod(launcher, 0o755);
         await fs.writeFile(
           launcherCli,
-          `// JUNO_CODE_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
+          `// YYLO_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
         );
 
         const result = await execa(launcher, ['task', operation, 'T1'], {
@@ -410,7 +410,6 @@ describe('ypl wrapper', () => {
   );
 
   it.each([
-    { args: ['ledger', 'list'], operation: 'kanban' },
     { args: ['kanban', 'list'], operation: 'kanban' },
     { args: ['task', 'status', 'T1'], operation: 'kanban' },
     { args: ['task', 'preflight', 'T1'], operation: 'kanban' },
@@ -467,7 +466,7 @@ describe('ypl wrapper', () => {
           `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
         ].join('\n'),
       );
-      await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
       await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
 
@@ -518,7 +517,7 @@ describe('ypl wrapper', () => {
           `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
         ].join('\n'),
       );
-      await fs.copy(JUNO_CODE_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
       await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
 
@@ -540,15 +539,15 @@ describe('ypl wrapper', () => {
       const fakeBin = path.join(tempDir, 'fake-bin');
       await fs.ensureDir(binDir);
       await fs.ensureDir(fakeBin);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'unused\n');
       await fs.writeFile(
         path.join(fakeBin, 'node'),
-        '#!/usr/bin/env bash\nif [ "$1" = "-p" ] && [ "$2" = "process.versions.node" ]; then echo 22.22.0; exit 0; fi\n[ "$JUNO_CODE_NODE_EXECUTABLE" = "$0" ] || exit 88\n[ "${PATH%%:*}" = "$(dirname "$0")" ] || exit 89\nprintf "%s\\n" "$@"\n',
+        '#!/usr/bin/env bash\nif [ "$1" = "-p" ] && [ "$2" = "process.versions.node" ]; then echo 22.22.0; exit 0; fi\n[ "$YYLO_NODE_EXECUTABLE" = "$0" ] || exit 88\n[ "${PATH%%:*}" = "$(dirname "$0")" ] || exit 89\nprintf "%s\\n" "$@"\n',
         { mode: 0o755 },
       );
-      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+      const result = await execa(path.join(binDir, 'yylo.sh'), ['--version'], {
         cwd: tempDir, env: { PATH: `${fakeBin}:${process.env.PATH}` }, reject: false,
       });
       expect(result.exitCode).toBe(0);
@@ -567,7 +566,7 @@ describe('ypl wrapper', () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       const record = path.join(tempDir, 'record.json');
       await Promise.all([binDir, preferredBin, runtimeBin, scriptsDir].map((directory) => fs.ensureDir(directory)));
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
       await fs.chmod(path.join(binDir, 'yy'), 0o755);
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
@@ -577,7 +576,7 @@ describe('ypl wrapper', () => {
           "const child = spawnSync('juno-benchmark', ['probe'], { encoding: 'utf8' });",
           `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({`,
           "  delegate: child.stdout.trim(), marker: process.env.DELEGATE_MARKER,",
-          "  path: process.env.PATH, nodeExecutablePresent: Object.prototype.hasOwnProperty.call(process.env, 'JUNO_CODE_NODE_EXECUTABLE')",
+          "  path: process.env.PATH, nodeExecutablePresent: Object.prototype.hasOwnProperty.call(process.env, 'YYLO_NODE_EXECUTABLE')",
           '}));',
           'process.exit(child.status ?? 1);',
         ].join('\n'),
@@ -594,7 +593,7 @@ describe('ypl wrapper', () => {
 
       const result = await execa(path.join(binDir, 'yy'), ['benchmark', 'probe'], {
         cwd: tempDir,
-        env: { PATH: callerPath, DELEGATE_MARKER: 'exact caller value', JUNO_CODE_NODE_EXECUTABLE: undefined },
+        env: { PATH: callerPath, DELEGATE_MARKER: 'exact caller value', YYLO_NODE_EXECUTABLE: undefined },
         reject: false,
       });
 
@@ -618,11 +617,11 @@ describe('ypl wrapper', () => {
       const marker = path.join(tempDir, 'cli-ran');
       await fs.ensureDir(binDir);
       await fs.ensureDir(fakeBin);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')\n`);
       await fs.writeFile(path.join(fakeBin, 'node'), '#!/usr/bin/env bash\nif [ "$1" = "-p" ]; then echo 18.19.0; else exit 97; fi\n', { mode: 0o755 });
-      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+      const result = await execa(path.join(binDir, 'yylo.sh'), ['--version'], {
         cwd: tempDir,
         env: { PATH: `${fakeBin}:${process.env.PATH}`, NVM_DIR: path.join(tempDir, 'missing-nvm') },
         reject: false,
@@ -644,8 +643,8 @@ describe('ypl wrapper', () => {
       const selectedMarker = path.join(tempDir, 'selected-node');
       await fs.ensureDir(binDir);
       await fs.ensureDir(fakeBin);
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), "console.log('selected-compatible-node')\n");
       await fs.writeFile(
         path.join(fakeBin, 'node'),
@@ -662,7 +661,7 @@ describe('ypl wrapper', () => {
         );
       }
 
-      const result = await execa(path.join(binDir, 'juno-code.sh'), ['--version'], {
+      const result = await execa(path.join(binDir, 'yylo.sh'), ['--version'], {
         cwd: tempDir,
         env: { PATH: `${fakeBin}:${process.env.PATH}`, NVM_DIR: nvmDir },
         reject: false,
@@ -678,20 +677,20 @@ describe('ypl wrapper', () => {
 
   it.each([
     ['yy', 'yy'],
-    ['juno-code', 'juno-code'],
+    ['yylo', 'yylo'],
   ])('preserves the %s launch identity through the common wrapper', async (fileName, launchSurface) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-launch-surface-'));
     try {
       const binDir = path.join(tempDir, 'bin');
       await fs.ensureDir(binDir);
       const wrapper = path.join(binDir, fileName);
-      await fs.copy(JUNO_CODE_SOURCE, wrapper);
+      await fs.copy(YYLO_SOURCE, wrapper);
       await fs.chmod(wrapper, 0o755);
       await fs.writeFile(path.join(binDir, 'cli.mjs'), "console.log(process.argv0)\n");
       const result = await execa(wrapper, ['--version'], {
         cwd: tempDir,
         reject: false,
-        env: { JUNO_CODE_LAUNCH_SURFACE: 'ypl' },
+        env: { YYLO_LAUNCH_SURFACE: 'ypl' },
       });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe(launchSurface);
@@ -700,15 +699,15 @@ describe('ypl wrapper', () => {
     }
   });
 
-  it('executes the juno-code wrapper with pi --live before forwarded args', async () => {
+  it('executes the yylo wrapper with pi --live before forwarded args', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-ypl-wrapper-'));
     try {
       const binDir = path.join(tempDir, 'bin');
       await fs.ensureDir(binDir);
       await fs.copy(YPL_SOURCE, path.join(binDir, 'ypl.sh'));
-      await fs.copy(JUNO_CODE_SOURCE, path.join(binDir, 'juno-code.sh'));
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo.sh'));
       await fs.chmod(path.join(binDir, 'ypl.sh'), 0o755);
-      await fs.chmod(path.join(binDir, 'juno-code.sh'), 0o755);
+      await fs.chmod(path.join(binDir, 'yylo.sh'), 0o755);
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
         "console.log(JSON.stringify({ args: process.argv.slice(2), launchSurface: process.argv0 }))\n",
@@ -718,7 +717,7 @@ describe('ypl wrapper', () => {
       const result = await execa(path.join(binDir, 'ypl.sh'), ['hello world', '--model', 'sonnet'], {
         cwd: tempDir,
         reject: false,
-        env: { JUNO_CODE_LAUNCH_SURFACE: 'yy' },
+        env: { YYLO_LAUNCH_SURFACE: 'yy' },
       });
 
       expect(result.exitCode).toBe(0);

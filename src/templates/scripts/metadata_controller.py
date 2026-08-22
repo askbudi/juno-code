@@ -347,7 +347,7 @@ def load_policy(path: Path) -> dict[str, Any]:
             raise BoundaryError(f"{field} contains duplicates")
         value[field] = normalized
     runtime = value["runtime"]
-    if not isinstance(runtime, dict) or set(runtime) != {"package", "identity_file", "ignored_roots"} or runtime.get("package") != "juno-code":
+    if not isinstance(runtime, dict) or set(runtime) != {"package", "identity_file", "ignored_roots"} or runtime.get("package") != "@yylo/cli":
         raise BoundaryError("invalid runtime policy")
     runtime["identity_file"] = safe_relative(runtime["identity_file"])
     runtime["ignored_roots"] = sorted(safe_relative(item) for item in runtime["ignored_roots"])
@@ -444,8 +444,8 @@ def runtime_identity(executable: Path, expected_version: str, repository: Path) 
     if (result.returncode
             or not load_sibling("task_workspace.py").cli_version_output_valid(
                 result, expected_version, executable.parent)):
-        raise BoundaryError(f"runtime identity mismatch: expected juno-code {expected_version}")
-    return {"package": "juno-code", "version": expected_version, "executable": str(executable),
+        raise BoundaryError(f"runtime identity mismatch: expected yylo {expected_version}")
+    return {"package": "@yylo/cli", "version": expected_version, "executable": str(executable),
             "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
 
 
@@ -541,7 +541,7 @@ def inventory(old: Path, old_head: str, product_head: str, policy: dict[str, Any
         "controller_data": [name for name in selected if name.startswith((".juno_task/tasks", ".juno_task/ledger"))],
         "task_specs": [name for name in selected if name.startswith(".juno_task/specs")],
         "minimal_project_configuration": [name for name in names if name in {".juno_task/config.json", ".gitignore"} or name.startswith(".juno_task/config/")],
-        "product_documentation": [name for name in names if name == "README.md" or name.startswith(("docs/", "juno-code/docs/", "frontend/"))],
+        "product_documentation": [name for name in names if name == "README.md" or name.startswith(("docs/", "yylo/docs/", "frontend/"))],
         "historical_evidence": [name for name in names if name.startswith((".juno_task/workflows", ".juno_task/artifacts", ".juno_task/logs"))
                                 or (name.startswith(".juno_task/specs/") and not copied_allowed(name, policy))],
     }
@@ -626,7 +626,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     preserved_entries = [{"mode": mode, "oid": oid, "path": name} for mode, oid, name in entries]
     boundary = {"schema_version": RECEIPT_SCHEMA, "operation": "controller-boundary", "source_head": plan["old_head"],
                 "product_ref": plan["product_ref"], "product_head_at_plan": plan["product_head"],
-                "runtime": {"package": "juno-code", "version": plan["runtime"]["version"]},
+                "runtime": {"package": "@yylo/cli", "version": plan["runtime"]["version"]},
                 "policy_sha256": plan["policy_sha256"],
                 "reviewed_policy_sha256": {
                     "task_workspace": reviewed_policies["task_workspace"]["sha256"],
@@ -638,7 +638,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     integration_policy_bytes = canonical(reviewed_policies["integration_workspace"]["content"])
     risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
     generated = {
-        ".gitignore": b".env.juno\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n.juno_task/transactions/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
+        ".gitignore": b".env.yylo\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n.juno_task/transactions/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
         CONFIG_PATH: canonical_controller_config_bytes(),
         ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/config/task-workspace.json": task_policy_bytes,
@@ -658,7 +658,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
         for name, data in generated.items():
             add_blob(old, index_env, name, data)
         tree = git(old, "write-tree", env=index_env)
-    identity = {"package": "juno-code", "version": plan["runtime"]["version"], "executable": plan["runtime"]["executable"],
+    identity = {"package": "@yylo/cli", "version": plan["runtime"]["version"], "executable": plan["runtime"]["executable"],
                 "executable_sha256": plan["runtime"]["executable_sha256"], "source": "installed-release", "tracked": False}
     commit_env = {"GIT_AUTHOR_NAME": "Juno Controller Migration", "GIT_AUTHOR_EMAIL": "juno-controller@local.invalid",
                   "GIT_COMMITTER_NAME": "Juno Controller Migration", "GIT_COMMITTER_EMAIL": "juno-controller@local.invalid"}
@@ -926,7 +926,7 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             )
         except (BoundaryError, KeyError, TypeError, json.JSONDecodeError):
             generated_contract_ok = False
-    product_markers = [name for name in names if name == "README.md" or name.startswith(("juno-code/", "juno_kanban/", "frontend/", "scripts/", ".github/"))]
+    product_markers = [name for name in names if name == "README.md" or name.startswith(("yylo/", "juno_kanban/", "frontend/", "scripts/", ".github/"))]
     tracked_agent_surface = sorted(name for name in names if agent_surface_path(name))
     gitignore_lines, missing_root_ignores = committed_gitignore(root, head)
     staged = git(root, "diff", "--cached", "--name-only", check=False).splitlines()
@@ -1167,7 +1167,7 @@ def package_policy_source(root: Path, runtime_executable: str | None = None) -> 
     if runtime_executable:
         entrypoint = Path(runtime_executable).expanduser().resolve()
         if entrypoint.parent.name != "bin" or entrypoint.parent.parent.name not in {"src", "dist"}:
-            raise BoundaryError("registered controller runtime executable is not a juno-code package entrypoint")
+            raise BoundaryError("registered controller runtime executable is not a yylo package entrypoint")
         package_root = entrypoint.parent.parent.parent
     elif engine.parent.parent.parent.name in {"src", "dist"}:
         package_root = engine.parents[3]
@@ -1176,9 +1176,9 @@ def package_policy_source(root: Path, runtime_executable: str | None = None) -> 
     else:
         raise BoundaryError("cannot locate migration package from the managed runtime without registered runtime identity")
     manifest_path = package_root / "package.json"
-    manifest = read_json(manifest_path, "juno-code package manifest")
-    if manifest.get("name") != "juno-code" or not isinstance(manifest.get("version"), str):
-        raise BoundaryError("metadata-policy migration requires an identifiable juno-code package")
+    manifest = read_json(manifest_path, "yylo package manifest")
+    if manifest.get("name") != "@yylo/cli" or not isinstance(manifest.get("version"), str):
+        raise BoundaryError("metadata-policy migration requires an identifiable yylo package")
     generation_name = "src" if (runtime_executable and Path(runtime_executable).resolve().parent.parent.name == "src") \
         or (not runtime_executable and engine.parent.parent.parent.name == "src") else "dist"
     template_root = package_root / generation_name / "templates"
@@ -1206,7 +1206,7 @@ def package_policy_source(root: Path, runtime_executable: str | None = None) -> 
     source_execution = generation_name == "src"
     runtime_entrypoint = package_root / ("src/bin/cli.ts" if source_execution else "dist/bin/cli.mjs")
     if runtime_entrypoint.is_symlink() or not runtime_entrypoint.is_file():
-        raise BoundaryError("juno-code migration package runtime entrypoint is missing or unsafe")
+        raise BoundaryError("yylo migration package runtime entrypoint is missing or unsafe")
     generation_path = root / ".juno_task/runtime/managed-controller/generation.json"
     generation: dict[str, Any] = {"present": False}
     if generation_path.exists() or generation_path.is_symlink():
@@ -1237,7 +1237,7 @@ def package_policy_source(root: Path, runtime_executable: str | None = None) -> 
                       "package_version": generation_value["package_version"],
                       "target_sha": generation_value["target_sha"],
                       "engine_binding_sha256": digest(engine_binding)}
-    return {"package": "juno-code", "version": manifest["version"],
+    return {"package": "@yylo/cli", "version": manifest["version"],
             "package_manifest_sha256": file_digest(manifest_path),
             "engine_path": str(engine), "engine_sha256": engine_sha256,
             "runtime_entrypoint": str(runtime_entrypoint.resolve()),
@@ -2281,7 +2281,7 @@ def resolved_registry_artifact(npm: str, package_spec: str, version: str,
         raise BoundaryError("registry artifact integrity evidence is malformed") from exc
     if hashlib.sha512(data).digest() != expected or hashlib.sha1(data).hexdigest() != row["shasum"]:
         raise BoundaryError("downloaded exact runtime artifact failed integrity verification")
-    return {"source": "registry", "package": "juno-code", "package_spec": package_spec,
+    return {"source": "registry", "package": "@yylo/cli", "package_spec": package_spec,
             "version": version, "integrity": row["integrity"], "shasum": row["shasum"],
             "sha256": hashlib.sha256(data).hexdigest(),
             "tarball_sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data),
@@ -2346,9 +2346,9 @@ def _authenticate_npm_pack(data: bytes, version: str) -> None:
         manifest = json.loads(manifest_data.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise BoundaryError("local runtime artifact package manifest is malformed") from exc
-    if (not isinstance(manifest, dict) or manifest.get("name") != "juno-code"
+    if (not isinstance(manifest, dict) or manifest.get("name") != "@yylo/cli"
             or manifest.get("version") != version or not valid_semver(manifest.get("version"))):
-        raise BoundaryError("local runtime artifact package name/version does not match requested juno-code release")
+        raise BoundaryError("local runtime artifact package name/version does not match requested yylo release")
 
 
 def authenticate_local_runtime_artifact(supplied: Path, version: str,
@@ -2371,7 +2371,7 @@ def authenticate_local_runtime_artifact(supplied: Path, version: str,
             != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
         raise BoundaryError("local runtime artifact changed while it was being authenticated")
     _authenticate_npm_pack(data, version)
-    evidence = {"source": "local", "path": str(artifact), "package": "juno-code",
+    evidence = {"source": "local", "path": str(artifact), "package": "@yylo/cli",
                 "version": version, "sha256": hashlib.sha256(data).hexdigest(),
                 "size_bytes": len(data)}
     return evidence, data
@@ -2416,7 +2416,7 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
             elif prior_artifact.get("source") == "local":
                 raise BoundaryError("completed local-artifact receipt requires the same --artifact input for replay")
             executable = Path(prior["runtime"]["executable"])
-            expected_root = prefix / "node_modules/juno-code"
+            expected_root = prefix / "node_modules/@yylo/cli"
             try:
                 executable.resolve().relative_to(expected_root.resolve())
             except ValueError as exc:
@@ -2424,8 +2424,8 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
             identity = runtime_identity(executable, args.runtime_version, root)
             manifest_path = expected_root / "package.json"
             installation = prior.get("installation", {})
-            manifest = read_json(manifest_path, "installed juno-code package")
-            manifest_matches = (manifest.get("name") == "juno-code"
+            manifest = read_json(manifest_path, "installed yylo package")
+            manifest_matches = (manifest.get("name") == "@yylo/cli"
                                 and manifest.get("version") == args.runtime_version)
             if installation:
                 manifest_matches = (manifest_matches
@@ -2455,13 +2455,13 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
         raise BoundaryError("runtime install/rebind requires a clean metadata controller")
     npm = shutil.which("npm")
     if not npm:
-        raise BoundaryError("npm is required to install the exact juno-code release")
+        raise BoundaryError("npm is required to install the exact yylo release")
     before = {"head": git(root, "rev-parse", "HEAD"), "tree": git(root, "write-tree"),
               "runtime_version": git(root, "config", "--worktree", "--get", "juno.controller.runtimeVersion", check=False),
               "runtime_executable": git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable", check=False)}
     runtime_file = root / policy["runtime"]["identity_file"]
     before_identity = runtime_file.read_bytes() if runtime_file.exists() else None
-    package_spec = f"juno-code@{args.runtime_version}"
+    package_spec = f"yylo@{args.runtime_version}"
     artifact: dict[str, Any] | None = None
     installation: dict[str, Any] | None = None
     installed_runtime: dict[str, str] | None = None
@@ -2470,7 +2470,7 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
             temporary_root = Path(temporary)
             if local_artifact is not None:
                 artifact, authenticated = authenticate_local_runtime_artifact(local_artifact, args.runtime_version, root)
-                snapshot = temporary_root / "juno-code-authenticated.tgz"
+                snapshot = temporary_root / "yylo-authenticated.tgz"
                 snapshot.write_bytes(authenticated)
                 # Reauthenticate the owner-visible file immediately before any prefix mutation.
                 verify_local_runtime_artifact(artifact, root)
@@ -2489,14 +2489,14 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
                 raise BoundaryError(
                     f"exact runtime installation failed for verified {package_spec}: "
                     f"{result.stderr.strip() or result.stdout.strip() or 'npm failed'}")
-            package_root = prefix / "node_modules/juno-code"
+            package_root = prefix / "node_modules/@yylo/cli"
             manifest_path = package_root / "package.json"
-            manifest = read_json(manifest_path, "installed juno-code package")
-            if manifest.get("name") != "juno-code" or manifest.get("version") != args.runtime_version:
-                raise BoundaryError("installed package identity does not match the requested exact juno-code release")
+            manifest = read_json(manifest_path, "installed yylo package")
+            if manifest.get("name") != "@yylo/cli" or manifest.get("version") != args.runtime_version:
+                raise BoundaryError("installed package identity does not match the requested exact yylo release")
             executable = package_root / "dist/bin/cli.mjs"
             installation = {"prefix": str(prefix), "package_root": str(package_root.resolve()),
-                            "package": "juno-code", "version": args.runtime_version,
+                            "package": "@yylo/cli", "version": args.runtime_version,
                             "package_manifest_sha256": file_digest(manifest_path)}
             installed_runtime = runtime_identity(executable, args.runtime_version, root)
             return runtime_rebind(argparse.Namespace(

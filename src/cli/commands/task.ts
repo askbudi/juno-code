@@ -97,7 +97,7 @@ export async function invokeTaskRuntimeBootstrap(
   }
   const packagePath = path.resolve(path.dirname(script), '../../..', 'package.json');
   const packageJson = await fs.readJson(packagePath) as { name?: string; version?: string };
-  if (packageJson.name !== 'juno-code' || typeof packageJson.version !== 'string') {
+  if (packageJson.name !== '@yylo/cli' || typeof packageJson.version !== 'string') {
     throw new Error('Packaged task-runtime identity is invalid.');
   }
   const hash = createHash('sha256').update(source).digest('hex');

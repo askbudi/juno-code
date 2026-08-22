@@ -743,7 +743,7 @@ export class ExecutionEngine extends EventEmitter {
     // Configure
     (backend as any).configure({
       workingDirectory: request.workingDirectory,
-      servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.juno_code/services`,
+      servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.yylo/services`,
       debug: this.engineConfig.config.verbose >= 2,
       timeout: request.timeoutMs || this.engineConfig.config.mcpTimeout || 43200000,
       enableJsonStreaming: true,
@@ -762,7 +762,7 @@ export class ExecutionEngine extends EventEmitter {
     const isAvailable = await backend.isAvailable();
     if (!isAvailable) {
       throw new Error(
-        'Shell backend is not available. Ensure ~/.juno_code/services/ exists and contains service scripts.',
+        'Shell backend is not available. Ensure ~/.yylo/services/ exists and contains service scripts.',
       );
     }
 
@@ -1441,7 +1441,7 @@ export class ExecutionEngine extends EventEmitter {
       engineLogger.info(`║  Behavior:        raise (exit immediately)                     ║`);
       engineLogger.info(`╠════════════════════════════════════════════════════════════════╣`);
       engineLogger.info(`║  To auto-wait instead, use: --on-hourly-limit wait            ║`);
-      engineLogger.info(`║  Or set: JUNO_CODE_ON_HOURLY_LIMIT=wait                        ║`);
+      engineLogger.info(`║  Or set: YYLO_ON_HOURLY_LIMIT=wait                        ║`);
       engineLogger.info(`║  Or in config.json: { "onHourlyLimit": "wait" }               ║`);
       engineLogger.info(`╚════════════════════════════════════════════════════════════════╝`);
 

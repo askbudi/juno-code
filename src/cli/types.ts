@@ -1,5 +1,5 @@
 /**
- * CLI Types Module for juno-code
+ * CLI Types Module for yylo
  *
  * TypeScript interfaces and types for the CLI framework,
  * supporting commands, options, error handling, and constants.
@@ -104,9 +104,9 @@ export interface MainCommandOptions extends GlobalCLIOptions {
   cloneSession?: boolean;
   /** Explicit Pi session ID/path to fork from when cloning */
   cloneFromSession?: string;
-  /** Named branch target for `juno-code clone --name <branch>` */
+  /** Named branch target for `yylo clone --name <branch>` */
   cloneBranchName?: string;
-  /** Named branch source for `juno-code clone --from <branch>` */
+  /** Named branch source for `yylo clone --from <branch>` */
   cloneBranchFrom?: string;
   /** Continue the most recent conversation (shell backend only) */
   continue?: boolean;
@@ -391,45 +391,45 @@ export class RuntimeError extends CLIError {
 
 /**
  * Environment variable mappings for CLI options
- * Uses JUNO_CODE_* prefix exclusively (legacy JUNO_TASK_* removed)
+ * Uses YYLO_* prefix exclusively (legacy JUNO_TASK_* removed)
  */
 export const ENVIRONMENT_MAPPINGS = {
   // Core options
-  JUNO_CODE_SUBAGENT: 'subagent',
-  JUNO_CODE_AGENT: 'backend',
-  JUNO_CODE_BACKEND: 'backend',
-  JUNO_CODE_PROMPT: 'prompt',
-  JUNO_CODE_CWD: 'cwd',
-  JUNO_CODE_MAX_ITERATIONS: 'maxIterations',
-  JUNO_CODE_MODEL: 'model',
-  JUNO_CODE_LOG_FILE: 'logFile',
-  JUNO_CODE_VERBOSE: 'verbose',
-  JUNO_CODE_QUIET: 'quiet',
-  JUNO_CODE_INTERACTIVE: 'interactive',
-  JUNO_CODE_CONFIG: 'config',
+  YYLO_SUBAGENT: 'subagent',
+  YYLO_AGENT: 'backend',
+  YYLO_BACKEND: 'backend',
+  YYLO_PROMPT: 'prompt',
+  YYLO_CWD: 'cwd',
+  YYLO_MAX_ITERATIONS: 'maxIterations',
+  YYLO_MODEL: 'model',
+  YYLO_LOG_FILE: 'logFile',
+  YYLO_VERBOSE: 'verbose',
+  YYLO_QUIET: 'quiet',
+  YYLO_INTERACTIVE: 'interactive',
+  YYLO_CONFIG: 'config',
 
   // MCP options
-  JUNO_CODE_MCP_SERVER_PATH: 'mcpServerPath',
-  JUNO_CODE_MCP_TIMEOUT: 'mcpTimeout',
-  JUNO_CODE_MCP_RETRIES: 'mcpRetries',
+  YYLO_MCP_SERVER_PATH: 'mcpServerPath',
+  YYLO_MCP_TIMEOUT: 'mcpTimeout',
+  YYLO_MCP_RETRIES: 'mcpRetries',
 
   // Session options
-  JUNO_CODE_SESSION_DIR: 'sessionDir',
-  JUNO_CODE_LOG_LEVEL: 'logLevel',
+  YYLO_SESSION_DIR: 'sessionDir',
+  YYLO_LOG_LEVEL: 'logLevel',
 
   // Template options
-  JUNO_CODE_TEMPLATE: 'template',
-  JUNO_CODE_FORCE: 'force',
+  YYLO_TEMPLATE: 'template',
+  YYLO_FORCE: 'force',
 
   // Git options
-  JUNO_CODE_GIT_URL: 'gitUrl',
+  YYLO_GIT_URL: 'gitUrl',
 
   // UI options
-  JUNO_CODE_NO_COLOR: 'noColor',
-  JUNO_CODE_HEADLESS: 'headless',
+  YYLO_NO_COLOR: 'noColor',
+  YYLO_HEADLESS: 'headless',
 
   // Feedback options
-  JUNO_CODE_ENABLE_FEEDBACK: 'enableFeedback',
+  YYLO_ENABLE_FEEDBACK: 'enableFeedback',
 
   // Special aliases
   JUNO_INTERACTIVE_FEEDBACK_MODE: 'enableFeedback', // Alias for enableFeedback
@@ -538,7 +538,7 @@ export const SUBAGENT_ALIASES: Record<string, SubagentType> = {
  * Command categories for help organization
  */
 export const COMMAND_CATEGORIES = {
-  EXECUTION: ['juno-code', 'start'],
+  EXECUTION: ['yylo', 'start'],
   PROJECT: ['init', 'setup-git'],
   TESTING: ['test'],
   SESSION: ['session'],

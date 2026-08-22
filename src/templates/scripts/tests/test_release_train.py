@@ -40,7 +40,7 @@ class ReleaseTrainTests(unittest.TestCase):
                                       "timeout_seconds": 10, "max_output_bytes": 1024}}) + "\n")
         (self.root / ".juno_task/config/risk-policy.json").write_text("{}\n")
         (self.root / "src").mkdir()
-        (self.root / "juno-code").mkdir()
+        (self.root / "yylo").mkdir()
         (self.root / "juno-code/package.json").write_text('{"version":"1.0.0"}\n')
         (self.root / "juno-code/package-lock.json").write_text('{"version":"1.0.0","packages":{"":{"version":"1.0.0"}}}\n')
         (self.root / ".juno_task/state").mkdir()

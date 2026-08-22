@@ -42,8 +42,8 @@ export function protectedRoots(
   // runs. Test processes are rebound below to a suite-owned fixture controller,
   // so implicitly freezing the shared controller creates a race without adding
   // isolation. Callers that own an otherwise external root can still opt it in
-  // explicitly through JUNO_CODE_TEST_PROTECTED_GIT_ROOTS.
-  const extra = environment.JUNO_CODE_TEST_PROTECTED_GIT_ROOTS?.trim();
+  // explicitly through YYLO_TEST_PROTECTED_GIT_ROOTS.
+  const extra = environment.YYLO_TEST_PROTECTED_GIT_ROOTS?.trim();
   if (extra) {
     for (const [index, root] of extra.split(path.delimiter).filter(Boolean).entries()) {
       add(`protected[${index}]`, root);
@@ -59,7 +59,7 @@ export default function setup() {
   // Default test processes receive only suite-owned controller/metadata state.
   // Git-aware runner tests construct narrower per-test controllers as well, so
   // finalization and checkpoint paths cannot fall back to an external checkout.
-  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'juno-code-suite-'));
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yylo-suite-'));
   const fixtureController = path.join(fixtureRoot, 'controller');
   const fixtureScripts = path.join(fixtureController, '.juno_task', 'scripts');
   const fixtureBin = path.join(fixtureController, '.venv_juno', 'bin');
@@ -68,12 +68,12 @@ export default function setup() {
   const python = execFileSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim();
   execFileSync(python, ['-m', 'venv', path.dirname(fixtureBin)], { stdio: 'ignore' });
 
-  process.env.JUNO_CODE_TEST_FIXTURE_ROOT = fixtureRoot;
+  process.env.YYLO_TEST_FIXTURE_ROOT = fixtureRoot;
   process.env.JUNO_TASK_ROOT = fixtureController;
   process.env.JUNO_WORKSPACE_ROLE = 'controller';
   process.env.JUNO_WORKSPACE_ENFORCEMENT = 'strict';
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(fixtureRoot, 'metadata');
-  process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES = '1';
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(fixtureRoot, 'metadata');
+  process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '1';
   process.env.GIT_OPTIONAL_LOCKS = '0';
 
   return () => {

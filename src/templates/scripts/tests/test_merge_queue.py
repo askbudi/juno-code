@@ -100,7 +100,7 @@ class MergeQueueTests(unittest.TestCase):
             "destinations": ["fixtures/generated.txt"],
         }) + "\n")
         package = self.repository / "juno-code/package.json"
-        package.write_text(json.dumps({"name": "juno-code", "version": "9.0.0"}) + "\n")
+        package.write_text(json.dumps({"name": "@yylo/cli", "version": "9.0.0"}) + "\n")
         (self.repository / "src").mkdir()
         (self.repository / "src/shared.txt").write_text("base\n")
         git(self.repository, "add", ".")
@@ -299,7 +299,7 @@ raise SystemExit(2)
             merge_runtime.require_owner_advancement(authority)
 
     def test_managed_review_prompt_resolves_from_bound_runtime(self) -> None:
-        executable = self.root / "installed/dist/bin/juno-code.sh"
+        executable = self.root / "installed/dist/bin/yylo.sh"
         prompt = self.root / "installed/dist/templates/prompts/review_commit_parallel_runner.md"
         executable.parent.mkdir(parents=True)
         prompt.parent.mkdir(parents=True)
@@ -315,7 +315,7 @@ raise SystemExit(2)
         self.assertEqual(merge_runtime.managed_review_prompt(self.controller), prompt.resolve())
 
     def test_managed_review_prompt_rejects_runtime_hash_drift(self) -> None:
-        executable = self.root / "installed/dist/bin/juno-code.sh"
+        executable = self.root / "installed/dist/bin/yylo.sh"
         prompt = self.root / "installed/dist/templates/prompts/review_commit_parallel_runner.md"
         executable.parent.mkdir(parents=True)
         prompt.parent.mkdir(parents=True)
@@ -584,7 +584,7 @@ raise SystemExit(2)
         script = checkout / ".juno_task/scripts/task_workspace.py"
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
         manifest = {
-            "schemaVersion": 1, "packageName": "juno-code", "packageVersion": version,
+            "schemaVersion": 1, "packageName": "@yylo/cli", "packageVersion": version,
             "assets": {".juno_task/scripts/task_workspace.py": {
                 "type": "script", "templateVersion": version,
                 "sourceSha256": digest, "installedSha256": digest,

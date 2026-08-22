@@ -24,14 +24,44 @@ describe('Bolt task workspace managed runtime', () => {
       const [task, integration, installer] = policy.focused_validation;
       expect(task?.resource).toEqual(installer?.resource);
       expect(task?.resource).toMatchObject({
-        id: 'juno-code-real-git-managed-install',
-        lock_path: '/tmp/juno-code-focused-real-git-managed-install.lock',
+        id: 'yylo-real-git-managed-install',
+        lock_path: '/tmp/yylo-focused-real-git-managed-install.lock',
       });
       expect(task!.resource!.wait_timeout_seconds).toBe(1200);
       expect(integration?.resource).toBeUndefined();
       expect(task?.argv).toContain('src/utils/__tests__/task-workspace.test.ts');
       expect(installer?.argv).toContain('src/utils/__tests__/script-installer.test.ts');
       expect(integration?.argv).toContain('src/utils/__tests__/integration-workspace.test.ts');
+    }
+  });
+
+  it('routes benchmark changes through test, typecheck, and build', () => {
+    for (const policyPath of [
+      resolve(repository, '.juno_task/config/task-workspace.json'),
+      resolve(repository, 'juno-code/src/templates/config/task-workspace.json'),
+    ]) {
+      const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as {
+        validation_profiles: Array<{ id: string; path_roots: string[]; commands: Array<{ id: string }> }>;
+      };
+      const benchmark = policy.validation_profiles.find(({ id }) => id === 'benchmark-suite');
+      expect(benchmark?.path_roots).toEqual(['juno-benchmark']);
+      expect(benchmark?.commands.map(({ id }) => id)).toEqual([
+        'benchmark-test', 'benchmark-typecheck', 'benchmark-build',
+      ]);
+    }
+  });
+
+  it('hydrates the private monorepo directory rather than a public brand path', () => {
+    for (const workflowPath of [
+      resolve(repository, '.juno_task/config/worktree-hydration.yaml'),
+      resolve(repository, 'juno-code/src/templates/config/worktree-hydration.yaml'),
+    ]) {
+      const workflow = readFileSync(workflowPath, 'utf8');
+      expect(workflow).toContain('"verify-node-lock", "--cwd", "juno-code"');
+      expect(workflow).toContain('"hydrate-node", "--cwd", "juno-code"');
+      expect(workflow).toContain('"verify-node-lock", "--cwd", "juno-benchmark"');
+      expect(workflow).toContain('"hydrate-node", "--cwd", "juno-benchmark"');
+      expect(workflow).not.toContain('"--prefix", "yylo"');
     }
   });
 

@@ -39,10 +39,10 @@ try {
   const runtimeDirectory = path.join(installed, '.juno_task/runtime');
   await mkdir(runtimeDirectory, { recursive: true });
   await writeFile(path.join(installed, '.juno_task/managed-assets.json'), JSON.stringify({
-    schemaVersion: 1, packageName: 'juno-code', packageVersion: packageJson.version, assets: {},
+    schemaVersion: 1, packageName: '@yylo/cli', packageVersion: packageJson.version, assets: {},
   }));
   await writeFile(path.join(runtimeDirectory, 'identity.json'), JSON.stringify({
-    package: 'juno-code', version: packageJson.version, executable,
+    package: '@yylo/cli', version: packageJson.version, executable,
     executable_sha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
     source: 'installed-release', tracked: false,
   }));
@@ -127,7 +127,7 @@ try {
 
   const result = {
     schema_version: 'juno_bolt_package_canary.v1',
-    package: `juno-code@${JSON.parse(readFileSync(path.join(installed, 'package.json'))).version}`,
+    package: `yylo@${JSON.parse(readFileSync(path.join(installed, 'package.json'))).version}`,
     package_files: packed.entryCount,
     selected_tests: Object.values(selections).flat().length,
     scenarios: {

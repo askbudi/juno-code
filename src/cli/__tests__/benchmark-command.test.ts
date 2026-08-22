@@ -23,15 +23,15 @@ const requiredLeakageClasses = [
   'canonical-controller-route', 'host-paths', 'candidate-git-metadata',
 ];
 const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
-const requiredBenchmarkVersion = packageJson.junoBenchmark.version;
+const requiredBenchmarkVersion = packageJson.yyloBenchmark.version;
 
 useSharedHeavyWorkloadLock('benchmark clean-source release artifact smoke');
 
 async function fixture(): Promise<{ root: string; bin: string; record: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-delegate-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-delegate-'));
   fixtures.push(root);
   const binDirectory = path.join(root, 'bin');
-  const executable = path.join(binDirectory, 'juno-benchmark');
+  const executable = path.join(binDirectory, 'yylo-benchmark');
   const record = path.join(root, 'record.json');
   await import('node:fs/promises').then(({ mkdir }) => mkdir(binDirectory));
   await writeFile(executable, `#!/usr/bin/env node
@@ -39,13 +39,13 @@ const fs = require('node:fs');
 if (process.argv[2] === '--version') {
   if (process.env.FAKE_VERSION_WAIT) setInterval(() => {}, 1000);
   else {
-    process.stdout.write(process.env.FAKE_BENCHMARK_VERSION || 'juno-benchmark ${requiredBenchmarkVersion}');
+    process.stdout.write(process.env.FAKE_BENCHMARK_VERSION || 'yylo-benchmark ${requiredBenchmarkVersion}');
     process.exit(Number(process.env.FAKE_VERSION_EXIT || 0));
   }
 }
 fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({
   argv: process.argv.slice(2), cwd: process.cwd(), marker: process.env.DELEGATE_MARKER,
-  preflightPresent: Object.prototype.hasOwnProperty.call(process.env, 'JUNO_CODE_PREFLIGHT_ONLY')
+  preflightPresent: Object.prototype.hasOwnProperty.call(process.env, 'YYLO_PREFLIGHT_ONLY')
 }));
 process.stdout.write('delegate stdout\\n');
 process.stderr.write('delegate stderr\\n');
@@ -120,7 +120,7 @@ describe('benchmark delegate', () => {
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
       FAKE_RECORD: record,
       DELEGATE_MARKER: 'exact value',
-      JUNO_CODE_PREFLIGHT_ONLY: 'must-not-leak',
+      YYLO_PREFLIGHT_ONLY: 'must-not-leak',
     };
     const args = ['plan', '--task', 'T 1', '--models', ':mini,:sol', '--dry-run'];
 
@@ -167,7 +167,7 @@ describe('benchmark delegate', () => {
     }
   });
 
-  it.each(['juno-benchmark 0.1.0', 'juno-benchmark 1.0.0', 'juno-benchmark 0.1.1-alpha.1'])(
+  it.each(['yylo-benchmark 0.1.0', 'yylo-benchmark 1.0.0', 'yylo-benchmark 0.1.1-alpha.1'])(
     'refuses incompatible version %s before forwarding user arguments',
     async (reportedVersion) => {
       const { root, bin, record } = await fixture();

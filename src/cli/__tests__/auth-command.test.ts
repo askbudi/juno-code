@@ -26,7 +26,7 @@ describe('auth command', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await cmd.parseAsync(
-      ['node', 'juno-code', 'import-codex', '--input', '/in.json', '--output', '/out.json', '--provider', 'p'],
+      ['node', 'yylo', 'import-codex', '--input', '/in.json', '--output', '/out.json', '--provider', 'p'],
       { from: 'node' },
     );
 
@@ -50,7 +50,7 @@ describe('auth command', () => {
     }) as any);
 
     await expect(
-      cmd.parseAsync(['node', 'juno-code', 'import-codex'], { from: 'node' }),
+      cmd.parseAsync(['node', 'yylo', 'import-codex'], { from: 'node' }),
     ).rejects.toThrow('process.exit called');
 
     expect(exitSpy).toHaveBeenCalledWith(1);

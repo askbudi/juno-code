@@ -30,7 +30,7 @@ def process_alive(pid: int) -> bool:
 
 
 def metadata_root(controller: Path) -> Path:
-    override = os.environ.get("JUNO_CODE_SESSION_METADATA_DIRECTORY", "").strip()
+    override = os.environ.get("YYLO_SESSION_METADATA_DIRECTORY", "").strip()
     if override:
         candidate = Path(override)
         return candidate if candidate.is_absolute() else (controller / candidate).resolve()
@@ -42,7 +42,7 @@ def metadata_root(controller: Path) -> Path:
         return Path(completed.stdout.strip()).resolve() / "juno" / "session_metadata"
     identity = hashlib.sha256(str(controller.resolve()).encode()).hexdigest()[:16]
     state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
-    return state / "juno-code" / "session_metadata" / identity
+    return state / "@yylo/cli" / "session_metadata" / identity
 
 
 def resolve_controller(cwd: Path) -> dict[str, object]:
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             "JUNO_TASK_ROOT": str(controller),
             "JUNO_CONTROLLER_SOURCE": str(resolution.get("source", "")),
             "JUNO_WORKSPACE_ROLE": role,
-            "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata_root(controller)),
+            "YYLO_SESSION_METADATA_DIRECTORY": str(metadata_root(controller)),
         })
         try:
             return subprocess.run(command, cwd=str(controller), env=env).returncode

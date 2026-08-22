@@ -1,17 +1,28 @@
+# YYLO package hydration uses the private monorepo directory name.
 schema_version: v1
 workflow_id: worktree-hydration
 workflow_class: task_hydration
 steps:
   - id: node_dependencies
     name: Hydrate exact Node lock
-    probe: ["test", "-x", "juno-code/node_modules/.bin/vitest"]
-    command: ["npm", "ci", "--prefix", "juno-code", "--no-audit", "--no-fund"]
+    probe: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "verify-node-lock", "--cwd", "juno-code"]
+    command: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "hydrate-node", "--cwd", "juno-code"]
     timeout_seconds: 900
     fail_workflow: true
     non_interactive: true
     network: true
     sensitive: false
     outputs: ["juno-code/node_modules"]
+  - id: benchmark_dependencies
+    name: Hydrate exact Benchmark Node lock
+    probe: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "verify-node-lock", "--cwd", "juno-benchmark"]
+    command: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "hydrate-node", "--cwd", "juno-benchmark"]
+    timeout_seconds: 900
+    fail_workflow: true
+    non_interactive: true
+    network: true
+    sensitive: false
+    outputs: ["juno-benchmark/node_modules"]
   - id: clean_tree
     name: Prove hydration outputs are ignored
     probe: ["python3", ".juno_task/scripts/worktree_hydration.py", "--project-root", ".", "verify-clean"]

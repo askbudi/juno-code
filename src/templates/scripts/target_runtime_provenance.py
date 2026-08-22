@@ -202,12 +202,12 @@ def package_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise ProvenanceError("managed runtime identity shape is invalid")
     executable = Path(str(identity.get("executable", ""))).expanduser().resolve(strict=True)
     executable_bytes = executable.read_bytes()
-    if (identity.get("package") != "juno-code" or identity.get("source") != "installed-release"
+    if (identity.get("package") != "@yylo/cli" or identity.get("source") != "installed-release"
             or identity.get("tracked") is not False
             or not load_task_runtime().is_valid_semver(identity.get("version"))
             or not HASH_RE.fullmatch(str(identity.get("executable_sha256", "")))
             or sha256(executable_bytes) != identity["executable_sha256"]):
-        raise ProvenanceError("managed runtime identity does not prove an installed juno-code executable")
+        raise ProvenanceError("managed runtime identity does not prove an installed yylo executable")
     package_root = executable.parents[2]
     package_path = package_root / "package.json"
     manifest_path = package_root / "dist/templates/managed-assets.json"

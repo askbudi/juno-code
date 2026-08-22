@@ -70,12 +70,12 @@
     ".juno_task/specs"
   ],
   "runtime": {
-    "package": "juno-code",
+    "package": "@yylo/cli",
     "identity_file": ".juno_task/runtime/identity.json",
     "ignored_roots": [
       ".agents",
       ".claude",
-      ".env.juno",
+      ".env.yylo",
       ".juno_task/cache",
       ".juno_task/locks",
       ".juno_task/runtime",

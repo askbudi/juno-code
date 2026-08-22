@@ -45,7 +45,7 @@ function buildContinueSnapshotEnv(scope: string): Record<string, string> {
   fs.ensureDirSync(metadataDirectory);
   const document = fs.pathExistsSync(statePath) ? fs.readJsonSync(statePath) : { version: 2, scopes: {} };
   document.scopes[scopeHash] = {
-    source: 'JUNO_CODE_CONTINUE_SCOPE',
+    source: 'YYLO_CONTINUE_SCOPE',
     createdAt: '2026-07-30T00:00:00.000Z',
     lastUsedAt: '2026-07-30T00:00:00.000Z',
     pinned: false,
@@ -54,7 +54,7 @@ function buildContinueSnapshotEnv(scope: string): Record<string, string> {
     branches: { main: { session_id: 'session-continue-stdin', parent: null, updated_at: '2026-07-30T00:00:00.000Z' } },
   };
   fs.writeJsonSync(statePath, document);
-  return { JUNO_CODE_CONTINUE_SCOPE: scope, JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory };
+  return { YYLO_CONTINUE_SCOPE: scope, YYLO_SESSION_METADATA_DIRECTORY: metadataDirectory };
 }
 
 /**
@@ -81,7 +81,7 @@ async function executeCLI(
   } = options;
 
   const binaryPath = binary === 'js' ? BINARY_JS : BINARY_MJS;
-  const requestedMetadata = env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  const requestedMetadata = env.YYLO_SESSION_METADATA_DIRECTORY;
   const metadataDirectory = requestedMetadata
     ? path.resolve(cwd, requestedMetadata)
     : path.join(tempDir, 'built-cli-session-metadata');
@@ -99,10 +99,10 @@ async function executeCLI(
     // Set CI mode for quiet output
     CI: '1',
     // Override any user config
-    JUNO_CODE_CONFIG: '',
+    YYLO_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env,
-    JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
+    YYLO_SESSION_METADATA_DIRECTORY: metadataDirectory,
   };
 
   try {
@@ -177,7 +177,7 @@ describe('Binary Execution Tests', () => {
 
   beforeEach(async () => {
     // Create temporary directory for each test
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-binary-test-'));
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-binary-test-'));
   });
 
   afterEach(async () => {
@@ -285,7 +285,7 @@ describe('Binary Execution Tests', () => {
         'templates/skills/pi/ralph-loop/SKILL.md',
       );
       const fakeBin = path.join(tempDir, 'fake-bin');
-      const servicesDir = path.join(homeDir, '.juno_code', 'services');
+      const servicesDir = path.join(homeDir, '.yylo', 'services');
       const installedExtension = path.join(projectDir, '.pi/extensions/juno-skill-preprocessor.ts');
       const compiledExtension = path.join(projectDir, '.pi/extensions/juno-skill-preprocessor.mjs');
       const installedSkill = path.join(projectDir, '.pi/skills/ralph-loop/SKILL.md');
@@ -371,7 +371,7 @@ exit 1
             ...process.env,
             HOME: homeDir,
             PATH: `${fakeBin}:${process.env.PATH}`,
-            JUNO_CODE_HEADLESS: '1',
+            YYLO_HEADLESS: '1',
             NO_COLOR: '1',
           },
           reject: false,
@@ -465,10 +465,10 @@ exit 1
       const result = await executeCLI([]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain('Juno Code');
+      expect(result.stdout).toContain('YYLO');
       expect(result.stdout).toContain('TypeScript CLI for AI Subagent Orchestration');
-      expect(result.stdout).toContain('juno-code init');
-      expect(result.stdout).toContain('juno-code start');
+      expect(result.stdout).toContain('yylo init');
+      expect(result.stdout).toContain('yylo start');
       expect(result.stdout).toContain('ypl');
       expect(result.stdout).toContain('yy pi --live');
     });
@@ -486,7 +486,7 @@ exit 1
     });
 
     it.each([
-      { level: 'root', args: ['--help'], usage: 'Usage: juno-code' },
+      { level: 'root', args: ['--help'], usage: 'Usage: yylo' },
       { level: 'namespace', args: ['task', '-h'], usage: 'Usage: task' },
       { level: 'subcommand', args: ['scripts', 'update', '--help'], usage: 'Usage: update' },
       { level: 'nested', args: ['integration', 'runtime-refresh', '--help'], usage: 'Usage: runtime-refresh' },
@@ -503,7 +503,7 @@ exit 1
 
       const result = await executeCLI(args, {
         cwd: sandbox,
-        env: { JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata },
+        env: { YYLO_SESSION_METADATA_DIRECTORY: metadata },
       });
 
       expect(result.exitCode).toBe(0);
@@ -606,7 +606,7 @@ exit 1
           '.juno_task/wiki/custom.md': 'owner wiki\n',
           '.juno_task/config/controller-workspace.json': '{"retired":true}\n',
           '.juno_task/managed-assets.json':
-            '{"schemaVersion":1,"packageName":"juno-code","packageVersion":"old","assets":{}}\n',
+            '{"schemaVersion":1,"packageName":"@yylo/cli","packageVersion":"old","assets":{}}\n',
           '.juno_task/managed-conflicts/old/custom.backup': 'old backup\n',
           '.venv_juno/bin/python': 'old requirement runtime\n',
           '.agents/skills/custom/SKILL.md': 'owner agent skill\n',
@@ -723,7 +723,7 @@ exit 1
         // Use the shipped shell binary, not an imported handler. Invalid
         // iteration input stops immediately after startup, before Pi dispatch.
         const result = await execa(
-          path.join(PROJECT_ROOT, 'dist/bin/juno-code.sh'),
+          path.join(PROJECT_ROOT, 'dist/bin/yylo.sh'),
           ['pi', '-p', 'review exact candidate', '-i', 'invalid'],
           {
             cwd: task,
@@ -735,7 +735,7 @@ exit 1
               JUNO_TASK_ROOT: controller,
               JUNO_CONTROLLER_BRANCH: 'controller-branch',
               JUNO_WORKSPACE_ROLE: 'controller',
-              JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(sandbox, 'metadata'),
+              YYLO_SESSION_METADATA_DIRECTORY: path.join(sandbox, 'metadata'),
             },
           },
         );
@@ -750,7 +750,7 @@ exit 1
     });
 
     it('should honor nested-command --cwd when installing managed prompts and macros', async () => {
-      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-managed-cwd-'));
+      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-managed-cwd-'));
       try {
         await fs.ensureDir(path.join(targetDir, '.juno_task'));
         await fs.writeJson(path.join(targetDir, '.juno_task', 'config.json'), {});
@@ -789,7 +789,7 @@ exit 1
     it('loads metadata-controller prepare output and refuses retired persisted controller shapes', async () => {
       const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-metadata-config-'));
       const configPath = path.join(targetDir, '.juno_task', 'config.json');
-      const env = { JUNO_CODE_PROJECT_BOOTSTRAP_WRITES: '0' };
+      const env = { YYLO_PROJECT_BOOTSTRAP_WRITES: '0' };
       try {
         await fs.ensureDir(path.dirname(configPath));
         await fs.writeJson(configPath, {
@@ -930,7 +930,7 @@ exit 1
       expect(result.stdout).toContain('yy clone --name C');
       expect(result.stdout).toContain('yy branches');
       expect(result.stdout).toContain('yy switch C');
-      expect(result.stdout).toContain('future yy cc / juno-code continue follows C');
+      expect(result.stdout).toContain('future yy cc / yylo continue follows C');
       expect(result.stdout).toContain('--name main is reserved');
       expect(result.stdout).toContain(':luna');
       expect(result.stdout).toContain('openai-codex/gpt-5.6-luna');
@@ -989,7 +989,7 @@ exit 1
         await fs.copyFile(path.resolve(process.cwd(), 'src/templates/config', name), path.join(policyDir, name));
       }
       await fs.writeFile(path.join(tempDir, '.gitignore'), [
-        '.juno_task/scripts/', '.juno_task/runtime/', '.venv_juno/', '.env.juno',
+        '.juno_task/scripts/', '.juno_task/runtime/', '.venv_juno/', '.env.yylo',
         '/AGENTS.md', '/CLAUDE.md', '/.agents/', '/.claude/', '/.pi/',
         'built-cli-session-metadata/', '',
       ].join('\n'));
@@ -1038,7 +1038,7 @@ exit 1
       await fs.writeFile(path.join(tempDir, '.gitignore'), [
         '.juno_task/scripts/',
         '.venv_juno/',
-        '.env.juno',
+        '.env.yylo',
         '/AGENTS.md',
         '/CLAUDE.md',
         '/.agents/',
@@ -1122,7 +1122,7 @@ exit 1
       const result = await executeCLI(['integration', 'mystery'], {
         cwd: project,
         expectError: true,
-        env: { JUNO_CODE_SUBAGENT: 'fixture-provider' },
+        env: { YYLO_SUBAGENT: 'fixture-provider' },
       });
 
       expect(result.exitCode).toBe(2);
@@ -1142,7 +1142,7 @@ exit 1
       ['future-command', 'status'],
     ])('compiled preflight preserves free-form prompt input: %s', async (...args) => {
       const result = await executeCLI(args, {
-        env: { JUNO_CODE_PREFLIGHT_ONLY: '1' },
+        env: { YYLO_PREFLIGHT_ONLY: '1' },
       });
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe('');
@@ -1387,9 +1387,9 @@ exit 1
   });
 
   describe('Environment Variables Tests', () => {
-    it('should respect JUNO_CODE_VERBOSE environment variable', async () => {
+    it('should respect YYLO_VERBOSE environment variable', async () => {
       const result = await executeCLI(['--version'], {
-        env: { JUNO_CODE_VERBOSE: 'true' },
+        env: { YYLO_VERBOSE: 'true' },
       });
 
       expect(result.exitCode).toBe(0);
@@ -1505,7 +1505,7 @@ exit 1
       });
 
       const result = await executeCLI(['start'], {
-        env: { JUNO_CODE_MCP_TIMEOUT: '1' }, // Very short timeout
+        env: { YYLO_MCP_TIMEOUT: '1' }, // Very short timeout
         expectError: true,
       });
 
@@ -1602,7 +1602,7 @@ exit 1
         headlessMode: false,
         workingDirectory: tempDir,
         sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
+        envFilePath: '.env.yylo',
         envFileCopied: true,
         hooks: {},
       };
@@ -1617,7 +1617,7 @@ exit 1
         expectError: true,
         env: {
           ...buildContinueSnapshotEnv(scope),
-          JUNO_CODE_CONTINUE_SCOPE: scope,
+          YYLO_CONTINUE_SCOPE: scope,
         },
       });
       const output = result.all || `${result.stdout}\n${result.stderr}`;
@@ -1713,9 +1713,9 @@ exit 1
         expectError: true,
         env: {
           ...fixture.env,
-          JUNO_CODE_CONTINUE_SCOPE: scope,
-          [`JUNO_CODE_LAST_SESSION_ID_${scopeHash}`]: 'SESSION_C',
-          [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
+          YYLO_CONTINUE_SCOPE: scope,
+          [`YYLO_LAST_SESSION_ID_${scopeHash}`]: 'SESSION_C',
+          [`YYLO_LAST_EXECUTION_SETTINGS_${scopeHash}`]: JSON.stringify({
             version: 1,
             subagent: 'claude',
             maxIterations: 5,
@@ -1799,8 +1799,8 @@ exit 1
         expectError: true,
         env: {
           ...envA,
-          [`JUNO_CODE_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_ENV_CONFLICT',
-          [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
+          [`YYLO_LAST_SESSION_ID_${scopeHashA}`]: 'SESSION_ENV_CONFLICT',
+          [`YYLO_LAST_EXECUTION_SETTINGS_${scopeHashA}`]: JSON.stringify({
             version: 1,
             subagent: 'pi',
             maxIterations: 1,
@@ -1815,7 +1815,7 @@ exit 1
     });
 
     it('should handle subagent direct commands (if implemented)', async () => {
-      // Test if subagent shortcuts like 'juno-code claude "prompt"' work
+      // Test if subagent shortcuts like 'yylo claude "prompt"' work
       const result = await executeCLI(['claude', '--help'], { expectError: true });
 
       // This might work or might not, depending on implementation
@@ -1840,7 +1840,7 @@ exit 1
         headlessMode: false,
         workingDirectory: tempDir,
         sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
+        envFilePath: '.env.yylo',
         envFileCopied: true,
         hooks: {},
       };
@@ -1862,7 +1862,7 @@ exit 1
     });
 
     it('should honor --cwd when setting per-subagent default model', async () => {
-      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-code-set-model-target-'));
+      const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-set-model-target-'));
 
       try {
         const baseConfig = {
@@ -1885,7 +1885,7 @@ exit 1
           onHourlyLimit: 'raise',
           interactive: true,
           headlessMode: false,
-          envFilePath: '.env.juno',
+          envFilePath: '.env.yylo',
           envFileCopied: true,
           hooks: {},
         };
@@ -1950,7 +1950,7 @@ exit 1
         headlessMode: false,
         workingDirectory: tempDir,
         sessionDirectory: path.join(tempDir, '.juno_task'),
-        envFilePath: '.env.juno',
+        envFilePath: '.env.yylo',
         envFileCopied: true,
         hooks: {},
       };
@@ -2054,7 +2054,7 @@ echo "RUN_UNTIL_ARGS:$*"
       expect(result.exitCode).toBe(0);
       // The outer bound is passed to the script explicitly...
       expect(output).toContain('RUN_UNTIL_ARGS:--max-iterations 2 pi -p alias prompt');
-      // ...and is stripped from the inner juno-code arguments (-i never forwards).
+      // ...and is stripped from the inner yylo arguments (-i never forwards).
       expect(output).not.toContain('RUN_UNTIL_ARGS:pi -p alias prompt -i 2');
       expect(output).not.toMatch(/RUN_UNTIL_ARGS:.*-i 2/);
       // The exact scope is printed before the loop starts.
@@ -2096,7 +2096,7 @@ echo "RUN_UNTIL_ARGS:$*"
         const result = await executeCLI([continueAlias, '-p', 'next step', '-i', 'invalid'], {
           expectError: true,
           env: {
-            JUNO_CODE_CONTINUE_SCOPE: `binary-continue-alias-${continueAlias}`,
+            YYLO_CONTINUE_SCOPE: `binary-continue-alias-${continueAlias}`,
           },
         });
         const output = result.all || `${result.stdout}\n${result.stderr}`;
@@ -2127,7 +2127,7 @@ echo "RUN_UNTIL_ARGS:$*"
 
     it('should reject a built continuity validation metadata override outside its fresh fixture', async () => {
       await expect(executeCLI(['--version'], {
-        env: { JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(os.tmpdir(), 'not-this-fixture') },
+        env: { YYLO_SESSION_METADATA_DIRECTORY: path.join(os.tmpdir(), 'not-this-fixture') },
       })).rejects.toThrow('Binary validation metadata must stay inside its fresh fixture');
     });
 
@@ -2229,10 +2229,10 @@ echo "RUN_UNTIL_ARGS:$*"
             ...process.env,
             NO_COLOR: '1',
             CI: '1',
-            JUNO_CODE_CONFIG: '',
+            YYLO_CONFIG: '',
             JUNO_TASK_CONFIG: '',
             PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
-            JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
+            YYLO_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
           },
           timeout: BINARY_TIMEOUT,
           reject: false,
@@ -2276,11 +2276,11 @@ echo "RUN_UNTIL_ARGS:$*"
               ...process.env,
               NO_COLOR: '1',
               CI: '1',
-              JUNO_CODE_CONFIG: '',
+              YYLO_CONFIG: '',
               JUNO_TASK_CONFIG: '',
               ...withoutStableTerminalMarkers,
               ...env,
-              JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
+              YYLO_SESSION_METADATA_DIRECTORY: path.join(tempDir, 'built-cli-session-metadata'),
             },
             timeout: BINARY_TIMEOUT,
             reject: false,
@@ -2314,22 +2314,22 @@ echo "RUN_UNTIL_ARGS:$*"
         ].map(([hash, id]) => [hash, { source: 'project+stable_terminal+TMUX_PANE', createdAt: timestamp, lastUsedAt: timestamp, pinned: false, settings: { version: 1, subagent: 'pi', maxIterations: 1 }, active: 'main', branches: { main: { session_id: id, parent: null, updated_at: timestamp } } }])),
       });
       const paneAEnv = {
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
+        YYLO_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneA',
-        [`JUNO_CODE_LAST_SESSION_ID_${paneAFullHash}`]: 'SESSION_PANE_A',
-        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneAFullHash}`]: JSON.stringify({
+        [`YYLO_LAST_SESSION_ID_${paneAFullHash}`]: 'SESSION_PANE_A',
+        [`YYLO_LAST_EXECUTION_SETTINGS_${paneAFullHash}`]: JSON.stringify({
           version: 1,
           subagent: 'pi',
           maxIterations: 1,
         }),
       };
       const paneBEnv = {
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadataDirectory,
+        YYLO_SESSION_METADATA_DIRECTORY: metadataDirectory,
         ...withoutStableTerminalMarkers,
         TMUX_PANE: '%paneB',
-        [`JUNO_CODE_LAST_SESSION_ID_${paneBFullHash}`]: 'SESSION_PANE_B',
-        [`JUNO_CODE_LAST_EXECUTION_SETTINGS_${paneBFullHash}`]: JSON.stringify({
+        [`YYLO_LAST_SESSION_ID_${paneBFullHash}`]: 'SESSION_PANE_B',
+        [`YYLO_LAST_EXECUTION_SETTINGS_${paneBFullHash}`]: JSON.stringify({
           version: 1,
           subagent: 'pi',
           maxIterations: 1,
@@ -2360,7 +2360,7 @@ echo "RUN_UNTIL_ARGS:$*"
     it('should report not_found for continue scope without snapshot state', async () => {
       const result = await executeCLI(['continue-scope', '--json'], {
         env: {
-          JUNO_CODE_CONTINUE_SCOPE: 'binary-continue-scope-missing',
+          YYLO_CONTINUE_SCOPE: 'binary-continue-scope-missing',
         },
       });
 
@@ -2382,18 +2382,18 @@ echo "RUN_UNTIL_ARGS:$*"
     it('doctors, plans, explicitly applies, pins, unpins, and rolls back only isolated fixture state', async () => {
       const metadata = path.join(tempDir, 'metadata');
       const env = {
-        JUNO_CODE_CONTINUE_SCOPE: 'binary-continuity-fixture',
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
+        YYLO_CONTINUE_SCOPE: 'binary-continuity-fixture',
+        YYLO_SESSION_METADATA_DIRECTORY: metadata,
       };
       await fs.ensureDir(path.join(tempDir, '.juno_task'));
       await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
-        envFilePath: '.env.juno',
+        envFilePath: '.env.yylo',
         envFileCopied: false,
       });
       const scope = explicitContinueScopeHash('binary-continuity-fixture');
       const suffix = scope.replace('SCOPE_', '');
-      const original = `SECRET=DO_NOT_PRINT\nJUNO_CODE_LAST_SESSION_ID_SCOPE_${suffix}=SESSION_DO_NOT_PRINT\nJUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='{"version":1,"subagent":"pi"}'\n`;
-      await fs.writeFile(path.join(tempDir, '.env.juno'), original);
+      const original = `SECRET=DO_NOT_PRINT\nYYLO_LAST_SESSION_ID_SCOPE_${suffix}=SESSION_DO_NOT_PRINT\nYYLO_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='{"version":1,"subagent":"pi"}'\n`;
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), original);
 
       const doctor = await executeCLI(['continuity', 'doctor', '--json'], { env });
       expect(doctor.exitCode).toBe(0);
@@ -2403,16 +2403,16 @@ echo "RUN_UNTIL_ARGS:$*"
       const planPath = path.join(tempDir, 'reviewed.json');
       const planned = await executeCLI(['continuity', 'clean', '--plan', planPath], { env });
       expect(planned.exitCode).toBe(0);
-      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+      expect(await fs.readFile(path.join(tempDir, '.env.yylo'), 'utf8')).toBe(original);
       const applied = await executeCLI(['continuity', 'clean', '--apply', planPath], { env });
       expect(applied.exitCode).toBe(0);
       const receiptPath = JSON.parse(applied.stdout).receiptPath;
-      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(
+      expect(await fs.readFile(path.join(tempDir, '.env.yylo'), 'utf8')).toBe(
         'SECRET=DO_NOT_PRINT\n',
       );
 
       expect((await executeCLI(['continuity', 'rollback', receiptPath], { env })).exitCode).toBe(0);
-      expect(await fs.readFile(path.join(tempDir, '.env.juno'), 'utf8')).toBe(original);
+      expect(await fs.readFile(path.join(tempDir, '.env.yylo'), 'utf8')).toBe(original);
 
       expect(
         (await executeCLI(['continuity', 'clean', '--apply', planPath], { env })).exitCode,

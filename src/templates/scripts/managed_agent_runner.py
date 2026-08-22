@@ -112,13 +112,13 @@ LEGACY_METADATA_POLICY = b'''{
     ".juno_task/specs"
   ],
   "runtime": {
-    "package": "juno-code",
+    "package": "@yylo/cli",
     "identity_file": ".juno_task/runtime/identity.json",
     "ignored_roots": [
       ".juno_task/runtime",
       ".juno_task/scripts",
       ".venv_juno",
-      ".env.juno"
+      ".env.yylo"
     ]
   }
 }
@@ -675,7 +675,7 @@ def supported_node_version(version: str) -> bool:
 
 
 def managed_node_contract() -> tuple[dict[str, str], str]:
-    supplied = os.environ.get("JUNO_CODE_NODE_EXECUTABLE", "")
+    supplied = os.environ.get("YYLO_NODE_EXECUTABLE", "")
     yy_executable = shutil.which("yy")
     path_node = shutil.which("node")
     path_version = node_version(path_node)
@@ -732,11 +732,11 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "JUNO_CONTROLLER_BRANCH": args.controller_branch.removeprefix("refs/heads/"),
                 "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict",
                 "JUNO_SUBAGENT_CAPTURE_PATH": str(capture), "JUNO_TOOL_ID": args.tool_id,
-                "JUNO_CODE_SESSION_METADATA_DIRECTORY": str(metadata),
+                "YYLO_SESSION_METADATA_DIRECTORY": str(metadata),
                 "JUNO_CONTROLLER_CHECKPOINT_ACTIVE": "1", "PYTHONUNBUFFERED": "1",
-                "JUNO_CODE_NODE_EXECUTABLE": node_contract["executable"],
+                "YYLO_NODE_EXECUTABLE": node_contract["executable"],
                 "PATH": normalized_path}
-    explicit["JUNO_CODE_PROJECT_BOOTSTRAP_WRITES"] = "0"
+    explicit["YYLO_PROJECT_BOOTSTRAP_WRITES"] = "0"
     if args.mode == "worker":
         explicit.update({"TASK_ROOT": str(Path(args.agent_root).resolve()), "JUNO_AGENT_TASK_ID": args.task_id,
                          "JUNO_WORKSPACE_ROLE": "task"})

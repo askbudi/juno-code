@@ -1,5 +1,5 @@
 /**
- * Simplified Feedback command implementation for juno-code CLI
+ * Simplified Feedback command implementation for yylo CLI
  *
  * Simple feedback collection with minimal interface.
  * Removes complex features: structured data, metadata, categorization, etc.
@@ -255,7 +255,7 @@ function getFeedbackFile(options: FeedbackCommandOptions): string {
 export function configureFeedbackCommand(program: Command): void {
   program
     .command('feedback')
-    .description('Submit feedback about juno-code (enhanced interface)')
+    .description('Submit feedback about yylo (enhanced interface)')
     .argument('[feedback...]', 'Feedback text or issue description')
     .option('-f, --file <path>', 'Feedback file path (default: .juno_task/USER_FEEDBACK.md)')
     .option('--interactive', 'Launch simple interactive feedback form')
@@ -293,18 +293,18 @@ export function configureFeedbackCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code feedback                                    # Interactive feedback form
-  $ juno-code feedback "Issue with command"              # Direct feedback text
-  $ juno-code feedback --interactive                     # Use interactive form
-  $ juno-code feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria
-  $ juno-code feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
-  $ juno-code feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form
-  $ juno-code feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
-  $ juno-code feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
-  $ juno-code feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
-  $ juno-code feedback archive                                                       # Archive resolved issues to keep file lean
-  $ juno-code feedback compact                                                        # Compact CLAUDE.md and AGENTS.md
-  $ juno-code feedback compact CLAUDE.md                                             # Compact specific file
+  $ yylo feedback                                    # Interactive feedback form
+  $ yylo feedback "Issue with command"              # Direct feedback text
+  $ yylo feedback --interactive                     # Use interactive form
+  $ yylo feedback --issue "Bug description" --test "Should work without errors"      # Issue with test criteria
+  $ yylo feedback -is "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
+  $ yylo feedback -is "UI issue" -tc "Should be intuitive"                        # Alternative short form
+  $ yylo feedback --detail "Bug description" --test "Should work without errors"   # Issue with test criteria
+  $ yylo feedback -d "Connection timeout" -t "Connect within 30 seconds"           # Short form flags
+  $ yylo feedback --description "UI issue" --test "Should be intuitive"             # Alternative form
+  $ yylo feedback archive                                                       # Archive resolved issues to keep file lean
+  $ yylo feedback compact                                                        # Compact CLAUDE.md and AGENTS.md
+  $ yylo feedback compact CLAUDE.md                                             # Compact specific file
 
 Enhanced Features:
   1. Issue Description → Structured feedback with optional test criteria
@@ -361,7 +361,7 @@ async function handleCompactCommand(
     if (filesToCompact.length === 0) {
       console.log(chalk.yellow('📄 No config files found to compact'));
       console.log(chalk.gray('   Looking for: CLAUDE.md, AGENTS.md'));
-      console.log(chalk.gray('   Usage: juno-code feedback compact [file1] [file2]'));
+      console.log(chalk.gray('   Usage: yylo feedback compact [file1] [file2]'));
       return;
     }
 
@@ -508,7 +508,7 @@ export async function feedbackCommandHandler(
         throw new ValidationError(
           'Issue description is required when using --issue/-is/--detail/--description or --test/-tc flags',
           [
-            'Use: juno-code feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"',
+            'Use: yylo feedback -is "Issue description" -t "Test criteria" or -tc "Test criteria"',
           ],
         );
       }
@@ -580,10 +580,10 @@ export async function feedbackCommandHandler(
                 ),
               );
               console.log(chalk.gray('Examples:'));
-              console.log(chalk.gray('  juno-code feedback --issue "Bug description"'));
-              console.log(chalk.gray('  juno-code feedback -is "Issue" -t "Test criteria"'));
-              console.log(chalk.gray('  juno-code feedback --detail "Bug description"'));
-              console.log(chalk.gray('  juno-code feedback -d "Issue" -t "Test criteria"'));
+              console.log(chalk.gray('  yylo feedback --issue "Bug description"'));
+              console.log(chalk.gray('  yylo feedback -is "Issue" -t "Test criteria"'));
+              console.log(chalk.gray('  yylo feedback --detail "Bug description"'));
+              console.log(chalk.gray('  yylo feedback -d "Issue" -t "Test criteria"'));
             }
             break;
         }

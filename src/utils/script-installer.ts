@@ -2,7 +2,7 @@
  * Script Installer Utility
  * Handles automatic installation of project-level scripts from templates
  *
- * Unlike ServiceInstaller (which installs to ~/.juno_code/services/),
+ * Unlike ServiceInstaller (which installs to ~/.yylo/services/),
  * this installer manages scripts in the project's .juno_task/scripts/ directory.
  */
 
@@ -139,7 +139,7 @@ export class ScriptInstaller {
     }
 
     const packageScriptsDir = this.getPackageScriptsDir();
-    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    if (!packageScriptsDir) throw new Error('YYLO package scripts are missing');
     const mismatches: string[] = [];
     for (const [relative, binding] of Object.entries(generation.scripts)) {
       const scriptName = path.relative(MANAGED_SCRIPT_ROOT, relative);
@@ -181,7 +181,7 @@ export class ScriptInstaller {
       return { installed: [], updated: [], backups: [] };
     }
     const packageScriptsDir = this.getPackageScriptsDir();
-    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    if (!packageScriptsDir) throw new Error('YYLO package scripts are missing');
     const packageConfigDir = path.join(path.dirname(packageScriptsDir), 'config');
     await assertPackageSource(packageConfigDir, path.dirname(packageScriptsDir), 'directory');
 
@@ -315,7 +315,7 @@ export class ScriptInstaller {
     );
     if (blocking.length === 0) return true;
 
-    if (!silent || process.env.JUNO_CODE_DEBUG === '1') {
+    if (!silent || process.env.YYLO_DEBUG === '1') {
       console.error(
         '⚠ Lifecycle scripts were not updated because managed guidance has unresolved conflicts:',
       );
@@ -359,7 +359,7 @@ export class ScriptInstaller {
     // Log scanning utility
     'log_scanner.sh', // Scans log files for errors/exceptions and creates kanban bug reports
     // Parallel/workflow execution
-    'parallel_runner.sh', // Run juno-code tasks in parallel with tmux visualization
+    'parallel_runner.sh', // Run yylo tasks in parallel with tmux visualization
     'parallel_runner_wait.sh', // Wait for nonblocking parallel_runner runs to complete
     'workflow_runner.sh', // Run ordered YAML workflows with per-step artifacts
     'workflow_assert.py', // Emit named, machine-readable workflow assertions
@@ -368,9 +368,9 @@ export class ScriptInstaller {
     ...MANAGED_SCRIPT_NAMES, // Lifecycle scripts are declared once in managed-assets.json
   ])];
 
-  private static readonly ROOT_DELEGATE_MARKER = '# juno-code-managed: root-git-flow.v1';
+  private static readonly ROOT_DELEGATE_MARKER = '# yylo-managed: root-git-flow.v1';
   private static readonly ROOT_DELEGATE = `#!/usr/bin/env bash
-# juno-code-managed: root-git-flow.v1
+# yylo-managed: root-git-flow.v1
 set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "\${BASH_SOURCE[0]}")/.." && pwd -P)"
 exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
@@ -393,7 +393,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       }
     }
 
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error('[DEBUG] ScriptInstaller: Could not find templates/scripts directory');
       console.error('[DEBUG] Tried:', candidates);
     }
@@ -431,7 +431,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       }
       const packageScriptsDir = this.getPackageScriptsDir();
       if (!packageScriptsDir) {
-        if (!silent && process.env.JUNO_CODE_DEBUG === '1') {
+        if (!silent && process.env.YYLO_DEBUG === '1') {
           console.error('[DEBUG] ScriptInstaller: Package scripts directory not found');
         }
         return false;
@@ -439,7 +439,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
       const sourcePath = path.join(packageScriptsDir, scriptName);
       if (!(await fs.pathExists(sourcePath))) {
-        if (!silent && process.env.JUNO_CODE_DEBUG === '1') {
+        if (!silent && process.env.YYLO_DEBUG === '1') {
           console.error(`[DEBUG] ScriptInstaller: Source script not found: ${sourcePath}`);
         }
         return false;
@@ -469,13 +469,13 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
         console.log(`✓ Installed script: ${scriptName} to .juno_task/scripts/`);
       }
 
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(`[DEBUG] ScriptInstaller: Installed ${scriptName} to ${destPath}`);
       }
 
       return true;
     } catch (error) {
-      if (!silent && process.env.JUNO_CODE_DEBUG === '1') {
+      if (!silent && process.env.YYLO_DEBUG === '1') {
         console.error(`[DEBUG] ScriptInstaller: Failed to install ${scriptName}:`, error);
       }
       return false;
@@ -558,7 +558,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
         return false;
       }
 
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(`[DEBUG] ScriptInstaller: Missing scripts: ${missing.join(', ')}`);
       }
 
@@ -589,7 +589,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
       return installedAny;
     } catch (error) {
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error('[DEBUG] ScriptInstaller: autoInstallMissing error:', error);
       }
       return false;
@@ -634,7 +634,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
       return false;
     } catch (error) {
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(
           `[DEBUG] ScriptInstaller: updateScriptIfNewer error for ${scriptName}:`,
           error,
@@ -757,7 +757,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
     const packageScriptsDir = this.getPackageScriptsDir();
     if (!packageScriptsDir) {
-      throw new Error('Juno Code package scripts are missing');
+      throw new Error('YYLO package scripts are missing');
     }
     await assertPackageSource(packageScriptsDir, packageScriptsDir, 'directory');
     for (const scriptName of this.REQUIRED_SCRIPTS) {
@@ -792,7 +792,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     // control-plane refusal, not a best-effort installer miss.
     await this.assertManagedControllerPackageUpdateAllowed(projectDir);
     try {
-      const debug = process.env.JUNO_CODE_DEBUG === '1';
+      const debug = process.env.YYLO_DEBUG === '1';
       const metadataOnlyController = await this.isMetadataOnlyController(projectDir);
 
       // First check if .juno_task exists (project is initialized)
@@ -868,7 +868,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
       return updatedAny;
     } catch (error) {
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error('[DEBUG] ScriptInstaller: autoUpdate error:', error);
       }
       return false;
@@ -877,7 +877,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
 
   private static async assertForcedScriptsInstalled(projectDir: string): Promise<void> {
     const packageScriptsDir = this.getPackageScriptsDir();
-    if (!packageScriptsDir) throw new Error('Juno Code package scripts are missing');
+    if (!packageScriptsDir) throw new Error('YYLO package scripts are missing');
     for (const scriptName of this.REQUIRED_SCRIPTS) {
       const source = path.join(packageScriptsDir, scriptName);
       const destination = path.join(projectDir, '.juno_task', 'scripts', scriptName);
@@ -902,7 +902,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
    * @returns true if update was successful
    */
   static async forceUpdateAll(projectDir: string, silent = false): Promise<boolean> {
-    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const debug = process.env.YYLO_DEBUG === '1';
 
     try {
       await this.preflightUpdate(projectDir, true);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Codex Service Script for juno-code
+Codex Service Script for yylo
 This script provides a wrapper around OpenAI Codex CLI with configurable options.
 """
 
@@ -104,7 +104,7 @@ Environment Variables:
   CODEX_MODEL                Model name (supports shorthand, default: gpt-5.3-codex)
   CODEX_HIDE_STREAM_TYPES    Comma-separated list of streaming msg types to hide
                              Default: turn_diff,token_count,exec_command_output_delta
-  JUNO_CODE_HIDE_STREAM_TYPES Same as CODEX_HIDE_STREAM_TYPES (alias)
+  YYLO_HIDE_STREAM_TYPES Same as CODEX_HIDE_STREAM_TYPES (alias)
             """
         )
 
@@ -487,7 +487,7 @@ Environment Variables:
         # Resolve hidden stream types (ENV configurable)
         default_hidden = {"turn_diff", "token_count", "exec_command_output_delta"}
         env_hide_1 = os.environ.get("CODEX_HIDE_STREAM_TYPES", "")
-        env_hide_2 = os.environ.get("JUNO_CODE_HIDE_STREAM_TYPES", "")
+        env_hide_2 = os.environ.get("YYLO_HIDE_STREAM_TYPES", "")
         hide_types = set(default_hidden)
         for env_val in (env_hide_1, env_hide_2):
             if env_val:

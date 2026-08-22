@@ -82,7 +82,7 @@ export function createSessionContinuityConfig(
     headlessMode: true,
     workingDirectory: projectRoot,
     sessionDirectory: path.join(projectRoot, '.juno_task'),
-    envFilePath: '.env.juno',
+    envFilePath: '.env.yylo',
     envFileCopied: true,
     hooks: {},
     ...overrides,
@@ -118,7 +118,7 @@ async function writeEnvSnapshot(
   }
 
   if (lines.length > 0) {
-    const envPath = path.join(projectRoot, '.env.juno');
+    const envPath = path.join(projectRoot, '.env.yylo');
     const existing = (await fs.pathExists(envPath)) ? await fs.readFile(envPath, 'utf-8') : '';
     await fs.writeFile(envPath, `${existing}${lines.join('\n')}\n`, 'utf-8');
   }
@@ -191,7 +191,7 @@ export async function createSessionContinuityFixture(
   const env = await writeEnvSnapshot(projectRoot, options.scope, scope, options.envSessionId, settings);
 
   const metadataDirectory = path.join(projectRoot, '.juno_task');
-  env.JUNO_CODE_SESSION_METADATA_DIRECTORY = metadataDirectory;
+  env.YYLO_SESSION_METADATA_DIRECTORY = metadataDirectory;
   const originalProcessEnv = new Map<string, string | undefined>();
   const keysToSeed = Object.keys(env);
   if (options.seedProcessEnv) {
@@ -222,10 +222,10 @@ export async function createSessionContinuityFixture(
     }
   };
 
-  const readEnvFile = () => fs.readFile(path.join(projectRoot, '.env.juno'), 'utf-8');
+  const readEnvFile = () => fs.readFile(path.join(projectRoot, '.env.yylo'), 'utf-8');
   const readBranchState = () => fs.readJson(path.join(projectRoot, '.juno_task', 'session_continuity.v2.json'));
   const writeEnvSession = async (sessionId: string) => {
-    const envPath = path.join(projectRoot, '.env.juno');
+    const envPath = path.join(projectRoot, '.env.yylo');
     const existing = (await fs.pathExists(envPath)) ? await fs.readFile(envPath, 'utf-8') : '';
     const line = `${scope.sessionEnvKey}=${quoteEnvValue(sessionId, 'double')}`;
     const pattern = new RegExp(`^(?:export\\s+)?${scope.sessionEnvKey}=.*$`, 'm');

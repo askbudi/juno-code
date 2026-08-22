@@ -367,6 +367,7 @@ describe('controller_checkpoint.py template script', () => {
     ...process.env,
     JUNO_TASK_ROOT: '',
     JUNO_CONTROLLER_BRANCH: '',
+    JUNO_CONTROLLER_CHECKPOINT_ACTIVE: '',
     JUNO_WORKSPACE_ROLE: '',
     JUNO_CHECKPOINT_AGENT_COMMAND: command,
   });

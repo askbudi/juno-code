@@ -30,6 +30,20 @@ describe('worktree hydration helper', () => {
     await fs.remove(source);
   });
 
+  it('binds installed Node dependencies to the exact package-lock hash', async () => {
+    const pkg = path.join(root, 'pkg');
+    await fs.ensureDir(pkg);
+    await fs.writeJson(path.join(pkg, 'package.json'), { name: 'fixture', version: '1.0.0' });
+    expect(spawnSync('npm', ['install', '--package-lock-only', '--ignore-scripts'], { cwd: pkg }).status).toBe(0);
+    const hydrate = spawnSync('python3', [helper, '--project-root', root, 'hydrate-node', '--cwd', 'pkg'], { encoding: 'utf8' });
+    expect(hydrate.status, hydrate.stderr).toBe(0);
+    const verify = () => spawnSync('python3', [helper, '--project-root', root, 'verify-node-lock', '--cwd', 'pkg'], { encoding: 'utf8' });
+    expect(verify().status).toBe(0);
+    await fs.writeFile(path.join(pkg, 'node_modules/.yylo-package-lock.sha256'), 'stale\n');
+    expect(verify().status).toBe(2);
+    expect(verify().stderr).toContain('missing or stale');
+  });
+
   it('rejects tracked hydration drift', async () => {
     await fs.writeFile(path.join(root, '.gitignore'), '.env\nchanged\n');
     const result = spawnSync('python3', [helper, '--project-root', root, 'verify-clean'], { encoding: 'utf8' });

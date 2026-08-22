@@ -46,13 +46,13 @@ use that ecosystem's deterministic, task-local install. Never copy or symlink a
 dependency directory from another worktree and never substitute arbitrary global
 packages.
 
-For a Juno Code validation root, `cd` to that configured cwd, activate Node 22
+For a YYLO validation root, `cd` to that configured cwd, activate Node 22
 (for example, `source ~/.nvm/nvm.sh && nvm use 22`), and verify its major version.
 Run task-local `npm ci` when `node_modules` is absent or when its recorded lock
 identity differs from the current `package-lock.json`. The following is the
 canonical command; it streams combined stdout/stderr to both the terminal and a
 task-ID-named `/tmp` log, enforces a real timeout, and writes its terminal footer
-immediately. Set `TASK_ID` and run it from the configured Juno Code validation
+immediately. Set `TASK_ID` and run it from the configured YYLO validation
 cwd:
 
 ```bash

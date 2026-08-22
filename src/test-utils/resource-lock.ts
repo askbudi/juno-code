@@ -13,7 +13,7 @@ export const DEFAULT_SHARED_RESOURCE_ACQUIRE_TIMEOUT_MS = 1_200_000;
 export const SHARED_RESOURCE_LOCK_HOOK_TIMEOUT_MS = 1_210_000;
 export const MANAGED_INSTALL_OPERATION_TIMEOUT_MS = 900_000;
 const DEFAULT_DIAGNOSTIC_INTERVAL_MS = 5_000;
-const DEFAULT_LOCK_NAME = 'juno-code-real-git-managed-install.lock';
+const DEFAULT_LOCK_NAME = 'yylo-real-git-managed-install.lock';
 const PYTHON_PROTOCOL = path.resolve(import.meta.dirname, '../templates/scripts/tests/test_task_workspace.py');
 
 export interface TestResourceLockOwner {

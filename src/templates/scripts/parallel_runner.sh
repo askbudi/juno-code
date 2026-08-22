@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run juno-code tasks in parallel with queue management, output extraction, and aggregation.
+Run yylo tasks in parallel with queue management, output extraction, and aggregation.
 
 Modes:
   Headless (default): ThreadPoolExecutor, output to log files only.
@@ -71,7 +71,7 @@ Command file schema v1:
         - .juno_task/workflows/a.yaml
     - id: smoke
       command: |
-        cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+        cd yylo && npm test -- src/utils/__tests__/script-installer.test.ts
       cwd: .
       env:
         NODE_ENV: test
@@ -104,7 +104,7 @@ Arguments:
                  Placeholders: {{task_id}}, {{item}}, {{file_format}}.
   --prompt       Inline prompt template content (same placeholders as --prompt-file).
                  Use --prompt - to read template content from stdin/heredoc.
-  --subagent-args Extra raw args appended to each juno-code invocation.
+  --subagent-args Extra raw args appended to each yylo invocation.
                  Example: --subagent-args "--live --thinking high"
   --tmux         Run in tmux mode. 'windows' (default), 'panes' (side-by-side),
                  or 'tabs' (one dedicated window/tab per task named by task ID).
@@ -113,7 +113,7 @@ Arguments:
   --tmux-handoff Tmux-only mode: dedicate one worker pane/window per task and do not reuse it after completion.
   --max-panes-per-session N  With --tmux-handoff, split large task lists into capped tmux sessions.
   --name         Session name (default: auto-generated batch-N). Tmux session = pc-{name}.
-  --output-dir   Structured output directory. Default: /tmp/juno-code-sessions/{date}/{run_id}.
+  --output-dir   Structured output directory. Default: /tmp/yylo-sessions/{date}/{run_id}.
   --stop         Stop a session. Uses --name if provided, otherwise auto-detects.
   --stop-all     Stop ALL running sessions.
 """
@@ -138,7 +138,8 @@ if _sys.version_info < _PYTHON_MINIMUM:
     if _os.path.isfile(_venv_python):
         _recommendation = (
             "Recommended command:\n"
-            "  %s %s --help" % (_venv_python, _script)
+            "  %s %s --help\n"
+            "If this managed runtime is stale, run `yy scripts update --force`." % (_venv_python, _script)
         )
     else:
         _recommendation = (
@@ -188,12 +189,12 @@ from invocation_correlation import child_invocation_environment
 
 
 _SCOPED_CONTINUITY_KEY_PREFIXES = (
-    "JUNO_CODE_LAST_SESSION_ID_SCOPE_",
-    "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_",
+    "YYLO_LAST_SESSION_ID_SCOPE_",
+    "YYLO_LAST_EXECUTION_SETTINGS_SCOPE_",
 )
 _LEGACY_CONTINUITY_KEYS = {
-    "JUNO_CODE_LAST_SESSION_ID",
-    "JUNO_CODE_LAST_EXECUTION_SETTINGS",
+    "YYLO_LAST_SESSION_ID",
+    "YYLO_LAST_EXECUTION_SETTINGS",
 }
 
 
@@ -208,8 +209,8 @@ def _child_process_environment(base):
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-STALE_CHECK_ENV = "JUNO_CODE_SKIP_SCRIPT_STALE_CHECK"
-TEMPLATE_DIR_ENV = "JUNO_CODE_SCRIPT_TEMPLATE_DIR"
+STALE_CHECK_ENV = "YYLO_SKIP_SCRIPT_STALE_CHECK"
+TEMPLATE_DIR_ENV = "YYLO_SCRIPT_TEMPLATE_DIR"
 
 
 def _display_path(path: Path) -> str:
@@ -235,7 +236,7 @@ def _installed_template_candidates(script_name: str) -> list[Path]:
     if env_template_dir:
         candidates.append(Path(env_template_dir).expanduser() / script_name)
 
-    for command_name in ("yy", "juno-code", "ypl"):
+    for command_name in ("yy", "yylo", "ypl"):
         command_path = shutil.which(command_name)
         if not command_path:
             continue
@@ -275,7 +276,7 @@ def warn_if_runtime_script_is_stale(script_name: str) -> None:
             installed_hash = hashlib.sha256(template_path.read_bytes()).hexdigest()
             if runtime_hash != installed_hash:
                 print(
-                    f"{script_name}: warning: this runtime script differs from the installed juno-code template.\n"
+                    f"{script_name}: warning: this runtime script differs from the installed yylo template.\n"
                     f"  runtime: {_display_path(runtime_path)}\n"
                     f"  installed template: {installed_path}\n"
                     "  update with: yy scripts update --force",
@@ -733,7 +734,7 @@ commands:
       - .juno_task/workflows/b.yaml
   - id: smoke
     command: |
-      cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+      cd yylo && npm test -- src/utils/__tests__/script-installer.test.ts
     timeout_seconds: 300
 '''
 
@@ -1335,7 +1336,7 @@ def _resolve_output_dir(args):
         output_dir = Path(os.environ["JUNO_OUTPUT_DIR"])
     else:
         today = datetime.now().strftime("%Y-%m-%d")
-        output_dir = Path(f"/tmp/juno-code-sessions/{today}")
+        output_dir = Path(f"/tmp/yylo-sessions/{today}")
     if _run_id:
         output_dir = output_dir / _run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1348,7 +1349,7 @@ def _task_output_path(output_dir, task_id):
 
 
 def _parse_result_from_lines(lines):
-    """Parse the most recent juno-code result event from text lines."""
+    """Parse the most recent yylo result event from text lines."""
     for line in reversed(lines):
         idx = line.find('{"type":')
         if idx == -1:
@@ -1369,7 +1370,7 @@ def _strip_parallel_log_prefix(line):
 
     # Task logs may prefix each line with relay metadata:
     #   [HH:MM:SS] [TASKID] ...
-    # Strip these tokens before parsing juno-code summary fields.
+    # Strip these tokens before parsing yylo summary fields.
     line = re.sub(r"^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]\s+", "", line)
     line = re.sub(r"^\[[A-Za-z0-9_-]{3,}\]\s+", "", line)
     return line
@@ -1382,7 +1383,7 @@ def _looks_like_clock_token(token):
 
 
 def _parse_result_from_cli_summary_text(clean_text):
-    """Build a synthetic result payload from juno-code CLI summary text.
+    """Build a synthetic result payload from yylo CLI summary text.
 
     This is a fallback when no structured {"type":"result"} object is present in logs.
     """
@@ -1477,7 +1478,7 @@ def _parse_result_from_cli_summary_text(clean_text):
 
 
 def _parse_result_from_text(text):
-    """Parse latest juno-code result event from text output.
+    """Parse latest yylo result event from text output.
 
     Supports:
     - single-line JSON event logs
@@ -1521,7 +1522,7 @@ def _parse_result_from_text(text):
 
 
 def _parse_result_from_log(task_log_path):
-    """Parse the juno-code result event from a task log file."""
+    """Parse the yylo result event from a task log file."""
     try:
         text = Path(task_log_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -2029,7 +2030,7 @@ def run_stop_all():
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run juno-code tasks in parallel with queue management and output extraction",
+        description="Run yylo tasks in parallel with queue management and output extraction",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""
         Command file schema v1:
@@ -2047,7 +2048,7 @@ def parse_args():
                 - .juno_task/workflows/a.yaml
             - id: smoke
               command: |
-                cd juno-code && npm test -- src/utils/__tests__/script-installer.test.ts
+                cd yylo && npm test -- src/utils/__tests__/script-installer.test.ts
               timeout_seconds: 300
 
         Command entries require unique ids matching [A-Za-z0-9_.-]+ and a command.
@@ -2158,7 +2159,7 @@ def parse_args():
     )
     parser.add_argument(
         "--subagent-args", action="append", default=None,
-        help="Extra raw args appended to each juno-code invocation. Repeatable; values are shell-split.",
+        help="Extra raw args appended to each yylo invocation. Repeatable; values are shell-split.",
     )
     parser.add_argument(
         "--tmux", nargs="?", const="windows", default=None, choices=["windows", "panes", "tabs"],
@@ -2182,7 +2183,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output-dir", type=str, default=None,
-        help="Structured output directory. Default: /tmp/juno-code-sessions/{date}/{run_id}.",
+        help="Structured output directory. Default: /tmp/yylo-sessions/{date}/{run_id}.",
     )
     parser.add_argument(
         "--stop", action="store_true", default=False,
@@ -2514,12 +2515,12 @@ def print_summary(task_ids, results, task_times, wall_elapsed, total_tasks):
 def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
              service="claude", model=":sonnet", file_format="", strict=False,
              subagent_args=None):
-    """Run a single juno-code subprocess (called from its own thread)."""
+    """Run a single yylo subprocess (called from its own thread)."""
     global _completed_count
 
     semaphore.acquire()
     try:
-        log_combined(f"Starting juno-code (thread {threading.current_thread().name})", task_id)
+        log_combined(f"Starting yylo (thread {threading.current_thread().name})", task_id)
         start = time.monotonic()
         start_iso = datetime.now().isoformat()
 
@@ -2532,7 +2533,7 @@ def run_task(task_id, semaphore, pwd, prompt_path=None, output_dir=None,
         env = _build_process_env({"ASSIGNED_TASK_ID": task_id}, task_id=task_id)
 
         cmd = [
-            "juno-code",
+            "yylo",
             "-b", "shell",
             "-s", service,
             "-m", model,
@@ -2981,7 +2982,7 @@ def write_runner_script(task_id, pwd, prompt_path, session_name_short,
         #!/bin/bash
         source %(env_path)s
         cd %(pwd)s
-        juno-code -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks%(subagent_args)s%(prompt_arg)s
+        yylo -b shell -s %(service)s -m %(model)s -i 1 -v --no-hooks%(subagent_args)s%(prompt_arg)s
         echo "___DONE_%(sentinel_id)s_${?}___"
     """) % {
         "env_path": shlex.quote(str(env_path)),
@@ -3983,7 +3984,7 @@ def run_tmux_handoff_batched(args, pwd, prompt_source_label, prompt_template, ou
 # ---------------------------------------------------------------------------
 
 def resolve_session_metadata_directory(controller_root: str) -> str:
-    override = os.environ.get("JUNO_CODE_SESSION_METADATA_DIRECTORY", "").strip()
+    override = os.environ.get("YYLO_SESSION_METADATA_DIRECTORY", "").strip()
     if override:
         candidate = Path(override)
         return str(candidate if candidate.is_absolute() else (Path(controller_root) / candidate).resolve())
@@ -3995,7 +3996,7 @@ def resolve_session_metadata_directory(controller_root: str) -> str:
         return str(Path(completed.stdout.strip()).resolve() / "juno" / "session_metadata")
     identity = hashlib.sha256(str(Path(controller_root).resolve()).encode()).hexdigest()[:16]
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
-    return str(state_home / "juno-code" / "session_metadata" / identity)
+    return str(state_home / "@yylo/cli" / "session_metadata" / identity)
 
 
 def resolve_controller_environment() -> dict[str, str]:
@@ -4016,7 +4017,7 @@ def resolve_controller_environment() -> dict[str, str]:
         "JUNO_TASK_ROOT": controller_root,
         "JUNO_CONTROLLER_SOURCE": resolution["source"],
         "JUNO_WORKSPACE_ROLE": resolution["role"],
-        "JUNO_CODE_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
+        "YYLO_SESSION_METADATA_DIRECTORY": resolve_session_metadata_directory(controller_root),
     }
 
 

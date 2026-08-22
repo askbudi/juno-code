@@ -17,35 +17,35 @@ import {
 } from '../session-continuity-state.js';
 
 const roots: string[] = [];
-const originalMetadata = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+const originalMetadata = process.env.YYLO_SESSION_METADATA_DIRECTORY;
 const sha = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 async function fixture(): Promise<{ root: string; metadata: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-continuity-maintenance-'));
   const metadata = path.join(root, 'metadata');
   roots.push(root);
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = metadata;
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = metadata;
   await fs.ensureDir(path.join(root, '.juno_task'));
   await fs.writeJson(path.join(root, '.juno_task', 'config.json'), {
-    envFilePath: '.env.juno',
+    envFilePath: '.env.yylo',
     envFileCopied: false,
   });
   return { root, metadata };
 }
 afterEach(async () => {
   for (const root of roots.splice(0)) await fs.remove(root);
-  if (originalMetadata === undefined) delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
-  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = originalMetadata;
+  if (originalMetadata === undefined) delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
+  else process.env.YYLO_SESSION_METADATA_DIRECTORY = originalMetadata;
 });
 function legacy(scope: string, session = 'SESSION', settings = '{"version":1,"subagent":"pi"}') {
   const suffix = scope.replace(/^SCOPE_/, '');
-  return `JUNO_CODE_LAST_SESSION_ID_SCOPE_${suffix}=${session}\nJUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='${settings}'\n`;
+  return `YYLO_LAST_SESSION_ID_SCOPE_${suffix}=${session}\nYYLO_LAST_EXECUTION_SETTINGS_SCOPE_${suffix}='${settings}'\n`;
 }
 
 describe('continuity maintenance', () => {
   it('inventories and plans without values, then imports/removes only continuity bytes with mode-600 backup and receipt', async () => {
     const { root } = await fixture();
     const current = resolveContinueScopeContext(
-      { JUNO_CODE_CONTINUE_SCOPE: 'fixture-pane' },
+      { YYLO_CONTINUE_SCOPE: 'fixture-pane' },
       1,
       root,
     );
@@ -53,7 +53,7 @@ describe('continuity maintenance', () => {
       `# keep\r\nTOKEN = "s3cr3t"\r\n\r\n${legacy(current.scopeHash, 'SESSION_SECRET').replaceAll('\n', '\r\n')}TAIL=' exact '`,
       'utf8',
     );
-    await fs.writeFile(path.join(root, '.env.juno'), original, { mode: 0o644 });
+    await fs.writeFile(path.join(root, '.env.yylo'), original, { mode: 0o644 });
     const metadataPath = getSessionContinuityFilePath(root);
     await fs.ensureDir(path.dirname(metadataPath));
     await fs.writeJson(metadataPath, { version: 2, scopes: {} }, { mode: 0o644 });
@@ -77,10 +77,10 @@ describe('continuity maintenance', () => {
     });
     expect(plan.projected.removedAssignments).toBe(2);
     expect(JSON.stringify(plan)).not.toContain('SESSION_SECRET');
-    expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(original);
+    expect(await fs.readFile(path.join(root, '.env.yylo'))).toEqual(original);
 
     const result = await applyContinuityMigrationPlan({ workingDirectory: root, planPath, context: current });
-    expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(
+    expect(await fs.readFile(path.join(root, '.env.yylo'))).toEqual(
       Buffer.from(`# keep\r\nTOKEN = "s3cr3t"\r\n\r\nTAIL=' exact '`),
     );
     expect(
@@ -92,11 +92,11 @@ describe('continuity maintenance', () => {
     expect((await fs.stat(receipt.backups[0].path)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(receipt.metadata.backupPath)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(metadataPath)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(path.join(root, '.env.juno'))).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(path.join(root, '.env.yylo'))).mode & 0o777).toBe(0o600);
 
     await rollbackContinuityMigration({ workingDirectory: root, receiptPath: result.receiptPath });
-    expect(await fs.readFile(path.join(root, '.env.juno'))).toEqual(original);
-    expect((await fs.stat(path.join(root, '.env.juno'))).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(path.join(root, '.env.yylo'))).toEqual(original);
+    expect((await fs.stat(path.join(root, '.env.yylo'))).mode & 0o777).toBe(0o600);
     expect(await fs.readJson(metadataPath)).toEqual({ version: 2, scopes: {} });
     expect((await fs.stat(metadataPath)).mode & 0o777).toBe(0o600);
   });
@@ -108,7 +108,7 @@ describe('continuity maintenance', () => {
       envFilePath: '.env.custom',
       envFileCopied: true,
     });
-    await fs.writeFile(path.join(root, '.env.juno'), legacy(scope, 'A'));
+    await fs.writeFile(path.join(root, '.env.yylo'), legacy(scope, 'A'));
     await fs.writeFile(path.join(root, '.env.custom'), legacy(scope, 'B'));
     await expect(
       createContinuityMigrationPlan({
@@ -119,23 +119,23 @@ describe('continuity maintenance', () => {
 
     await fs.writeFile(
       path.join(root, '.env.custom'),
-      `${legacy(scope, 'A')}JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF=A\n`,
+      `${legacy(scope, 'A')}YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF=A\n`,
     );
     await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/duplicate/i);
     await fs.writeFile(
       path.join(root, '.env.custom'),
-      'JUNO_CODE_LAST_SESSION_ID_SCOPE_NOT_A_HASH=x\n',
+      'YYLO_LAST_SESSION_ID_SCOPE_NOT_A_HASH=x\n',
     );
     await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
 
     await fs.writeFile(
       path.join(root, '.env.custom'),
-      'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF="unterminated\n',
+      'YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF="unterminated\n',
     );
     await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
     await fs.writeFile(
       path.join(root, '.env.custom'),
-      "JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF='unterminated\n",
+      "YYLO_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF='unterminated\n",
     );
     await expect(inspectContinuityState({ workingDirectory: root })).rejects.toThrow(/malformed/i);
   });
@@ -148,7 +148,7 @@ describe('continuity maintenance', () => {
       envFileCopied: true,
     });
     await fs.writeFile(
-      path.join(root, '.env.juno'),
+      path.join(root, '.env.yylo'),
       `DEFAULT = ' exact '  \n${legacy(scope, 'A')}`,
     );
     await fs.ensureDir(path.join(root, 'private'));
@@ -159,7 +159,7 @@ describe('continuity maintenance', () => {
     const planPath = path.join(root, 'plan.json');
     await createContinuityMigrationPlan({ workingDirectory: root, planPath });
     await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
-    expect(await fs.readFile(path.join(root, '.env.juno'), 'utf8')).toBe("DEFAULT = ' exact '  \n");
+    expect(await fs.readFile(path.join(root, '.env.yylo'), 'utf8')).toBe("DEFAULT = ' exact '  \n");
     expect(await fs.readFile(path.join(root, 'private/custom.env'), 'utf8')).toBe(
       'CUSTOM="untouched"',
     );
@@ -168,7 +168,7 @@ describe('continuity maintenance', () => {
   it('migrates custom-only state while preserving absent env paths as absent', async () => {
     const { root } = await fixture();
     const scope = 'SCOPE_0123456789ABCDEF';
-    const defaultPath = path.join(root, '.env.juno');
+    const defaultPath = path.join(root, '.env.yylo');
     const customPath = path.join(root, '.env.custom');
     await fs.writeJson(path.join(root, '.juno_task', 'config.json'), {
       envFilePath: '.env.custom',
@@ -178,7 +178,7 @@ describe('continuity maintenance', () => {
     const planPath = path.join(root, 'custom-only-plan.json');
     const plan = await createContinuityMigrationPlan({ workingDirectory: root, planPath });
     expect(plan.files.map((file) => ({ path: path.basename(file.path), exists: file.exists }))).toEqual([
-      { path: '.env.juno', exists: false },
+      { path: '.env.yylo', exists: false },
       { path: '.env.custom', exists: true },
     ]);
     const { receiptPath } = await applyContinuityMigrationPlan({ workingDirectory: root, planPath });
@@ -200,7 +200,7 @@ describe('continuity maintenance', () => {
   it('rejects stale plans and rollback after concurrent changes', async () => {
     const { root } = await fixture();
     const scope = 'SCOPE_0123456789ABCDEF';
-    const envPath = path.join(root, '.env.juno');
+    const envPath = path.join(root, '.env.yylo');
     await fs.writeFile(envPath, legacy(scope));
     const planPath = path.join(root, 'plan.json');
     await createContinuityMigrationPlan({ workingDirectory: root, planPath });
@@ -224,11 +224,11 @@ describe('continuity maintenance', () => {
   it('rejects plans when live-scope evidence or the invoking current scope changes', async () => {
     const { root, metadata } = await fixture();
     const plannedContext = resolveContinueScopeContext(
-      { JUNO_CODE_CONTINUE_SCOPE: 'planned-scope' },
+      { YYLO_CONTINUE_SCOPE: 'planned-scope' },
       1,
       root,
     );
-    await fs.writeFile(path.join(root, '.env.juno'), legacy(plannedContext.scopeHash));
+    await fs.writeFile(path.join(root, '.env.yylo'), legacy(plannedContext.scopeHash));
     const planPath = path.join(root, 'live-plan.json');
     await createContinuityMigrationPlan({
       workingDirectory: root,
@@ -246,15 +246,15 @@ describe('continuity maintenance', () => {
 
     await fs.remove(path.join(metadata, 'continue_scope_runtime.json'));
     const otherContext = resolveContinueScopeContext(
-      { JUNO_CODE_CONTINUE_SCOPE: 'other-scope' },
+      { YYLO_CONTINUE_SCOPE: 'other-scope' },
       1,
       root,
     );
     await expect(
       applyContinuityMigrationPlan({ workingDirectory: root, planPath, context: otherContext }),
     ).rejects.toThrow(/current scope changed/i);
-    expect(await fs.readFile(path.join(root, '.env.juno'), 'utf8')).toContain(
-      'JUNO_CODE_LAST_SESSION_ID_SCOPE_',
+    expect(await fs.readFile(path.join(root, '.env.yylo'), 'utf8')).toContain(
+      'YYLO_LAST_SESSION_ID_SCOPE_',
     );
   });
 
@@ -265,7 +265,7 @@ describe('continuity maintenance', () => {
       envFilePath: '.env.custom',
       envFileCopied: true,
     });
-    const defaultPath = path.join(root, '.env.juno');
+    const defaultPath = path.join(root, '.env.yylo');
     const customPath = path.join(root, '.env.custom');
     await fs.writeFile(defaultPath, `${legacy(scope)}DEFAULT=before\n`);
     await fs.writeFile(customPath, `${legacy(scope)}CUSTOM=before\n`);
@@ -292,7 +292,7 @@ describe('continuity maintenance', () => {
   it('never embeds env values in plan hashes or summaries', async () => {
     const { root } = await fixture();
     await fs.writeFile(
-      path.join(root, '.env.juno'),
+      path.join(root, '.env.yylo'),
       `${legacy('SCOPE_0123456789ABCDEF', 'DO_NOT_PRINT')}API_SECRET=TOP_SECRET\n`,
     );
     const plan = await createContinuityMigrationPlan({
@@ -302,6 +302,6 @@ describe('continuity maintenance', () => {
     const serialized = JSON.stringify(plan);
     expect(serialized).not.toContain('DO_NOT_PRINT');
     expect(serialized).not.toContain('TOP_SECRET');
-    expect(plan.files[0]?.sha256).toBe(sha(await fs.readFile(path.join(root, '.env.juno'))));
+    expect(plan.files[0]?.sha256).toBe(sha(await fs.readFile(path.join(root, '.env.yylo'))));
   });
 });

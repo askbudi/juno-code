@@ -11,7 +11,7 @@ import { verifyInstalledExecutionEnvelope } from './verify-benchmark-installed-e
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const junoCodeRoot = resolve(scriptDirectory, '..');
 const repositoryRoot = resolve(junoCodeRoot, '..');
-const fixtureRoot = await mkdtemp(join(tmpdir(), 'juno-benchmark-release-smoke-'));
+const fixtureRoot = await mkdtemp(join(tmpdir(), 'yylo-benchmark-release-smoke-'));
 const sourceRoot = join(fixtureRoot, 'source');
 const packDirectory = join(fixtureRoot, 'packs');
 const prefix = join(fixtureRoot, 'prefix');
@@ -45,7 +45,7 @@ function run(command, args, options = {}) {
 
 const sha256 = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const packageIdentity = (root) => JSON.parse(run('node', ['-e', "const p=require('./package.json');process.stdout.write(JSON.stringify({name:p.name,version:p.version}))"], { cwd: root }).stdout);
-const versionOutput = (command, args, options) => run(command, args, options).stdout.trim().replace(/^juno-benchmark\s+/u, '');
+const versionOutput = (command, args, options) => run(command, args, options).stdout.trim().replace(/^yylo-benchmark\s+/u, '');
 
 function packedArtifact(projectRoot) {
   const result = run('npm', ['pack', '--silent', '--json', '--pack-destination', packDirectory], { cwd: projectRoot });
@@ -90,8 +90,8 @@ try {
   const junoCodeArtifact = packedArtifact(stagedJunoCodeRoot);
   const evidenceArtifacts = join(stagedBenchmarkRoot, '.release-evidence');
   await mkdir(evidenceArtifacts);
-  await copyFile(benchmarkArtifact, join(evidenceArtifacts, 'juno-benchmark.tgz'));
-  await copyFile(junoCodeArtifact, join(evidenceArtifacts, 'juno-code.tgz'));
+  await copyFile(benchmarkArtifact, join(evidenceArtifacts, 'yylo-benchmark.tgz'));
+  await copyFile(junoCodeArtifact, join(evidenceArtifacts, 'yylo-cli.tgz'));
   run('npm', ['install', '--prefix', prefix, benchmarkArtifact, junoCodeArtifact]);
 
   const bin = join(prefix, 'node_modules', '.bin');
@@ -100,12 +100,12 @@ try {
   );
   env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`;
   const yy = join(bin, 'yy');
-  const benchmark = join(bin, 'juno-benchmark');
+  const benchmark = join(bin, 'yylo-benchmark');
   const benchmarkPackage = packageIdentity(stagedBenchmarkRoot);
   const junoPackage = packageIdentity(stagedJunoCodeRoot);
-  const requiredBenchmarkVersion = JSON.parse(await readFile(join(stagedJunoCodeRoot, 'package.json'), 'utf8')).junoBenchmark?.version;
+  const requiredBenchmarkVersion = JSON.parse(await readFile(join(stagedJunoCodeRoot, 'package.json'), 'utf8')).yyloBenchmark?.version;
   if (requiredBenchmarkVersion !== benchmarkPackage.version) {
-    throw new Error(`Juno Code requires benchmark ${requiredBenchmarkVersion ?? '<missing>'}, packed artifact is ${benchmarkPackage.version}`);
+    throw new Error(`YYLO requires benchmark ${requiredBenchmarkVersion ?? '<missing>'}, packed artifact is ${benchmarkPackage.version}`);
   }
 
   const yyHelp = run(yy, ['--help'], { cwd: fixtureRoot, env });
@@ -129,7 +129,7 @@ try {
     }
   }
   if (versionOutput(benchmark, ['--version'], { cwd: fixtureRoot, env }) !== requiredBenchmarkVersion) {
-    throw new Error('Packed standalone version does not satisfy the exact Juno Code contract');
+    throw new Error('Packed standalone version does not satisfy the exact YYLO contract');
   }
 
   // Prove the packed standalone and yy delegate expose the same live generic
@@ -149,7 +149,7 @@ try {
       redaction: { patterns: [], retain_prompt: false } }],
   }));
   await writeFile(join(workflowProject, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol'] }));
-  await writeFile(join(workflowProject, 'juno-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1',
+  await writeFile(join(workflowProject, 'yylo-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1',
     repository_id: 'packed-live', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol' } }));
   run('git', ['init', '-b', 'fixture'], { cwd: workflowProject, env });
   run('git', ['config', 'user.email', 'fixture@example.test'], { cwd: workflowProject, env });
@@ -179,9 +179,9 @@ else throw new Error('unsupported operation'); process.stdout.write(JSON.stringi
   const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env });
   if (standalonePlan.stdout !== delegatedPlan.stdout || standalonePlan.stderr !== delegatedPlan.stderr) throw new Error('Packed live workflow plans differ');
   await writeFile(join(workflowProject, 'plan.json'), standalonePlan.stdout);
-  const liveBase = { ...env, JUNO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
-  const standaloneLiveEnv = { ...liveBase, JUNO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-standalone') };
-  const delegatedLiveEnv = { ...liveBase, JUNO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-delegated') };
+  const liveBase = { ...env, YYLO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
+  const standaloneLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-standalone') };
+  const delegatedLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-delegated') };
   const liveOperations = [
     ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
     ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
@@ -202,7 +202,7 @@ else throw new Error('unsupported operation'); process.stdout.write(JSON.stringi
   // standalone and delegated launches one identical observable child process.
   const probeBin = join(fixtureRoot, 'probe-bin'); await mkdir(probeBin);
   const probeRecord = join(fixtureRoot, 'probe-record.json');
-  const probe = join(probeBin, 'juno-benchmark');
+  const probe = join(probeBin, 'yylo-benchmark');
   await writeFile(probe, `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -245,10 +245,10 @@ process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
   } else {
   const builtBin = join(fixtureRoot, 'built-bin'); await mkdir(builtBin);
   const builtBenchmarkEntry = join(stagedBenchmarkRoot, 'dist/bin.js');
-  const builtBenchmark = join(builtBin, 'juno-benchmark');
+  const builtBenchmark = join(builtBin, 'yylo-benchmark');
   await writeFile(builtBenchmark, `#!/bin/sh\nexec "${process.execPath}" "${builtBenchmarkEntry}" "$@"\n`, { mode: 0o755 });
   const builtEnv = { ...env, PATH: `${builtBin}${delimiter}${env.PATH}` };
-  const builtYy = join(stagedJunoCodeRoot, 'dist/bin/juno-code.sh');
+  const builtYy = join(stagedJunoCodeRoot, 'dist/bin/yylo.sh');
   const gitCommit = run('git', ['rev-parse', 'HEAD']).stdout.trim();
   const gitTreeBefore = run('git', ['rev-parse', 'HEAD^{tree}']).stdout.trim();
   if (run('git', ['status', '--porcelain']).stdout !== '') throw new Error('release-readiness source worktree is not clean');
@@ -266,14 +266,14 @@ process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
     const command = api.RELEASE_VERIFICATION_COMMANDS[kind];
     const executionEnv = {
       ...env,
-      JUNO_BENCHMARK_RELEASE_SOURCE_TREE: gitTreeBefore,
-      JUNO_BENCHMARK_RELEASE_COMMAND_HASH: api.canonicalHash(command),
+      YYLO_BENCHMARK_RELEASE_SOURCE_TREE: gitTreeBefore,
+      YYLO_BENCHMARK_RELEASE_COMMAND_HASH: api.canonicalHash(command),
       VITEST_MAX_THREADS: '1',
       VITEST_MIN_THREADS: '1',
       VITEST_MAX_FORKS: '1',
       VITEST_MIN_FORKS: '1',
       ...(kind === 'coverage' ? {
-        JUNO_BENCHMARK_RELEASE_CASE_EVIDENCE: releaseCaseEvidencePath,
+        YYLO_BENCHMARK_RELEASE_CASE_EVIDENCE: releaseCaseEvidencePath,
         NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${vitestReleaseHarness}`.trim(),
       } : {}),
     };
@@ -351,7 +351,7 @@ process.exit(Number(process.env.JUNO_DISTRIBUTION_EXIT));
       { installation: 'installed', surface: 'delegate', benchmark_version: versionOutput(yy, ['benchmark', '--version'], { env }), juno_code_version: junoPackage.version },
     ],
     verification_evidence: verificationEvidence,
-  }, { forbiddenValues: [fixtureRoot, process.env.HOME ?? '', process.env.XDG_CONFIG_HOME ?? '', process.env.JUNO_BENCHMARK_REGISTRY ?? ''] });
+  }, { forbiddenValues: [fixtureRoot, process.env.HOME ?? '', process.env.XDG_CONFIG_HOME ?? '', process.env.YYLO_BENCHMARK_REGISTRY ?? ''] });
   process.stdout.write(`${JSON.stringify(readiness)}\nbenchmark release artifact smoke passed\n`);
   }
 } finally {

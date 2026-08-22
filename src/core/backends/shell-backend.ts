@@ -1,7 +1,7 @@
 /**
- * Shell Backend Implementation for juno-code
+ * Shell Backend Implementation for yylo
  *
- * Executes shell scripts from ~/.juno_code/services/ directory
+ * Executes shell scripts from ~/.yylo/services/ directory
  * Supports JSON streaming output and converts to progress events
  */
 
@@ -36,7 +36,7 @@ export interface ShellBackendConfig {
   /** Working directory for execution */
   workingDirectory: string;
 
-  /** Path to services directory (default: ~/.juno_code/services) */
+  /** Path to services directory (default: ~/.yylo/services) */
   servicesPath: string;
 
   /** Enable debug logging */
@@ -395,7 +395,7 @@ export function formatDuration(ms: number): string {
 // =============================================================================
 
 /**
- * Shell backend that executes scripts from ~/.juno_code/services/
+ * Shell backend that executes scripts from ~/.yylo/services/
  */
 export class ShellBackend implements Backend {
   readonly type = 'shell' as const;
@@ -762,7 +762,7 @@ export class ShellBackend implements Backend {
       return { instruction, byteLength, mode: 'argv-env', thresholdBytes };
     }
 
-    const promptDir = path.join(os.tmpdir(), 'juno-code');
+    const promptDir = path.join(os.tmpdir(), 'yylo');
     await fsExtra.ensureDir(promptDir);
     const safeToolId = toolId.replace(/[^a-zA-Z0-9_.-]/g, '_');
     const promptFilePath = path.join(

@@ -1,6 +1,6 @@
 /**
  * Services Command
- * Manages juno-code service scripts (install, list, uninstall)
+ * Manages yylo service scripts (install, list, uninstall)
  */
 
 import { Command } from 'commander';
@@ -9,20 +9,20 @@ import { ServiceInstaller } from '../../utils/service-installer.js';
 
 export function createServicesCommand(): Command {
   const servicesCmd = new Command('services')
-    .description('Manage juno-code service scripts')
+    .description('Manage yylo service scripts')
     .addHelpText(
       'after',
       `
 Examples:
-  $ juno-code services install            Install service scripts to ~/.juno_code/services/
-  $ juno-code services install --force    Reinstall/refresh service scripts (codex.py/claude.py/gemini.py)
-  $ juno-code services list               List installed service scripts
-  $ juno-code services status             Check installation status
-  $ juno-code services uninstall          Remove all service scripts
-  $ juno-code services path               Show services directory path
+  $ yylo services install            Install service scripts to ~/.yylo/services/
+  $ yylo services install --force    Reinstall/refresh service scripts (codex.py/claude.py/gemini.py)
+  $ yylo services list               List installed service scripts
+  $ yylo services status             Check installation status
+  $ yylo services uninstall          Remove all service scripts
+  $ yylo services path               Show services directory path
 
 Service scripts are Python/shell scripts that provide additional functionality
-and can be customized by users. They are installed to ~/.juno_code/services/
+and can be customized by users. They are installed to ~/.yylo/services/
 where users can modify or extend them.
     `,
     );
@@ -30,7 +30,7 @@ where users can modify or extend them.
   // Install subcommand
   servicesCmd
     .command('install')
-    .description('Install service scripts to ~/.juno_code/services/')
+    .description('Install service scripts to ~/.yylo/services/')
     .option('-f, --force', 'Force reinstallation even if already installed')
     .action(async (options) => {
       try {
@@ -70,7 +70,7 @@ where users can modify or extend them.
 
         if (!isInstalled) {
           console.log(chalk.yellow('⚠ No services installed'));
-          console.log(chalk.dim('  Run: juno-code services install'));
+          console.log(chalk.dim('  Run: yylo services install'));
           return;
         }
 
@@ -118,7 +118,7 @@ where users can modify or extend them.
           }
         } else {
           console.log(chalk.yellow('  Status: Not installed'));
-          console.log(chalk.dim('  Run: juno-code services install'));
+          console.log(chalk.dim('  Run: yylo services install'));
         }
       } catch (error) {
         console.error(chalk.red('✗ Failed to check status:'));

@@ -1,5 +1,5 @@
 /**
- * Session command implementation for juno-code CLI
+ * Session command implementation for yylo CLI
  *
  * Provides comprehensive session management including list, info, remove, and clean
  * operations with detailed statistics, filtering, and cleanup capabilities.
@@ -293,8 +293,8 @@ async function handleSessionInfo(
 
   if (!sessionId) {
     console.log(chalk.red('Session ID is required'));
-    console.log(chalk.gray('Usage: juno-code session info <session-id>'));
-    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
+    console.log(chalk.gray('Usage: yylo session info <session-id>'));
+    console.log(chalk.gray('Use "yylo session list" to see available sessions'));
     return;
   }
 
@@ -302,7 +302,7 @@ async function handleSessionInfo(
 
   if (!session) {
     console.log(chalk.red(`Session not found: ${sessionId}`));
-    console.log(chalk.gray('Use "juno-code session list" to see available sessions'));
+    console.log(chalk.gray('Use "yylo session list" to see available sessions'));
     return;
   }
 
@@ -322,7 +322,7 @@ async function handleSessionRemove(
 
   if (sessionIds.length === 0) {
     console.log(chalk.red('At least one session ID is required'));
-    console.log(chalk.gray('Usage: juno-code session remove <session-id> [session-id...]'));
+    console.log(chalk.gray('Usage: yylo session remove <session-id> [session-id...]'));
     process.exit(1);
   }
 
@@ -520,15 +520,15 @@ Subcommands:
   clean, cleanup              Clean up old/empty sessions
 
 Examples:
-  $ juno-code session                                 # List all sessions
-  $ juno-code session list --limit 10                # Show 10 most recent
-  $ juno-code session list --subagent claude         # Filter by subagent
-  $ juno-code session list --status completed failed # Filter by status
-  $ juno-code session info abc123                    # Show session details
-  $ juno-code session remove abc123 def456           # Remove sessions
-  $ juno-code session remove abc123 --force          # Skip confirmation
-  $ juno-code session clean --days 30                # Remove sessions >30 days
-  $ juno-code session clean --empty --force          # Remove empty sessions
+  $ yylo session                                 # List all sessions
+  $ yylo session list --limit 10                # Show 10 most recent
+  $ yylo session list --subagent claude         # Filter by subagent
+  $ yylo session list --status completed failed # Filter by status
+  $ yylo session info abc123                    # Show session details
+  $ yylo session remove abc123 def456           # Remove sessions
+  $ yylo session remove abc123 --force          # Skip confirmation
+  $ yylo session clean --days 30                # Remove sessions >30 days
+  $ yylo session clean --empty --force          # Remove empty sessions
 
 Environment Variables:
   JUNO_TASK_SESSION_DIR      Session storage directory

@@ -206,7 +206,9 @@ describe('merge queue CLI', () => {
     }
     expect(git(root, 'status', '--porcelain')).not.toBe('');
     const previousTaskRoot = process.env.JUNO_TASK_ROOT;
+    const previousCheckpointActive = process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
     process.env.JUNO_TASK_ROOT = '';
+    delete process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
     try {
       await checkpointMergeQueueAfterFinalization('next', root, 0, mergedResult);
       expect(git(root, 'status', '--porcelain')).toBe('');
@@ -222,6 +224,8 @@ describe('merge queue CLI', () => {
     } finally {
       if (previousTaskRoot === undefined) delete process.env.JUNO_TASK_ROOT;
       else process.env.JUNO_TASK_ROOT = previousTaskRoot;
+      if (previousCheckpointActive === undefined) delete process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
+      else process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE = previousCheckpointActive;
     }
   }, 30_000);
 
@@ -232,12 +236,16 @@ describe('merge queue CLI', () => {
     const before = git(root, 'rev-parse', 'HEAD');
     const warning = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const previousTaskRoot = process.env.JUNO_TASK_ROOT;
+    const previousCheckpointActive = process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
     process.env.JUNO_TASK_ROOT = '';
+    delete process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
     try {
       await expect(checkpointMergeQueueAfterFinalization('next', root, 0, mergedResult)).resolves.toBeUndefined();
     } finally {
       if (previousTaskRoot === undefined) delete process.env.JUNO_TASK_ROOT;
       else process.env.JUNO_TASK_ROOT = previousTaskRoot;
+      if (previousCheckpointActive === undefined) delete process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE;
+      else process.env.JUNO_CONTROLLER_CHECKPOINT_ACTIVE = previousCheckpointActive;
     }
     expect(git(root, 'rev-parse', 'HEAD')).toBe(before);
     expect(git(root, 'status', '--porcelain')).toContain('.juno_task/tasks/T123.md');

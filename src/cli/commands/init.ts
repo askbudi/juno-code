@@ -1,5 +1,5 @@
 /**
- * Simplified Init command implementation for juno-code CLI
+ * Simplified Init command implementation for yylo CLI
  *
  * Minimal flow: Project Root → Main Task → Editor Selection → Git Setup → Save
  * Removes all complex features: token counting, cost calculation, character limits, etc.
@@ -47,7 +47,7 @@ class SimpleInitTUI {
    * Simplified gather method implementing the minimal flow
    */
   async gather(): Promise<InitializationContext> {
-    console.log(chalk.blue.bold('\n🚀 Juno Code Project Initialization\n'));
+    console.log(chalk.blue.bold('\n🚀 YYLO Project Initialization\n'));
 
     // 1. Project Root
     console.log(chalk.yellow('📁 Step 1: Project Directory'));
@@ -350,7 +350,7 @@ This directory contains detailed specifications for the project components.
 
 ## System Overview
 
-This project uses AI-assisted development with juno-code to achieve: ${variables.TASK}
+This project uses AI-assisted development with yylo to achieve: ${variables.TASK}
 
 ## Architectural Decisions
 
@@ -373,7 +373,7 @@ This project uses AI-assisted development with juno-code to achieve: ${variables
 
 - **Language**: TypeScript
 - **Runtime**: Node.js
-- **CLI**: juno-code with AI subagent integration
+- **CLI**: yylo with AI subagent integration
 - **Version Control**: Git
 - **Documentation**: Markdown-based
 
@@ -463,34 +463,34 @@ ${variables.DESCRIPTION}
 
 ## Overview
 
-This project uses juno-code for AI-powered development with ${variables.EDITOR} as the primary AI subagent.
+This project uses yylo for AI-powered development with ${variables.EDITOR} as the primary AI subagent.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js (v18 or higher)
-- juno-code CLI installed
+- yylo CLI installed
 - Git for version control
 
 ### Quick Start
 
 \`\`\`bash
 # Start task execution with production-ready AI instructions
-juno-code start
+yylo start
 
 # Or use main command with preferred subagent
-juno-code -s ${variables.EDITOR}
+yylo -s ${variables.EDITOR}
 
 # Provide feedback on the development process
-juno-code feedback
+yylo feedback
 \`\`\`
 
 ## Project Structure
 
 \`\`\`
 .
-├── .env.juno              # Project env file auto-loaded by juno-code
+├── .env.yylo              # Project env file auto-loaded by yylo
 ├── .juno_task/
 │   ├── prompt.md          # Production-ready AI instructions
 │   ├── init.md            # Task breakdown and constraints
@@ -544,12 +544,12 @@ ${variables.GIT_URL ? `\n## Repository\n${variables.GIT_URL}` : ''}
 1. **Review Task**: Check \`.juno_task/init.md\` for main task
 2. **Check Plan**: Review \`.juno_task/plan.md\` for current priorities
 3. **Track Implementation**: Follow \`.juno_task/implement.md\` for current implementation steps
-4. **Provide Feedback**: Use \`juno-code feedback\` for issues or suggestions
+4. **Provide Feedback**: Use \`yylo feedback\` for issues or suggestions
 5. **Monitor Progress**: Track AI development through \`.juno_task/prompt.md\`
 
 ---
 
-Created with juno-code on ${variables.CURRENT_DATE}
+Created with yylo on ${variables.CURRENT_DATE}
 ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
 `;
 
@@ -577,16 +577,16 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   }
 
   private async createProjectEnvFile(targetDirectory: string): Promise<void> {
-    const envPath = path.join(targetDirectory, '.env.juno');
+    const envPath = path.join(targetDirectory, '.env.yylo');
 
     if (!(await fs.pathExists(envPath))) {
       await fs.writeFile(
         envPath,
         '# Pin juno-kanban task storage to this project when commands run from here.\nJUNO_TASK_ROOT=.\n',
       );
-      console.log(chalk.green('   ✓ Created .env.juno'));
+      console.log(chalk.green('   ✓ Created .env.yylo'));
     } else {
-      console.log(chalk.gray('   ℹ️  .env.juno already exists'));
+      console.log(chalk.gray('   ℹ️  .env.yylo already exists'));
     }
   }
 
@@ -801,11 +801,11 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
   private printNextSteps(targetDirectory: string, editor: string): void {
     console.log(chalk.blue('\n🎯 Next Steps:'));
     console.log(chalk.white(`   cd ${targetDirectory}`));
-    console.log(chalk.white('   juno-code start           # Start task execution'));
-    console.log(chalk.white(`   juno-code -s ${editor}       # Quick execution with ${editor}`));
+    console.log(chalk.white('   yylo start           # Start task execution'));
+    console.log(chalk.white(`   yylo -s ${editor}       # Quick execution with ${editor}`));
     console.log(chalk.gray('\n💡 Tips:'));
     console.log(chalk.gray('   - Edit .juno_task/prompt.md to modify your main task'));
-    console.log(chalk.gray('   - Use "juno-code --help" to see all available commands'));
+    console.log(chalk.gray('   - Use "yylo --help" to see all available commands'));
     console.log(chalk.gray('   - Run .juno_task/scripts/clean_logs_folder.sh to archive old logs'));
   }
 
@@ -884,7 +884,7 @@ ${variables.EDITOR ? `using ${variables.EDITOR} as primary AI subagent` : ''}
           // Add all files and create initial commit
           execSync('git add .', { cwd: targetDirectory, stdio: 'ignore' });
 
-          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with juno-code using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [juno-code](https://github.com/yylo-dev/yylo)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+          const commitMessage = `Initial commit: ${this.context.task || 'Project initialization'}\n\n🤖 Generated with yylo using ${this.context.subagent} subagent\n🎯 Main Task: ${this.context.task}\n\n🚀 Generated with [yylo](https://github.com/yylo-dev/yylo)\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
 
           execSync(`git commit -m "${commitMessage}"`, {
             cwd: targetDirectory,
@@ -971,7 +971,7 @@ export async function initCommandHandler(
     const globalOptions = command.parent?.opts() || {};
     const allOptions = { ...options, ...globalOptions };
 
-    console.log(chalk.blue.bold('🎯 Juno Code - Simplified Initialization'));
+    console.log(chalk.blue.bold('🎯 YYLO - Simplified Initialization'));
 
     let context: InitializationContext;
 
@@ -1059,7 +1059,7 @@ export async function initCommandHandler(
 export function configureInitCommand(program: Command): void {
   program
     .command('init')
-    .description('Initialize new juno-code project - supports both interactive and inline modes')
+    .description('Initialize new yylo project - supports both interactive and inline modes')
     .argument(
       '[description]',
       'Task description for inline mode (optional - triggers inline mode if provided)',
@@ -1098,23 +1098,23 @@ export function configureInitCommand(program: Command): void {
       `
 Modes:
   Interactive Mode (default):
-    $ juno-code init                                    # Opens interactive TUI
-    $ juno-code init --interactive                      # Force interactive mode
+    $ yylo init                                    # Opens interactive TUI
+    $ yylo init --interactive                      # Force interactive mode
 
   Inline Mode (for automation):
-    $ juno-code init "Build a REST API"                 # Minimal inline mode
-    $ juno-code init "Build a REST API" --subagent claude --git-repo https://github.com/owner/repo
-    $ juno-code init "Build a REST API" --subagent codex --directory ./my-project
+    $ yylo init "Build a REST API"                 # Minimal inline mode
+    $ yylo init "Build a REST API" --subagent claude --git-repo https://github.com/owner/repo
+    $ yylo init "Build a REST API" --subagent codex --directory ./my-project
 
 Examples:
   # Interactive mode (default)
-  $ juno-code init                                    # Initialize in current directory with TUI
-  $ juno-code init --directory my-project             # Initialize in ./my-project with TUI
+  $ yylo init                                    # Initialize in current directory with TUI
+  $ yylo init --directory my-project             # Initialize in ./my-project with TUI
 
   # Inline mode (automation-friendly)
-  $ juno-code init "Create a TypeScript library"      # Quick init with inline description
-  $ juno-code init "Build web app" --subagent claude  # Specify AI subagent
-  $ juno-code init "API server" --git-repo https://github.com/me/repo
+  $ yylo init "Create a TypeScript library"      # Quick init with inline description
+  $ yylo init "Build web app" --subagent claude  # Specify AI subagent
+  $ yylo init "API server" --git-repo https://github.com/me/repo
 
 Arguments & Options:
   [description]              Task description (optional - triggers inline mode)

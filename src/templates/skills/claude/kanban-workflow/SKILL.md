@@ -1,12 +1,12 @@
 ---
 name: kanban-workflow
-description: Comprehensive guide for using Juno Ledger task management. Covers all commands (create, list, search, get, mark, update, archive, deps, ready, order, merge), dependency management, best practices, and workflow patterns. Use when you need to interact with the Juno Ledger board.
+description: Comprehensive guide for using YYLO Ledger task management. Covers all commands (create, list, search, get, mark, update, archive, deps, ready, order, merge), dependency management, best practices, and workflow patterns. Use when you need to interact with the YYLO Ledger board.
 argument-hint: "[command or workflow question]"
 ---
 
-## Juno Ledger CLI Reference
+## YYLO Ledger CLI Reference
 
-Use `yy ledger` for all commands. It delegates to the canonical controller `kanban.sh` compatibility wrapper and the `juno-kanban` Python distribution. `yy kanban` remains a fully supported alias.
+Use `yy ledger` for all commands. It delegates to the canonical controller `kanban.sh` compatibility wrapper and the `yylo-ledger` Python distribution. `yy kanban` remains a fully supported alias.
 
 ### Opt-in cross-project routing
 
@@ -155,9 +155,9 @@ Add `--raw` for compact output. Add `-p` for pretty print.
 
 ### Canonical Controller Routing
 
-Juno Ledger mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—Juno Ledger never switches Git branches or falls back silently.
+YYLO Ledger mutation resolves the controller in this order: explicit `JUNO_TASK_ROOT`, repository-local registration, then the current project root. Diagnose before orchestration with `.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation kanban`. The resolver may bootstrap or idempotently confirm a registration, but changing an existing controller requires `yy migrate registration plan` followed by a separately authorized apply. Explicit/registered path or branch errors fail closed—YYLO Ledger never switches Git branches or falls back silently.
 
-Run Juno Ledger and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
+Run YYLO Ledger and workflows from the controller. A task checkout may implement/test but routes task/session writes to that controller. An integration-owner checkout stays clean and refuses Kanban/orchestration/session writes in strict mode; launch from the controller and pass the product checkout separately as `TASK_ROOT`.
 
 ### Environment Variables
 

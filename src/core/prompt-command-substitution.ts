@@ -27,7 +27,7 @@ const TRIPLE_BACKTICK_MARKER = '!```';
 const TRIPLE_BACKTICK_CLOSER = '```';
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-const COMMAND_TIMEOUT_ENV_KEY = 'JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS';
+const COMMAND_TIMEOUT_ENV_KEY = 'YYLO_PROMPT_SUBSTITUTION_TIMEOUT_MS';
 
 export function findPromptCommandSubstitutions(prompt: string): PromptCommandSubstitutionMatch[] {
   const matches: PromptCommandSubstitutionMatch[] = [];

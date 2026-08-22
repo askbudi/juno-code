@@ -20,7 +20,7 @@ function runParallelScript(scriptPath: string, args: string[], input?: string, e
       JUNO_TASK_ROOT: parallelFixtureController,
       JUNO_WORKSPACE_ROLE: 'controller',
       JUNO_WORKSPACE_ENFORCEMENT: 'strict',
-      JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(parallelFixtureController, '.test-metadata'),
+      YYLO_SESSION_METADATA_DIRECTORY: path.join(parallelFixtureController, '.test-metadata'),
       PYTHONPATH: path.resolve(process.cwd(), 'src/templates/scripts'),
       ...env,
     },
@@ -69,11 +69,11 @@ describe('parallel_runner.sh command file foundation', () => {
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runParallelScript(staleScript, ['--help'], undefined, {
-      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+      YYLO_SCRIPT_TEMPLATE_DIR: templateDir,
     });
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain('parallel_runner.sh: warning: this runtime script differs from the installed juno-code template.');
+    expect(result.stderr).toContain('parallel_runner.sh: warning: this runtime script differs from the installed yylo template.');
     expect(result.stderr).toContain(`installed template: ${await fs.realpath(path.join(templateDir, 'parallel_runner.sh'))}`);
     expect(result.stderr).toContain('update with: yy scripts update --force');
   });
@@ -86,8 +86,8 @@ describe('parallel_runner.sh command file foundation', () => {
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runParallelScript(staleScript, ['--help'], undefined, {
-      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
-      JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1',
+      YYLO_SCRIPT_TEMPLATE_DIR: templateDir,
+      YYLO_SKIP_SCRIPT_STALE_CHECK: '1',
     });
 
     expect(result.status).toBe(0);
@@ -111,13 +111,13 @@ print(json.dumps([mod._parse_scalar(r'''"say \\"hello\\""'''), mod._parse_scalar
     const code = `
 import importlib.machinery, json, os
 mod = importlib.machinery.SourceFileLoader('parallel_runner', ${JSON.stringify(templateScript)}).load_module()
-os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF'] = 'historical'
-os.environ['JUNO_CODE_LAST_EXECUTION_SETTINGS'] = 'legacy'
-os.environ['JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix'] = 'historical-malformed'
+os.environ['YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF'] = 'historical'
+os.environ['YYLO_LAST_EXECUTION_SETTINGS'] = 'legacy'
+os.environ['YYLO_LAST_SESSION_ID_SCOPE_malformed_old_suffix'] = 'historical-malformed'
 os.environ['JUNO_TASK_ROOT'] = '/controller'
 os.environ['ARBITRARY_CONFIG'] = 'preserved'
 env = mod._build_process_env({'JUNO_MODEL': 'current'})
-print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG'), 'model': env.get('JUNO_MODEL')}))
+print(json.dumps({'continuity': sorted(k for k in env if k.startswith('YYLO_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG'), 'model': env.get('JUNO_MODEL')}))
 `;
     for (const script of [templateScript, runtimeScript]) {
       const result = spawnSync('python3', ['-c', code.replace(JSON.stringify(templateScript), JSON.stringify(script))], { cwd: repoRoot, encoding: 'utf8' });
@@ -134,7 +134,7 @@ print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE
 
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("'type' object is not subscriptable");
-    expect(result.stdout).toContain('Run juno-code tasks in parallel');
+    expect(result.stdout).toContain('Run yylo tasks in parallel');
   });
 
   it('documents commands file mode, linting, generator, schema, and examples in --help', () => {
@@ -402,14 +402,14 @@ commands:
       parallel: 1,
       commands: [{
         id: 'environment',
-        command: ['python3', '-c', `import json, os; open(${JSON.stringify(evidence)}, 'w').write(json.dumps({"task_root": os.environ["JUNO_TASK_ROOT"], "metadata": os.environ["JUNO_CODE_SESSION_METADATA_DIRECTORY"]}))`],
+        command: ['python3', '-c', `import json, os; open(${JSON.stringify(evidence)}, 'w').write(json.dumps({"task_root": os.environ["JUNO_TASK_ROOT"], "metadata": os.environ["YYLO_SESSION_METADATA_DIRECTORY"]}))`],
       }],
     });
 
     const controller = await fs.realpath(parallelFixtureController!);
     const result = runParallelScript(templateScript, ['--commands-file', target], undefined, {
       JUNO_CONTROLLER_BRANCH: 'fixture-controller',
-      JUNO_CODE_SESSION_METADATA_DIRECTORY: metadata,
+      YYLO_SESSION_METADATA_DIRECTORY: metadata,
     });
     expect(result.status).toBe(0);
     expect(await fs.readJson(evidence)).toEqual({ task_root: controller, metadata });

@@ -44,11 +44,11 @@ Use the installed Juno control plane; do not create another workflow engine.
    time. Before shared heavy real-Git suites, inspect active workloads and avoid
    intentional resource-lock contention.
 6. **Keep semantic review queue-owned and bounded.** Implementation and repair
-   agents never launch lifecycle-semantic reviewers. The managed merge queue is
-   the sole owner: low risk uses zero reviewers, normal at most one, and high
-   exactly two sequential predecessor-bound v1 reviewers against one frozen tip.
-   It permits one repair candidate and one delta review group; further material
-   findings stop as `REVIEW_FINDINGS_EXHAUSTED`, never an autonomous review loop.
+   agents never launch lifecycle-semantic reviewers. The managed merge queue is the sole lifecycle-semantic review owner:
+   low risk uses zero reviewers, normal at most one, and high uses Reviewer A then Reviewer B
+   sequentially against one frozen predecessor-bound v1 candidate. It permits at most one repair candidate
+   and one delta review group; further material findings stop as `REVIEW_FINDINGS_EXHAUSTED`,
+   never an autonomous review loop.
 7. **Use managed lifecycle boundaries.** After a clean committed implementation,
    run read-only `yy task preflight TASK_ID` and repair any reported closure
    defect while the task is still `WORKING`. Then run separately authorized

@@ -7,9 +7,9 @@ import semver from 'semver';
 import packageMetadata from '../../../package.json';
 import { markTransparentDelegate } from '../../utils/explicit-command.js';
 
-// This is intentionally exact and sourced from release metadata: a Juno Code
+// This is intentionally exact and sourced from release metadata: a YYLO
 // release is validated with one independently packaged benchmark artifact.
-export const BENCHMARK_VERSION_RANGE = packageMetadata.junoBenchmark.version;
+export const BENCHMARK_VERSION_RANGE = packageMetadata.yyloBenchmark.version;
 const BENCHMARK_SEMVER_RANGE = BENCHMARK_VERSION_RANGE;
 const VERSION_HANDSHAKE_TIMEOUT_MS = 10_000;
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const;
@@ -48,7 +48,7 @@ function executableCandidates(
 
 export function discoverBenchmarkExecutable(
   env: NodeJS.ProcessEnv = process.env,
-  name = 'juno-benchmark',
+  name = 'yylo-benchmark',
   cwd = process.cwd(),
 ): string {
   for (const candidate of executableCandidates(name, env, cwd)) {
@@ -60,8 +60,8 @@ export function discoverBenchmarkExecutable(
     }
   }
   throw new BenchmarkDelegateError(
-    `juno-code: cannot find independently installed '${name}' on PATH. ` +
-      `Install a compatible @juno-ai/juno-benchmark (${BENCHMARK_VERSION_RANGE}) and retry.`,
+    `yylo: cannot find independently installed '${name}' on PATH. ` +
+      `Install a compatible @yylo/benchmark (${BENCHMARK_VERSION_RANGE}) and retry.`,
     127,
   );
 }
@@ -77,7 +77,7 @@ function waitForChild(
       timedOut = true;
       if (!child.kill('SIGKILL')) {
         reject(new BenchmarkDelegateError(
-          `juno-code: ${timeout.description} timed out after ${timeout.milliseconds}ms.`,
+          `yylo: ${timeout.description} timed out after ${timeout.milliseconds}ms.`,
           69,
         ));
       }
@@ -91,7 +91,7 @@ function waitForChild(
       if (timer !== undefined) clearTimeout(timer);
       if (timedOut && timeout !== undefined) {
         reject(new BenchmarkDelegateError(
-          `juno-code: ${timeout.description} timed out after ${timeout.milliseconds}ms.`,
+          `yylo: ${timeout.description} timed out after ${timeout.milliseconds}ms.`,
           69,
         ));
       } else {
@@ -113,7 +113,7 @@ export function forwardBenchmarkSignal(signal: ForwardedSignal): boolean {
 }
 
 function parseVersion(output: string): string | undefined {
-  const match = output.trim().match(/^(?:juno-benchmark\s+)?(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
+  const match = output.trim().match(/^(?:yylo-benchmark\s+)?(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
   if (match === null) return undefined;
   return semver.valid(match[1]) ?? undefined;
 }
@@ -146,8 +146,8 @@ async function readVersion(
   if (result.signal !== null) terminateWithSignal(result.signal);
   if (result.code !== 0) {
     throw new BenchmarkDelegateError(
-      `juno-code: '${executable} --version' failed with exit ${result.code ?? 1}` +
-        `${detail ? `: ${detail}` : ''}. Reinstall @juno-ai/juno-benchmark and retry.`,
+      `yylo: '${executable} --version' failed with exit ${result.code ?? 1}` +
+        `${detail ? `: ${detail}` : ''}. Reinstall @yylo/benchmark and retry.`,
       69,
     );
   }
@@ -155,7 +155,7 @@ async function readVersion(
 }
 
 function terminateWithSignal(signal: NodeJS.Signals): never {
-  // Juno Code owns generic signal handlers. Remove them only at terminal handoff so
+  // YYLO owns generic signal handlers. Remove them only at terminal handoff so
   // the delegate itself has the same signal outcome as the canonical executable.
   for (const forwarded of SIGNALS) process.removeAllListeners(forwarded);
   process.kill(process.pid, signal);
@@ -186,9 +186,9 @@ export async function invokeBenchmark(
   const version = parseVersion(output);
   if (version === undefined || !isCompatibleVersion(version)) {
     throw new BenchmarkDelegateError(
-      `juno-code: incompatible juno-benchmark version from '${executable}': ` +
+      `yylo: incompatible YYLO Benchmark version from '${executable}': ` +
         `${output || 'unknown'} (required ${BENCHMARK_VERSION_RANGE}). ` +
-        `Install a compatible @juno-ai/juno-benchmark and retry.`,
+        `Install a compatible @yylo/benchmark and retry.`,
       69,
     );
   }
@@ -209,7 +209,7 @@ export async function runBenchmarkDelegate(args: readonly string[]): Promise<voi
       return;
     }
     const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`juno-code: failed to delegate to juno-benchmark: ${detail}\n`);
+    process.stderr.write(`yylo: failed to delegate to yylo-benchmark: ${detail}\n`);
     process.exitCode = 126;
   }
 }
@@ -217,7 +217,7 @@ export async function runBenchmarkDelegate(args: readonly string[]): Promise<voi
 export function configureBenchmarkCommand(program: Command): void {
   const command = program
     .command('benchmark [args...]')
-    .description('Delegate transparently to an independently installed juno-benchmark CLI')
+    .description('Delegate transparently to an independently installed YYLO Benchmark CLI')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .action(runBenchmarkDelegate);

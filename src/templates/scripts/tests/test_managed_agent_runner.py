@@ -26,9 +26,9 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         (self.controller / ".juno_task/prompts").mkdir(parents=True)
         (self.controller / ".juno_task/prompts/reflect.md").write_text("controller reflect\n")
         self.env_target = self.tmp / "controller.env"; self.env_target.write_text("MANAGED_TEST_SECRET=not-for-receipts\n")
-        os.symlink(self.env_target, self.controller / ".env.juno")
+        os.symlink(self.env_target, self.controller / ".env.yylo")
         config = {"defaultSubagent":"pi", "defaultModel":":configured", "defaultModels":{"pi":":configured"},
-                  "envFilePath":".env.juno", "promptMacros":{"global":{"reflect":{"path":".juno_task/prompts/reflect.md"}},"local":{}}}
+                  "envFilePath":".env.yylo", "promptMacros":{"global":{"reflect":{"path":".juno_task/prompts/reflect.md"}},"local":{}}}
         (self.controller / ".juno_task/config.json").write_text(json.dumps(config) + "\n")
         (self.controller / ".juno_task/state").mkdir()
         (self.controller / runner.QUEUE_STATE_PATH).write_text("{}\n")
@@ -53,11 +53,11 @@ class ManagedAgentRunnerTests(unittest.TestCase):
         fake.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, shutil, subprocess, sys, time
 assert sys.argv[1:4] == ['pi','--no-hooks','--config']; assert '-f' in sys.argv and '-p' not in sys.argv
-assert pathlib.Path(shutil.which('node')).resolve()==pathlib.Path(os.environ['JUNO_CODE_NODE_EXECUTABLE']).resolve()
+assert pathlib.Path(shutil.which('node')).resolve()==pathlib.Path(os.environ['YYLO_NODE_EXECUTABLE']).resolve()
 assert not sys.stdin.read(1)
 if os.environ.get('PI_MODEL') or os.environ.get('JUNO_MODEL'): raise SystemExit(91)
 assert os.environ.get('JUNO_CONTROLLER_CHECKPOINT_ACTIVE')=='1'
-assert os.environ.get('JUNO_CODE_PROJECT_BOOTSTRAP_WRITES')=='0'
+assert os.environ.get('YYLO_PROJECT_BOOTSTRAP_WRITES')=='0'
 config=json.loads(pathlib.Path(sys.argv[4]).read_text())
 launcher_config=json.loads((pathlib.Path.cwd()/'.juno_task/config.json').read_text())
 expected_launcher=dict(config)
@@ -138,7 +138,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         policy["controller_branch"] = runner.LEGACY_METADATA_CONTROLLER_BRANCH
         policy["product_ref"] = runner.LEGACY_METADATA_PRODUCT_REF
         policy["runtime"]["ignored_roots"] = [
-            ".juno_task/runtime", ".juno_task/scripts", ".venv_juno", ".env.juno"]
+            ".juno_task/runtime", ".juno_task/scripts", ".venv_juno", ".env.yylo"]
         data = (json.dumps(policy, indent=2, ensure_ascii=False) + "\n").encode()
         self.assertEqual(data, runner.LEGACY_METADATA_POLICY)
         self.assertEqual(hashlib.sha256(data).hexdigest(), runner.LEGACY_METADATA_POLICY_SHA256)
@@ -346,7 +346,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         assert canonical_node
         return {**os.environ,
                 "PATH": os.pathsep.join((str(self.stale_bin), str(self.bin), os.environ["PATH"])),
-                "JUNO_CODE_NODE_EXECUTABLE": canonical_node,
+                "YYLO_NODE_EXECUTABLE": canonical_node,
                 "PI_MODEL": "forbidden", "JUNO_MODEL": "forbidden"}
 
     def test_required_terminal_result_is_receipt_bound_and_typed(self):
@@ -382,7 +382,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(result.returncode, 0, result.stderr)
         launch = json.loads((out / "launch.json").read_text())
         node = launch["environment_contract"]["node_runtime"]
-        self.assertEqual(Path(inherited["JUNO_CODE_NODE_EXECUTABLE"]), Path(node["executable"]))
+        self.assertEqual(Path(inherited["YYLO_NODE_EXECUTABLE"]), Path(node["executable"]))
         self.assertEqual("18.15.0", node["path_node_version_before"])
         self.assertNotEqual("18.15.0", node["version"])
         self.assertIn("PATH", launch["environment_contract"]["explicit_key_names"])
@@ -390,7 +390,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
     def test_unsupported_canonical_node_fails_before_managed_child_with_diagnostics(self):
         out = self.tmp / "unsupported-node"
         inherited = self.env()
-        inherited["JUNO_CODE_NODE_EXECUTABLE"] = str(self.stale_bin / "node")
+        inherited["YYLO_NODE_EXECUTABLE"] = str(self.stale_bin / "node")
         result = subprocess.run(self.command(out), env=inherited, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f"canonical executable: {self.stale_bin / 'node'}", result.stderr)
@@ -422,12 +422,12 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         launcher_payload = json.loads(Path(launch["launcher_config"]["path"]).read_text())
         self.assertEqual("metadata-only", launcher_payload["controllerWorkspace"]["mode"])
         self.assertEqual(derived["defaultModel"], launcher_payload["defaultModel"])
-        self.assertIn("JUNO_CODE_PROJECT_BOOTSTRAP_WRITES",
+        self.assertIn("YYLO_PROJECT_BOOTSTRAP_WRITES",
                       launch["environment_contract"]["explicit_key_names"])
         self.assertEqual({x["setting"] for x in config_contract["path_mappings"]},
                          {"envFilePath", "promptMacros.global.reflect.path"})
         self.assertEqual(derived["defaultModel"], ":configured")
-        self.assertEqual(derived["envFilePath"], str(self.controller.resolve() / ".env.juno"))
+        self.assertEqual(derived["envFilePath"], str(self.controller.resolve() / ".env.yylo"))
         self.assertEqual(derived["promptMacros"]["global"]["reflect"]["path"],
                          str(self.controller.resolve() / ".juno_task/prompts/reflect.md"))
         self.assertEqual(Path(derived["envFilePath"]).resolve(), self.env_target.resolve())
@@ -863,7 +863,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(result.returncode, 0, result.stderr)
         config_path = json.loads((out / "launch.json").read_text())["compatible_config"]["derived"]["path"]
         smoke_env = {k:v for k,v in os.environ.items() if not k.startswith(("PI_", "JUNO_")) and k != "TASK_ROOT"}
-        smoke_env["JUNO_CODE_PROJECT_BOOTSTRAP_WRITES"] = "0"
+        smoke_env["YYLO_PROJECT_BOOTSTRAP_WRITES"] = "0"
         repository = RUNNER.parents[2]
         tsx = repository / "juno-code/node_modules/.bin/tsx"
         loader = repository / "juno-code/src/core/config.ts"

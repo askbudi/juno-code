@@ -114,7 +114,7 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
             raise ManagedRuntimeError("target managed asset definition is invalid")
         package = managed_source_json(repository, commit, MANAGED_PACKAGE_PATH)
         version = package.get("version") if isinstance(package, dict) else None
-        if (not isinstance(package, dict) or package.get("name") != "juno-code"
+        if (not isinstance(package, dict) or package.get("name") != "@yylo/cli"
                 or not managed_valid_package_version(version)):
             raise ManagedRuntimeError("target package name/version is invalid")
         result: dict[str, str] = {}
@@ -151,7 +151,7 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
         manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
         if (not isinstance(manifest, dict)
                 or set(manifest) != {"schemaVersion", "packageName", "packageVersion", "assets"}
-                or manifest.get("schemaVersion") != 1 or manifest.get("packageName") != "juno-code"
+                or manifest.get("schemaVersion") != 1 or manifest.get("packageName") != "@yylo/cli"
                 or not managed_valid_package_version(manifest.get("packageVersion"))
                 or not isinstance(manifest.get("assets"), dict)):
             raise ManagedRuntimeError("installed managed asset manifest/package identity is invalid")

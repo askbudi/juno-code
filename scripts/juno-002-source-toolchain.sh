@@ -9,9 +9,9 @@ while [[ -L "$SCRIPT_PATH" ]]; do
     [[ "$LINK_TARGET" == /* ]] && SCRIPT_PATH=$LINK_TARGET || SCRIPT_PATH="$LINK_DIR/$LINK_TARGET"
 done
 SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)
-JUNO_CODE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
-REPOSITORY_ROOT=$(cd "$JUNO_CODE_ROOT/.." && pwd -P)
-POLICY_FILE="$JUNO_CODE_ROOT/src/templates/scripts/juno-toolchain-policy.sh"
+YYLO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
+REPOSITORY_ROOT=$(cd "$YYLO_ROOT/.." && pwd -P)
+POLICY_FILE="$YYLO_ROOT/src/templates/scripts/juno-toolchain-policy.sh"
 # shellcheck source=../src/templates/scripts/juno-toolchain-policy.sh
 source "$POLICY_FILE"
 
@@ -22,17 +22,17 @@ PREVIOUS_FILE="$STATE_DIR/previous"
 GENERATIONS_DIR="$STATE_DIR/generations"
 NPM_CMD="${JUNO_002_NPM:-npm}"
 PYTHON_CMD="${JUNO_002_PYTHON:-python3}"
-CODE_SOURCE="${JUNO_002_CODE_SOURCE:-$JUNO_CODE_ROOT}"
+CODE_SOURCE="${JUNO_002_CODE_SOURCE:-$YYLO_ROOT}"
 KANBAN_SOURCE="${JUNO_002_KANBAN_SOURCE:-$REPOSITORY_ROOT/juno_kanban}"
 
 fail() { echo "juno-002-toolchain: $*" >&2; exit 1; }
 
 code_source_version() {
     local package_file="$1/package.json" version
-    [[ -f "$package_file" ]] || fail "juno-code package identity is missing: $package_file"
+    [[ -f "$package_file" ]] || fail "yylo package identity is missing: $package_file"
     version=$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$package_file" | head -n 1)
     [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] ||
-        fail "invalid juno-code source version in $package_file: ${version:-missing}"
+        fail "invalid yylo source version in $package_file: ${version:-missing}"
     printf '%s\n' "$version"
 }
 canonical_dir() { (cd "$1" && pwd -P); }
@@ -57,13 +57,13 @@ load_selection() {
 
 validate_code() {
     local executable=$1 source=${2:-$CODE_SOURCE} output required escaped
-    [[ -x "$executable" ]] || fail "juno-code executable is missing or not executable: $executable"
+    [[ -x "$executable" ]] || fail "yylo executable is missing or not executable: $executable"
     required=$(code_source_version "$source")
     escaped=${required//./\\.}
-    output=$(cd "$STATE_DIR" && "$executable" --version 2>&1) || fail "juno-code --version failed: $executable: $output"
+    output=$(cd "$STATE_DIR" && "$executable" --version 2>&1) || fail "yylo --version failed: $executable: $output"
     [[ "$output" =~ (^|[^0-9])${escaped}([^0-9]|$) ]] ||
-        fail "juno-code identity rejected: executable=$executable output=$output required=$required"
-    printf 'juno-code identity: executable=%s version=%s\n' "$executable" "$required" >&2
+        fail "yylo identity rejected: executable=$executable output=$output required=$required"
+    printf 'yylo identity: executable=%s version=%s\n' "$executable" "$required" >&2
 }
 
 select_paths() {
@@ -72,7 +72,7 @@ select_paths() {
     juno_kanban_check_executable "$kanban_executable" selected
     if [[ -f "$SELECTED_FILE" ]]; then cp "$SELECTED_FILE" "$PREVIOUS_FILE"; fi
     write_selection "$SELECTED_FILE" "$code_executable" "$kanban_executable" "$code_source" "$kanban_source"
-    echo "selected: juno-code=$code_executable juno-kanban=$kanban_executable"
+    echo "selected: yylo=$code_executable juno-kanban=$kanban_executable"
 }
 
 cleanup_unselected_generations() {
@@ -108,7 +108,7 @@ install_generation() {
 install_sources() {
     CODE_SOURCE=$(canonical_dir "$CODE_SOURCE")
     KANBAN_SOURCE=$(canonical_dir "$KANBAN_SOURCE")
-    [[ -f "$CODE_SOURCE/package.json" ]] || fail "juno-code source is invalid: $CODE_SOURCE"
+    [[ -f "$CODE_SOURCE/package.json" ]] || fail "yylo source is invalid: $CODE_SOURCE"
     [[ -f "$KANBAN_SOURCE/setup.py" ]] || fail "juno-kanban source is invalid: $KANBAN_SOURCE"
     mkdir -p "$STATE_DIR" "$BIN_DIR" "$GENERATIONS_DIR"
 
@@ -152,13 +152,13 @@ run_selected() {
 }
 
 controller_status() {
-    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" \
+    python3 "$YYLO_ROOT/src/templates/scripts/controller_resolver.py" \
         --cwd "$REPOSITORY_ROOT" --operation diagnostic --format json
 }
 
 register_controller() {
     [[ $# -eq 2 ]] || fail "usage: $0 register-controller PATH BRANCH"
-    python3 "$JUNO_CODE_ROOT/src/templates/scripts/controller_resolver.py" \
+    python3 "$YYLO_ROOT/src/templates/scripts/controller_resolver.py" \
         --cwd "$1" --register "$1" --branch "$2" --format json
 }
 

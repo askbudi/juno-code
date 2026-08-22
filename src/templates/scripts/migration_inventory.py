@@ -660,8 +660,8 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
                           ".juno_task/receipts/controller-boundary.json", ".juno_task/state/tasks.json"],
         "tracked_recursive": recursive,
         "tracked_top_level_files": top_level,
-        "runtime": {"package": "juno-code", "identity_file": ".juno_task/runtime/identity.json",
-                    "ignored_roots": [".agents", ".claude", ".env.juno", ".juno_task/cache",
+        "runtime": {"package": "@yylo/cli", "identity_file": ".juno_task/runtime/identity.json",
+                    "ignored_roots": [".agents", ".claude", ".env.yylo", ".juno_task/cache",
                                       ".juno_task/locks", ".juno_task/runtime", ".juno_task/scripts",
                                       ".pi", ".venv_juno", "AGENTS.md", "CLAUDE.md"]},
     }

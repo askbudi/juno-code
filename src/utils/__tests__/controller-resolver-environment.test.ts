@@ -13,16 +13,16 @@ vi.mock('node:fs', () => ({
 import { resolveController } from '../controller-resolver.js';
 
 afterEach(() => {
-  delete process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF;
-  delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+  delete process.env.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF;
+  delete process.env.YYLO_LAST_EXECUTION_SETTINGS;
   delete process.env.CONTROLLER_BOUNDARY_CONFIG;
   mocks.execFileSync.mockReset();
 });
 
 describe('controller resolver child environment', () => {
   it('preserves routing/config and removes continuity before resolver dispatch', () => {
-    process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical';
-    process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = 'legacy';
+    process.env.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical';
+    process.env.YYLO_LAST_EXECUTION_SETTINGS = 'legacy';
     process.env.CONTROLLER_BOUNDARY_CONFIG = 'preserved';
     mocks.execFileSync.mockReturnValue(JSON.stringify({
       path: '/controller', source: 'environment', expected_branch: 'main', actual_branch: 'main',
@@ -33,7 +33,7 @@ describe('controller resolver child environment', () => {
 
     const environment = mocks.execFileSync.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv;
     expect(environment.CONTROLLER_BOUNDARY_CONFIG).toBe('preserved');
-    expect(environment.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
-    expect(environment.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
+    expect(environment.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+    expect(environment.YYLO_LAST_EXECUTION_SETTINGS).toBeUndefined();
   });
 });

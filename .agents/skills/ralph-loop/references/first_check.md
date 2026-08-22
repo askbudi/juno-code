@@ -10,7 +10,7 @@ Perform these check once, to make sure about the git logic. There is no need to 
   git rev-parse --git-dir 2>/dev/null
   ```
 
-- Check if Dockerfile\* exists or Docker in plan.md → create/verify .dockerignore
+- Check if Dockerfile\* exists or the assigned task requires Docker → create/verify .dockerignore
 - Check if .eslintrc* or eslint.config.* exists → create/verify .eslintignore
 - Check if .prettierrc\* exists → create/verify .prettierignore
 - Check if .npmrc or package.json exists → create/verify .npmignore (if publishing)

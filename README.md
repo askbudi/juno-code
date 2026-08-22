@@ -1,9 +1,9 @@
-# juno-code
+# yylo
 
-Juno Code orchestrates AI coding agents and structured development workflows. It works alongside [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, and [Juno Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
+YYLO orchestrates AI coding agents and structured development workflows. It works alongside [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [YYLO Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
 
 <p align="center">
-  <img src="./Juno-code-icon.png" alt="juno-code logo" width="200" />
+  <img src="./Juno-code-icon.png" alt="yylo logo" width="200" />
 </p>
 
 <p align="center">
@@ -11,25 +11,27 @@ Juno Code orchestrates AI coding agents and structured development workflows. It
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/juno-code"><img src="https://img.shields.io/npm/v/juno-code.svg" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/%40yylo%2Fcli"><img src="https://img.shields.io/npm/v/%40yylo%2Fcli.svg" alt="npm version" /></a>
   <a href="https://github.com/yylo-dev/yylo"><img src="https://img.shields.io/github/stars/yylo-dev/yylo?style=social" alt="GitHub stars" /></a>
 </p>
 
 ## Installation
 
-`yy benchmark ...` is a thin, fail-closed delegate to the independently
-installed `juno-benchmark` executable. Install compatible release artifacts for
-both packages on the same `PATH`; this Juno Code release requires exactly
-`juno-benchmark 0.1.0` and does not embed or discover a checkout-local benchmark
-implementation. The local release plan binds both package manifests and verifies
-their packed artifacts together in a fresh prefix for every configured Node runtime.
+`yy` and `yylo` are equivalent launchers. Their `ledger` and `benchmark`
+subcommands are thin, fail-closed delegates to independently installed
+`yylo-ledger` and `yylo-benchmark` executables. Install `yylo-ledger==0.1.0rc1`
+and `@yylo/benchmark@0.1.0-rc.1` on the same `PATH`; delegates never discover
+checkout-local or legacy runtimes.
 
 ```bash
-juno-benchmark --help
+yylo-ledger --help
+yy ledger --help
+yylo-benchmark --help
 yy benchmark --help
 ```
 
-The two help/version surfaces are byte- and exit-equivalent. Release candidates
+Each standalone/delegated help/version pair is byte- and exit-equivalent; arguments,
+stdin, stdout, stderr, cwd, environment, nonzero exits, and signals are propagated. Release candidates
 verify this from packed npm artifacts with
 `npm run test:benchmark-release-artifacts`. That offline verifier also runs the fixed,
 timeout-bounded benchmark coverage and credential/leak-scan commands with closed stdin.
@@ -39,14 +41,14 @@ stale, mismatched, or altered evidence fails closed.
 
 ### Isolated Juno 2 source toolchain
 
-From a monorepo checkout containing `juno-code/` and `juno_kanban/`:
+From a monorepo checkout containing `yylo/` and `juno_kanban/`:
 
 ```bash
-./juno-code/scripts/juno-002-source-toolchain.sh install
+./yylo/scripts/juno-002-source-toolchain.sh install
 export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
 yy-juno-002 --version
 juno-kanban-juno-002 --version
-./juno-code/scripts/juno-002-source-toolchain.sh status
+./yylo/scripts/juno-002-source-toolchain.sh status
 ```
 
 The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.5,<3.0.0` policy before execution. `yy-juno-002 init` provisions the disposable controller's own `.venv_juno` from that selected Kanban source; it never adopts an unrelated active/global environment, and generated linked-worktree wrappers continue to execute only the controller runtime. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
@@ -59,14 +61,14 @@ hash -r
 command -v yy-juno-002 juno-kanban-juno-002
 yy-juno-002 --version
 juno-kanban-juno-002 --version
-./juno-code/scripts/juno-002-source-toolchain.sh status
-./juno-code/scripts/juno-002-source-toolchain.sh controller-status
+./yylo/scripts/juno-002-source-toolchain.sh status
+./yylo/scripts/juno-002-source-toolchain.sh controller-status
 ```
 
 Register a controller checkout from a linked task checkout when an environment override is not preferable:
 
 ```bash
-./juno-code/scripts/juno-002-source-toolchain.sh register-controller /path/to/controller controller-branch
+./yylo/scripts/juno-002-source-toolchain.sh register-controller /path/to/controller controller-branch
 ./.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation diagnostic --format shell
 ```
 
@@ -81,7 +83,7 @@ Juno 2.1 controller cutover uses `yy migrate registration plan|apply|verify|roll
 | Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
 | Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
 
-Choose the smallest lane that satisfies the work. The metadata-only linked controller tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed Juno Code release. Controller commits never merge or synchronize to product history. Every product change uses a dedicated `yy task` worktree; `yy merge` serializes only target mutation. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
+Choose the smallest lane that satisfies the work. The metadata-only linked controller tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed YYLO release. Controller commits never merge or synchronize to product history. Every product change uses a dedicated `yy task` worktree; `yy merge` serializes only target mutation. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
 
 ### Workspace routing and integration operations
 
@@ -174,7 +176,7 @@ A receipt-bound controller generation is Git-target-owned. `yy scripts update`
 from a mismatched (especially older) package refuses instead of replacing those
 ignored scripts. It also refreshes only controller-local managed bytes; it does
 not repair a missing or stale target-tracked task runtime. For an ordinary
-consumer target (one containing neither the `juno-code` package nor template source), use
+consumer target (one containing neither the `yylo` package nor template source), use
 the explicit package-bound recovery instead:
 
 ```bash
@@ -237,7 +239,7 @@ be outside **every** Git worktree and Git ancestor:
 ```bash
 yy migrate runtime-rebind \
   --root /absolute/controller --branch refs/heads/CONTROLLER \
-  --runtime /absolute/juno-code/dist/bin/cli.mjs --runtime-version X.Y.Z \
+  --runtime /absolute/yylo/dist/bin/cli.mjs --runtime-version X.Y.Z \
   --output /tmp/yy-runtime-rebind.json
 ```
 
@@ -255,9 +257,9 @@ yy migrate runtime-install-rebind \
   --output /tmp/yy-runtime-install-rebind.json
 ```
 
-By default this resolves the exact `juno-code@X.Y.Z` registry tarball. For an
+By default this resolves the exact `yylo@X.Y.Z` registry tarball. For an
 unpublished local RC, pass one previously created npm pack tarball with
-`--artifact /absolute/external/juno-code-X.Y.Z.tgz`. The artifact must be a
+`--artifact /absolute/external/yylo-X.Y.Z.tgz`. The artifact must be a
 regular non-symlink file outside every Git worktree/ancestor. Juno authenticates
 its bounded bytes, SHA-256, package name, and exact version before mutation,
 installs an authenticated private snapshot in offline mode, and records the
@@ -363,7 +365,7 @@ older disabled configurations; its controller reconciliation command refuses.
 Rollback operations are intentionally separate:
 
 1. **Source rollback:** use Git in the source worktrees to choose reviewed source commits; this does not select executables or alter Kanban data.
-2. **Executable selector rollback:** run `./juno-code/scripts/juno-002-source-toolchain.sh rollback-selection`, then `status`; this swaps only the repository-local selected executable paths and does not replace normal global tools.
+2. **Executable selector rollback:** run `./yylo/scripts/juno-002-source-toolchain.sh rollback-selection`, then `status`; this swaps only the repository-local selected executable paths and does not replace normal global tools.
 3. **Kanban data rollback:** restore/migrate a separately backed-up board with Kanban's reviewed data procedures. Switching source branches—including switching to `master`—or selectors never downgrades, reverses conversion, or restores board data.
 
 These local commands authorize neither push/deploy nor production-board conversion or post-deploy E2E.
@@ -371,7 +373,7 @@ These local commands authorize neither push/deploy nor production-board conversi
 Normal stable installation remains explicit and independent:
 
 ```bash
-npm install -g juno-code
+npm install -g yylo
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -380,27 +382,27 @@ npm install -g @mariozechner/pi-coding-agent
 After installation, initialize your project:
 
 ```bash
-juno-code init --task "Your task description" --subagent claude
+yylo init --task "Your task description" --subagent claude
 # Or with Pi (multi-provider agent)
-juno-code init --task "Your task description" --subagent pi
+yylo init --task "Your task description" --subagent pi
 ```
 
 ### Shell Completion (Tab Autocomplete)
 
 ```bash
 # Install completion for your current shell
-juno-code completion install
+yylo completion install
 
 # Or explicitly target a shell
-juno-code completion install bash
-juno-code completion install zsh
-juno-code completion install fish
+yylo completion install bash
+yylo completion install zsh
+yylo completion install fish
 
 # Check status
-juno-code completion status
+yylo completion status
 ```
 
-After installation/reload, `juno-code c<TAB><TAB>` suggests available subcommands.
+After installation/reload, `yylo c<TAB><TAB>` suggests available subcommands.
 
 ---
 
@@ -433,21 +435,21 @@ Run the AI in a loop. Let it iterate. Watch it solve problems, fix bugs, and add
 | **Vendor lock-in**  | Ralph was built for Claude Code                           | Can't easily switch to Codex, Gemini, Pi, or others    |
 | **No traceability** | Changes blend together                                    | Hard to debug, impossible to time-travel               |
 
-## juno-code: Ralph, But Better
+## yylo: Ralph, But Better
 
-juno-code takes the Ralph insight—_AI works better in loops_—and adds the structure needed for real work:
+yylo takes the Ralph insight—_AI works better in loops_—and adds the structure needed for real work:
 
 ### Iteration Control: No More Overcooking
 
 ```bash
 # Exactly 5 iterations - cooked perfectly
-juno-code -b shell -s claude -m :opus -i 5 -v
+yylo -b shell -s claude -m :opus -i 5 -v
 
 # Until kanban tasks complete - cooked exactly right
 ./.juno_task/scripts/run_until_completion.sh -s claude -i 1 -v
 
 # Unlimited (like Ralph) - when you really want that
-juno-code -b shell -s claude
+yylo -b shell -s claude
 ```
 
 ### Task Tracking with Juno Ledger: Structured, Not Prose
@@ -461,8 +463,8 @@ remains a behaviorally identical compatibility alias.
 Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `yy ledger project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
 
 ```bash
-yy ledger --project juno-code create --body "Cross-project issue" --tags bug
-yy ledger --project juno-code list --status todo
+yy ledger --project yylo create --body "Cross-project issue" --tags bug
+yy ledger --project yylo list --status todo
 ```
 
 The destination wrapper/runtime remains authoritative, and invalid routing never falls back to the source board. This implementation boundary matters because direct foreign-storage access could bypass destination controller, virtualenv, stdin, or write guards; real two-project tests prove exact target and stdin behavior.
@@ -516,10 +518,10 @@ Switch between Claude, Codex, Gemini, Pi, or Cursor with one flag:
 
 ```bash
 # Stuck on a bug? Try different models
-juno-code -b shell -s claude -m :opus -i 1 -v
-juno-code -b shell -s codex -m :codex -i 1 -v
-juno-code -b shell -s gemini -m :flash -i 1 -v
-juno-code -b shell -s pi -m :sonnet -i 1 -v
+yylo -b shell -s claude -m :opus -i 1 -v
+yylo -b shell -s codex -m :codex -i 1 -v
+yylo -b shell -s gemini -m :flash -i 1 -v
+yylo -b shell -s pi -m :sonnet -i 1 -v
 ```
 
 ### Parallel Execution
@@ -573,7 +575,7 @@ Use `production-triage-handoff` when production discovery should fan out into ca
 
 Managed nested execution derives authority at each registered worktree boundary. When a controller-dispatched agent changes into a task worktree, Workflow Runner and nested `yy pi` discard the stale dispatch-root role assertion and use the task worktree's persisted registration; an explicit mismatch at the current dispatch root still fails closed. Version cache, failure, and lock state for task invocations is stored under the registered controller's ignored `.juno_task/runtime/managed-controller/version-checks/` tree, never in product output. Inherited cache-path overrides cannot redirect registered task diagnostics into the task worktree; an authoritative cached-version mismatch that cannot be repaired is reported with bounded hook evidence and blocks agent dispatch with a nonzero exit.
 
-By default, generic step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a generic step when automation should fail fast. Typed `managed_agent` workflows are different and fail closed. They require the exact top-level policy `managed_agent_policy: {external_side_effects: forbidden, lifecycle_hooks: disabled}` and every managed step requires `stage_boundary: {root: /absolute/git/worktree, admitted_paths: [exact/relative/path, ...]}`. Lint validates the declarations, dry-run resolves the exact worktree boundary, and runtime hashes tracked and untracked content before and after dispatch. Any mutation outside that step's paths writes `stage_boundary.json`, fails the step before its successor, and performs no cleanup. Managed-agent receipts also record the effective `yy pi --no-hooks` policy, so prompt text is never the enforcement boundary for project lifecycle hooks. Declare `mode`, absolute controller/agent/prompt/output roots, and worker admission or reviewer candidate identity. Set `require_terminal_result: true` to require the provider capture to declare a typed `completed`, `blocked`, `incomplete`, or `failed` result; Workflow Runner verifies its receipt-bound step digest, session, candidate identity, and response hash, and only `completed` can succeed. Top-level `final_worktree: {path: /absolute/worktree, head: <40-hex-sha>}` adds a clean exact-HEAD terminal equality gate. They always fail the workflow on transport or semantic failure and delegate fresh configured-default `yy pi` execution to `managed_agent_runner.py`; outer capture is disabled while live `stdout.log`, `stderr.log`, labelled `combined.log`, and the hash-bound launcher receipt remain available without tmux. Managed `yy pi` commands inherit project model/provider defaults. A project may approve exact explicit selectors with `workflowModels`; model-only spelling must match exactly, while `--provider P --model M` is checked as `P/M`. Missing or empty `workflowModels` rejects explicit selection. Workflow Runner applies this to steps, summary, and every review surface, and rejects provider-only, inline environment, `--additional-args`, and alternate-config bypasses. Policy/config hashes and normalized selections are bound into run and recovery evidence. Workflow and parallel subprocesses inherit the canonical `JUNO_TASK_ROOT` plus an isolated session metadata destination. Durable run artifacts retain selected session IDs even though mutable history, branch, and runtime-marker files stay outside product worktrees. Add `--tmux` to create a dedicated detached observer session; it does **not** detach the producer, so the invoking command must remain alive. The runner prints the attach command and streams step stdout/stderr into `workflow.live.log` for that session even when `--no-print-step-stdout` keeps the invoking console quiet. The observer remains available after completion for review, and `manifest.json` records its session, live log, and attach command; use `--tmux-session NAME` for a stable custom name. Steps that invoke `juno-code`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` as the final answer. The runner does not inject `--quiet`; it keeps successful stderr logs in artifacts instead of echoing them to the operator console, and detected agent commands that exit 0 with an empty response are marked failed. Use `workflow_runner.sh lint` before cron runs to catch noisy `stdout`/`stderr` templates, and `workflow_runner.sh doctor`/`dr` after runs to diagnose manifest/artifact response issues. `--print-output all` emits every completed step response on either success or failure and is validated by the same early selector path as `summary`, `none`, and explicit step IDs. At the end, detected agent step session ids are printed and the last session is persisted to the same continue-scope env file and main branch registry used by juno-code, so `yy cc` can continue the last workflow agent session. Set top-level `continue_from_step: <step-id-or-name>` when a workflow should hand off a specific agent step instead; explicit selection is strict and fails if that step does not produce a session id. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, live observer visibility, response capture, session visibility, and continue handoff.
+By default, generic step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a generic step when automation should fail fast. Typed `managed_agent` workflows are different and fail closed. They require the exact top-level policy `managed_agent_policy: {external_side_effects: forbidden, lifecycle_hooks: disabled}` and every managed step requires `stage_boundary: {root: /absolute/git/worktree, admitted_paths: [exact/relative/path, ...]}`. Lint validates the declarations, dry-run resolves the exact worktree boundary, and runtime hashes tracked and untracked content before and after dispatch. Any mutation outside that step's paths writes `stage_boundary.json`, fails the step before its successor, and performs no cleanup. Managed-agent receipts also record the effective `yy pi --no-hooks` policy, so prompt text is never the enforcement boundary for project lifecycle hooks. Declare `mode`, absolute controller/agent/prompt/output roots, and worker admission or reviewer candidate identity. Set `require_terminal_result: true` to require the provider capture to declare a typed `completed`, `blocked`, `incomplete`, or `failed` result; Workflow Runner verifies its receipt-bound step digest, session, candidate identity, and response hash, and only `completed` can succeed. Top-level `final_worktree: {path: /absolute/worktree, head: <40-hex-sha>}` adds a clean exact-HEAD terminal equality gate. They always fail the workflow on transport or semantic failure and delegate fresh configured-default `yy pi` execution to `managed_agent_runner.py`; outer capture is disabled while live `stdout.log`, `stderr.log`, labelled `combined.log`, and the hash-bound launcher receipt remain available without tmux. Managed `yy pi` commands inherit project model/provider defaults. A project may approve exact explicit selectors with `workflowModels`; model-only spelling must match exactly, while `--provider P --model M` is checked as `P/M`. Missing or empty `workflowModels` rejects explicit selection. Workflow Runner applies this to steps, summary, and every review surface, and rejects provider-only, inline environment, `--additional-args`, and alternate-config bypasses. Policy/config hashes and normalized selections are bound into run and recovery evidence. Workflow and parallel subprocesses inherit the canonical `JUNO_TASK_ROOT` plus an isolated session metadata destination. Durable run artifacts retain selected session IDs even though mutable history, branch, and runtime-marker files stay outside product worktrees. Add `--tmux` to create a dedicated detached observer session; it does **not** detach the producer, so the invoking command must remain alive. The runner prints the attach command and streams step stdout/stderr into `workflow.live.log` for that session even when `--no-print-step-stdout` keeps the invoking console quiet. The observer remains available after completion for review, and `manifest.json` records its session, live log, and attach command; use `--tmux-session NAME` for a stable custom name. Steps that invoke `yylo`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` as the final answer. The runner does not inject `--quiet`; it keeps successful stderr logs in artifacts instead of echoing them to the operator console, and detected agent commands that exit 0 with an empty response are marked failed. Use `workflow_runner.sh lint` before cron runs to catch noisy `stdout`/`stderr` templates, and `workflow_runner.sh doctor`/`dr` after runs to diagnose manifest/artifact response issues. `--print-output all` emits every completed step response on either success or failure and is validated by the same early selector path as `summary`, `none`, and explicit step IDs. At the end, detected agent step session ids are printed and the last session is persisted to the same continue-scope env file and main branch registry used by yylo, so `yy cc` can continue the last workflow agent session. Set top-level `continue_from_step: <step-id-or-name>` when a workflow should hand off a specific agent step instead; explicit selection is strict and fails if that step does not produce a session id. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, live observer visibility, response capture, session visibility, and continue handoff.
 
 Cron owners should wrap a launch with `orchestration_guard.py --key <stable-name> -- <command>`. The guard requires the controller role, rejects a concurrent live owner, reclaims a stale marker, and never changes Git refs. A workflow singleton is **not** integration authority: research/report cron may produce reports and proposed tasks only. Automatic implementation follow-up requires an explicit reviewed policy, and advancing a target still requires the separate integration-owner lease and receipt described below.
 
@@ -631,7 +633,7 @@ Run scripts at any lifecycle point. Works with ANY backend, not just Claude:
 `-v` gives you structured output instead of raw JSON dumps:
 
 ```bash
-juno-code -b shell -s claude -i 5 -v
+yylo -b shell -s claude -i 5 -v
 # Clean, readable progress instead of wall of JSON
 ```
 
@@ -641,54 +643,54 @@ Auto-wait when you hit API rate limits instead of failing:
 
 ```bash
 # Wait automatically when hitting hourly limits
-juno-code -b shell -s claude -i 10 --on-hourly-limit wait
+yylo -b shell -s claude -i 10 --on-hourly-limit wait
 
 # Or exit immediately (default)
-juno-code -b shell -s claude -i 10 --on-hourly-limit raise
+yylo -b shell -s claude -i 10 --on-hourly-limit raise
 ```
 
 ## Quick Start
 
 ```bash
 # Install
-npm install -g juno-code
+npm install -g yylo
 
 # Initialize project
-juno-code init --task "Add user authentication..." --subagent claude
+yylo init --task "Add user authentication..." --subagent claude
 
 # Start execution - uses .juno_task/init.md (optimized Ralph prompt)
-juno-code start -b shell -s claude -i 1 -v
+yylo start -b shell -s claude -i 1 -v
 
 # Or with a custom prompt
-juno-code -b shell -s claude -i 5 -p 'Fix the login bug'
+yylo -b shell -s claude -i 5 -p 'Fix the login bug'
 
-# Default Ralph based on kanban , without -p , juno-code uses .juno_task/prompt.md as prompt
-juno-code -b shell -s claude -i 5 -v
+# Default Ralph based on kanban , without -p , yylo uses .juno_task/prompt.md as prompt
+yylo -b shell -s claude -i 5 -v
 ```
 
-**Key insight**: Running `juno-code start` without `-p` uses `.juno_task/prompt.md`—a production-ready prompt template that implements the Ralph method with guard rails.
+**Key insight**: Running `yylo start` without `-p` uses `.juno_task/prompt.md`—a production-ready prompt template that implements the Ralph method with guard rails.
 
 ### Shell safety for prompts
 
-When prompt text contains shell metacharacters (especially backticks `` `...` `` or `$()`), prefer one of these patterns so your shell does not execute substitutions before juno-code receives the prompt:
+When prompt text contains shell metacharacters (especially backticks `` `...` `` or `$()`), prefer one of these patterns so your shell does not execute substitutions before yylo receives the prompt:
 
 ```bash
-juno-code -s claude -p 'literal text with `backticks` and $(dollar-parens)'
-juno-code -s claude -f prompt.md
-juno-code -s claude << 'EOF'
+yylo -s claude -p 'literal text with `backticks` and $(dollar-parens)'
+yylo -s claude -f prompt.md
+yylo -s claude << 'EOF'
 literal text with `backticks`
 EOF
 ```
 
 ### Oversized prompt transport
 
-`juno-code` protects shell-backend runs from OS `E2BIG` spawn failures by switching large prompts away from argv/env transport. The threshold is controlled by `JUNO_PROMPT_ARG_MAX_BYTES` (default `65536` bytes / 64 KiB). Prompts at or below the threshold may use normal argv/env paths; larger prompts are sent through managed prompt files or stdin so wrappers do not copy huge payloads into `JUNO_INSTRUCTION` or vendor CLI arguments.
+`yylo` protects shell-backend runs from OS `E2BIG` spawn failures by switching large prompts away from argv/env transport. The threshold is controlled by `JUNO_PROMPT_ARG_MAX_BYTES` (default `65536` bytes / 64 KiB). Prompts at or below the threshold may use normal argv/env paths; larger prompts are sent through managed prompt files or stdin so wrappers do not copy huge payloads into `JUNO_INSTRUCTION` or vendor CLI arguments.
 
-You do not need to create temp files yourself. When file transport is required, juno-code manages prompt files under `/tmp/juno-code/` and cleans internal handoff files where safe. The tests assert argv/env/stdin/file behavior because this backing implementation is what prevents regressions where a safe CLI stdin/heredoc entry point later becomes a huge Python wrapper argv or environment variable.
+You do not need to create temp files yourself. When file transport is required, yylo manages prompt files under `/tmp/yylo/` and cleans internal handoff files where safe. The tests assert argv/env/stdin/file behavior because this backing implementation is what prevents regressions where a safe CLI stdin/heredoc entry point later becomes a huge Python wrapper argv or environment variable.
 
 ### Prompt-time command substitution (per iteration)
 
-`juno-code` also supports explicit prompt-time shell substitutions that run inside the working directory on **every engine iteration**:
+`yylo` also supports explicit prompt-time shell substitutions that run inside the working directory on **every engine iteration**:
 
 - `!'command'`
 - `!\`\`\`command\`\`\``
@@ -696,8 +698,8 @@ You do not need to create temp files yourself. When file transport is required, 
 Examples:
 
 ````bash
-juno-code claude -i 3 -p "Summarize git status: !'git status --short'"
-juno-code claude -i 2 -p "Recent commits:\n!```git log -n 5 --oneline```"
+yylo claude -i 3 -p "Summarize git status: !'git status --short'"
+yylo claude -i 2 -p "Recent commits:\n!```git log -n 5 --oneline```"
 ````
 
 This avoids relying on your shell’s one-time backtick expansion and keeps command output fresh across retries/iterations.
@@ -708,38 +710,38 @@ This avoids relying on your shell’s one-time backtick expansion and keeps comm
 
 ```bash
 # Initialize - sets up .juno_task/ directory structure
-juno-code init --task "description" --subagent claude
-juno-code init --interactive  # wizard mode
+yylo init --task "description" --subagent claude
+yylo init --interactive  # wizard mode
 
 # Start execution (uses .juno_task/prompt.md by default)
-juno-code start -b shell -s claude -i 5 -v
-juno-code start -b shell -s codex -m :codex -i 10
+yylo start -b shell -s claude -i 5 -v
+yylo start -b shell -s codex -m :codex -i 10
 
 # Direct prompt execution
-juno-code -b shell -s claude -i 3 -p 'your prompt'
+yylo -b shell -s claude -i 3 -p 'your prompt'
 
 # Quick subagent shortcuts
-juno-code claude 'your task'
-juno-code codex 'your task'
-juno-code gemini 'your task'
-juno-code pi 'your task'
+yylo claude 'your task'
+yylo codex 'your task'
+yylo gemini 'your task'
+yylo pi 'your task'
 
 # Pi live interactive run (auto-exits on non-aborted completion)
-juno-code pi --live -p '/skill:ralph-loop' -i 1
+yylo pi --live -p '/skill:ralph-loop' -i 1
 
 # Installed shortcuts
-# yy is the short binary alias for juno-code.
+# yy is the short binary alias for yylo.
 # ypl is shorthand for yy pi --live and forwards all remaining args.
 yy pi --live 'hello'
 ypl 'hello'
 ypl '/skill:ralph-loop' -i 1
 
 # AI-powered test generation
-juno-code test --generate --framework vitest
-juno-code test --run
+yylo test --generate --framework vitest
+yylo test --run
 
 # View and parse log files
-juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit 50
+yylo view-log .juno_task/logs/claude_shell_*.log --output json-only --limit 50
 ```
 
 ### Global Options
@@ -766,22 +768,22 @@ juno-code view-log .juno_task/logs/claude_shell_*.log --output json-only --limit
 ### Session Management
 
 ```bash
-juno-code session list                # View all sessions
-juno-code session info abc123         # Session details
-juno-code --resume abc123 -p 'continue'   # Resume session
-juno-code --continue -p 'keep going'      # Continue most recent (backend-native)
-juno-code continue 'next prompt'          # Reuse last session id + runtime settings snapshot
-juno-code clone 'Explore approach A'      # Fork current shell continue-scope Pi session
-juno-code clone --name C 'Explore C'      # Clone main into named branch C
-juno-code clone --from C --name M 'Explore M'  # Clone branch C into branch M
-juno-code branches                        # List this shell's named branches
-juno-code switch C                        # Make C active for future continue runs
-juno-code continue --clone 'Explore approach B'
-juno-code --resume abc123 --clone 'Explore approach C'  # Fork explicit session id
-juno-code pi --resume abc123 'Continue work'             # Resume explicit session id
+yylo session list                # View all sessions
+yylo session info abc123         # Session details
+yylo --resume abc123 -p 'continue'   # Resume session
+yylo --continue -p 'keep going'      # Continue most recent (backend-native)
+yylo continue 'next prompt'          # Reuse last session id + runtime settings snapshot
+yylo clone 'Explore approach A'      # Fork current shell continue-scope Pi session
+yylo clone --name C 'Explore C'      # Clone main into named branch C
+yylo clone --from C --name M 'Explore M'  # Clone branch C into branch M
+yylo branches                        # List this shell's named branches
+yylo switch C                        # Make C active for future continue runs
+yylo continue --clone 'Explore approach B'
+yylo --resume abc123 --clone 'Explore approach C'  # Fork explicit session id
+yylo pi --resume abc123 'Continue work'             # Resume explicit session id
 ```
 
-Each `juno-code` run also appends execution history to `session_history.json` under the shared Git-common-dir Juno state root (unlimited, newest-first). `session_branches.json` and `continue_scope_runtime.json` use the same resolver, so linked worktrees cannot dirty tracked product paths or overwrite another repository's state. Non-Git directories use an identity-keyed user state directory. Set `JUNO_CODE_SESSION_METADATA_DIRECTORY` for an explicit location; existing project-local metadata is left untouched until the user explicitly adopts or migrates it.
+Each `yylo` run also appends execution history to `session_history.json` under the shared Git-common-dir Juno state root (unlimited, newest-first). `session_branches.json` and `continue_scope_runtime.json` use the same resolver, so linked worktrees cannot dirty tracked product paths or overwrite another repository's state. Non-Git directories use an identity-keyed user state directory. Set `YYLO_SESSION_METADATA_DIRECTORY` for an explicit location; existing project-local metadata is left untouched until the user explicitly adopts or migrates it.
 
 Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
 
@@ -792,24 +794,24 @@ CLI run summaries also surface these fields live in the terminal:
 - `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
 - `Session ID(s)` entries with per-session cost when available
 
-For `juno-code continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.juno` remains user configuration and is not rewritten during normal continuity operation.
+For `yylo continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.yylo` remains user configuration and is not rewritten during normal continuity operation.
 
 Legacy continuity cleanup is explicit and reversible:
 
 ```bash
-juno-code continuity doctor --json
-juno-code continuity clean                         # dry-run inventory only
-juno-code migrate inventory --project . --output /durable/inventory.json
-juno-code migrate owner-template --inventory /durable/inventory.json --output /durable/answers.json
-juno-code migrate generate-policy --inventory /durable/inventory.json --answers /durable/answers.json --output /durable/policies.json
-juno-code migrate evacuation-plan --inventory /durable/inventory.json --policy /durable/policies.json --project /absolute/source --output /durable/evacuation-plan.json
-juno-code migrate evacuation-apply --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-apply.json --allow-disposable-mutation
-juno-code migrate evacuation-verify --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-verify.json
-juno-code continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
-juno-code continuity clean --apply /tmp/review.json
-juno-code continuity rollback <receipt-path>
-juno-code continuity pin [SCOPE_0123456789ABCDEF]
-juno-code continuity unpin [SCOPE_0123456789ABCDEF]
+yylo continuity doctor --json
+yylo continuity clean                         # dry-run inventory only
+yylo migrate inventory --project . --output /durable/inventory.json
+yylo migrate owner-template --inventory /durable/inventory.json --output /durable/answers.json
+yylo migrate generate-policy --inventory /durable/inventory.json --answers /durable/answers.json --output /durable/policies.json
+yylo migrate evacuation-plan --inventory /durable/inventory.json --policy /durable/policies.json --project /absolute/source --output /durable/evacuation-plan.json
+yylo migrate evacuation-apply --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-apply.json --allow-disposable-mutation
+yylo migrate evacuation-verify --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-verify.json
+yylo continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
+yylo continuity clean --apply /tmp/review.json
+yylo continuity rollback <receipt-path>
+yylo continuity pin [SCOPE_0123456789ABCDEF]
+yylo continuity unpin [SCOPE_0123456789ABCDEF]
 ```
 
 Metadata evacuation is bound to the exact reviewed inventory, policy, product
@@ -818,27 +820,27 @@ a clean disposable linked worktree and never stages, commits, moves the product 
 registers a controller, or removes the rollback controller. Unclassified paths and
 nested repository/gitlink boundary crossings fail closed.
 
-Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `JUNO_CODE_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
+Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `YYLO_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
 
 Expiration removes only automatic lookup metadata. A missing Pi session fails without deleting its continuity record or trying another scope, and the error directs the operator to an explicit `--resume <session-id>` or a new run. Deterministic clock/TTL/LRU/live/pin/named/concurrency/missing-session tests plus the persisted 2,500-scope structural regression matter because prose or cleanup commands cannot enforce the hard bound, prove lost-update safety, or prove that explicit recovery remains available without cross-scope routing.
 
-Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `JUNO_CODE_CONTINUE_SCOPE=<name>`. `JUNO_CODE_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
+Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `YYLO_CONTINUE_SCOPE=<name>`. `YYLO_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
 
 Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Concurrency, malformed-document, stale-lock, routing, and deterministic 2,500-pair boundary tests matter because only the locked backing service prevents lost updates, while routing tests prove no caller silently restores the retired env/branch stores.
 
 Script endpoint for hash/status lookups:
 
 ```bash
-juno-code continue-scope --json                    # current scope hash + status
-juno-code continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
-juno-code continue-scope --json --parent-pid 1234  # scope seen by a child of PID 1234
+yylo continue-scope --json                    # current scope hash + status
+yylo continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
+yylo continue-scope --json --parent-pid 1234  # scope seen by a child of PID 1234
 ```
 
 `continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`. Script runners use `--parent-pid` for caller/child handoff scopes; descriptor selection, hashing, and environment-key generation remain owned exclusively by TypeScript rather than being mirrored in runner code.
 
 ### Pi Session Cloning and Named Branches
 
-Pi session cloning lets one root session branch into independent experiments without branches overwriting each other. `juno-code` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
+Pi session cloning lets one root session branch into independent experiments without branches overwriting each other. `yylo` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
 
 ```bash
 ypl 'init'
@@ -855,60 +857,60 @@ yy cc 'continue C'
 yy switch C 'continue C immediately'
 
 # Equivalent long forms:
-juno-code branches
-juno-code switch C
-juno-code switch C 'Continue C immediately'
-juno-code clone 'Explore auto-branch'
-juno-code clone C 'Explore C'
-juno-code clone --name C 'Explore C'
-juno-code clone --from C --name M 'Explore M'
+yylo branches
+yylo switch C
+yylo switch C 'Continue C immediately'
+yylo clone 'Explore auto-branch'
+yylo clone C 'Explore C'
+yylo clone --name C 'Explore C'
+yylo clone --from C --name M 'Explore M'
 ```
 
 Named branch behavior:
 
-- `juno-code branches` shows named branches for the current shell/pane and marks the active branch.
-- `juno-code switch C` makes `C` active for future `juno-code continue` / `yy cc` in that shell; `juno-code switch +` and `juno-code switch -` cycle to the next/previous listed branch with wraparound; `juno-code switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
-- `juno-code clone 'prompt'` auto-assigns the first available generated branch name (`b1`, `b2`, ...) when a branch registry exists for the current shell, clones from `main`, runs the prompt immediately, and does **not** switch the active branch.
-- `juno-code clone C 'prompt'` is shorthand for `juno-code clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
-- `juno-code clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
+- `yylo branches` shows named branches for the current shell/pane and marks the active branch.
+- `yylo switch C` makes `C` active for future `yylo continue` / `yy cc` in that shell; `yylo switch +` and `yylo switch -` cycle to the next/previous listed branch with wraparound; `yylo switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
+- `yylo clone 'prompt'` auto-assigns the first available generated branch name (`b1`, `b2`, ...) when a branch registry exists for the current shell, clones from `main`, runs the prompt immediately, and does **not** switch the active branch.
+- `yylo clone C 'prompt'` is shorthand for `yylo clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
+- `yylo clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
 - Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
-- If a new terminal tab reports `No named session branches found for this shell scope`, that tab has a different continue scope. Run `ypl 'init'` in that tab, run from the original tab, or set a shared `JUNO_CODE_CONTINUE_SCOPE=<name>` before starting runs that should share branch state.
+- If a new terminal tab reports `No named session branches found for this shell scope`, that tab has a different continue scope. Run `ypl 'init'` in that tab, run from the original tab, or set a shared `YYLO_CONTINUE_SCOPE=<name>` before starting runs that should share branch state.
 - A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.
 
 Explicit session-id resume/clone behavior:
 
-- `juno-code pi --resume <session-id> 'prompt'` or `ypl --resume <session-id> 'prompt'` resumes that exact Pi session. Because `ypl` expands to `yy pi --live`, do **not** run `ypl clone C ...`; `clone C` would be treated as prompt text.
-- `juno-code --resume <session-id> --clone 'prompt'` forks the explicit session id as a non-named clone.
-- `juno-code clone C --resume <session-id> 'prompt'` is not the named-branch syntax; named clones source from the branch registry (`main` by default, or `--from C`). Use `juno-code --resume <session-id> --clone 'prompt'` for an explicit session id, or initialize/register `main` first and then use `juno-code clone C 'prompt'`.
-- `juno-code clone ...` and `juno-code continue --clone ...` fork the current shell session and then future `juno-code continue` in that shell follows the clone.
+- `yylo pi --resume <session-id> 'prompt'` or `ypl --resume <session-id> 'prompt'` resumes that exact Pi session. Because `ypl` expands to `yy pi --live`, do **not** run `ypl clone C ...`; `clone C` would be treated as prompt text.
+- `yylo --resume <session-id> --clone 'prompt'` forks the explicit session id as a non-named clone.
+- `yylo clone C --resume <session-id> 'prompt'` is not the named-branch syntax; named clones source from the branch registry (`main` by default, or `--from C`). Use `yylo --resume <session-id> --clone 'prompt'` for an explicit session id, or initialize/register `main` first and then use `yylo clone C 'prompt'`.
+- `yylo clone ...` and `yylo continue --clone ...` fork the current shell session and then future `yylo continue` in that shell follows the clone.
 
 The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, pass `clone C` through `ypl` as prompt text, drop an inline `switch C 'prompt'` request after switching, lose an unnamed clone because no branch name was recorded, or expect clone to switch branches automatically.
 
 ### Feedback System
 
 ```bash
-# While juno-code is running, provide feedback
-juno-code feedback "found a bug in the auth flow"
-juno-code feedback --interactive
+# While yylo is running, provide feedback
+yylo feedback "found a bug in the auth flow"
+yylo feedback --interactive
 
 # Or enable inline feedback
-juno-code start -b shell -s claude --enable-feedback -i 10
+yylo start -b shell -s claude --enable-feedback -i 10
 ```
 
 ### Skills Management
 
-Skills are Markdown instruction files (with YAML frontmatter) installed into agent-specific directories so each coding agent reads them as context. juno-code auto-provisions skills on every CLI run.
+Skills are Markdown instruction files (with YAML frontmatter) installed into agent-specific directories so each coding agent reads them as context. yylo auto-provisions skills on every CLI run.
 
 ```bash
 # List installed skills
-juno-code skills list
+yylo skills list
 
 # Install/update skills
-juno-code skills install
-juno-code skills install --force
+yylo skills install
+yylo skills install --force
 
 # Check skill status
-juno-code skills status
+yylo skills status
 ```
 
 **Skill groups by agent:**
@@ -923,23 +925,23 @@ juno-code skills status
 
 ```bash
 # View installed services
-juno-code services list
+yylo services list
 
 # Check service status
-juno-code services status
+yylo services status
 
 # Force reinstall (get latest)
-juno-code services install --force
+yylo services install --force
 ```
 
 ### Auth Management (Codex → Pi)
 
 ```bash
 # Import default Codex auth into Pi auth store
-juno-code auth import-codex
+yylo auth import-codex
 
 # Use explicit input/output paths (useful for account switching/backup files)
-juno-code auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
+yylo auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
 ```
 
 This command translates Codex CLI credentials to Pi's `auth.json` format (`type: "oauth"`) and writes/updates the `openai-codex` provider entry.
@@ -972,32 +974,32 @@ These aliases are subagent-specific: Pi's `:mini` selects Terra, while the Codex
 
 ### Pi Live Mode (`--live`)
 
-Use live mode when you want Pi's interactive TUI while keeping juno-code iteration hooks/statistics.
+Use live mode when you want Pi's interactive TUI while keeping yylo iteration hooks/statistics.
 
 ```bash
 # Canonical live flow
-juno-code pi --live -p '/skill:ralph-loop' -i 1
+yylo pi --live -p '/skill:ralph-loop' -i 1
 
 # Override the :gpt default when a different provider or model is required
-juno-code pi --live -m :sonnet -p '/skill:ralph-loop' -i 1
+yylo pi --live -m :sonnet -p '/skill:ralph-loop' -i 1
 
 # GPT-5.6 models support Pi's max thinking level
-juno-code pi -m :gpt --thinking max -p 'Analyze and implement this task' -i 1
+yylo pi -m :gpt --thinking max -p 'Analyze and implement this task' -i 1
 ```
 
 Notes:
 
 - Pi accepts `--thinking off|minimal|low|medium|high|xhigh|max`; use `max` for GPT-5.6 models when maximum supported reasoning effort is desired. `PI_THINKING=max` provides the equivalent environment default.
-- `--live` is validated as **Pi-only** (`juno-code pi ...`).
+- `--live` is validated as **Pi-only** (`yylo pi ...`).
 - `--live` requires extensions enabled (`--no-extensions` is incompatible).
 - Live auto-exit is triggered on non-aborted `agent_end` only. Pressing `Esc` to interrupt the current run keeps Pi open so you can continue interacting.
-- To manually leave Pi and return control to juno-code hooks/loop, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
+- To manually leave Pi and return control to yylo hooks/loop, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
 - Best experience is an interactive terminal (TTY) so Pi TUI can manage screen state cleanly.
 - Pi TUI depends on the Node runtime used to launch Pi; use a modern Node version (Node 20+) in PATH.
 
 ### Custom Backends
 
-Service scripts live in `~/.juno_code/services/`. Each is a Python script that accepts standard args (`-p/--prompt`, `-m/--model`, `-v/--verbose`) and outputs JSON events to stdout.
+Service scripts live in `~/.yylo/services/`. Each is a Python script that accepts standard args (`-p/--prompt`, `-m/--model`, `-v/--verbose`) and outputs JSON events to stdout.
 
 For audited automation, `yy pi --execution-envelope --model PROVIDER/MODEL PROMPT`
 emits one `juno_execution_envelope.v1` JSON object as the sole stdout payload. Its
@@ -1016,7 +1018,7 @@ Hooks allow user-defined shell commands at execution lifecycle points. Configure
 | `END_RUN`         | After all iterations     | Cleanup, reports              |
 | `ON_STALE`        | Stale iteration detected | Alert, auto-create task       |
 
-**Default hooks** (set up by `juno-code init`):
+**Default hooks** (set up by `yylo init`):
 
 - `START_ITERATION`: CLAUDE.md / AGENTS.md file size checks, feedback cleanup
 - `ON_STALE`: Creates a kanban warning task when no progress detected
@@ -1041,11 +1043,11 @@ Example config:
 
 ## Autonomous Execution
 
-Use these runners as the core automation layer around `juno-code`:
+Use these runners as the core automation layer around `yylo`:
 
 | Need                                           | Use                                                        |
 | ---------------------------------------------- | ---------------------------------------------------------- |
-| One AI loop over project/kanban context        | `juno-code start` or `juno-code -p ...`                    |
+| One AI loop over project/kanban context        | `yylo start` or `yylo -p ...`                    |
 | Keep looping until kanban is done              | `run_until_completion.sh`                                  |
 | Many independent kanban tasks                  | `parallel_runner.sh --kanban ...` or `--kanban-filter ...` |
 | Many complete shell commands or workflow files | `parallel_runner.sh --commands-file ...`                   |
@@ -1057,7 +1059,7 @@ The runner tests exercise real subprocess boundaries because this is where produ
 
 ### run_until_completion.sh
 
-Continuously runs juno-code until all kanban tasks are completed. Uses a do-while loop: juno-code runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
+Continuously runs yylo until all kanban tasks are completed. Uses a do-while loop: yylo runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
 
 ```bash
 # Run until all tasks complete
@@ -1103,11 +1105,11 @@ Execute commands or named hooks before the main loop:
 2. Hooks from `--pre-run-hook` flags (in order)
 3. Commands from `JUNO_PRE_RUN` env var
 4. Commands from `--pre-run` flags (in order)
-5. Main juno-code loop begins
+5. Main yylo loop begins
 
 ### Parallel Runner
 
-Orchestrate N concurrent juno-code processes with queue management, structured output, and optional tmux visualization.
+Orchestrate N concurrent yylo processes with queue management, structured output, and optional tmux visualization.
 
 #### Input Modes
 
@@ -1200,7 +1202,7 @@ Tip: keep the filter string quoted so it is passed as one argument to `parallel_
 
 ## Slack Integration
 
-juno-code includes built-in Slack integration for team collaboration. The system monitors Slack channels and creates kanban tasks from messages, then posts agent responses as threaded replies.
+yylo includes built-in Slack integration for team collaboration. The system monitors Slack channels and creates kanban tasks from messages, then posts agent responses as threaded replies.
 
 ### How It Works
 
@@ -1276,7 +1278,7 @@ Then run with the hook:
 
 ## GitHub Integration
 
-juno-code includes built-in GitHub integration for issue tracking and automated responses. The system monitors GitHub repositories, creates kanban tasks from issues, and posts agent responses as threaded comments with automatic issue closure.
+yylo includes built-in GitHub integration for issue tracking and automated responses. The system monitors GitHub repositories, creates kanban tasks from issues, and posts agent responses as threaded comments with automatic issue closure.
 
 ### How It Works
 
@@ -1405,7 +1407,7 @@ yy ledger merge source/ --into target/ --strategy keep-newer
 ### Hierarchy (highest to lowest priority)
 
 1. CLI arguments
-2. Environment variables (`JUNO_CODE_*`)
+2. Environment variables (`YYLO_*`)
 3. Project config (`.juno_task/config.json`)
 4. Global config files
 5. Hardcoded defaults
@@ -1415,9 +1417,9 @@ yy ledger merge source/ --into target/ --strategy keep-newer
 Set model defaults per subagent without changing your global default:
 
 ```bash
-juno-code pi set-default-model :api-codex
-juno-code claude set-default-model :opus
-juno-code codex set-default-model :gpt-5
+yylo pi set-default-model :api-codex
+yylo claude set-default-model :opus
+yylo codex set-default-model :gpt-5
 ```
 
 This writes to `.juno_task/config.json`:
@@ -1432,7 +1434,7 @@ This writes to `.juno_task/config.json`:
 }
 ```
 
-`juno-code` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
+`yylo` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
 
 For managed Workflow Runner calls, separately allow exact explicit Pi selectors:
 
@@ -1481,12 +1483,12 @@ Notes:
 - `maxDepth` defaults to `10` and must be a positive integer.
 - `order` supports `before_command_substitution` (default) or `after_command_substitution`.
 - Dictionary values can be strings or objects with exactly one non-empty `path` or `text` field.
-- `path` loads UTF-8 text/markdown from an absolute path or a path relative to the project working directory where `juno-code` is executed.
+- `path` loads UTF-8 text/markdown from an absolute path or a path relative to the project working directory where `yylo` is executed.
 - Loaded/inline macro text still flows through normal `@@key` macro expansion and `!'cmd'` prompt command substitution according to `order`.
 
 #### Managed Bolt prompts
 
-Fresh `juno-code init` installs portable, file-backed Bolt prompts and guidance. Existing projects install or refresh the same assets with:
+Fresh `yylo init` installs portable, file-backed Bolt prompts and guidance. Existing projects install or refresh the same assets with:
 
 ```bash
 yy scripts update
@@ -1500,12 +1502,12 @@ Safe updates are checksum-based through `.juno_task/managed-assets.json`. Missin
 
 Why tests and backing implementation matter: prose alone cannot prove npm packaging, detect whether a file still matches its managed base, or ensure retired executors are absent after upgrade. Build/pack parity, clean-install macro expansion, update-conflict, and disposable old-generation upgrade fixtures exercise those runtime boundaries.
 
-### Project Env Bootstrap (`.env.juno`)
+### Project Env Bootstrap (`.env.yylo`)
 
-`juno-code` now bootstraps a project env file automatically:
+`yylo` now bootstraps a project env file automatically:
 
-- On `juno-code init`: creates an empty `.env.juno` in project root
-- On any `juno-code` run: ensures `.env.juno` exists (creates if missing)
+- On `yylo init`: creates an empty `.env.yylo` in project root
+- On any `yylo` run: ensures `.env.yylo` exists (creates if missing)
 - Loads env values before execution so hooks and subagent processes receive them
 - Supports custom env file path via `.juno_task/config.json`
 
@@ -1521,16 +1523,16 @@ Example config:
 Notes:
 
 - `envFilePath`: env file to load (relative to project root or absolute path)
-- `envFileCopied`: tracks one-time initialization from `.env.juno` to custom env path
-- Load order: `.env.juno` first, then `envFilePath` (custom file overrides defaults)
+- `envFileCopied`: tracks one-time initialization from `.env.yylo` to custom env path
+- Load order: `.env.yylo` first, then `envFilePath` (custom file overrides defaults)
 
 ### Project Structure
 
-After `juno-code init`:
+After `yylo init`:
 
 ```
 your-project/
-├── .env.juno            # Project env file auto-created and loaded on startup
+├── .env.yylo            # Project env file auto-created and loaded on startup
 ├── .juno_task/
 │   ├── init.md           # Task breakdown (your input)
 │   ├── prompt.md         # AI instructions (Ralph-style prompt)
@@ -1559,10 +1561,10 @@ your-project/
 
 ```bash
 # Primary
-export JUNO_CODE_BACKEND=shell
-export JUNO_CODE_SUBAGENT=claude
-export JUNO_CODE_MODEL=:sonnet
-export JUNO_CODE_MAX_ITERATIONS=10
+export YYLO_BACKEND=shell
+export YYLO_SUBAGENT=claude
+export YYLO_MODEL=:sonnet
+export YYLO_MAX_ITERATIONS=10
 
 # Service-specific
 export CODEX_HIDE_STREAM_TYPES="turn_diff,token_count"
@@ -1595,7 +1597,7 @@ export JUNO_VERBOSE=true                 # Enable [INFO] output
 
 ```bash
 # Initialize
-juno-code init --task "Migrate JavaScript to TypeScript"
+yylo init --task "Migrate JavaScript to TypeScript"
 
 # Run until done (not forever)
 ./.juno_task/scripts/run_until_completion.sh -s claude -i 20 -v
@@ -1608,13 +1610,13 @@ juno-code init --task "Migrate JavaScript to TypeScript"
 
 ```bash
 # Try with Claude opus
-juno-code -b shell -s claude -m :opus -p "Investigate CI failures" -i 3
+yylo -b shell -s claude -m :opus -p "Investigate CI failures" -i 3
 
 # Stuck? Try Codex perspective
-juno-code -b shell -s codex -p "Same investigation" -i 3
+yylo -b shell -s codex -p "Same investigation" -i 3
 
 # Or use Pi with any provider's model
-juno-code -b shell -s pi -m :sonnet -p "Same investigation" -i 3
+yylo -b shell -s pi -m :sonnet -p "Same investigation" -i 3
 ```
 
 ### Parallel Batch Processing
@@ -1657,9 +1659,9 @@ juno-code -b shell -s pi -m :sonnet -p "Same investigation" -i 3
   -s claude -i 5 -v
 ```
 
-## Comparison: Ralph vs juno-code
+## Comparison: Ralph vs yylo
 
-| Feature              | Ralph                                  | juno-code                                        |
+| Feature              | Ralph                                  | yylo                                        |
 | -------------------- | -------------------------------------- | ------------------------------------------------ |
 | **Design Focus**     | One-time tasks (migrations, rewrites)  | Iterative development (scales to 1000s of tasks) |
 | **Core Loop**        | `while :; do claude; done`             | Controlled iterations                            |
@@ -1681,15 +1683,15 @@ juno-code -b shell -s pi -m :sonnet -p "Same investigation" -i 3
 ### Service scripts not updating
 
 ```bash
-juno-code services install --force
+yylo services install --force
 ```
 
 ### Model passthrough issues
 
 ```bash
 # Verify with verbose
-juno-code -v -b shell -s codex -m :codex -p "test"
-# Check stderr for: "Executing: python3 ~/.juno_code/services/codex.py ... -m gpt-5.3-codex"
+yylo -v -b shell -s codex -m :codex -p "test"
+# Check stderr for: "Executing: python3 ~/.yylo/services/codex.py ... -m gpt-5.3-codex"
 ```
 
 ### Kanban not finding tasks
@@ -1701,8 +1703,8 @@ juno-code -v -b shell -s codex -m :codex -p "test"
 ### Skills not appearing
 
 ```bash
-juno-code skills list
-juno-code skills install --force
+yylo skills list
+yylo skills install --force
 ```
 
 ### Python environment issues
@@ -1715,15 +1717,15 @@ juno-code skills install --force
 ## Build from Source
 
 ```bash
-cd juno-code
+cd yylo
 
 # Build
 npm run build
 
-# Build as exp-juno-code (local testing)
+# Build as exp-yylo (local testing)
 npm run build:exp
 
-# Remove exp-juno-code
+# Remove exp-yylo
 npm run uninstall:exp
 
 # Run tests
@@ -1739,7 +1741,7 @@ npm run typecheck
 
 ## Credits
 
-juno-code is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/)—the insight that AI delivers production software through iterative refinement. juno-code adds the structure that makes Ralph sustainable for real development work.
+yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/)—the insight that AI delivers production software through iterative refinement. yylo adds the structure that makes Ralph sustainable for real development work.
 
 ---
 
@@ -1747,19 +1749,19 @@ juno-code is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/
 
 ```bash
 # Install globally
-npm install -g juno-code
+npm install -g yylo
 
 # Initialize in your project
 cd your-project
-juno-code init --task "Your task description" --subagent claude
+yylo init --task "Your task description" --subagent claude
 
 # Start coding with AI
-juno-code start -b shell -s claude -i 5 -v
+yylo start -b shell -s claude -i 5 -v
 ```
 
 **Links:**
 
-- [npm package](https://www.npmjs.com/package/juno-code)
+- [npm package](https://www.npmjs.com/package/%40yylo%2Fcli)
 - [GitHub repository](https://github.com/yylo-dev/yylo)
 - [Report issues](https://github.com/yylo-dev/yylo/issues)
 

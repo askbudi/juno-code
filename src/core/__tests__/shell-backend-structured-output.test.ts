@@ -36,7 +36,7 @@ const createEnvironmentBoundaryService = async () => {
     path.join(servicesDir, 'claude.py'),
     `#!/usr/bin/env python3
 import json, os, sys
-names = sorted(name for name in os.environ if name.startswith("JUNO_CODE_LAST_"))
+names = sorted(name for name in os.environ if name.startswith("YYLO_LAST_"))
 resume = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else None
 print(json.dumps({"type":"result","result":json.dumps({"continuity_names":names,"config":os.environ.get("BOUNDARY_CONFIG"),"root":os.environ.get("JUNO_TASK_ROOT"),"resume":resume})}))
 `,
@@ -278,8 +278,8 @@ time.sleep(30)
       environment: {
         BOUNDARY_CONFIG: 'preserved',
         JUNO_TASK_ROOT: '/controller',
-        JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF: 'historical',
-        JUNO_CODE_LAST_EXECUTION_SETTINGS: 'legacy',
+        YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF: 'historical',
+        YYLO_LAST_EXECUTION_SETTINGS: 'legacy',
       },
     });
     await backend.initialize();
@@ -480,7 +480,7 @@ time.sleep(30)
       expect(payload.argv).not.toContain(instruction);
       expect(payload.argv).toContain('--prompt-file');
       expect(payload.env_instruction).toBeNull();
-      expect(payload.prompt_file).toContain(path.join(os.tmpdir(), 'juno-code'));
+      expect(payload.prompt_file).toContain(path.join(os.tmpdir(), 'yylo'));
       expect(payload.prompt_file_content).toBe(instruction);
       expect(await fs.pathExists(payload.prompt_file)).toBe(false);
     } finally {
@@ -550,7 +550,7 @@ time.sleep(30)
     try {
       const { servicesDir, workingDir } = await createStubPromptTransportService('claude');
       const beforeFiles = new Set(
-        (await fs.readdir(path.join(os.tmpdir(), 'juno-code')).catch(() => [] as string[])).filter(
+        (await fs.readdir(path.join(os.tmpdir(), 'yylo')).catch(() => [] as string[])).filter(
           (name) => name.includes('claude_subagent') && name.endsWith('-prompt.md'),
         ),
       );
@@ -580,7 +580,7 @@ time.sleep(30)
       await expect(backend.execute(request)).rejects.toThrow('Failed to execute script');
 
       const afterFiles = (
-        await fs.readdir(path.join(os.tmpdir(), 'juno-code')).catch(() => [] as string[])
+        await fs.readdir(path.join(os.tmpdir(), 'yylo')).catch(() => [] as string[])
       ).filter((name) => name.includes('claude_subagent') && name.endsWith('-prompt.md'));
       expect(afterFiles.filter((name) => !beforeFiles.has(name))).toEqual([]);
     } finally {

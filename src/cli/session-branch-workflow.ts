@@ -155,10 +155,10 @@ async function applyContinueContextFromEnvironment(
   if (!sessionId) {
     const commandHint = action === 'clone' ? 'clone' : 'continue';
     throw new ValidationError(`No previous session found to ${commandHint} in this shell context`, [
-      `Run a regular juno-code command in this same pane/tab first (scope source: ${scopedState.context.scopeSource})`,
+      `Run a regular yylo command in this same pane/tab first (scope source: ${scopedState.context.scopeSource})`,
       action === 'clone'
-        ? 'Or clone an explicit Pi session: juno-code --resume <session-id> --clone "your prompt"'
-        : 'Or resume another session directly: juno-code --resume <session-id> "your next prompt"',
+        ? 'Or clone an explicit Pi session: yylo --resume <session-id> --clone "your prompt"'
+        : 'Or resume another session directly: yylo --resume <session-id> "your next prompt"',
     ]);
   }
 
@@ -169,8 +169,8 @@ async function applyContinueContextFromEnvironment(
     throw new ValidationError(
       'Previous execution settings are missing or invalid for this shell context',
       [
-        'Run a regular juno-code command again in this pane/tab to refresh the continue snapshot',
-        'Then retry: juno-code continue "your next prompt"',
+        'Run a regular yylo command again in this pane/tab to refresh the continue snapshot',
+        'Then retry: yylo continue "your next prompt"',
       ],
     );
   }
@@ -227,8 +227,8 @@ async function resolveNamedCloneOptions(
 
   if (!targetName) {
     throw new ValidationError('Named branch clone requires --name <branch>', [
-      'Use: juno-code clone --name C "your prompt"',
-      'Use: juno-code clone --from C --name M "your prompt"',
+      'Use: yylo clone --name C "your prompt"',
+      'Use: yylo clone --from C --name M "your prompt"',
     ]);
   }
 
@@ -238,7 +238,7 @@ async function resolveNamedCloneOptions(
       `Invalid clone branch name '${targetName}': ${targetValidation.reason}`,
       [
         "Choose a non-empty branch name other than 'main'",
-        'Example: juno-code clone --name C "your prompt"',
+        'Example: yylo clone --name C "your prompt"',
       ],
     );
   }
@@ -247,15 +247,15 @@ async function resolveNamedCloneOptions(
   if (!sourceValidation.valid) {
     throw new ValidationError(
       `Invalid source branch name '${sourceName}': ${sourceValidation.reason}`,
-      ['Use an existing branch from: juno-code branches'],
+      ['Use an existing branch from: yylo branches'],
     );
   }
 
   if (branches.length === 0) {
     throw new ValidationError('No named session branches found for this shell scope', [
-      "Run ypl 'init' or juno-code pi 'init' first in this shell/tab to create the main session branch",
-      'Then retry: juno-code clone --name C "your prompt"',
-      'For an explicit session id, use: juno-code --resume <session-id> --clone "your prompt"',
+      "Run ypl 'init' or yylo pi 'init' first in this shell/tab to create the main session branch",
+      'Then retry: yylo clone --name C "your prompt"',
+      'For an explicit session id, use: yylo --resume <session-id> --clone "your prompt"',
       'Do not use ypl clone C ...; ypl expands to yy pi --live, so clone C becomes prompt text.',
     ]);
   }
@@ -263,14 +263,14 @@ async function resolveNamedCloneOptions(
   const sourceBranch = branches.find((branch) => branch.name === sourceName);
   if (!sourceBranch) {
     throw new ValidationError(`Unknown source branch '${sourceName}' for this shell scope`, [
-      'List branches with: juno-code branches',
-      'Use: juno-code clone --from <branch> --name <new-branch> "your prompt"',
+      'List branches with: yylo branches',
+      'Use: yylo clone --from <branch> --name <new-branch> "your prompt"',
     ]);
   }
 
   if (!sourceBranch.sessionId.trim()) {
     throw new ValidationError(`Source branch '${sourceName}' does not have a session id`, [
-      "Run ypl 'init' or juno-code pi 'init' to refresh the main branch session",
+      "Run ypl 'init' or yylo pi 'init' to refresh the main branch session",
     ]);
   }
 
@@ -304,8 +304,8 @@ async function normalizeCloneOptions(
   const normalizedSource = typeof options.resume === 'string' ? options.resume.trim() : '';
   if (!normalizedSource) {
     throw new ValidationError('Pi session cloning requires a source session', [
-      'Use: juno-code --resume <session-id> --clone "your prompt"',
-      'Or run from a shell with a saved continue scope: juno-code clone "your prompt"',
+      'Use: yylo --resume <session-id> --clone "your prompt"',
+      'Or run from a shell with a saved continue scope: yylo clone "your prompt"',
     ]);
   }
 

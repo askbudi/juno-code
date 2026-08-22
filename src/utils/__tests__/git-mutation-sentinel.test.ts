@@ -47,7 +47,7 @@ describe('full-suite Git mutation sentinel', () => {
 
     expect(protectedRoots(productRoot, {
       JUNO_TASK_ROOT: controllerRoot,
-      JUNO_CODE_TEST_PROTECTED_GIT_ROOTS: controllerRoot,
+      YYLO_TEST_PROTECTED_GIT_ROOTS: controllerRoot,
     })).toEqual([
       {
         identity: 'product/candidate',

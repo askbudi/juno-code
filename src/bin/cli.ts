@@ -1,5 +1,5 @@
 /**
- * CLI entry point for juno-code
+ * CLI entry point for yylo
  *
  * Comprehensive TypeScript CLI implementation with full functionality parity
  * to the Python budi-cli. Provides all core commands with interactive and
@@ -30,10 +30,11 @@ import {
   classifyExplicitInvocation,
   formatExplicitInvocationError,
 } from '../utils/explicit-command.js';
+import { migrateLegacyEnvironment } from '../core/identity-migration.js';
 
 const executableLaunchSurface = (() => {
   const executable = basename(process.argv0);
-  return executable === 'yy' || executable === 'ypl' ? executable : 'juno-code';
+  return executable === 'yy' || executable === 'ypl' ? executable : 'yylo';
 })();
 
 function observeCommanderRequest(program: Command) {
@@ -100,6 +101,10 @@ import {
   forwardBenchmarkSignal,
   runBenchmarkDelegate,
 } from '../cli/commands/benchmark.js';
+import {
+  forwardLedgerSignal,
+  runLedgerDelegate,
+} from '../cli/commands/ledger.js';
 import CompletionCommand from '../cli/commands/completion.js';
 
 // Import version from package.json
@@ -211,8 +216,8 @@ function handleCLIError(error: unknown, verbose: number = 0): void {
     console.error(chalk.red.bold('\n❌ Branch Registry Error'));
     console.error(chalk.red(`   ${error.message}`));
     console.error(chalk.yellow('\n💡 Suggestions:'));
-    console.error(chalk.yellow("   • Run ypl 'init' or juno-code pi 'init' first to create the main branch"));
-    console.error(chalk.yellow('   • Inspect branches with: juno-code branches'));
+    console.error(chalk.yellow("   • Run ypl 'init' or yylo pi 'init' first to create the main branch"));
+    console.error(chalk.yellow('   • Inspect branches with: yylo branches'));
     process.exit(1);
     return;
   }
@@ -304,7 +309,7 @@ function setupGlobalOptions(program: Command): void {
     .option('--continue', 'Continue the most recent conversation (shell backend only)')
     .option(
       '--til-completion',
-      'Run juno-code in a loop until all Juno Ledger tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
+      'Run yylo in a loop until all Juno Ledger tasks are complete (aliases: --until-completion, --run-until-completion, --till-complete)',
     )
     .option('--until-completion', 'Alias for --til-completion')
     .addOption(new Option('--run-until-completion', 'Alias for --til-completion').hideHelp())
@@ -402,7 +407,7 @@ function getForwardedUntilCompletionArgs(): string[] {
       continue;
     }
 
-    // --cwd is consumed by the outer juno-code invocation to locate/run the
+    // --cwd is consumed by the outer yylo invocation to locate/run the
     // correct run_until_completion script. Do not forward it to inner loop
     // invocations, otherwise relative paths can be applied twice.
     if (arg === '--cwd' || arg === '-w') {
@@ -481,7 +486,7 @@ async function runUntilCompletionScriptIfRequested(
   if (!(await fs.pathExists(scriptPath))) {
     console.error(chalk.red.bold('\n❌ Error: run_until_completion.sh not found'));
     console.error(chalk.red(`   Expected location: ${scriptPath}`));
-    console.error(chalk.yellow('\n💡 Suggestion: Run "juno-code init" to initialize the project'));
+    console.error(chalk.yellow('\n💡 Suggestion: Run "yylo init" to initialize the project'));
     process.exit(1);
     return true;
   }
@@ -496,7 +501,7 @@ async function runUntilCompletionScriptIfRequested(
     }
   }
 
-  // Forward all juno-code arguments except completion flags and pre-run-hook values
+  // Forward all yylo arguments except completion flags and pre-run-hook values
   scriptArgs.push(...getForwardedUntilCompletionArgs());
 
   // The outer iteration bound is passed to the script explicitly and is never
@@ -572,7 +577,7 @@ function setupContinueCommand(program: Command): void {
   const continueCommand = program
     .command('continue')
     .aliases(['contiue', 'cn', 'cc'])
-    .description('Continue the most recent juno-code session with saved settings (aliases: contiue, cn, cc)')
+    .description('Continue the most recent yylo session with saved settings (aliases: contiue, cn, cc)')
     .argument('[prompt_text...]', 'Prompt text (positional, alternative to -p)')
     .option(
       '-p, --prompt [text]',
@@ -621,8 +626,8 @@ function setupContinueCommand(program: Command): void {
     'after',
     `
 ${chalk.blue.bold('Examples:')}
-  juno-code continue 'Implement the next step'
-  juno-code continue --clone 'Explore approach B'
+  yylo continue 'Implement the next step'
+  yylo continue --clone 'Explore approach B'
 
 ${chalk.blue.bold('Pi clone behavior:')}
   continue --clone forks the current shell continue-scope session with Pi native --fork.
@@ -635,7 +640,7 @@ ${chalk.blue.bold('Pi clone behavior:')}
 
 /**
  * Setup clone command.
- * Alias-style UX for `juno-code continue --clone`, using the current shell continue scope.
+ * Alias-style UX for `yylo continue --clone`, using the current shell continue scope.
  */
 function setupCloneCommand(program: Command): void {
   const cloneCommand = program
@@ -710,25 +715,25 @@ function setupCloneCommand(program: Command): void {
     'after',
     `
 ${chalk.blue.bold('Examples:')}
-  juno-code clone 'Explore approach A'      # auto-names b1, b2, ...
-  juno-code clone early_reflect '@@reflect'
-  juno-code clone --name C 'Explore C'
-  juno-code clone --from C --name M 'Explore M'
-  juno-code --resume <session-id> --clone '@@close_loop'   # fork explicit session id
+  yylo clone 'Explore approach A'      # auto-names b1, b2, ...
+  yylo clone early_reflect '@@reflect'
+  yylo clone --name C 'Explore C'
+  yylo clone --from C --name M 'Explore M'
+  yylo --resume <session-id> --clone '@@close_loop'   # fork explicit session id
 
 ${chalk.blue.bold('Named branch behavior:')}
   clone 'prompt' auto-assigns the first available b-number branch (b1, b2, ...)
   when this shell already has a branch registry. clone C 'prompt' is shorthand
   for --name C 'prompt'. --name C clones from main
   by default, runs the prompt immediately in C, and overwrites C if it already
-  exists. Clone does not switch the active branch; use juno-code switch C when
-  future juno-code continue runs should follow C. --from C --name M clones from
+  exists. Clone does not switch the active branch; use yylo switch C when
+  future yylo continue runs should follow C. --from C --name M clones from
   branch C into M. The target name main is reserved.
 
 ${chalk.blue.bold('Scope behavior:')}
   Each shell/pane has its own active branch registry. If a new tab says
   "No named session branches found", run ypl 'init' in that tab, use the
-  original tab, or set JUNO_CODE_CONTINUE_SCOPE=<name> before shared runs.
+  original tab, or set YYLO_CONTINUE_SCOPE=<name> before shared runs.
   Use --resume <id> --clone for explicit session ids; clone C --resume <id>
   is not named-branch syntax.
 `,
@@ -784,7 +789,7 @@ function setupNamedBranchCommands(program: Command): void {
 
         if (branches.length === 0) {
           console.log('No named session branches found for this shell scope.');
-          console.log("Run ypl 'init' or juno-code pi 'init' first.");
+          console.log("Run ypl 'init' or yylo pi 'init' first.");
           return;
         }
 
@@ -807,12 +812,12 @@ function setupNamedBranchCommands(program: Command): void {
     'after',
     `
 ${chalk.blue.bold('Examples:')}
-  juno-code branches
-  juno-code branches --json
+  yylo branches
+  yylo branches --json
 
 ${chalk.blue.bold('Behavior:')}
   Shows named branches for this shell/pane and marks the active branch with *.
-  Future juno-code continue runs follow the active branch in this shell.
+  Future yylo continue runs follow the active branch in this shell.
 `,
   );
 
@@ -874,7 +879,7 @@ ${chalk.blue.bold('Behavior:')}
     'after',
     `
 ${chalk.blue.bold('Examples:')}
-  juno-code switch C
+  yylo switch C
   yy switch C
   yy switch +
   yy switch -
@@ -882,9 +887,9 @@ ${chalk.blue.bold('Examples:')}
 
 ${chalk.blue.bold('Behavior:')}
   Makes the branch active only for this shell/pane. Use + or - to cycle to the
-  next/previous branch with wraparound. If a prompt is provided, juno-code
+  next/previous branch with wraparound. If a prompt is provided, yylo
   switches first and then runs that prompt as a continue on the newly active
-  branch. Future juno-code continue or yy cc runs in this shell continue that
+  branch. Future yylo continue or yy cc runs in this shell continue that
   branch until you switch again or a reset creates a new main registry.
 `,
   );
@@ -1164,7 +1169,7 @@ function setupMainCommand(program: Command): void {
 
           // Check if project is initialized
           if (await fs.pathExists(junoTaskDir)) {
-            console.log(chalk.blue.bold('🎯 Juno Code - Auto-detected Initialized Project\n'));
+            console.log(chalk.blue.bold('🎯 YYLO - Auto-detected Initialized Project\n'));
 
             // Try to load configuration for auto-detection
             try {
@@ -1219,23 +1224,23 @@ function setupMainCommand(program: Command): void {
           !options.interactivePrompt
         ) {
           console.log(
-            chalk.blue.bold('🎯 Juno Code - TypeScript CLI for AI Subagent Orchestration\n'),
+            chalk.blue.bold('🎯 YYLO - TypeScript CLI for AI Subagent Orchestration\n'),
           );
           console.log(chalk.white('To get started:'));
-          console.log(chalk.gray('  juno-code init                    # Initialize new project'));
-          console.log(chalk.gray('  juno-code start                   # Start execution'));
-          console.log(chalk.gray('  juno-code test --generate --run   # AI-powered testing'));
+          console.log(chalk.gray('  yylo init                    # Initialize new project'));
+          console.log(chalk.gray('  yylo start                   # Start execution'));
+          console.log(chalk.gray('  yylo test --generate --run   # AI-powered testing'));
           console.log(
-            chalk.gray("  juno-code -s claude 'prompt'      # Quick execution with Claude"),
+            chalk.gray("  yylo -s claude 'prompt'      # Quick execution with Claude"),
           );
           console.log(
-            chalk.gray("  juno-code -s claude -p 'prompt'   # Same (explicit -p flag)"),
+            chalk.gray("  yylo -s claude -p 'prompt'   # Same (explicit -p flag)"),
           );
           console.log(chalk.gray("  ypl 'prompt'                     # Shortcut for: yy pi --live 'prompt'"));
           console.log(
             chalk.gray('  shell safety: use single quotes or -f/stdin for prompts with backticks/$()'),
           );
-          console.log(chalk.gray('  juno-code --help                  # Show all commands'));
+          console.log(chalk.gray('  yylo --help                  # Show all commands'));
           console.log('');
           return;
         }
@@ -1255,7 +1260,7 @@ function setupMainCommand(program: Command): void {
  */
 function displayBanner(verbose: number = 0): void {
   if (verbose >= 1) {
-    console.error(chalk.blue.bold(`\n🎯 Juno Code v${VERSION} - TypeScript CLI`));
+    console.error(chalk.blue.bold(`\n🎯 YYLO v${VERSION} - TypeScript CLI`));
     console.error(chalk.gray(`   Node.js ${process.version} on ${process.platform}`));
     console.error(chalk.gray(`   Working directory: ${process.cwd()}`));
     console.error('');
@@ -1316,7 +1321,7 @@ function setupScriptManagementCommands(program: Command): void {
       console.log(chalk.green('✓ Force updated scripts, requirements, and managed project assets'));
       if (!outcome.scriptsUpdated && !outcome.skillsUpdated &&
           outcome.assets.installed.length + outcome.assets.updated.length === 0) {
-        console.log(chalk.yellow('No project assets updated. Is this an initialized juno-code project with .juno_task/?'));
+        console.log(chalk.yellow('No project assets updated. Is this an initialized yylo project with .juno_task/?'));
       }
       return;
     }
@@ -1355,10 +1360,10 @@ function setupScriptManagementCommands(program: Command): void {
       'after',
       `
 ${chalk.blue.bold('Examples:')}
-  juno-code scripts update --force
+  yylo scripts update --force
   yy scripts update --force
 
-${chalk.gray('This updates scripts from the currently installed juno-code package/templates.')}
+${chalk.gray('This updates scripts from the currently installed yylo package/templates.')}
 `,
     );
 
@@ -1476,7 +1481,7 @@ function setupCompletion(program: Command): void {
 
 /**
  * Subagent help text definitions.
- * Each entry provides backend-specific documentation shown via `juno-code <subagent> --help`.
+ * Each entry provides backend-specific documentation shown via `yylo <subagent> --help`.
  */
 const SUBAGENT_HELP: Record<
   string,
@@ -1525,33 +1530,33 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code claude 'Analyze this codebase'
+  yylo claude 'Analyze this codebase'
 
   ${chalk.gray('# Choose a model')}
-  juno-code claude -m :opus 'Complex refactoring task'
-  juno-code claude -m :haiku 'Quick analysis'
+  yylo claude -m :opus 'Complex refactoring task'
+  yylo claude -m :haiku 'Quick analysis'
 
   ${chalk.gray('# File-based prompt')}
-  juno-code claude -f prompt.md
+  yylo claude -f prompt.md
 
   ${chalk.gray('# Resume a session')}
-  juno-code claude --resume <session-id> 'Continue the work'
-  juno-code claude --continue 'Next step'
+  yylo claude --resume <session-id> 'Continue the work'
+  yylo claude --continue 'Next step'
 
   ${chalk.gray('# Tool configuration')}
-  juno-code claude --disallowed-tools Bash 'Read-only analysis'
-  juno-code claude --allowed-tools Read Grep 'Search only'
+  yylo claude --disallowed-tools Bash 'Read-only analysis'
+  yylo claude --allowed-tools Read Grep 'Search only'
 
   ${chalk.gray('# Pipe prompt via stdin')}
-  echo 'Explain this code' | juno-code claude
-  cat prompt.md | juno-code claude
+  echo 'Explain this code' | yylo claude
+  cat prompt.md | yylo claude
 
   ${chalk.gray('# Shell safety')}
   ${chalk.gray('Use single quotes (or -f/stdin) when prompts contain backticks or $()')}
 
   ${chalk.gray('# Prompt-time substitutions (refreshed each iteration)')}
-  juno-code claude -p "Status: !'git status --short'"
-  juno-code claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
+  yylo claude -p "Status: !'git status --short'"
+  yylo claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
 `,
   },
 
@@ -1616,24 +1621,24 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code pi 'Build a REST API endpoint'
+  yylo pi 'Build a REST API endpoint'
 
   ${chalk.gray('# Use a specific provider and model')}
-  juno-code pi -m :gpt-5 'Refactor this module'
-  juno-code pi -m openai/gpt-4o --provider openai 'Task'
-  juno-code pi -m :gemini-pro 'Analyze performance'
+  yylo pi -m :gpt-5 'Refactor this module'
+  yylo pi -m openai/gpt-4o --provider openai 'Task'
+  yylo pi -m :gemini-pro 'Analyze performance'
 
   ${chalk.gray('# Extended thinking')}
-  juno-code pi --thinking high 'Complex architecture redesign'
+  yylo pi --thinking high 'Complex architecture redesign'
 
   ${chalk.gray('# Tool and session control')}
-  juno-code pi --no-tools 'Read-only analysis'
-  juno-code pi --no-session 'One-off question'
-  juno-code pi --resume <session-id> 'Continue work'
+  yylo pi --no-tools 'Read-only analysis'
+  yylo pi --no-session 'One-off question'
+  yylo pi --resume <session-id> 'Continue work'
   ypl --resume <session-id> '@@close_loop'  ${chalk.gray('# live resume; do not prefix with "clone C"')}
 
   ${chalk.gray('# Interactive live TUI mode')}
-  juno-code pi --live -p '/skill:ralph-loop' -i 1
+  yylo pi --live -p '/skill:ralph-loop' -i 1
   ypl '/skill:ralph-loop' -i 1     ${chalk.gray('# shortcut for: yy pi --live ...')}
 
   ${chalk.gray('# Named Pi session branches (per shell/pane continue scope)')}
@@ -1644,7 +1649,7 @@ ${chalk.blue('Examples:')}
   yy clone --from C --name M 'Explore M'
   yy --resume <session-id> --clone '@@close_loop' ${chalk.gray('# fork explicit session id (not named)')}
   yy branches                      ${chalk.gray('# list branches; * marks active')}
-  yy switch C                      ${chalk.gray('# future yy cc / juno-code continue follows C')}
+  yy switch C                      ${chalk.gray('# future yy cc / yylo continue follows C')}
   yy switch +                      ${chalk.gray('# cycle to next branch with wraparound')}
   yy switch -                      ${chalk.gray('# cycle to previous branch with wraparound')}
   yy switch C 'Continue C now'     ${chalk.gray('# switch first, then run prompt on C')}
@@ -1658,7 +1663,7 @@ ${chalk.blue('Examples:')}
   ${chalk.gray('New root Pi runs and explicit --resume without --clone reset registry to main.')}
 
   ${chalk.gray('# File-based prompt')}
-  juno-code pi -f instructions.md
+  yylo pi -f instructions.md
 `,
   },
 
@@ -1686,18 +1691,18 @@ ${chalk.blue('Service-Specific Options:')}
 ${chalk.blue('Environment Variables:')}
   CODEX_MODEL                     Model override (default: gpt-5.3-codex)
   CODEX_HIDE_STREAM_TYPES         Stream types to suppress (comma-separated)
-  JUNO_CODE_HIDE_STREAM_TYPES     Alternative stream type filter
+  YYLO_HIDE_STREAM_TYPES     Alternative stream type filter
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code codex 'Fix the failing tests'
+  yylo codex 'Fix the failing tests'
 
   ${chalk.gray('# Use a different model')}
-  juno-code codex -m :gpt-5 'Implement feature X'
-  juno-code codex -m :codex-mini 'Quick fix'
+  yylo codex -m :gpt-5 'Implement feature X'
+  yylo codex -m :codex-mini 'Quick fix'
 
   ${chalk.gray('# File-based prompt')}
-  juno-code codex -f prompt.md
+  yylo codex -f prompt.md
 `,
   },
 
@@ -1730,17 +1735,17 @@ ${chalk.blue('Environment Variables:')}
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code gemini 'Analyze this codebase'
+  yylo gemini 'Analyze this codebase'
 
   ${chalk.gray('# Choose a model')}
-  juno-code gemini -m :flash 'Quick analysis'
-  juno-code gemini -m :pro-3 'Complex task'
+  yylo gemini -m :flash 'Quick analysis'
+  yylo gemini -m :pro-3 'Complex task'
 
   ${chalk.gray('# Include specific directories')}
-  juno-code gemini --include-directories 'src,tests' 'Review code quality'
+  yylo gemini --include-directories 'src,tests' 'Review code quality'
 
   ${chalk.gray('# File-based prompt')}
-  juno-code gemini -f prompt.md
+  yylo gemini -f prompt.md
 `,
   },
 
@@ -1751,17 +1756,17 @@ ${chalk.blue.bold('Cursor Backend')} — Cursor AI editor agent
 
 ${chalk.blue('Note:')}
   Cursor uses the Claude service backend (claude.py).
-  See ${chalk.cyan('juno-code claude --help')} for model shorthands and service options.
+  See ${chalk.cyan('yylo claude --help')} for model shorthands and service options.
 
 ${chalk.blue('Examples:')}
   ${chalk.gray('# Basic execution')}
-  juno-code cursor 'Refactor this component'
+  yylo cursor 'Refactor this component'
 
   ${chalk.gray('# With model selection')}
-  juno-code cursor -m :sonnet 'Analyze code'
+  yylo cursor -m :sonnet 'Analyze code'
 
   ${chalk.gray('# File-based prompt')}
-  juno-code cursor -f prompt.md
+  yylo cursor -f prompt.md
 `,
   },
 };
@@ -1874,7 +1879,7 @@ function setupAliases(program: Command): void {
           const typedSubagent = subagent as SubagentType;
           const normalizedModel = String(model).trim();
           if (!normalizedModel) {
-            throw new Error('Model cannot be empty. Example: juno-code pi set-default-model :api-codex');
+            throw new Error('Model cannot be empty. Example: yylo pi set-default-model :api-codex');
           }
 
           if (!subagentModels.isModelCompatibleWithSubagent(normalizedModel, typedSubagent)) {
@@ -1931,23 +1936,24 @@ function setupAliases(program: Command): void {
 
 /**
  * Configure environment variable integration
- * Supports JUNO_CODE_* environment variables
+ * Supports YYLO_* environment variables
  */
 function configureEnvironment(): void {
-  // New JUNO_CODE_* environment variables (priority)
+  migrateLegacyEnvironment();
+  // Canonical YYLO_* environment variables
   const newEnvVars = [
-    'JUNO_CODE_SUBAGENT',
-    'JUNO_CODE_PROMPT',
-    'JUNO_CODE_CWD',
-    'JUNO_CODE_MAX_ITERATIONS',
-    'JUNO_CODE_MODEL',
-    'JUNO_CODE_LOG_FILE',
-    'JUNO_CODE_VERBOSE',
-    'JUNO_CODE_QUIET',
-    'JUNO_CODE_CONFIG',
-    'JUNO_CODE_MCP_TIMEOUT',
-    'JUNO_CODE_NO_COLOR',
-    'JUNO_CODE_ENABLE_FEEDBACK',
+    'YYLO_SUBAGENT',
+    'YYLO_PROMPT',
+    'YYLO_CWD',
+    'YYLO_MAX_ITERATIONS',
+    'YYLO_MODEL',
+    'YYLO_LOG_FILE',
+    'YYLO_VERBOSE',
+    'YYLO_QUIET',
+    'YYLO_CONFIG',
+    'YYLO_MCP_TIMEOUT',
+    'YYLO_NO_COLOR',
+    'YYLO_ENABLE_FEEDBACK',
   ];
 
   // Helper function to process environment variables
@@ -1962,7 +1968,7 @@ function configureEnvironment(): void {
 
       switch (option) {
         case 'verbose':
-          // JUNO_CODE_VERBOSE supports true/false/0/1/no/yes — pass value through for normalization
+          // YYLO_VERBOSE supports true/false/0/1/no/yes — pass value through for normalization
           if (value.toLowerCase() === 'false' || value === '0' || value.toLowerCase() === 'no') {
             process.argv.push('--verbose', 'false');
           } else if (value.toLowerCase() === 'true' || value === '1' || value.toLowerCase() === 'yes') {
@@ -1984,7 +1990,7 @@ function configureEnvironment(): void {
     return false;
   };
 
-  // Process JUNO_CODE_* variables
+  // Process YYLO_* variables
   for (const envVar of newEnvVars) {
     processEnvVar(envVar, 'juno_code_');
   }
@@ -2011,8 +2017,8 @@ function configureEnvironment(): void {
 
 function configureCommandSurface(program: Command): void {
   program
-    .name('juno-code')
-    .description('TypeScript implementation of juno-code CLI tool for AI subagent orchestration')
+    .name('yylo')
+    .description('TypeScript implementation of yylo CLI tool for AI subagent orchestration')
     .version(VERSION, '-V, --version', 'Display version information')
     .helpOption('-h, --help', 'Display help information');
   setupGlobalOptions(program);
@@ -2061,7 +2067,7 @@ async function main(): Promise<void> {
   // This check deliberately precedes environment/config/bootstrap installers.
   // The wrapper also invokes it in preflight-only mode before project bootstrap.
   const explicitInvocation = classifyExplicitInvocation(process.argv.slice(2), program);
-  if (process.env.JUNO_CODE_HELP_PREFLIGHT_ONLY === '1') {
+  if (process.env.YYLO_HELP_PREFLIGHT_ONLY === '1') {
     // Private wrapper protocol: 80 means a semantic help option (not an option
     // value or post-`--` payload); zero means normal execution should continue.
     process.exitCode = explicitInvocation.kind === 'help' ? 80 : 0;
@@ -2079,7 +2085,7 @@ async function main(): Promise<void> {
     explicitInvocation.command.outputHelp();
     return;
   }
-  if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1') return;
+  if (process.env.YYLO_PREFLIGHT_ONLY === '1') return;
 
   // Benchmark is an independent product. Delegate its untouched argument tail
   // before Commander can consume --help or the `--` delimiter and before Juno
@@ -2088,6 +2094,10 @@ async function main(): Promise<void> {
   const initialLeading = classifyLeadingCommand(initialArgs);
   if (initialArgs[initialLeading.index] === 'benchmark') {
     await runBenchmarkDelegate(initialArgs.slice(initialLeading.index + 1));
+    return;
+  }
+  if (initialArgs[initialLeading.index] === 'ledger') {
+    await runLedgerDelegate(initialArgs.slice(initialLeading.index + 1));
     return;
   }
 
@@ -2128,7 +2138,7 @@ async function main(): Promise<void> {
     ));
   // Config/env bootstrap consumes the same decision; do not let a later config
   // load reintroduce project writes after installers were correctly skipped.
-  process.env.JUNO_CODE_PROJECT_BOOTSTRAP_WRITES =
+  process.env.YYLO_PROJECT_BOOTSTRAP_WRITES =
     mayAutoUpdateProjectAssets && !isMetadataOnlyController ? '1' : '0';
 
   // Auto-update service scripts if package version changed (silent operation)
@@ -2145,11 +2155,11 @@ async function main(): Promise<void> {
 
     const updated = await ServiceInstaller.autoUpdate(isForceUpdate);
 
-    // Show update message in force update mode or JUNO_CODE_DEBUG
+    // Show update message in force update mode or YYLO_DEBUG
     if (
       updated &&
       (isForceUpdate ||
-        process.env.JUNO_CODE_DEBUG === '1')
+        process.env.YYLO_DEBUG === '1')
     ) {
       if (isForceUpdate) {
         console.log(chalk.green('✓ Service scripts reinstalled'));
@@ -2160,7 +2170,7 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error(
         '[DEBUG] Service auto-update failed:',
         error instanceof Error ? error.message : String(error),
@@ -2185,15 +2195,15 @@ async function main(): Promise<void> {
       // Normal auto-update (only missing/outdated scripts)
       const updated = await ScriptInstaller.autoUpdate(process.cwd(), true);
 
-      // Show update message in JUNO_CODE_DEBUG mode
-      if (updated && process.env.JUNO_CODE_DEBUG === '1') {
+      // Show update message in YYLO_DEBUG mode
+      if (updated && process.env.YYLO_DEBUG === '1') {
         console.error('[DEBUG] Project scripts auto-updated in .juno_task/scripts/');
       }
     }
     }
   } catch (error) {
     // Log error in debug mode, but don't break CLI
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error(
         '[DEBUG] Script auto-update failed:',
         error instanceof Error ? error.message : String(error),
@@ -2214,13 +2224,13 @@ async function main(): Promise<void> {
     } else {
       const updated = await SkillInstaller.autoUpdate(process.cwd());
 
-      if (updated && process.env.JUNO_CODE_DEBUG === '1') {
+      if (updated && process.env.YYLO_DEBUG === '1') {
         console.error('[DEBUG] Agent skill files auto-updated');
       }
     }
     }
   } catch (error) {
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error(
         '[DEBUG] Skill auto-update failed:',
         error instanceof Error ? error.message : String(error),
@@ -2250,7 +2260,7 @@ async function main(): Promise<void> {
   program.addHelpText(
     'before',
     `
-${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestration
+${chalk.blue.bold('🎯 YYLO')} - TypeScript CLI for AI Subagent Orchestration
 
 `,
   );
@@ -2260,29 +2270,29 @@ ${chalk.blue.bold('🎯 Juno Code')} - TypeScript CLI for AI Subagent Orchestrat
     `
 ${chalk.blue.bold('Examples:')}
   ${chalk.gray('# Initialize new project (interactive mode)')}
-  juno-code init
+  yylo init
 
   ${chalk.gray('# Initialize with inline mode (automation-friendly)')}
-  juno-code init 'Build a REST API' --subagent claude --git-repo https://github.com/user/repo
+  yylo init 'Build a REST API' --subagent claude --git-repo https://github.com/user/repo
 
   ${chalk.gray('# Start execution using .juno_task/init.md')}
-  juno-code start
+  yylo start
 
   ${chalk.gray('# AI-powered testing')}
-  juno-code test --generate --run
-  juno-code test src/utils.ts --subagent claude
-  juno-code test --analyze --coverage
+  yylo test --generate --run
+  yylo test src/utils.ts --subagent claude
+  yylo test --analyze --coverage
 
   ${chalk.gray('# Quick execution with Claude')}
-  juno-code claude 'Analyze this codebase and suggest improvements'
+  yylo claude 'Analyze this codebase and suggest improvements'
 
   ${chalk.gray('# Short aliases')}
   yy pi --live 'hello'
   ypl 'hello'     ${chalk.gray('# same as: yy pi --live hello')}
 
   ${chalk.gray('# Pipe prompt via stdin (heredoc, pipe, redirect)')}
-  echo 'Analyze this codebase' | juno-code -s claude
-  juno-code -s claude << 'EOF'
+  echo 'Analyze this codebase' | yylo -s claude
+  yylo -s claude << 'EOF'
   Analyze this codebase and suggest improvements
   EOF
 
@@ -2290,75 +2300,75 @@ ${chalk.blue.bold('Examples:')}
   ${chalk.gray('Use single quotes or -f/stdin when prompts include backticks or $()')}
 
   ${chalk.gray('# Prompt-time command substitution (per iteration)')}
-  juno-code claude -p "Status: !'git status --short'"
-  juno-code claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
+  yylo claude -p "Status: !'git status --short'"
+  yylo claude -i 3 -p "Recent commits:\n!\`\`\`git log -n 5 --oneline\`\`\`"
 
   ${chalk.gray('# Interactive project setup')}
-  juno-code init --interactive
+  yylo init --interactive
 
   ${chalk.gray('# Continue the last session without retyping settings')}
-  juno-code continue 'Implement the next step'
-  juno-code continue -p 'Continue from here' 
+  yylo continue 'Implement the next step'
+  yylo continue -p 'Continue from here'
 
   ${chalk.gray('# Clone Pi sessions for independent branches')}
-  juno-code clone 'Explore approach A'
-  juno-code clone --name C 'Explore C'
-  juno-code clone --from C --name M 'Explore M'
-  juno-code --resume <session-id> --clone '@@close_loop'  ${chalk.gray('# explicit id fork')}
-  juno-code branches
-  juno-code switch C
-  juno-code continue --clone 'Explore approach B'
-  juno-code --resume <session-id> --clone 'Explore approach C'
+  yylo clone 'Explore approach A'
+  yylo clone --name C 'Explore C'
+  yylo clone --from C --name M 'Explore M'
+  yylo --resume <session-id> --clone '@@close_loop'  ${chalk.gray('# explicit id fork')}
+  yylo branches
+  yylo switch C
+  yylo continue --clone 'Explore approach B'
+  yylo --resume <session-id> --clone 'Explore approach C'
 
   ${chalk.gray('# Force-refresh installed project scripts from the current package')}
-  juno-code scripts update --force
-  juno-code install-scripts --force
+  yylo scripts update --force
+  yylo install-scripts --force
 
   ${chalk.gray('# Query continue scope hash/status for scripts')}
-  juno-code continue-scope --json
-  juno-code continue-scope A1B2C3 --json
+  yylo continue-scope --json
+  yylo continue-scope A1B2C3 --json
 
   ${chalk.gray('# Manage sessions')}
-  juno-code session list
-  juno-code session info abc123
+  yylo session list
+  yylo session info abc123
 
   ${chalk.gray('# Enable feedback collection globally')}
-  juno-code --enable-feedback start
+  yylo --enable-feedback start
 
   ${chalk.gray('# Collect feedback')}
-  juno-code feedback --interactive
+  yylo feedback --interactive
 
   ${chalk.gray('# Import Codex auth into Pi auth.json')}
-  juno-code auth import-codex
+  yylo auth import-codex
 
   ${chalk.gray('# Set subagent-specific default models')}
-  juno-code pi set-default-model :api-codex
-  juno-code claude set-default-model :opus
+  yylo pi set-default-model :api-codex
+  yylo claude set-default-model :opus
 
   ${chalk.gray('# Setup Git repository')}
-  juno-code setup-git https://github.com/yylo-dev/yylo
+  yylo setup-git https://github.com/yylo-dev/yylo
 
   ${chalk.gray('# Verbose is ON by default. Disable with:')}
-  juno-code -v false -s claude 'prompt'
-  juno-code -v 0 -s claude 'prompt'
-  juno-code -v no -s claude 'prompt'
+  yylo -v false -s claude 'prompt'
+  yylo -v 0 -s claude 'prompt'
+  yylo -v no -s claude 'prompt'
 
   ${chalk.gray('# Quiet mode (suppress agent output and hooks):')}
-  juno-code --quiet -s claude 'prompt'
-  juno-code --silent -s claude 'prompt'
+  yylo --quiet -s claude 'prompt'
+  yylo --silent -s claude 'prompt'
 
 ${chalk.blue.bold('Environment Variables:')}
-  JUNO_CODE_SUBAGENT              Default subagent (claude, cursor, codex, gemini, pi)
-  JUNO_CODE_CONFIG                Configuration file path
-  JUNO_CODE_VERBOSE               Verbose output (true/false/0/1/no/yes, default: true)
-  JUNO_CODE_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
-  JUNO_CODE_MCP_TIMEOUT           Operation timeout in milliseconds
-  JUNO_CODE_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
+  YYLO_SUBAGENT              Default subagent (claude, cursor, codex, gemini, pi)
+  YYLO_CONFIG                Configuration file path
+  YYLO_VERBOSE               Verbose output (true/false/0/1/no/yes, default: true)
+  YYLO_ENABLE_FEEDBACK       Enable concurrent feedback collection (true/false)
+  YYLO_MCP_TIMEOUT           Operation timeout in milliseconds
+  YYLO_ON_HOURLY_LIMIT       Behavior when quota limit reached (wait/raise)
   JUNO_INTERACTIVE_FEEDBACK_MODE  Enable interactive feedback mode (true/false)
   NO_COLOR                        Disable colored output (standard)
 
 ${chalk.blue.bold('Env File Bootstrap:')}
-  Auto-creates ${chalk.cyan('.env.juno')} in project root and loads it on startup.
+  Auto-creates ${chalk.cyan('.env.yylo')} in project root and loads it on startup.
   (Python virtual environment path is ${chalk.cyan('.venv_juno')}; this is separate from env files.)
   Configure custom env file in ${chalk.cyan('.juno_task/config.json')}:
     ${chalk.gray('"envFilePath": ".env.local", "envFileCopied": true')}
@@ -2445,7 +2455,7 @@ process.on('uncaughtException', async (error) => {
 
 // Handle Ctrl+C gracefully — show session ID so user can resume later
 process.on('SIGINT', () => {
-  if (forwardBenchmarkSignal('SIGINT')) return;
+  if (forwardBenchmarkSignal('SIGINT') || forwardLedgerSignal('SIGINT')) return;
   const sessionId = _getActiveSessionId?.();
   if (sessionId) {
     console.log(chalk.cyan(`\n\n🔑 Session ID: ${sessionId}`));
@@ -2460,20 +2470,20 @@ process.on('SIGINT', () => {
 
 // Handle SIGTERM gracefully
 process.on('SIGTERM', () => {
-  if (forwardBenchmarkSignal('SIGTERM')) return;
+  if (forwardBenchmarkSignal('SIGTERM') || forwardLedgerSignal('SIGTERM')) return;
   console.log(chalk.yellow('\n\n⚠️  Execution terminated'));
   setTimeout(() => process.exit(143), 400);
 });
 
 // Parent terminal/pipe owners commonly use SIGHUP for cancellation.
 process.on('SIGHUP', () => {
-  if (forwardBenchmarkSignal('SIGHUP')) return;
+  if (forwardBenchmarkSignal('SIGHUP') || forwardLedgerSignal('SIGHUP')) return;
   console.log(chalk.yellow('\n\n⚠️  Execution parent disconnected'));
   setTimeout(() => process.exit(129), 400);
 });
 
 process.on('SIGQUIT', () => {
-  if (forwardBenchmarkSignal('SIGQUIT')) return;
+  if (forwardBenchmarkSignal('SIGQUIT') || forwardLedgerSignal('SIGQUIT')) return;
   process.removeAllListeners('SIGQUIT');
   process.kill(process.pid, 'SIGQUIT');
 });
@@ -2498,16 +2508,16 @@ if (versionOnly) {
   const invocationLifecycle = new InvocationLifecycle({
     workingDirectory: process.cwd(),
     junoCodeVersion: VERSION,
-    launchSurface: executableLaunchSurface ?? 'juno-code',
+    launchSurface: executableLaunchSurface ?? 'yylo',
     ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
   });
   void runWithInvocationLifecycle(
     invocationLifecycle,
     async () => { process.stdout.write(`${VERSION}\n`); },
   ).catch(reportFatalError);
-} else if (process.env.JUNO_CODE_PREFLIGHT_ONLY === '1' ||
-  process.env.JUNO_CODE_HELP_PREFLIGHT_ONLY === '1' ||
-  process.env.JUNO_CODE_RUNTIME_PROBE === '1') {
+} else if (process.env.YYLO_PREFLIGHT_ONLY === '1' ||
+  process.env.YYLO_HELP_PREFLIGHT_ONLY === '1' ||
+  process.env.YYLO_RUNTIME_PROBE === '1') {
   void main().catch(reportFatalError);
 } else {
   const observationProgram = new Command();
@@ -2521,7 +2531,7 @@ if (versionOnly) {
     const invocationLifecycle = new InvocationLifecycle({
       workingDirectory: process.cwd(),
       junoCodeVersion: VERSION,
-      launchSurface: executableLaunchSurface ?? 'juno-code',
+      launchSurface: executableLaunchSurface ?? 'yylo',
       ...(wrapperContinuation ? { continuation: wrapperContinuation } : {}),
     });
     void runWithInvocationLifecycle(invocationLifecycle, main, requestObservation).catch(reportFatalError);

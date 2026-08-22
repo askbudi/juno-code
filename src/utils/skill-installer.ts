@@ -151,7 +151,7 @@ export class SkillInstaller {
       }
     }
 
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error('[DEBUG] SkillInstaller: Could not find templates/skills directory');
       console.error('[DEBUG] Tried:', candidates);
     }
@@ -176,7 +176,7 @@ export class SkillInstaller {
       }
     }
 
-    if (process.env.JUNO_CODE_DEBUG === '1') {
+    if (process.env.YYLO_DEBUG === '1') {
       console.error('[DEBUG] SkillInstaller: Could not find templates/extensions directory');
     }
 
@@ -263,7 +263,7 @@ export class SkillInstaller {
     silent = true,
     force = false,
   ): Promise<number> {
-    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const debug = process.env.YYLO_DEBUG === '1';
     const packageSkillsDir = this.getPackageSkillsDir();
 
     if (!packageSkillsDir) {
@@ -359,7 +359,7 @@ export class SkillInstaller {
     silent = true,
     force = false,
   ): Promise<number> {
-    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const debug = process.env.YYLO_DEBUG === '1';
     const packageExtDir = this.getPackageExtensionsDir();
 
     if (!packageExtDir) {
@@ -497,7 +497,7 @@ export class SkillInstaller {
     strict = false,
   ): Promise<boolean> {
     await this.preflightInstall(projectDir);
-    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const debug = process.env.YYLO_DEBUG === '1';
     let totalInstalled = await this.installControllerInstructions(projectDir, silent, force);
 
     for (const group of this.SKILL_GROUPS) {
@@ -566,7 +566,7 @@ export class SkillInstaller {
    */
   static async autoUpdate(projectDir: string, force = false): Promise<boolean> {
     try {
-      const debug = process.env.JUNO_CODE_DEBUG === '1';
+      const debug = process.env.YYLO_DEBUG === '1';
 
       // Only install skills for initialized projects
       const junoTaskDir = path.join(projectDir, '.juno_task');
@@ -586,7 +586,7 @@ export class SkillInstaller {
 
       return updated;
     } catch (error) {
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(
           '[DEBUG] SkillInstaller: autoUpdate error:',
           error instanceof Error ? error.message : String(error),
@@ -806,7 +806,7 @@ export class SkillInstaller {
    * @param silent - If true, suppresses console output
    */
   static async ensurePiSettings(projectDir: string, silent = true): Promise<void> {
-    const debug = process.env.JUNO_CODE_DEBUG === '1';
+    const debug = process.env.YYLO_DEBUG === '1';
     const piDir = path.join(projectDir, '.pi');
     const settingsPath = path.join(piDir, 'settings.json');
 

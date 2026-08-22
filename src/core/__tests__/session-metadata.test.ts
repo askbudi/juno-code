@@ -11,7 +11,7 @@ import {
 } from '../session-metadata.js';
 
 const roots: string[] = [];
-const originalMetadataDirectory = process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+const originalMetadataDirectory = process.env.YYLO_SESSION_METADATA_DIRECTORY;
 const scope = (suffix: string) => ({ scopeHash: `SCOPE_${suffix.padEnd(16, '0')}` });
 
 async function temporaryDirectory(name: string): Promise<string> {
@@ -26,12 +26,12 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 beforeEach(() => {
-  delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
 });
 
 afterEach(async () => {
-  if (originalMetadataDirectory === undefined) delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
-  else process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = originalMetadataDirectory;
+  if (originalMetadataDirectory === undefined) delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
+  else process.env.YYLO_SESSION_METADATA_DIRECTORY = originalMetadataDirectory;
   for (const root of roots.splice(0)) await fs.remove(root);
 });
 
@@ -60,7 +60,7 @@ describe('session metadata resolver', () => {
     expect(getSessionMetadataDirectory(root, { XDG_STATE_HOME: state })).toMatch(
       new RegExp(`^${state.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     );
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = '../explicit-metadata';
+    process.env.YYLO_SESSION_METADATA_DIRECTORY = '../explicit-metadata';
     expect(getSessionMetadataDirectory(root)).toBe(path.resolve(root, '../explicit-metadata'));
   });
 
@@ -84,7 +84,7 @@ describe('session metadata resolver', () => {
 
   it('serializes concurrent branch producers without dropping scopes', async () => {
     const root = await temporaryDirectory('concurrent');
-    process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
+    process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(root, 'metadata');
     await Promise.all([
       resetMainSessionBranch({ workingDirectory: root, scope: scope('A'), sessionId: 'one' }),
       resetMainSessionBranch({ workingDirectory: root, scope: scope('B'), sessionId: 'two' }),

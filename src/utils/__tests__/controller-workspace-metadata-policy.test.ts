@@ -57,7 +57,7 @@ describe('metadata-controller sparse policy', () => {
         selected_paths: ['.gitignore', '.juno_task'],
         required_paths: ['.gitignore', '.juno_task/config.json'],
       },
-      generation: { package_name: 'juno-code', package_version: '2.1.2', managed_assets_schema: 1 },
+      generation: { package_name: '@yylo/cli', package_version: '2.1.2', managed_assets_schema: 1 },
     };
     const policyPath = path.join(temporary, 'policy.json');
     await fs.writeJson(policyPath, policy);
@@ -113,7 +113,7 @@ describe('metadata-controller sparse policy', () => {
         selected_paths: ['.gitignore', '.juno_task/config.json'],
         required_paths: ['.gitignore', '.juno_task/config.json'],
       },
-      generation: { package_name: 'juno-code', package_version: '2.1.3', managed_assets_schema: 1 },
+      generation: { package_name: '@yylo/cli', package_version: '2.1.3', managed_assets_schema: 1 },
     };
     const policyPath = path.join(temporary, 'policy.json');
     await fs.writeJson(policyPath, policy);

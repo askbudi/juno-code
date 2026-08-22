@@ -1,5 +1,5 @@
 /**
- * Completion Command for juno-code CLI
+ * Completion Command for yylo CLI
  *
  * Manages shell completion installation, uninstallation, and status.
  * Supports auto-detection and manual shell selection.
@@ -244,7 +244,7 @@ export class CompletionCommand {
         console.log(chalk.blue('\n💡 Suggestions:'));
         console.log(
           chalk.white(
-            `   Install completion: juno-code completion install ${uninstalledShells.join(' ')}`,
+            `   Install completion: yylo completion install ${uninstalledShells.join(' ')}`,
           ),
         );
       }
@@ -259,7 +259,7 @@ export class CompletionCommand {
           console.log(
             chalk.yellow(`\n🎯 Current shell (${currentShell}): Completion not installed`),
           );
-          console.log(chalk.white(`   Install: juno-code completion install ${currentShell}`));
+          console.log(chalk.white(`   Install: yylo completion install ${currentShell}`));
         }
       }
     } catch (error) {
@@ -370,7 +370,7 @@ export class CompletionCommand {
         break;
     }
 
-    console.log(chalk.white('• Test: juno-code <TAB>'));
+    console.log(chalk.white('• Test: yylo <TAB>'));
   }
 }
 

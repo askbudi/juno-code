@@ -28,7 +28,7 @@ Usage:
     )
 
 Version: 1.0.0
-Package: juno-code@1.x.x
+Package: yylo@1.x.x
 Auto-installed by: ScriptInstaller
 """
 

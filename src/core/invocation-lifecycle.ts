@@ -39,21 +39,21 @@ export interface InvocationExecutionContext {
   requestedModel?: string | null;
 }
 
-export const INVOCATION_CHILD_ENV = 'JUNO_CODE_INVOCATION_CHILD';
+export const INVOCATION_CHILD_ENV = 'YYLO_INVOCATION_CHILD';
 export const INVOCATION_CORRELATION_ENV = {
-  traceId: 'JUNO_CODE_TRACE_ID',
-  parentSpanId: 'JUNO_CODE_PARENT_SPAN_ID',
-  taskId: 'JUNO_CODE_TASK_ID',
-  workflowRunId: 'JUNO_CODE_WORKFLOW_RUN_ID',
-  workflowStepId: 'JUNO_CODE_WORKFLOW_STEP_ID',
-  launchSurface: 'JUNO_CODE_LAUNCH_SURFACE',
+  traceId: 'YYLO_TRACE_ID',
+  parentSpanId: 'YYLO_PARENT_SPAN_ID',
+  taskId: 'YYLO_TASK_ID',
+  workflowRunId: 'YYLO_WORKFLOW_RUN_ID',
+  workflowStepId: 'YYLO_WORKFLOW_STEP_ID',
+  launchSurface: 'YYLO_LAUNCH_SURFACE',
 } as const;
 export const ACTIVE_INVOCATION_ENV = {
-  traceId: 'JUNO_CODE_ACTIVE_TRACE_ID',
-  spanId: 'JUNO_CODE_ACTIVE_SPAN_ID',
-  taskId: 'JUNO_CODE_ACTIVE_TASK_ID',
-  workflowRunId: 'JUNO_CODE_ACTIVE_WORKFLOW_RUN_ID',
-  workflowStepId: 'JUNO_CODE_ACTIVE_WORKFLOW_STEP_ID',
+  traceId: 'YYLO_ACTIVE_TRACE_ID',
+  spanId: 'YYLO_ACTIVE_SPAN_ID',
+  taskId: 'YYLO_ACTIVE_TASK_ID',
+  workflowRunId: 'YYLO_ACTIVE_WORKFLOW_RUN_ID',
+  workflowStepId: 'YYLO_ACTIVE_WORKFLOW_STEP_ID',
 } as const;
 
 const CORRELATION_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
@@ -110,17 +110,17 @@ export interface InvocationContinuation {
   startedMonotonicMs: number;
 }
 
-export const WRAPPER_LIFECYCLE_ENV = 'JUNO_CODE_WRAPPER_LIFECYCLE';
-export const WRAPPER_OBSERVATION_ENV = 'JUNO_CODE_WRAPPER_OBSERVATION';
+export const WRAPPER_LIFECYCLE_ENV = 'YYLO_WRAPPER_LIFECYCLE';
+export const WRAPPER_OBSERVATION_ENV = 'YYLO_WRAPPER_OBSERVATION';
 // Removed legacy path transport must never reach provider descendants.
 delete process.env[WRAPPER_OBSERVATION_ENV];
 
 const DEFAULT_WRITE_TIMEOUT_MS = 500;
-const KNOWN_LAUNCH_SURFACES = new Set(['juno-code', 'yy', 'ypl']);
+const KNOWN_LAUNCH_SURFACES = new Set(['yylo', 'yy', 'ypl']);
 
 function normalizeLaunchSurface(candidate: string | undefined): string {
   const value = candidate?.trim();
-  return value && KNOWN_LAUNCH_SURFACES.has(value) ? value : 'juno-code';
+  return value && KNOWN_LAUNCH_SURFACES.has(value) ? value : 'yylo';
 }
 
 function errorMessage(error: unknown): string {
@@ -137,7 +137,7 @@ export class InvocationLifecycle {
   private readonly warn: (message: string) => void;
   private readonly identity;
   private workingDirectory: string;
-  private service = 'juno-code';
+  private service = 'yylo';
   private requestedModel: string | null = null;
   private readonly startedAt: string;
   private readonly startedMonotonicMs: number;
@@ -272,7 +272,7 @@ export class InvocationLifecycle {
         }),
       ]);
     } catch (error) {
-      this.warn(`[juno-code telemetry] ${event.event_type} write failed: ${errorMessage(error)}`);
+      this.warn(`[yylo telemetry] ${event.event_type} write failed: ${errorMessage(error)}`);
     } finally {
       if (timer) clearTimeout(timer);
     }

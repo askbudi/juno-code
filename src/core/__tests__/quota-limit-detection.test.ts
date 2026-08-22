@@ -623,10 +623,10 @@ describe('onHourlyLimit Configuration', () => {
     expect(() => validateConfig(config)).toThrow();
   });
 
-  it('should load onHourlyLimit from JUNO_CODE_ON_HOURLY_LIMIT environment variable', async () => {
+  it('should load onHourlyLimit from YYLO_ON_HOURLY_LIMIT environment variable', async () => {
     // Set the environment variable
-    const originalEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
-    process.env.JUNO_CODE_ON_HOURLY_LIMIT = 'wait';
+    const originalEnv = process.env.YYLO_ON_HOURLY_LIMIT;
+    process.env.YYLO_ON_HOURLY_LIMIT = 'wait';
 
     try {
       // Need to re-import to pick up the new env value
@@ -640,17 +640,17 @@ describe('onHourlyLimit Configuration', () => {
     } finally {
       // Restore original env
       if (originalEnv === undefined) {
-        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+        delete process.env.YYLO_ON_HOURLY_LIMIT;
       } else {
-        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalEnv;
+        process.env.YYLO_ON_HOURLY_LIMIT = originalEnv;
       }
     }
   });
 
   it('should prioritize CLI option over environment variable', async () => {
     // Set the environment variable to 'raise'
-    const originalEnv = process.env.JUNO_CODE_ON_HOURLY_LIMIT;
-    process.env.JUNO_CODE_ON_HOURLY_LIMIT = 'raise';
+    const originalEnv = process.env.YYLO_ON_HOURLY_LIMIT;
+    process.env.YYLO_ON_HOURLY_LIMIT = 'raise';
 
     try {
       const { ConfigLoader } = await import('../config.js');
@@ -665,9 +665,9 @@ describe('onHourlyLimit Configuration', () => {
     } finally {
       // Restore original env
       if (originalEnv === undefined) {
-        delete process.env.JUNO_CODE_ON_HOURLY_LIMIT;
+        delete process.env.YYLO_ON_HOURLY_LIMIT;
       } else {
-        process.env.JUNO_CODE_ON_HOURLY_LIMIT = originalEnv;
+        process.env.YYLO_ON_HOURLY_LIMIT = originalEnv;
       }
     }
   });

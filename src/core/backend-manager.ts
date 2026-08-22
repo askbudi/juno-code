@@ -1,5 +1,5 @@
 /**
- * Backend interface for juno-code
+ * Backend interface for yylo
  *
  * Defines the contract that backend implementations must satisfy.
  * Currently only the shell backend exists (see backends/shell-backend.ts).

@@ -15,9 +15,9 @@ import {
 
 afterEach(() => {
   mocks.execFile.mockReset();
-  delete process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS;
-  delete process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF;
-  delete process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS;
+  delete process.env.YYLO_PROMPT_SUBSTITUTION_TIMEOUT_MS;
+  delete process.env.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF;
+  delete process.env.YYLO_LAST_EXECUTION_SETTINGS;
   delete process.env.PROMPT_BOUNDARY_CONFIG;
 });
 
@@ -119,8 +119,8 @@ describe('prompt-command-substitution', () => {
     });
 
     it('should filter continuity while preserving arbitrary config at the substitution boundary', async () => {
-      process.env.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical-session';
-      process.env.JUNO_CODE_LAST_EXECUTION_SETTINGS = 'legacy-settings';
+      process.env.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF = 'historical-session';
+      process.env.YYLO_LAST_EXECUTION_SETTINGS = 'legacy-settings';
       process.env.PROMPT_BOUNDARY_CONFIG = 'preserved';
       mocks.execFile.mockImplementation((...args: unknown[]) => {
         const callback = args[args.length - 1] as
@@ -134,8 +134,8 @@ describe('prompt-command-substitution', () => {
 
       const environment = mocks.execFile.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv;
       expect(environment.PROMPT_BOUNDARY_CONFIG).toBe('preserved');
-      expect(environment.JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
-      expect(environment.JUNO_CODE_LAST_EXECUTION_SETTINGS).toBeUndefined();
+      expect(environment.YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF).toBeUndefined();
+      expect(environment.YYLO_LAST_EXECUTION_SETTINGS).toBeUndefined();
     });
 
     it('should execute prompt substitution commands with stdin closed to avoid shell-read hangs', async () => {
@@ -159,8 +159,8 @@ describe('prompt-command-substitution', () => {
       expect(argv?.[1]).toBe('(kanban-juno list) </dev/null');
     });
 
-    it('should honor JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS when commandTimeoutMs is not provided', async () => {
-      process.env.JUNO_CODE_PROMPT_SUBSTITUTION_TIMEOUT_MS = '6543';
+    it('should honor YYLO_PROMPT_SUBSTITUTION_TIMEOUT_MS when commandTimeoutMs is not provided', async () => {
+      process.env.YYLO_PROMPT_SUBSTITUTION_TIMEOUT_MS = '6543';
       mocks.execFile.mockImplementation((...args: unknown[]) => {
         const callback = args[args.length - 1] as (
           | ((error: Error | null, stdout?: string, stderr?: string) => void)

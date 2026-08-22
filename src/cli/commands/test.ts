@@ -1,5 +1,5 @@
 /**
- * Test command implementation for juno-code CLI
+ * Test command implementation for yylo CLI
  *
  * Comprehensive AI-powered testing framework with intelligent test generation,
  * execution, analysis, and reporting capabilities.
@@ -1504,18 +1504,18 @@ export function configureTestCommand(program: Command): void {
       'after',
       `
 Examples:
-  $ juno-code test --generate                          # Generate tests for current project
-  $ juno-code test --run                              # Run existing tests
-  $ juno-code test --generate --run                   # Generate and run tests
-  $ juno-code test src/utils.ts --generate            # Generate tests for specific file
-  $ juno-code test --type unit --intelligence smart   # Generate smart unit tests
-  $ juno-code test --subagent cursor --generate       # Use Cursor for test generation
-  $ juno-code test --run --coverage                   # Run tests with coverage
-  $ juno-code test --analyze --quality thorough       # Analyze test quality thoroughly
-  $ juno-code test --report --format html             # Generate HTML report
-  $ juno-code test --framework jest --generate        # Generate Jest tests
-  $ juno-code test --template api-integration         # Use specific template
-  $ juno-code test --watch                            # Run tests in watch mode
+  $ yylo test --generate                          # Generate tests for current project
+  $ yylo test --run                              # Run existing tests
+  $ yylo test --generate --run                   # Generate and run tests
+  $ yylo test src/utils.ts --generate            # Generate tests for specific file
+  $ yylo test --type unit --intelligence smart   # Generate smart unit tests
+  $ yylo test --subagent cursor --generate       # Use Cursor for test generation
+  $ yylo test --run --coverage                   # Run tests with coverage
+  $ yylo test --analyze --quality thorough       # Analyze test quality thoroughly
+  $ yylo test --report --format html             # Generate HTML report
+  $ yylo test --framework jest --generate        # Generate Jest tests
+  $ yylo test --template api-integration         # Use specific template
+  $ yylo test --watch                            # Run tests in watch mode
 
 Test Types:
   unit         Unit tests for individual functions/classes

@@ -13,20 +13,20 @@ import {
 } from '../continue-scope.js';
 import { persistContinueScopeSnapshot, resetMainSessionBranch } from '../session-continuity-state.js';
 
-const CONTINUE_SESSION_ENV_KEY_BASE = 'JUNO_CODE_LAST_SESSION_ID';
-const CONTINUE_SETTINGS_ENV_KEY_BASE = 'JUNO_CODE_LAST_EXECUTION_SETTINGS';
+const CONTINUE_SESSION_ENV_KEY_BASE = 'YYLO_LAST_SESSION_ID';
+const CONTINUE_SETTINGS_ENV_KEY_BASE = 'YYLO_LAST_EXECUTION_SETTINGS';
 
 const tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-continue-scope-'));
   tempDirs.push(dir);
-  process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
+  process.env.YYLO_SESSION_METADATA_DIRECTORY = path.join(dir, 'metadata');
   return dir;
 }
 
 afterEach(async () => {
-  delete process.env.JUNO_CODE_SESSION_METADATA_DIRECTORY;
+  delete process.env.YYLO_SESSION_METADATA_DIRECTORY;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {

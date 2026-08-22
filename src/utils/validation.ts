@@ -1,5 +1,5 @@
 /**
- * Validation Utilities Module for juno-code
+ * Validation Utilities Module for yylo
  *
  * Provides Zod-based validation for configuration values.
  *

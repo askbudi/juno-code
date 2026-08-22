@@ -36,12 +36,12 @@ function launchCanonicalChild(childMode: string, surface: string, metadata: Reco
 }
 
 if (mode === 'observation-env') {
-  const child = childProcess.spawnSync(process.execPath, ['-e', 'process.stdout.write(process.env.JUNO_CODE_WRAPPER_OBSERVATION || "")'], {
+  const child = childProcess.spawnSync(process.execPath, ['-e', 'process.stdout.write(process.env.YYLO_WRAPPER_OBSERVATION || "")'], {
     encoding: 'utf8',
     env: process.env,
   });
   fs.writeJsonSync(path.join(process.cwd(), 'observation-env.json'), {
-    current: process.env.JUNO_CODE_WRAPPER_OBSERVATION ?? null,
+    current: process.env.YYLO_WRAPPER_OBSERVATION ?? null,
     child: child.stdout,
   });
   process.exit(0);

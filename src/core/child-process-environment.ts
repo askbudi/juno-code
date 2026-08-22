@@ -8,12 +8,12 @@
 export type ChildEnvironment = Readonly<NodeJS.ProcessEnv>;
 
 const LEGACY_CONTINUITY_KEYS = new Set([
-  'JUNO_CODE_LAST_SESSION_ID',
-  'JUNO_CODE_LAST_EXECUTION_SETTINGS',
+  'YYLO_LAST_SESSION_ID',
+  'YYLO_LAST_EXECUTION_SETTINGS',
 ]);
 const SCOPED_CONTINUITY_KEY_PREFIXES = [
-  'JUNO_CODE_LAST_SESSION_ID_SCOPE_',
-  'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_',
+  'YYLO_LAST_SESSION_ID_SCOPE_',
+  'YYLO_LAST_EXECUTION_SETTINGS_SCOPE_',
 ] as const;
 
 export function isContinuityEnvironmentKey(name: string): boolean {

@@ -1,6 +1,6 @@
 /**
  * Service Installer Utility
- * Handles installation and management of juno-code service scripts
+ * Handles installation and management of yylo service scripts
  */
 
 import fs from 'fs-extra';
@@ -18,8 +18,8 @@ export class ServiceInstaller {
     'pi.py',
     'environment_boundary.py',
   ];
-  private static readonly SERVICES_DIR = path.join(homedir(), '.juno_code', 'services');
-  private static readonly VERSION_FILE = path.join(homedir(), '.juno_code', 'services', '.version');
+  private static readonly SERVICES_DIR = path.join(homedir(), '.yylo', 'services');
+  private static readonly VERSION_FILE = path.join(homedir(), '.yylo', 'services', '.version');
 
   private static missingScripts(baseDir: string): string[] {
     return this.REQUIRED_SCRIPTS.filter((file) => !fs.existsSync(path.join(baseDir, file)));
@@ -184,7 +184,7 @@ export class ServiceInstaller {
         return servicesPath;
       }
 
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(
           `[DEBUG] Services path missing required scripts (${servicesPath}): ${missing.join(', ')}`,
         );
@@ -193,12 +193,12 @@ export class ServiceInstaller {
 
     throw new Error(
       'Could not find services directory in package containing provider scripts and environment_boundary.py. ' +
-        'Try reinstalling juno-code or re-running npm run build to refresh service scripts.',
+        'Try reinstalling yylo or re-running npm run build to refresh service scripts.',
     );
   }
 
   /**
-   * Install all service scripts to ~/.juno_code/services/
+   * Install all service scripts to ~/.yylo/services/
    * @param silent - If true, suppresses console output
    */
   static async install(silent = false): Promise<void> {
@@ -252,7 +252,7 @@ export class ServiceInstaller {
    */
   static async autoUpdate(force = false): Promise<boolean> {
     try {
-      const debug = process.env.JUNO_CODE_DEBUG === '1';
+      const debug = process.env.YYLO_DEBUG === '1';
 
       if (debug) {
         const packageVersion = this.getPackageVersion();
@@ -280,7 +280,7 @@ export class ServiceInstaller {
       return false;
     } catch (error) {
       // Log error in debug mode
-      if (process.env.JUNO_CODE_DEBUG === '1') {
+      if (process.env.YYLO_DEBUG === '1') {
         console.error(
           '[DEBUG] autoUpdate error:',
           error instanceof Error ? error.message : String(error),

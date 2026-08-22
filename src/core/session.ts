@@ -1,5 +1,5 @@
 /**
- * Core session management module for juno-code
+ * Core session management module for yylo
  * @module core/session
  */
 import * as path from 'node:path';

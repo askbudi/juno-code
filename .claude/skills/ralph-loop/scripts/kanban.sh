@@ -11,6 +11,9 @@
 # Example: ./.juno_task/scripts/kanban.sh list --limit 5
 # Example: ./.juno_task/scripts/kanban.sh list -f json --raw  # (flag order normalized)
 # Example: ./.juno_task/scripts/kanban.sh -f json --raw list  # (also works)
+# Cold exact reads are transparent; archive-search is explicit and bounded.
+# Archive maintenance requires owner approval and external plan/create receipts.
+# Example: ./.juno_task/scripts/kanban.sh archive-pack doctor
 #
 # Note: Global flags (-f/--format, -p/--pretty, --raw, -v/--verbose, -c/--config)
 #       can be placed anywhere in the command line. This wrapper normalizes them
@@ -21,7 +24,7 @@
 #   JUNO_VERBOSE=true  - Show [KANBAN] informational messages
 #   (Both default to false for silent operation)
 #
-# Created by: juno-code init command
+# Created by: yylo init command
 # Date: Auto-generated during project initialization
 
 set -euo pipefail  # Exit on error, undefined variable, or pipe failure
@@ -67,27 +70,21 @@ log_warning() {
 }
 
 log_error() {
-    # Always print errors regardless of JUNO_VERBOSE
-    echo -e "${RED}[KANBAN]${NC} $1"
+    # Always print errors regardless of JUNO_VERBOSE; stdout remains machine-safe.
+    echo -e "${RED}[KANBAN]${NC} $1" >&2
 }
 
 # Function to check if we're inside .venv_juno specifically
 # CRITICAL: Don't just check for ANY venv - check if we're in .venv_juno
 is_in_venv_juno() {
-    # Check if VIRTUAL_ENV is set and points to .venv_juno
-    if [ -n "${VIRTUAL_ENV:-}" ]; then
-        # Check if VIRTUAL_ENV path contains .venv_juno
-        if [[ "${VIRTUAL_ENV:-}" == *"/.venv_juno" ]] || [[ "${VIRTUAL_ENV:-}" == *".venv_juno"* ]]; then
-            return 0  # Inside .venv_juno
-        fi
-
-        # Check if the basename is .venv_juno
-        if [ "$(basename "${VIRTUAL_ENV:-}")" = ".venv_juno" ]; then
-            return 0  # Inside .venv_juno
-        fi
-    fi
-
-    return 1  # Not inside .venv_juno (or not in any venv)
+    # A shell may inherit another project's identically named `.venv_juno`.
+    # Compare canonical directories, not basename/substrings, before skipping
+    # activation of this controller's environment.
+    local active_venv expected_venv
+    [ -n "${VIRTUAL_ENV:-}" ] && [ -d "${VIRTUAL_ENV:-}" ] || return 1
+    active_venv=$(cd "${VIRTUAL_ENV:-}" 2>/dev/null && pwd -P) || return 1
+    expected_venv=$(cd "$PROJECT_ROOT/$VENV_DIR" 2>/dev/null && pwd -P) || return 1
+    [ "$active_venv" = "$expected_venv" ]
 }
 
 # Function to activate virtual environment
@@ -141,7 +138,7 @@ ensure_python_environment() {
     # Check if install_requirements.sh exists
     if [ ! -f "$INSTALL_SCRIPT" ]; then
         log_error "Install script not found: $INSTALL_SCRIPT"
-        log_error "Please run 'juno-code init' to initialize the project"
+        log_error "Please run 'yylo init' to initialize the project"
         return 1
     fi
 
@@ -170,41 +167,27 @@ ensure_python_environment() {
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Auto-discover project root by walking up the directory tree looking for .juno_task/
-# This makes kanban.sh work from any installation depth (e.g. .juno_task/scripts/,
-# .claude/skills/ralph-loop/scripts/, etc.) without a hardcoded relative path.
-PROJECT_ROOT=""
-_dir="$SCRIPT_DIR"
-while [[ "$_dir" != "/" ]]; do
-    if [[ -d "$_dir/.juno_task" ]]; then
-        PROJECT_ROOT="$_dir"
-        break
-    fi
-    _dir="$( cd "$_dir/.." && pwd )"
-done
-if [[ -z "$PROJECT_ROOT" ]]; then
-    echo "ERROR: Could not find project root (no .juno_task/ directory found above $SCRIPT_DIR)" >&2
+# Resolve the canonical controller from the invocation checkout. The shared
+# resolver never changes refs and refuses invalid explicit/registered settings.
+RESOLVER="$SCRIPT_DIR/controller_resolver.py"
+if [[ ! -f "$RESOLVER" ]]; then
+    echo "ERROR: Controller resolver not installed: $RESOLVER" >&2
     exit 1
 fi
+INVOCATION_CWD="$PWD"
+# Preserve the initialized source checkout before controller resolution changes
+# cwd. juno-kanban uses this only for opt-in registry policy evaluation.
+export JUNO_KANBAN_INVOCATION_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+RESOLVED_ENV=$(python3 "$RESOLVER" --cwd "$INVOCATION_CWD" --operation kanban --format shell)
+eval "$RESOLVED_ENV"
+PROJECT_ROOT="$JUNO_TASK_ROOT"
 
-# Change to project root
+# Kanban runtime and storage both belong to the verified controller checkout.
 cd "$PROJECT_ROOT"
 
-# Export JUNO_TASK_ROOT so juno-kanban resolves .juno_task paths from this
-# wrapper's project root, regardless of a stale parent-shell value or where
-# the calling agent happens to be.
-export JUNO_TASK_ROOT="$PROJECT_ROOT"
-
-# Prefer local kanban source when available.
-# - Monorepo root:   $PROJECT_ROOT/juno_kanban/src
-# - juno_kanban root: $PROJECT_ROOT/src
-# This keeps wrapper behavior aligned with working-tree changes without requiring
-# immediate reinstall from PyPI between local iterations.
-if [[ -d "$PROJECT_ROOT/src/kanban" ]]; then
-    export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-elif [[ -d "$PROJECT_ROOT/juno_kanban/src/kanban" ]]; then
-    export PYTHONPATH="$PROJECT_ROOT/juno_kanban/src${PYTHONPATH:+:$PYTHONPATH}"
-fi
+# Runtime selection deliberately follows the executable installed in .venv_juno.
+# Never prepend a neighboring source checkout to PYTHONPATH: source integration
+# alone does not authorize switching the active Kanban storage implementation.
 
 # Arrays to store normalized arguments (declared at script level for proper handling)
 declare -a NORMALIZED_GLOBAL_FLAGS=()
@@ -222,12 +205,12 @@ normalize_arguments() {
     local found_command=false
 
     # Known subcommands
-    local commands="create search get show update archive mark list merge ready deps order"
+    local commands="project create search get show update archive mark list merge ready deps order history doctor archive-search archive-pack reconcile convert rollback"
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             # Global flags that take a value
-            -f|--format|-c|--config)
+            -f|--format|-c|--config|--project)
                 if [[ -n "${2:-}" ]]; then
                     NORMALIZED_GLOBAL_FLAGS+=("$1" "$2")
                     shift 2
@@ -235,6 +218,10 @@ normalize_arguments() {
                     NORMALIZED_GLOBAL_FLAGS+=("$1")
                     shift
                 fi
+                ;;
+            --format=*|--config=*|--project=*)
+                NORMALIZED_GLOBAL_FLAGS+=("$1")
+                shift
                 ;;
             # Global flags that don't take a value
             -p|--pretty|--raw|-v|--verbose|--version)
@@ -267,14 +254,83 @@ normalize_arguments() {
     done
 }
 
+# The optional housekeeping hook validates Kanban writes, not reads. Avoid a
+# Python helper plus recursive wrapper startup for commands that are provably
+# read-only; unknown/new command shapes remain fail-closed through the helper.
+requires_contract_write_validation() {
+    local command="${NORMALIZED_COMMAND_ARGS[0]:-}"
+    local subcommand="${NORMALIZED_COMMAND_ARGS[1]:-}"
+    case "$command" in
+        project|get|show|list|search|ready|order|history|doctor|archive-search)
+            return 1
+            ;;
+        deps)
+            [[ "$subcommand" == "add" || "$subcommand" == "remove" ]]
+            return
+            ;;
+        archive-pack)
+            case "archive-pack:$subcommand" in
+                archive-pack:plan|archive-pack:doctor) return 1 ;;
+                *) return 0 ;;
+            esac
+            ;;
+        "")
+            # Commandless non-TTY input is the legacy create shortcut. Interactive
+            # help and explicit --version do not mutate Kanban state.
+            if [[ ! -t 0 ]]; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 # Main kanban logic
 main() {
     log_info "=== juno-kanban Wrapper ==="
 
+    # Select the canonical project interpreter before any Python-backed guard.
+    # The guards intentionally reinvoke this wrapper once; activation is idempotent.
+    if ! ensure_python_environment; then
+        log_error "Failed to setup Python environment"
+        exit 1
+    fi
+    log_success "Python environment ready!"
+
+    # Normalize once before guards so read-only contract hooks can be skipped
+    # without weakening validation for unknown or mutating command shapes.
+    normalize_arguments "$@"
+
+    # Mutations may not use argument-level storage redirection after canonical
+    # resolution. Exact canonical spelling is tolerated for compatibility;
+    # every other config refuses before body/stdin parsing or state creation.
+    if requires_contract_write_validation; then
+        local index configured canonical_config
+        canonical_config=$(cd "$PROJECT_ROOT/.juno_task" && pwd -P)/config.json
+        for ((index = 0; index < ${#NORMALIZED_GLOBAL_FLAGS[@]}; index++)); do
+            if [[ "${NORMALIZED_GLOBAL_FLAGS[$index]}" == "-c" || "${NORMALIZED_GLOBAL_FLAGS[$index]}" == "--config" ]]; then
+                configured="${NORMALIZED_GLOBAL_FLAGS[$((index + 1))]:-}"
+            elif [[ "${NORMALIZED_GLOBAL_FLAGS[$index]}" == --config=* ]]; then
+                configured="${NORMALIZED_GLOBAL_FLAGS[$index]#--config=}"
+            else
+                continue
+            fi
+            [[ -n "$configured" ]] || { log_error "canonical mutation config is missing"; exit 1; }
+            configured=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$configured")
+            [[ "$configured" == "$canonical_config" ]] || {
+                log_error "Kanban mutation config must be canonical controller config: $canonical_config"
+                exit 1
+            }
+        done
+    fi
+
     # Sweep workers must route every Kanban operation through the coordinator's
     # assignment guard. The guard reinvokes this wrapper with the internal flag
     # after validating mutation ownership and establishing its audit boundary.
-    if [[ -n "${ASSIGNED_TASK_ID:-}" && "${E2E_SWEEP_KANBAN_INTERNAL:-}" != "1" ]]; then
+    if [[ -n "${ASSIGNED_TASK_ID:-}" && -n "${E2E_SWEEP_KANBAN_GUARD_DIR:-}" && -n "${E2E_SWEEP_KANBAN_RECORDS:-}" && "${E2E_SWEEP_KANBAN_INTERNAL:-}" != "1" ]]; then
         local guard_helper="${E2E_SWEEP_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_sweep_helper.py}"
         if [[ ! -f "$guard_helper" ]]; then
             log_error "E2E sweep assignment guard helper not found: $guard_helper"
@@ -285,24 +341,12 @@ main() {
 
     # Projects with canonical E2E contracts validate create/body/tag writes before
     # canonical Kanban execution. The helper reinvokes this wrapper once internally.
-    if [[ "${E2E_CONTRACT_VALIDATION_INTERNAL:-}" != "1" ]]; then
+    if [[ "${E2E_CONTRACT_VALIDATION_INTERNAL:-}" != "1" ]] && requires_contract_write_validation; then
         local contract_helper="${E2E_HOUSEKEEPING_HELPER_PATH:-$PROJECT_ROOT/.juno_task/scripts/e2e_housekeeping.py}"
         if [[ -f "$contract_helper" ]]; then
             exec python3 "$contract_helper" validate-kanban-write -- "$0" "$@"
         fi
     fi
-
-    # Ensure Python environment is ready
-    if ! ensure_python_environment; then
-        log_error "Failed to setup Python environment"
-        exit 1
-    fi
-
-    log_success "Python environment ready!"
-
-    # Normalize argument order (global flags before command)
-    # This allows users to write "list -f json --raw" which gets reordered to "-f json --raw list"
-    normalize_arguments "$@"
 
     if [ "${JUNO_DEBUG:-false}" = "true" ]; then
         echo "[DEBUG] Original args: $*" >&2
@@ -310,9 +354,38 @@ main() {
         echo "[DEBUG] Normalized command args: ${NORMALIZED_COMMAND_ARGS[*]:-<none>}" >&2
     fi
 
-    # Execute juno-kanban with normalized arguments from project root
-    # Build the command properly preserving argument quoting
+    # Execute the controller checkout's isolated runtime explicitly. Do not rely
+    # on a hashed or unrelated global executable remaining earlier on PATH.
+    local kanban_executable="$PROJECT_ROOT/.venv_juno/bin/juno-kanban"
+    if [[ ! -x "$kanban_executable" ]]; then
+        log_error "juno-kanban executable missing from controller environment: $kanban_executable"
+        exit 1
+    fi
+    local policy_file="$SCRIPT_DIR/juno-toolchain-policy.sh"
+    if [[ ! -f "$policy_file" ]]; then
+        log_error "Juno 2 Kanban compatibility policy missing: $policy_file"
+        exit 1
+    fi
+    # shellcheck source=juno-toolchain-policy.sh
+    source "$policy_file"
+    if ! juno_kanban_check_executable "$kanban_executable" controller-runtime; then
+        exit 1
+    fi
     log_info "Executing juno-kanban with normalized arguments"
+
+    # Bind storage/config discovery to the resolved canonical controller. A
+    # linked rollback checkout or global project registry must never redirect
+    # reads or writes after sparse-controller cutover. Preserve an explicit
+    # caller override for bounded maintenance commands.
+    local arg_index arg
+    local -a resolved_config_args=(--config "$PROJECT_ROOT/.juno_task/config.json")
+    for ((arg_index = 0; arg_index < ${#NORMALIZED_GLOBAL_FLAGS[@]}; arg_index++)); do
+        arg="${NORMALIZED_GLOBAL_FLAGS[$arg_index]}"
+        if [[ "$arg" == "-c" || "$arg" == "--config" || "$arg" == --config=* ]]; then
+            resolved_config_args=()
+            break
+        fi
+    done
 
     # Execute with proper array expansion to preserve quoting
     # Use ${arr[@]+"${arr[@]}"} pattern to handle empty arrays with set -u
@@ -324,18 +397,50 @@ main() {
     # - 'c' (character device) or other: Redirect from /dev/null to prevent hanging
     #   when called from tools that don't provide stdin (Issue #42, #60)
     #
-    # The first character of `ls -la /dev/fd/0` indicates the file type:
-    # p = pipe, - = regular file, c = character device, l = symlink, etc.
-    local stdin_type
-    stdin_type=$(ls -la /dev/fd/0 2>/dev/null | cut -c1)
+    # Decide from command semantics rather than descriptor type. On macOS both a
+    # populated subprocess pipe and an inherited idle descriptor can appear as a
+    # socket; probing by type either discards real bodies or leaves query commands
+    # hanging. Only commands whose syntax explicitly needs stdin receive it.
+    local pass_stdin=false
+    # Preserve the commandless stdin shortcut (`kanban.sh <<'EOF' ...`). This
+    # includes socket-backed subprocess input on macOS, not only pipes/files.
+    # Interactive no-argument calls remain nonblocking because a TTY is excluded.
+    if [[ ${#NORMALIZED_COMMAND_ARGS[@]} -eq 0 && ! -t 0 ]]; then
+        pass_stdin=true
+    fi
+    for ((arg_index = 0; arg_index < ${#NORMALIZED_COMMAND_ARGS[@]}; arg_index++)); do
+        arg="${NORMALIZED_COMMAND_ARGS[$arg_index]}"
+        if [[ ( "$arg" == "--body-file" || "$arg" == "--response-file" ) && "${NORMALIZED_COMMAND_ARGS[$((arg_index + 1))]:-}" == "-" ]] \
+            || [[ "$arg" == "--body-file=-" || "$arg" == "--response-file=-" ]]; then
+            pass_stdin=true
+            break
+        fi
+    done
+    if [[ "${NORMALIZED_COMMAND_ARGS[0]:-}" == "create" ]]; then
+        # Bare create (including status/tag-only options) is the legacy implicit
+        # stdin form. Recognized explicit body/title forms do not read stdin.
+        pass_stdin=true
+        if [[ "${NORMALIZED_COMMAND_ARGS[1]:-}" != -* && -n "${NORMALIZED_COMMAND_ARGS[1]:-}" ]]; then
+            pass_stdin=false
+        fi
+        for arg in "${NORMALIZED_COMMAND_ARGS[@]:1}"; do
+            [[ "$arg" == "--body" || "$arg" == --body=* || "$arg" == "--title" || "$arg" == --title=* || "$arg" == "--body-file" || "$arg" == --body-file=* ]] && pass_stdin=false
+        done
+        for ((arg_index = 0; arg_index < ${#NORMALIZED_COMMAND_ARGS[@]}; arg_index++)); do
+            arg="${NORMALIZED_COMMAND_ARGS[$arg_index]}"
+            if [[ "$arg" == "--body-file" && "${NORMALIZED_COMMAND_ARGS[$((arg_index + 1))]:-}" == "-" ]] || [[ "$arg" == "--body-file=-" ]]; then
+                pass_stdin=true
+            fi
+        done
+    fi
 
-    if [[ "$stdin_type" == "p" || "$stdin_type" == "-" ]]; then
-        # stdin is a pipe or regular file (heredoc) - pass it through
-        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+    if [[ "$pass_stdin" == true ]]; then
+        "$kanban_executable" ${resolved_config_args[@]+"${resolved_config_args[@]}"} \
+                    ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"}
     else
-        # stdin is a character device or unknown - redirect from /dev/null to prevent hanging
-        juno-kanban ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
+        "$kanban_executable" ${resolved_config_args[@]+"${resolved_config_args[@]}"} \
+                    ${NORMALIZED_GLOBAL_FLAGS[@]+"${NORMALIZED_GLOBAL_FLAGS[@]}"} \
                     ${NORMALIZED_COMMAND_ARGS[@]+"${NORMALIZED_COMMAND_ARGS[@]}"} < /dev/null
     fi
 }

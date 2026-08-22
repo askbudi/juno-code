@@ -8,7 +8,7 @@ validation_gate: "python3 .juno_task/scripts/tests/test_task_workspace.py && pyt
 
 The controller is a metadata store. It contains Kanban/task truth and compact
 receipts, not product code. Runtime scripts are installed from one versioned
-Juno Code package and are not synchronized through product history.
+YYLO package and are not synchronized through product history.
 
 ```text
 metadata controller
@@ -57,7 +57,7 @@ and wait diagnostics, lane position, and critical-path contribution. A terminal
 failure persists the complete schedule and is not automatically retried against
 an unchanged candidate. Independent features can remain active concurrently.
 Project classification is explicit: a source repository whose
-`juno-code/package.json` names `juno-code` must provide both authoritative,
+`juno-code/package.json` names `yylo` must provide both authoritative,
 strict declarations; an ordinary consumer without that package identity has no
 Juno-source declaration requirement.
 

@@ -448,7 +448,7 @@ describe('Init Command', () => {
         await runInit([], options, mockCommand);
 
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Code Project Initialization'),
+          expect.stringContaining('YYLO Project Initialization'),
         );
         expect(consoleSpy).toHaveBeenCalledWith(
           expect.stringContaining('Project initialization complete'),
@@ -477,7 +477,7 @@ describe('Init Command', () => {
 
         // Verify interactive mode ran and completed
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Juno Code Project Initialization'),
+          expect.stringContaining('YYLO Project Initialization'),
         );
         expect(processExitSpy).toHaveBeenCalledWith(0);
       });
@@ -502,7 +502,7 @@ describe('Init Command', () => {
         expect(
           vi
             .mocked(fs.writeFile)
-            .mock.calls.some(([filePath]) => String(filePath).endsWith('.env.juno')),
+            .mock.calls.some(([filePath]) => String(filePath).endsWith('.env.yylo')),
         ).toBe(true);
         expect(ManagedProjectAssets.update).toHaveBeenCalledWith('/current/dir', { silent: false });
         expect(processExitSpy).toHaveBeenCalledWith(0);
@@ -592,7 +592,7 @@ describe('Init Command', () => {
 
         // Verify start command is mentioned in output
         const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
-        expect(logCalls.some((c) => c.includes('juno-code start'))).toBe(true);
+        expect(logCalls.some((c) => c.includes('yylo start'))).toBe(true);
       });
     });
 

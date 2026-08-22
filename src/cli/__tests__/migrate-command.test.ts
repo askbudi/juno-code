@@ -68,11 +68,11 @@ describe('migration CLI', () => {
     await program.parseAsync(['node', 'yy', 'migrate', 'runtime-install-rebind',
       '--root', '/controller', '--branch', 'refs/heads/controller',
       '--runtime-version', '2.1.3-rc.0.33', '--install-prefix', '/runtimes/rc33',
-      '--artifact', '/releases/juno-code-2.1.3-rc.0.33.tgz', '--output', '/receipts/rebind.json']);
+      '--artifact', '/releases/yylo-2.1.3-rc.0.33.tgz', '--output', '/receipts/rebind.json']);
     expect(invoke).toHaveBeenCalledWith(['runtime-install-rebind',
       '--root', '/controller', '--branch', 'refs/heads/controller',
       '--runtime-version', '2.1.3-rc.0.33', '--install-prefix', '/runtimes/rc33',
-      '--output', '/receipts/rebind.json', '--artifact', '/releases/juno-code-2.1.3-rc.0.33.tgz']);
+      '--output', '/receipts/rebind.json', '--artifact', '/releases/yylo-2.1.3-rc.0.33.tgz']);
   });
 
   it('routes receipt-bound metadata-policy plan and explicitly authorized apply', async () => {

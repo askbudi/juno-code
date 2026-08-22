@@ -121,7 +121,7 @@ function runWorkflowScript(scriptPath: string, args: string[], input?: string, e
       JUNO_CONTROLLER_BRANCH: 'fixture-controller',
       JUNO_WORKSPACE_ROLE: 'controller',
       JUNO_WORKSPACE_ENFORCEMENT: 'strict',
-      JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController, '.test-metadata'),
+      YYLO_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController, '.test-metadata'),
     },
   });
 }
@@ -132,9 +132,9 @@ function runWorkflow(args: string[], input?: string, env?: NodeJS.ProcessEnv) {
 
 const fakeScopeResolver = `
 def resolve_scope(parent_pid, cwd):
-    override = os.environ.get('JUNO_CODE_CONTINUE_SCOPE', '').strip()
+    override = os.environ.get('YYLO_CONTINUE_SCOPE', '').strip()
     if override:
-        descriptor = 'JUNO_CODE_CONTINUE_SCOPE:' + override
+        descriptor = 'YYLO_CONTINUE_SCOPE:' + override
     else:
         project = str(pathlib.Path(cwd).resolve())
         marker = next((f'{key}:{os.environ[key].strip()}' for key in ['TMUX_PANE','WEZTERM_PANE','KITTY_WINDOW_ID','KITTY_PID','TERM_SESSION_ID','WT_SESSION','ZELLIJ_PANE_ID','STY','WINDOWID','SSH_TTY'] if os.environ.get(key, '').strip()), None)
@@ -155,7 +155,7 @@ def resolve_scope(parent_pid, cwd):
     return scope
 
 def continuity_path():
-    root = pathlib.Path(os.environ.get('JUNO_CODE_SESSION_METADATA_DIRECTORY', pathlib.Path.cwd() / '.juno_task'))
+    root = pathlib.Path(os.environ.get('YYLO_SESSION_METADATA_DIRECTORY', pathlib.Path.cwd() / '.juno_task'))
     root.mkdir(parents=True, exist_ok=True)
     return root / 'session_continuity.v2.json'
 
@@ -184,7 +184,7 @@ def handle_scope_command():
         if not entry and len(scopes) == 1: entry = next(iter(scopes.values()))
         session_id = entry.get('branches', {}).get(entry.get('active'), {}).get('session_id')
     except Exception: session_id = None
-    print(json.dumps({'status':'finished' if session_id else 'not_found','hash':scope[6:12],'fullHash':scope,'scopeSource':'test','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_' + scope,'settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_' + scope,'sessionId':session_id,'isCurrentScope':True,'pid':None}))
+    print(json.dumps({'status':'finished' if session_id else 'not_found','hash':scope[6:12],'fullHash':scope,'scopeSource':'test','sessionEnvKey':'YYLO_LAST_SESSION_ID_' + scope,'settingsEnvKey':'YYLO_LAST_EXECUTION_SETTINGS_' + scope,'sessionId':session_id,'isCurrentScope':True,'pid':None}))
     return True
 `;
 
@@ -304,14 +304,14 @@ describe('workflow_runner.sh child environment contract', () => {
 import importlib.machinery, json
 mod = importlib.machinery.SourceFileLoader('workflow_runner', ${JSON.stringify(script)}).load_module()
 env = mod.child_process_environment({
-  'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF': 'historical',
-  'JUNO_CODE_LAST_SESSION_ID_SCOPE_malformed_old_suffix': 'historical-malformed',
-  'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_': 'historical-empty-suffix',
-  'JUNO_CODE_LAST_EXECUTION_SETTINGS': 'legacy',
+  'YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF': 'historical',
+  'YYLO_LAST_SESSION_ID_SCOPE_malformed_old_suffix': 'historical-malformed',
+  'YYLO_LAST_EXECUTION_SETTINGS_SCOPE_': 'historical-empty-suffix',
+  'YYLO_LAST_EXECUTION_SETTINGS': 'legacy',
   'JUNO_TASK_ROOT': '/controller',
   'ARBITRARY_CONFIG': 'preserved',
 })
-print(json.dumps({'continuity': sorted(k for k in env if k.startswith('JUNO_CODE_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG')}))
+print(json.dumps({'continuity': sorted(k for k in env if k.startswith('YYLO_LAST_')), 'root': env.get('JUNO_TASK_ROOT'), 'config': env.get('ARBITRARY_CONFIG')}))
 `;
       const result = spawnSync('python3', ['-c', code], { cwd: repoRoot, encoding: 'utf8' });
       expect(result.status, result.stderr).toBe(0);
@@ -399,7 +399,7 @@ describe('workflow_runner.sh template script', () => {
   });
 
   it('selects an ancestor managed interpreter when ambient Python lacks PyYAML', () => {
-    const start = '/controller/.juno_task/runtime/merge-queue/candidates/task-candidate/juno-code';
+    const start = '/controller/.juno_task/runtime/merge-queue/candidates/task-candidate/yylo';
     const managed = '/controller/.venv_juno/bin/python';
     const selected = discoverFixturePython(start, (command) => command === managed
       ? {
@@ -416,7 +416,7 @@ describe('workflow_runner.sh template script', () => {
   });
 
   it('reports every attempted interpreter when none owns PyYAML', () => {
-    expect(() => discoverFixturePython('/isolated/task/juno-code', (command) => ({
+    expect(() => discoverFixturePython('/isolated/task/yylo', (command) => ({
       status: 1,
       stdout: '',
       stderr: command === 'python3' ? 'ModuleNotFoundError: No module named yaml' : 'not found',
@@ -1062,7 +1062,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
       'command yy pi --model :evil hidden',
       "bash -lc 'codex hidden'",
       "dash -c 'pi hidden'",
-      "zsh -c 'juno-code pi hidden'",
+      "zsh -c 'yylo pi hidden'",
       "X=1 bash -lc 'ypl hidden'",
       "exec yy pi --model :evil hidden",
       "exec -a harmless yy pi --model :evil hidden",
@@ -1110,7 +1110,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
       [['X=1', 'env', '-v', 'yy', 'pi', '--model', ':unapproved', 'hidden'], 'unsupported env wrapper'],
       [['X=1', 'env', '-Syy pi --model :unapproved hidden'], 'not exactly allowlisted'],
       [['X=1', 'env', '--split-string=PI_MODEL=:luna yy pi hidden'], 'environment assignment PI_MODEL'],
-      [['JUNO_CODE_CONFIG=other.json', 'yy', 'pi', 'hidden'], 'alternate config through environment assignment'],
+      [['YYLO_CONFIG=other.json', 'yy', 'pi', 'hidden'], 'alternate config through environment assignment'],
       [['PI_ADDITIONAL_ARGS=--model :luna', 'yy', 'pi', 'hidden'], 'inject additional args'],
       [['yy', 'pi', '--additional-args=--model :luna', 'hidden'], '--additional-args'],
       [['yy', '--config', 'other.json', 'pi', 'hidden'], 'alternate config'],
@@ -1153,7 +1153,7 @@ pathlib.Path(os.environ['JUNO_SUBAGENT_CAPTURE_PATH']).write_text(json.dumps(pay
     await fs.writeFile(path.join(reviewerBin, 'yy'), `#!/usr/bin/env python3
 import json, os, pathlib, shutil, subprocess, sys
 if len(sys.argv) > 1 and sys.argv[1] == 'continue-scope':
-    print(json.dumps({'fullHash':'SCOPE_0123456789ABCDEF','sessionEnvKey':'JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF','settingsEnvKey':'JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF','sessionId':None}))
+    print(json.dumps({'fullHash':'SCOPE_0123456789ABCDEF','sessionEnvKey':'YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF','settingsEnvKey':'YYLO_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF','sessionId':None}))
     raise SystemExit(0)
 candidate, expected, mode = pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 pathlib.Path(os.environ['REVIEW_INVOCATION']).write_text(json.dumps({'cwd': os.getcwd(), 'candidate': str(candidate), 'sha': expected}))
@@ -1358,11 +1358,11 @@ print('PASS')
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runWorkflowScript(staleScript, ['--help'], undefined, {
-      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
+      YYLO_SCRIPT_TEMPLATE_DIR: templateDir,
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain('workflow_runner.sh: warning: this runtime script differs from the installed juno-code template.');
+    expect(result.stderr).toContain('workflow_runner.sh: warning: this runtime script differs from the installed yylo template.');
     expect(result.stderr).toContain(`installed template: ${await fs.realpath(path.join(templateDir, 'workflow_runner.sh'))}`);
     expect(result.stderr).toContain('update with: yy scripts update --force');
   });
@@ -1421,7 +1421,7 @@ summary:
         JUNO_TASK_ROOT: controller,
         JUNO_WORKSPACE_ROLE: 'controller',
         JUNO_WORKSPACE_ENFORCEMENT: 'strict',
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(controller, '.test-metadata'),
+        YYLO_SESSION_METADATA_DIRECTORY: path.join(controller, '.test-metadata'),
         JUNO_DEBUG: 'true',
       },
     });
@@ -1623,8 +1623,8 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     await fs.writeFile(staleScript, `${await fs.readFile(templateScript, 'utf8')}\n# local stale edit\n`);
 
     const result = runWorkflowScript(staleScript, ['--help'], undefined, {
-      JUNO_CODE_SCRIPT_TEMPLATE_DIR: templateDir,
-      JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1',
+      YYLO_SCRIPT_TEMPLATE_DIR: templateDir,
+      YYLO_SKIP_SCRIPT_STALE_CHECK: '1',
     });
 
     expect(result.status).toBe(0);
@@ -1657,7 +1657,7 @@ module.ensure_controller_python_environment({"JUNO_TASK_ROOT": controller, "JUNO
     expect(result.stdout).toContain('detached observer only; the producer remains');
     expect(result.stdout).toContain('attached to this foreground command');
     expect(result.stdout).toContain('fail_workflow: true');
-    expect(result.stdout).toContain('juno-code, yy, and ypl');
+    expect(result.stdout).toContain('yylo, yy, and ypl');
     expect(result.stdout).toContain('capture_session: false');
     expect(result.stdout).toContain('does not inject --quiet');
     expect(result.stdout).toContain('empty response');
@@ -1961,7 +1961,7 @@ summary: |
       workflow_id: 'relative_owner_child_capability',
       steps: [{ id: 'integrate', command: ['.juno_task/scripts/integration_owner_preflight.py', 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
-    const result = runWorkflowScript(managedRunner, ['--project-root', projectRoot, '--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
+    const result = runWorkflowScript(managedRunner, ['--project-root', projectRoot, '--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { YYLO_SKIP_SCRIPT_STALE_CHECK: '1' });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('legacy local_integration execution is read-only');
     expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
@@ -1986,7 +1986,7 @@ summary: |
       workflow_id: 'alias_child_capability',
       steps: [{ id: 'alias', command: [alias, 'integrate', '--actual-review-command', 'yy pi review', '--actual-review-receipt', 'actual.json'] }],
     });
-    const result = runWorkflowScript(managedRunner, ['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { JUNO_CODE_SKIP_SCRIPT_STALE_CHECK: '1' });
+    const result = runWorkflowScript(managedRunner, ['--workflow', workflowPath, '--out-dir', outDir, '--print-output', 'none'], undefined, { YYLO_SKIP_SCRIPT_STALE_CHECK: '1' });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('legacy local_integration execution is read-only');
     expect(await fs.pathExists(path.join(outDir, 'manifest.json'))).toBe(false);
@@ -2500,7 +2500,7 @@ exit 0
     await fs.writeFile(
       executablePath,
       `#!/usr/bin/env sh
-if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
+if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"YYLO_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
 echo 'VERBOSE INTERNAL LOG LINE'
 printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AGENT_RESPONSE","session_id":"session-final"}\n' > "$JUNO_SUBAGENT_CAPTURE_PATH"
 `,
@@ -2536,7 +2536,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL_AG
     await fs.writeFile(
       executablePath,
       `#!/usr/bin/env sh
-if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"JUNO_CODE_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"JUNO_CODE_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
+if [ "\${1:-}" = "continue-scope" ]; then printf '%s\\n' '{"fullHash":"SCOPE_0123456789ABCDEF","sessionEnvKey":"YYLO_LAST_SESSION_ID_SCOPE_0123456789ABCDEF","settingsEnvKey":"YYLO_LAST_EXECUTION_SETTINGS_SCOPE_0123456789ABCDEF"}'; exit 0; fi
 printf 'footer response\\n'
 printf 'debug cost: $0.999999 before footer\\n' >&2
 printf '🔑 Session ID(s):\\n' >&2
@@ -2571,7 +2571,7 @@ printf '   ${footerSessionId}    cost: $0.158907\\n' >&2
       executablePath,
       `#!/usr/bin/env python3
 import json, os, pathlib
-root = pathlib.Path(os.environ['JUNO_CODE_SESSION_METADATA_DIRECTORY'])
+root = pathlib.Path(os.environ['YYLO_SESSION_METADATA_DIRECTORY'])
 root.mkdir(parents=True, exist_ok=True)
 (root / 'session_history.json').write_text(json.dumps({'version': 1, 'sessions': [{'id': 'artifact'}]}))
 (root / 'session_branches.json').write_text(json.dumps({'version': 1, 'scopes': {'artifact': {}}}))
@@ -2635,7 +2635,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
   it('prints juno step session ids and persists the last one for yy cc continue', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'session-summary.json');
     const outDir = path.join(testDir, 'session-summary-out');
     await fs.writeJson(workflowPath, {
@@ -2649,7 +2649,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     const result = runWorkflow(
       ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
       undefined,
-      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-test-scope' },
+      { YYLO_CONTINUE_SCOPE: 'workflow-test-scope' },
     );
 
     expect(result.status).toBe(0);
@@ -2658,13 +2658,13 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(result.stdout).toContain('step 2 [second]: session-omega');
     expect(result.stdout).toContain('handoff: step 2 [second] persisted for yy cc');
     expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
-    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(testDir, '.env.yylo'))).toBe(false);
   });
 
   it('captures summary.command sessions and uses summary as the default yy cc handoff', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'summary-session.json');
     const outDir = path.join(testDir, 'summary-session-out');
     await fs.writeJson(workflowPath, {
@@ -2676,7 +2676,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     const result = runWorkflow(
       ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir],
       undefined,
-      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-summary-session' },
+      { YYLO_CONTINUE_SCOPE: 'workflow-summary-session' },
     );
 
     expect(result.status).toBe(0);
@@ -2692,13 +2692,13 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(manifest.continue.step_id).toBe('summary');
     expect(manifest.continue.session_id).toBe('session-summary');
     expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
-    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(testDir, '.env.yylo'))).toBe(false);
   });
 
   it('keeps default yy cc handoff on the last successful agent when summary.command fails with a session', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'failed-summary-session.json');
     const outDir = path.join(testDir, 'failed-summary-session-out');
     await fs.writeJson(workflowPath, {
@@ -2710,7 +2710,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     const result = runWorkflow(
       ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
       undefined,
-      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-failed-summary-session' },
+      { YYLO_CONTINUE_SCOPE: 'workflow-failed-summary-session' },
     );
 
     expect(result.status).toBe(0);
@@ -2726,7 +2726,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
   it('adopts top-level yy continue snapshots and persists them to the caller scope for yy cc', async () => {
     const { executablePath } = await installFakeTopLevelPersistingJuno(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'top-level-session.json');
     const outDir = path.join(testDir, 'top-level-session-out');
     await fs.writeJson(workflowPath, {
@@ -2748,7 +2748,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('step 1 [agent]: session-child');
     expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
-    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(testDir, '.env.yylo'))).toBe(false);
     const manifestPath = path.join(outDir, 'manifest.json');
     expect(await fs.pathExists(manifestPath)).toBe(true);
     const manifest = await fs.readJson(manifestPath);
@@ -2762,7 +2762,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
   it('supports continue_from_step to persist a non-last agent session', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'continue-from-step.json');
     const outDir = path.join(testDir, 'continue-from-step-out');
     await fs.writeJson(workflowPath, {
@@ -2783,11 +2783,11 @@ exec "$(dirname "$0")/yy" pi --live "$@"
       outDir,
       '--print-output',
       'none',
-      ], undefined, { JUNO_CODE_CONTINUE_SCOPE: 'workflow-continue-from-step' });
+      ], undefined, { YYLO_CONTINUE_SCOPE: 'workflow-continue-from-step' });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
-    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(testDir, '.env.yylo'))).toBe(false);
     const manifest = await fs.readJson(path.join(outDir, 'manifest.json'));
     expect(manifest.continue.step_id).toBe('first');
     expect(manifest.continue.session_id).toBe('session-alpha');
@@ -2796,7 +2796,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
   it('persists continue settings for option-style yy -s/--subagent commands', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'option-style-subagent.json');
     const outDir = path.join(testDir, 'option-style-subagent-out');
     await fs.writeJson(workflowPath, {
@@ -2811,7 +2811,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     const result = runWorkflow(
       ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
       undefined,
-      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-option-style-subagent' },
+      { YYLO_CONTINUE_SCOPE: 'workflow-option-style-subagent' },
     );
 
     expect(result.status).toBe(0);
@@ -2820,13 +2820,13 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     expect(manifest.continue.session_id).toBe('session-alpha');
     expect(manifest.continue.scope_hash).toMatch(/^SCOPE_[A-F0-9]{16}$/);
     expect(result.stdout).toContain('metadata_file: session_continuity.v2.json');
-    expect(await fs.pathExists(path.join(testDir, '.env.juno'))).toBe(false);
+    expect(await fs.pathExists(path.join(testDir, '.env.yylo'))).toBe(false);
   });
 
   it('supports continue_from_step summary override when summary is not the default last successful session', async () => {
     const { executablePath } = await installFakeJunoExecutable(testDir, 'yy');
     await fs.ensureDir(path.join(testDir, '.juno_task'));
-    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.juno' });
+    await fs.writeJson(path.join(testDir, '.juno_task', 'config.json'), { envFilePath: '.env.yylo' });
     const workflowPath = path.join(testDir, 'continue-from-summary.json');
     const outDir = path.join(testDir, 'continue-from-summary-out');
     await fs.writeJson(workflowPath, {
@@ -2839,7 +2839,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
     const result = runWorkflow(
       ['--workflow', workflowPath, '--run-root', testDir, '--out-dir', outDir, '--print-output', 'none'],
       undefined,
-      { JUNO_CODE_CONTINUE_SCOPE: 'workflow-continue-from-summary' },
+      { YYLO_CONTINUE_SCOPE: 'workflow-continue-from-summary' },
     );
 
     expect(result.status).toBe(0);
@@ -3764,7 +3764,7 @@ exec "$(dirname "$0")/yy" pi --live "$@"
       env: {
         ...process.env,
         JUNO_TASK_ROOT: workflowFixtureController,
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
+        YYLO_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
       },
       stdio: 'ignore',
     });
@@ -3869,7 +3869,7 @@ steps:
       env: {
         ...process.env,
         JUNO_TASK_ROOT: workflowFixtureController,
-        JUNO_CODE_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
+        YYLO_SESSION_METADATA_DIRECTORY: path.join(workflowFixtureController!, '.test-metadata'),
       },
     });
     expect(result.status).toBe(2);

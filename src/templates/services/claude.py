@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Service Script for juno-code
+Claude Service Script for yylo
 This script provides a wrapper around Anthropic Claude CLI with configurable options.
 """
 
@@ -286,7 +286,7 @@ Environment Variables:
         ]
 
         # Build the full prompt (auto_instruction + user prompt). Small prompts stay
-        # positional for CLI compatibility; oversized prompts use stdin so juno-code
+        # positional for CLI compatibility; oversized prompts use stdin so yylo
         # does not reintroduce OS E2BIG failures after shell-backend selected file
         # transport into this wrapper.
         full_prompt = f"{self.auto_instruction}\n\n{self.prompt}"

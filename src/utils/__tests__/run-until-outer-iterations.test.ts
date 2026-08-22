@@ -9,7 +9,7 @@ const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/run_until_compl
 const templateScript = path.resolve(process.cwd(), 'src/templates/scripts/run_until_completion.sh');
 
 /**
- * Real-script regression for the outer iteration bound. A mock juno-code on
+ * Real-script regression for the outer iteration bound. A mock yylo on
  * PATH records every inner invocation; a mock kanban.sh always reports one
  * pending task so the only thing that can stop the loop is the outer bound.
  */
@@ -35,7 +35,7 @@ describe('run_until_completion.sh outer --max-iterations bound', () => {
     ].join('\n'), { mode: 0o755 });
     const stubBin = path.join(testDir, 'bin');
     await fs.ensureDir(stubBin);
-    await fs.writeFile(path.join(stubBin, 'juno-code'), [
+    await fs.writeFile(path.join(stubBin, 'yylo'), [
       '#!/usr/bin/env bash',
       `printf '%s\\n' "$*" >> ${JSON.stringify(invocationLog)}`,
       'exit 0',

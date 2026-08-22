@@ -1,7 +1,7 @@
 /**
  * Default hooks template configuration
  *
- * This module provides default hook commands that are shipped with juno-code.
+ * This module provides default hook commands that are shipped with yylo.
  * These hooks are automatically configured during project initialization (init command).
  *
  * Hook Types:

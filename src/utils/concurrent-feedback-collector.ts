@@ -24,13 +24,13 @@ import {
 export interface FeedbackCollectorOptions {
   /**
    * Command to run for each feedback submission
-   * @default 'juno-code'
+   * @default 'yylo'
    */
   command?: string;
 
   /**
    * Arguments for the feedback command
-   * @default ['juno-code', 'feedback']
+   * @default ['yylo', 'feedback']
    */
   commandArgs?: string[];
 
@@ -101,8 +101,8 @@ export class ConcurrentFeedbackCollector {
 
   constructor(options: FeedbackCollectorOptions = {}) {
     this.options = {
-      command: options.command || 'juno-code',
-      commandArgs: options.commandArgs || ['juno-code', 'feedback'],
+      command: options.command || 'yylo',
+      commandArgs: options.commandArgs || ['yylo', 'feedback'],
       verbose: options.verbose || false,
       showHeader: options.showHeader !== undefined ? options.showHeader : true,
       progressInterval: options.progressInterval || 0,

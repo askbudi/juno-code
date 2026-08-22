@@ -60,7 +60,7 @@ if (!manifestSource.equals(manifestBuilt)) {
   throw new Error('Managed asset manifest differs between source and dist');
 }
 
-const packDirectory = mkdtempSync(path.join(os.tmpdir(), 'juno-code-managed-pack-'));
+const packDirectory = mkdtempSync(path.join(os.tmpdir(), 'yylo-managed-pack-'));
 try {
   const packOutput = execFileSync(
     'npm',

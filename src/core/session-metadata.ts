@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import fs from 'fs-extra';
 
-export const SESSION_METADATA_DIRECTORY_ENV = 'JUNO_CODE_SESSION_METADATA_DIRECTORY';
+export const SESSION_METADATA_DIRECTORY_ENV = 'YYLO_SESSION_METADATA_DIRECTORY';
 /** One lock shared by continuity state, runtime liveness markers, migration, and retention. */
 export const SESSION_CONTINUITY_SHARED_LOCK_NAME = 'session_continuity.v2.json';
 const PROJECT_STATE_KIND_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -60,7 +60,7 @@ export function resolveJunoProjectStateLocation(
   const identity = createHash('sha256').update(canonicalWorkingDirectory).digest('hex').slice(0, 16);
   const stateHome = path.resolve(env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), '.local', 'state'));
   return {
-    directory: path.join(stateHome, 'juno-code', stateKind, identity),
+    directory: path.join(stateHome, '@yylo/cli', stateKind, identity),
     durabilityAnchor: stateHome,
   };
 }

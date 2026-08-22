@@ -7,7 +7,7 @@ import {
 } from '../explicit-command.js';
 
 function surface(): Command {
-  const program = new Command('juno-code');
+  const program = new Command('yylo');
   program.helpOption('-h, --help', 'Display help information');
   program.option('-q, --quiet').option('-c, --config <path>');
   program.option('-p, --prompt [text]').option('-f, --prompt-file <path>');

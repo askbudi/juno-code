@@ -118,7 +118,7 @@ interface InitCommandTestResult {
  * =================================
  * - NO_COLOR: '1' - Disables ANSI colors for consistent output parsing
  * - NODE_ENV: 'development' - Prevents test environment detection
- * - JUNO_CODE_CONFIG: '' - Clean configuration environment
+ * - YYLO_CONFIG: '' - Clean configuration environment
  *
  * EXECUTION PARAMETERS:
  * ====================
@@ -144,7 +144,7 @@ async function executeInitCommandWithArgs(
     ...process.env,
     NO_COLOR: '1',
     NODE_ENV: 'development', // Prevent test environment detection
-    JUNO_CODE_CONFIG: '',
+    YYLO_CONFIG: '',
     JUNO_TASK_CONFIG: '', // Backward compatibility
     ...env,
   };

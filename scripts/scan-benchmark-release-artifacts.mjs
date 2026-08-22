@@ -34,7 +34,7 @@ const SYNTHETIC_ARTIFACTS = Object.freeze({
 });
 
 const forbiddenRuntimeValues = Object.entries(process.env)
-  .filter(([name, value]) => value !== undefined && value.length >= 4 && SENSITIVE_ENV.test(name) && !name.startsWith('JUNO_BENCHMARK_RELEASE_'))
+  .filter(([name, value]) => value !== undefined && value.length >= 4 && SENSITIVE_ENV.test(name) && !name.startsWith('YYLO_BENCHMARK_RELEASE_'))
   .map(([, value]) => Buffer.from(value));
 
 const files = [];
@@ -97,9 +97,9 @@ export function runSyntheticLeakageCanaries(sourceTree, commandHash, inspectArti
 
 async function main() {
   const roots = process.argv.slice(2);
-  if (roots.length !== 4) throw new Error('expected benchmark dist, Juno Code dist, and two packed artifact paths');
-  const sourceTree = process.env.JUNO_BENCHMARK_RELEASE_SOURCE_TREE;
-  const commandHash = process.env.JUNO_BENCHMARK_RELEASE_COMMAND_HASH;
+  if (roots.length !== 4) throw new Error('expected benchmark dist, YYLO dist, and two packed artifact paths');
+  const sourceTree = process.env.YYLO_BENCHMARK_RELEASE_SOURCE_TREE;
+  const commandHash = process.env.YYLO_BENCHMARK_RELEASE_COMMAND_HASH;
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceTree ?? '') || !/^sha256:[0-9a-f]{64}$/u.test(commandHash ?? '')) {
     throw new Error('leak scan requires a valid source tree and command hash binding');
   }
