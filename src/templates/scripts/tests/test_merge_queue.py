@@ -3798,6 +3798,28 @@ class EvidenceReuseTests(unittest.TestCase):
             self.claims[1], require_success=True)
         self.assertEqual(verified["exit_code"], 0)
 
+    def test_cached_reuse_receipt_is_fitted_to_the_evidence_bound(self) -> None:
+        self._run(self._claim(1), self._receipt_path(1),
+                  controller=self.controller, repository=self.repository)
+        original = merge_runtime._derived_reuse_receipt
+
+        def oversized(*args, **kwargs):
+            receipt = original(*args, **kwargs)
+            receipt["result"]["stdout"]["tail"] = "x" * 100_000
+            return receipt
+
+        with mock.patch.object(merge_runtime, "_derived_reuse_receipt", side_effect=oversized):
+            references, _reuse, calls = self._run(
+                self._claim(2), self._receipt_path(2),
+                controller=self.controller, repository=self.repository)
+        self.assertEqual(calls, [])
+        self.assertLessEqual(Path(references[0]["receipt_path"]).stat().st_size,
+                             self.plan["evidence_limits"]["max_receipt_bytes"])
+        fitted = json.loads(Path(references[0]["receipt_path"]).read_text())
+        self.assertEqual(fitted["candidate"], self.plan["candidate"])
+        self.assertEqual(fitted["claim"], self.claims[1])
+        self.assertEqual(fitted["command"], self.commands[0])
+
     def test_one_byte_tree_change_forces_fresh_validation(self) -> None:
         self._run(self._claim(1), self._receipt_path(1),
                   controller=self.controller, repository=self.repository)

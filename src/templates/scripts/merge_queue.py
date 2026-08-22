@@ -1608,6 +1608,8 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             started_at = risk_runtime.utc_now()
             derived = _derived_reuse_receipt(
                 source, commands, index, row, claim, started_at)
+            derived = fit_full_suite_receipt(
+                derived, plan["evidence_limits"]["max_receipt_bytes"])
             write_canonical_exclusive(receipt_path, derived,
                                       plan["evidence_limits"]["max_receipt_bytes"])
             _mark_reuse(reuse_entry, controller, key_sha)
