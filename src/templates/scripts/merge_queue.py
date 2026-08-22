@@ -4135,7 +4135,8 @@ def target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
         raise MergeQueueError("original immutable creation admission drifted")
     admitted = sorted(record.get("changed_paths", []))
     original_changed = sorted(set(task_runtime.git(
-        repository, "diff", "--name-only", f"{base_sha}..{source_tip}").splitlines()))
+        repository, "diff", "--no-renames", "--name-only",
+        f"{base_sha}..{source_tip}").splitlines()))
     frozen_allowed = creation.get("allowed_paths")
     if (not admitted or any(task_runtime.path_within(path, config["controller_private_paths"])
                             or not task_runtime.path_within(path, frozen_allowed)

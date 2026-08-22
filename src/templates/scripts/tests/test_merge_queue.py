@@ -859,6 +859,24 @@ raise SystemExit(2)
         self.assertNotIn("docs/renamed-away.txt",
                          {row["path"] for row in planned["classifications"]})
 
+    def test_target_refresh_keeps_both_sides_of_task_authored_renames(self) -> None:
+        self.install_merge_planner_runtime()
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "docs").mkdir()
+        git(worktree, "mv", "src/shared.txt", "docs/shared.txt")
+        git(worktree, "commit", "-m", "rename feature path")
+        self.task("finish", "X")
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        self.assertEqual(state["tasks"]["X"]["changed_paths"],
+                         ["docs/shared.txt", "src/shared.txt"])
+        self.advance_target()
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        classes = {row["path"]: row["classification"] for row in planned["classifications"]}
+        self.assertEqual(classes["src/shared.txt"], "feature-authored")
+        self.assertEqual(classes["docs/shared.txt"], "feature-authored")
+
     def test_review_repair_after_target_refresh_excludes_inherited_target_paths(self) -> None:
         self.install_merge_planner_runtime()
         self.commit_feature("X", "src/security/auth.py", "feature\n")
