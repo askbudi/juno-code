@@ -8,6 +8,28 @@ const temporary: string[] = [];
 afterEach(async () => Promise.all(temporary.splice(0).map((item) => fs.remove(item))));
 
 describe('YYLO launch identity', () => {
+  async function migrationEnvironment(env: Record<string, string>) {
+    const source = await fs.readFile(path.resolve('src/bin/yylo.sh'), 'utf8');
+    const loop = source.match(/while IFS='=' read -r legacy_name _; do[\s\S]*?done < <\(env\)/)?.[0];
+    expect(loop).toBeTruthy();
+    return execa('bash', ['-c', `set -euo pipefail\n${loop}\nprintf '%s' "$YYLO_MODEL"`], {
+      env,
+      reject: false,
+    });
+  }
+
+  it('maps a legacy-only environment value to the canonical name', async () => {
+    const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy' });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('legacy');
+  });
+
+  it('preserves an explicit canonical value over a conflicting legacy value', async () => {
+    const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy', YYLO_MODEL: 'canonical' });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('canonical');
+  });
+
   it('refuses a yy collision with a different yylo installation', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-collision-'));
     temporary.push(root);

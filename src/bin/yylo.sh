@@ -26,7 +26,7 @@ while IFS='=' read -r legacy_name _; do
     legacy_value="${!legacy_name}"
     # Explicit canonical configuration takes precedence over inherited legacy
     # telemetry/configuration during the bounded migration window.
-    if [ "${!canonical_name+x}" != x ]; then continue; fi
+    if [ "${!canonical_name+x}" = x ]; then continue; fi
     printf -v "$canonical_name" '%s' "$legacy_value"
     export "$canonical_name"
 done < <(env)
