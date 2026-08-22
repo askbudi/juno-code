@@ -605,7 +605,7 @@ describe('ypl wrapper', () => {
         delegate: 'preferred',
         marker: 'exact caller value',
         path: callerPath,
-        nodeExecutablePresent: false,
+        nodeExecutablePresent: true,
       });
     } finally {
       await fs.remove(tempDir);
