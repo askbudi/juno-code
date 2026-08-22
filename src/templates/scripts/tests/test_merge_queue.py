@@ -845,6 +845,20 @@ raise SystemExit(2)
         self.assertEqual((reference["source_tip"], reference["target_sha"]), (old_tip, target))
         self.assertTrue(Path(reference["receipt_path"]).is_file())
 
+    def test_target_refresh_ignores_unchanged_absent_admission_tombstones(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"]["changed_paths"].append("docs/renamed-away.txt")
+        state["tasks"]["X"]["changed_paths"].sort()
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        self.advance_target()
+        self.merge_target_into("X")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        self.assertNotIn("docs/renamed-away.txt",
+                         {row["path"] for row in planned["classifications"]})
+
     def test_review_repair_after_target_refresh_excludes_inherited_target_paths(self) -> None:
         self.install_merge_planner_runtime()
         self.commit_feature("X", "src/security/auth.py", "feature\n")

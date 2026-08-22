@@ -4151,7 +4151,9 @@ def target_refresh_plan(controller: Path, task_id: str) -> dict[str, Any]:
         "source": source_tip, "target": target_sha, "refreshed": new_tip}.items()}
     admitted_set = set(admitted)
     original_set = set(original_changed)
-    if not admitted_set.issubset(original_set):
+    unchanged_tombstones = {path for path in admitted_set
+                            if trees["base"].get(path) is None and trees["source"].get(path) is None}
+    if not (admitted_set - unchanged_tombstones).issubset(original_set):
         raise MergeQueueError("original immutable queue path admission drifted")
     inherited_source_paths = original_set - admitted_set
     if any(trees["source"].get(path) != trees["source_target_base"].get(path)
