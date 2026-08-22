@@ -596,6 +596,7 @@ describe('ypl wrapper', () => {
       const result = await execa(path.join(binDir, 'yy'), ['benchmark', 'probe'], {
         cwd: tempDir,
         env: callerEnv,
+        extendEnv: false,
         reject: false,
       });
 
