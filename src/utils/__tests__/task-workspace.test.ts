@@ -49,6 +49,17 @@ describe('Bolt task workspace managed runtime', () => {
       '.juno_task/scripts/metadata_controller.py',
       '.juno_task/scripts/tests/test_controller_registration.py',
       '.juno_task/scripts/tests/test_metadata_controller.py',
+      '.juno_task/scripts/await_blocker.py',
+      '.juno_task/scripts/install_requirements.sh',
+      '.juno_task/scripts/invocation_correlation.py',
+      '.juno_task/scripts/release_gate.py',
+      '.juno_task/scripts/release_train.py',
+      '.juno_task/scripts/target_runtime_provenance.py',
+      '.juno_task/scripts/task_workflow_helper.py',
+      '.juno_task/scripts/tests/test_release_train.py',
+      '.juno_task/scripts/tests/test_risk_policy.py',
+      '.juno_task/scripts/wiki_lint.py',
+      '.juno_task/scripts/worktree_hydration.py',
     ];
     for (const policyPath of policies) {
       const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as { allowed_paths: string[] };
