@@ -127,7 +127,7 @@ try {
 
   const result = {
     schema_version: 'juno_bolt_package_canary.v1',
-    package: `yylo@${JSON.parse(readFileSync(path.join(installed, 'package.json'))).version}`,
+    package: `@yylo/cli@${JSON.parse(readFileSync(path.join(installed, 'package.json'))).version}`,
     package_files: packed.entryCount,
     selected_tests: Object.values(selections).flat().length,
     scenarios: {

@@ -257,7 +257,7 @@ yy migrate runtime-install-rebind \
   --output /tmp/yy-runtime-install-rebind.json
 ```
 
-By default this resolves the exact `yylo@X.Y.Z` registry tarball. For an
+By default this resolves the exact `@yylo/cli@X.Y.Z` registry tarball. For an
 unpublished local RC, pass one previously created npm pack tarball with
 `--artifact /absolute/external/yylo-X.Y.Z.tgz`. The artifact must be a
 regular non-symlink file outside every Git worktree/ancestor. Juno authenticates

@@ -27,7 +27,7 @@ Environment Variables:
     JUNO_MAX_ATTACHMENT_SIZE    Max file size in bytes (default: 50MB)
 
 Version: 1.0.0
-Package: yylo@1.x.x
+Package: @yylo/cli@1.x.x
 Auto-installed by: ScriptInstaller
 """
 

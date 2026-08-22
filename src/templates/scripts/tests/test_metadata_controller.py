@@ -792,9 +792,11 @@ class MetadataControllerTest(unittest.TestCase):
         fake_npm.chmod(fake_npm.stat().st_mode | stat.S_IXUSR)
         original_which = mc.shutil.which
         original_run = mc.run
+        pack_argv: list[str] = []
 
         def install_fixture(argv: list[str], cwd: Path, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if argv and argv[0] == str(fake_npm) and "pack" in argv:
+                pack_argv.extend(argv)
                 destination = Path(argv[argv.index("--pack-destination") + 1])
                 tarball = destination / "yylo-2.0.33-rc.0.10.tgz"
                 tarball.write_bytes(b"exact fixture artifact")
@@ -826,7 +828,11 @@ class MetadataControllerTest(unittest.TestCase):
             mc.shutil.which = original_which
             mc.run = original_run
 
-        expected_runtime = (prefix / "node_modules/@yylo/cli/dist/bin/cli.mjs").resolve()
+        expected_package = (prefix / "node_modules/@yylo/cli").resolve()
+        expected_runtime = (expected_package / "dist/bin/cli.mjs").resolve()
+        self.assertIn("@yylo/cli@2.0.33-rc.0.10", pack_argv)
+        self.assertEqual(json.loads((expected_package / "package.json").read_text()),
+                         {"name": "@yylo/cli", "version": "2.0.33-rc.0.10"})
         self.assertEqual(receipt["runtime"]["executable"], str(expected_runtime))
         self.assertEqual(receipt["operation"], "runtime-install-rebind")
         self.assertRegex(receipt["artifact"]["integrity"], r"^sha512-")

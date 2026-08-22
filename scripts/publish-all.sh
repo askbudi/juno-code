@@ -270,7 +270,7 @@ main() {
   # Publish
   if [[ "$DRY_RUN" == false ]]; then
     echo -e "\n${YELLOW}⚠ About to publish the following package to NPM:${NC}"
-    echo "  • yylo@$new_version"
+    echo "  • @yylo/cli@$new_version"
     echo ""
     read -p "Continue with publishing? (y/N) " -n 1 -r
     echo
@@ -295,16 +295,16 @@ main() {
 
   if [[ "$DRY_RUN" == false ]]; then
     echo -e "\n${GREEN}Successfully published:${NC}"
-    echo "  • yylo@$new_version"
+    echo "  • @yylo/cli@$new_version"
     echo ""
     echo -e "${BLUE}Next steps:${NC}"
     echo "  1. Verify package on npmjs.com"
-    echo "  2. Test installation: npm install -g yylo@$new_version"
+    echo "  2. Test installation: npm install -g @yylo/cli@$new_version"
     echo "  3. Update documentation if needed"
   else
     echo -e "\n${YELLOW}DRY RUN Summary:${NC}"
     echo "  • Would bump version: $VERSION_TYPE"
-    echo "  • Would publish yylo package directly from main directory"
+    echo "  • Would publish @yylo/cli directly from main directory"
     echo "  • Package available in: $ROOT_DIR"
     echo ""
     echo "Run without --dry-run to actually publish"

@@ -2461,7 +2461,7 @@ def runtime_install_rebind(args: argparse.Namespace, policy: dict[str, Any]) -> 
               "runtime_executable": git(root, "config", "--worktree", "--get", "juno.controller.runtimeExecutable", check=False)}
     runtime_file = root / policy["runtime"]["identity_file"]
     before_identity = runtime_file.read_bytes() if runtime_file.exists() else None
-    package_spec = f"yylo@{args.runtime_version}"
+    package_spec = f"@yylo/cli@{args.runtime_version}"
     artifact: dict[str, Any] | None = None
     installation: dict[str, Any] | None = None
     installed_runtime: dict[str, str] | None = None
