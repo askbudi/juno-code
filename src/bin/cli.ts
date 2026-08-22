@@ -1992,7 +1992,7 @@ function configureEnvironment(): void {
 
   // Process YYLO_* variables
   for (const envVar of newEnvVars) {
-    processEnvVar(envVar, 'juno_code_');
+    processEnvVar(envVar, 'yylo_');
   }
 
   // Handle JUNO_INTERACTIVE_FEEDBACK_MODE environment variable (user-requested alternative)

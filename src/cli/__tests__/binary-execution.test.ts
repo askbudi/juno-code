@@ -1111,6 +1111,17 @@ exit 1
       )).toBe('');
     });
 
+    it('maps canonical YYLO environment names to valid options without overriding CLI options', async () => {
+      const result = await executeCLI(['--subagent', 'fixture-provider', '--help'], {
+        env: { YYLO_SUBAGENT: 'pi', YYLO_MODEL: 'ignored-by-explicit-help' },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).not.toContain('unknown option');
+      expect(result.all).not.toContain('--yylo-subagent');
+      expect(result.all).not.toContain('--yylo-model');
+    });
+
     it('fails closed for unknown explicit commands before fixture initialization', async () => {
       const project = path.join(tempDir, 'unknown-explicit-command');
       const configDir = path.join(project, '.juno_task');
