@@ -1732,6 +1732,22 @@ def write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
+def publish_test_ready(path: Path, payload: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        write_all(descriptor, payload.encode("utf-8")); os.fsync(descriptor)
+        os.close(descriptor); descriptor = -1
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
+    finally:
+        if descriptor >= 0: os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
 def durable_unlink(path: Path) -> None:
     path.unlink(missing_ok=True)
     directory_fd = os.open(path.parent, os.O_RDONLY)
@@ -1908,7 +1924,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
             pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_PAUSE_FILE")
             if pause:
                 ready = Path(pause + ".ready"); release = Path(pause + ".release")
-                ready.write_text("ready\n")
+                publish_test_ready(ready, "ready\n")
                 for _ in range(500):
                     if release.exists(): break
                     import time; time.sleep(0.01)
@@ -1985,7 +2001,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                     index_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_INDEX_PAUSE_FILE")
                     if index_pause:
                         ready = Path(index_pause + ".ready"); release = Path(index_pause + ".release")
-                        ready.write_text("ready\n")
+                        publish_test_ready(ready, "ready\n")
                         for _ in range(500):
                             if release.exists(): break
                             import time; time.sleep(0.01)
@@ -2026,7 +2042,7 @@ def policy_migration_apply(args: argparse.Namespace) -> dict[str, Any]:
                         race_pause = os.environ.get("JUNO_METADATA_POLICY_MIGRATION_TEST_ENDPOINT_PAUSE_FILE")
                         if race_pause:
                             ready = Path(race_pause + ".ready"); release = Path(race_pause + ".release")
-                            ready.write_text(relative + "\n")
+                            publish_test_ready(ready, relative + "\n")
                             for _ in range(500):
                                 if release.exists(): break
                                 import time; time.sleep(0.01)
