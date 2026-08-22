@@ -592,6 +592,37 @@ def task_scope_path(controller: Path, task_id: str) -> Path:
     return controller / ".juno_task/task-scopes" / task_id[:2].lower() / f"{task_id}.json"
 
 
+def immutable_task_body(body: bytes) -> bytes:
+    """Return task requirements while excluding lifecycle metadata and response evidence."""
+    marked = re.search(rb"<!-- juno:body:start -->.*?<!-- juno:body:end -->", body, re.DOTALL)
+    if marked:
+        return marked.group(0)
+    text = re.sub(rb"\A---\n.*?\n---\n", b"", body, count=1, flags=re.DOTALL)
+    return re.sub(rb"<!-- juno:response:start -->.*?<!-- juno:response:end -->", b"", text,
+                  flags=re.DOTALL).strip()
+
+
+def compatible_task_revision(controller: Path, task_id: str, body: bytes,
+                             expected_sha256: Any) -> bool:
+    """Permit status/response progress while retaining the frozen authored requirements."""
+    if not isinstance(expected_sha256, str):
+        return False
+    if hashlib.sha256(body).hexdigest() == expected_sha256:
+        return True
+    relative = task_scope_path(controller, task_id).parent.parent.parent / "tasks" / task_id[:2].lower() / f"{task_id}.md"
+    relative_path = relative.relative_to(controller).as_posix()
+    revisions = git(controller, "log", "--format=%H", "--", relative_path, check=False).splitlines()
+    for revision in revisions:
+        result = run(["git", "-C", str(controller), "show", f"{revision}:{relative_path}"],
+                     controller, check=False)
+        if result.returncode:
+            continue
+        historical = result.stdout.encode("utf-8")
+        if hashlib.sha256(historical).hexdigest() == expected_sha256:
+            return immutable_task_body(historical) == immutable_task_body(body)
+    return False
+
+
 def load_task_scope(controller: Path, task_id: str, body: bytes) -> tuple[dict[str, Any], str]:
     value, file_sha = read_json_object(task_scope_path(controller, task_id), f"canonical child scope {task_id}")
     keys = {"schema_version", "task_id", "task_revision_sha256", "lifecycle_status",
@@ -600,8 +631,10 @@ def load_task_scope(controller: Path, task_id: str, body: bytes) -> tuple[dict[s
         "baseline", "selectable_paths", "required_paths", "generated_paths"}
     if (set(value) != keys or value.get("schema_version") != TASK_SCOPE_SCHEMA
             or value.get("task_id") != task_id
-            or value.get("task_revision_sha256") != hashlib.sha256(body).hexdigest()
-            or value.get("lifecycle_status") != task_status(body, task_id)
+            or not compatible_task_revision(controller, task_id, body,
+                                            value.get("task_revision_sha256"))
+            or not isinstance(value.get("lifecycle_status"), str)
+            or not task_status(body, task_id)
             or not isinstance(value.get("umbrella_relations"), dict)
             or set(value["umbrella_relations"]) != relation_keys
             or value["umbrella_relations"].get("owner") is not None
@@ -1602,7 +1635,8 @@ def umbrella_drift(controller: Path, repository: Path, admission: Any,
         except TaskWorkspaceError:
             drift.append({"task_id": child_id, "reason": "canonical_child_unavailable"})
             continue
-        if (hashlib.sha256(body).hexdigest() != binding.get("task_revision_sha256")
+        if (not compatible_task_revision(controller, child_id, body,
+                                         binding.get("task_revision_sha256"))
                 or paths != binding.get("required_paths")
                 or evidence != binding.get("scope_evidence")
                 or stable_sha256(evidence) != binding.get("scope_evidence_sha256")

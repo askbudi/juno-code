@@ -778,6 +778,28 @@ class TaskWorkspaceTests(unittest.TestCase):
         self.assertEqual(status["umbrella_admission_status"]["authority"], "historical_creation")
         self.assertEqual(status["umbrella_admission_status"]["child_revision_drift"], [])
 
+    def test_umbrella_admission_allows_lifecycle_and_response_progress_but_not_requirement_drift(self) -> None:
+        declaration = self.umbrella_fixture()
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/task-scopes")
+        git(self.controller, "commit", "-m", "freeze umbrella requirements")
+        task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        for task_id in ("X", "Y", "Z"):
+            task = task_runtime.task_file(self.controller, task_id)
+            task.write_text(task.read_text().replace("status: todo", "status: done")
+                            + "\n<!-- juno:response:start -->\nvalidated\n<!-- juno:response:end -->\n")
+        git(self.controller, "add", ".juno_task/tasks")
+        git(self.controller, "commit", "-m", "record umbrella completion evidence")
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["umbrella_admission_status"]["child_revision_drift"], [])
+
+        child = task_runtime.task_file(self.controller, "Y")
+        child.write_text(child.read_text().replace("Exact required path: child/one.txt",
+                                                   "Changed authored requirement"))
+        git(self.controller, "add", ".juno_task/tasks")
+        git(self.controller, "commit", "-m", "drift authored requirement")
+        drift = task_runtime.status(self.controller, "X")["umbrella_admission_status"]["child_revision_drift"]
+        self.assertIn({"task_id": "Y", "reason": "canonical_child_unavailable"}, drift)
+
     def test_authoritative_scope_distinguishes_baseline_only_and_selectable_children(self) -> None:
         declaration = self.umbrella_fixture()
         self.write_task_scope("Y", owner="X", selectable=["optional"])
