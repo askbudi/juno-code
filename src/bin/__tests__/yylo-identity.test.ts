@@ -25,9 +25,10 @@ describe('YYLO launch identity', () => {
   });
 
   it('keeps active release guidance on canonical YYLO coordinates', async () => {
-    const [rootReadme, packageReadme] = await Promise.all([
+    const [rootReadme, packageReadme, launchPost] = await Promise.all([
       fs.readFile(path.resolve('../README.md'), 'utf8'),
       fs.readFile(path.resolve('README.md'), 'utf8'),
+      fs.readFile(path.resolve('docs/hackernews_post.md'), 'utf8'),
     ]);
     expect(rootReadme).toContain('https://www.npmjs.com/package/%40yylo%2Fcli');
     expect(rootReadme).not.toContain('https://www.npmjs.com/package/juno-code');
@@ -35,7 +36,9 @@ describe('YYLO launch identity', () => {
     expect(packageReadme).toContain('`--set v0.1.0-rc.1`');
     expect(packageReadme).toContain('npm install -g @yylo/cli@0.1.0-rc.1');
     expect(packageReadme).not.toMatch(/npm install -g yylo(?:\s|`|$)/m);
-    expect(packageReadme).not.toContain('npm install -g juno-code');
+    const releaseGuidance = [rootReadme, packageReadme, launchPost].join('\n');
+    expect(releaseGuidance).not.toMatch(/npm install -g (?:juno-code|yylo)(?:\s|`|$)/m);
+    expect(releaseGuidance).not.toContain('https://www.npmjs.com/package/juno-code');
     expect(packageReadme).not.toContain('release `v2.1.3-rc.1`');
   });
 
