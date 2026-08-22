@@ -7,6 +7,7 @@
   "hydration_workflow": ".juno_task/config/worktree-hydration.yaml",
   "allowed_paths": [
     ".juno_task/config",
+    ".juno_task/managed-assets.json",
     ".juno_task/prompts",
     ".juno_task/scripts/await_blocker.py",
     ".juno_task/scripts/controller_registration.py",

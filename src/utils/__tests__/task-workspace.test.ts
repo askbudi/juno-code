@@ -60,6 +60,7 @@ describe('Bolt task workspace managed runtime', () => {
       '.juno_task/scripts/tests/test_risk_policy.py',
       '.juno_task/scripts/wiki_lint.py',
       '.juno_task/scripts/worktree_hydration.py',
+      '.juno_task/managed-assets.json',
     ];
     for (const policyPath of policies) {
       const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as { allowed_paths: string[] };
