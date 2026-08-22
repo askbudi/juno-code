@@ -370,10 +370,10 @@ Rollback operations are intentionally separate:
 
 These local commands authorize neither push/deploy nor production-board conversion or post-deploy E2E.
 
-Normal stable installation remains explicit and independent:
+The RC installation remains explicit and independent:
 
 ```bash
-npm install -g yylo
+npm install -g @yylo/cli@0.1.0-rc.1
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -652,8 +652,8 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 ## Quick Start
 
 ```bash
-# Install
-npm install -g yylo
+# Install the RC
+npm install -g @yylo/cli@0.1.0-rc.1
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -1748,8 +1748,8 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 ## Get Started Now
 
 ```bash
-# Install globally
-npm install -g yylo
+# Install the RC globally
+npm install -g @yylo/cli@0.1.0-rc.1
 
 # Initialize in your project
 cd your-project
