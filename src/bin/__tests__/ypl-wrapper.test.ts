@@ -630,8 +630,15 @@ describe('ypl wrapper', () => {
       await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), '#!/bin/sh\nexit 91', { mode: 0o755 });
       const callerPath = `${binDir}${path.delimiter}${preferredBin}${path.delimiter}${runtimeBin}${path.delimiter}${process.env.PATH ?? ''}`;
 
+      // Hermetic caller environment: the transparent delegate must observe the
+      // caller's environment exactly, so remove both the canonical and the
+      // bounded-migration legacy Node override. The wrapper canonicalizes
+      // JUNO_CODE_* names before capturing the caller contract, so an ambient
+      // legacy name would otherwise leak the wrapper's owned Node selection
+      // into the delegate and couple this test to how the suite was launched.
       const callerEnv = { ...process.env, PATH: callerPath, DELEGATE_MARKER: 'exact caller value' };
       delete callerEnv.YYLO_NODE_EXECUTABLE;
+      delete callerEnv.JUNO_CODE_NODE_EXECUTABLE;
       const result = await execa(path.join(binDir, 'yy'), ['benchmark', 'probe'], {
         cwd: tempDir,
         env: callerEnv,
@@ -640,11 +647,13 @@ describe('ypl wrapper', () => {
       });
 
       expect(result.exitCode).toBe(0);
+      // A caller that pins no Node override must not observe the wrapper's
+      // internal Node selection in the delegated environment.
       expect(await fs.readJson(record)).toEqual({
         delegate: 'preferred',
         marker: 'exact caller value',
         path: callerPath,
-        nodeExecutablePresent: true,
+        nodeExecutablePresent: false,
       });
     } finally {
       await fs.remove(tempDir);
