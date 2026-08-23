@@ -162,24 +162,24 @@ const operation = process.argv[2]; const payload = JSON.parse(readFileSync(3, 'u
 const input = operation === 'probe' ? payload : payload.invocation;
 let output;
 const terminal = () => ({ dispatch_id: input.dispatch_id, status: 'success', effect: 'completed', runner_run_id: 'packed-' + input.step_id,
-  observed_provider: input.provider, observed_model: input.model, evidence: { outer_session_id: 'outer-packed', nested_session_ids: ['nested-packed'],
+  observed_provider: input.provider, observed_model: input.model, observed_juno_version: input.juno_version, evidence: { outer_session_id: 'outer-packed', nested_session_ids: ['nested-packed'],
   started_at: '2026-08-12T00:00:00.000Z', ended_at: '2026-08-12T00:00:01.000Z', runtime_ms: 1000,
   cost: { completeness: 'complete', usd: 0.5 }, candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
   transcript: 'packed synthetic truth', artifacts: { result: 'ok' } } });
 if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_process_boundary.v1', providers: ['openai-codex'] };
-else if (operation === 'preflight') output = { ok: true };
+else if (operation === 'preflight') output = { ok: true, provider: input.provider, model: input.model.split('/').slice(1).join('/'), juno_version: input.juno_version };
 else if (operation === 'dispatch' || operation === 'resume') output = terminal();
 else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
 else if (operation === 'judge') output = { resolved: true, evidence: 'packed governed judgement' };
 else throw new Error('unsupported operation'); process.stdout.write(JSON.stringify(output));\n`;
   await writeFile(boundaryPath, boundarySource);
   const canonicalBoundary = await realpath(boundaryPath); const boundaryHash = sha256(boundarySource).slice(7);
+  const liveBase = { ...env, YYLO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
   const planArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--dry-run'];
-  const standalonePlan = run(benchmark, planArgs, { cwd: workflowProject, env });
-  const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env });
+  const standalonePlan = run(benchmark, planArgs, { cwd: workflowProject, env: liveBase });
+  const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env: liveBase });
   if (standalonePlan.stdout !== delegatedPlan.stdout || standalonePlan.stderr !== delegatedPlan.stderr) throw new Error('Packed live workflow plans differ');
   await writeFile(join(workflowProject, 'plan.json'), standalonePlan.stdout);
-  const liveBase = { ...env, YYLO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
   const standaloneLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-standalone') };
   const delegatedLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-delegated') };
   const liveOperations = [
