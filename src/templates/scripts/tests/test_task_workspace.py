@@ -4486,6 +4486,89 @@ steps:
         self.assertEqual(tree_states, [True],
                          "repair launch must run against a freshly re-gated dependency tree")
 
+    def test_task_run_repair_gate_failure_consumes_no_repair_budget(self) -> None:
+        self.install_task_run_assets()
+        package = self.repository / "src"
+        (package / ".gitignore").write_text("node_modules/\n")
+        (package / "package.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0",
+             "dependencies": {"left-pad": "1.3.0"}}) + "\n")
+        (package / "package-lock.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+             "packages": {"": {"name": "fixture", "version": "1.0.0",
+                               "dependencies": {"left-pad": "1.3.0"}},
+                          "node_modules/left-pad": {"version": "1.3.0",
+                                                     "resolved": "left-pad",
+                                                     "integrity": "sha512-fixture"}}}) + "\n")
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        git(self.repository, "add", "src/.gitignore", "src/package.json", "src/package-lock.json",
+            str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow with exact lock")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(SCRIPT.read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(FIXTURE_INSTALLING_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        self.write_policy(validation_code=(
+            "import pathlib, sys; "
+            "sys.exit(0 if pathlib.Path('validated.txt').is_file() else 7)"))
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle", ".juno_task/config/task-workspace.json")
+        git(self.controller, "commit", "-m", "hydrated managed task with failing gate")
+
+        def implement(_controller: Path, _task_id: str, rec: dict,
+                      run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            tree = Path(rec["worktree"])
+            before = git(tree, "rev-parse", "HEAD")
+            (tree / "src/managed.txt").write_text("managed\n")
+            git(tree, "add", "src/managed.txt")
+            git(tree, "commit", "-m", "managed implementation")
+            # Corrupt the installed tree and make the authorized rerun
+            # unable to heal it before the repair phase begins.
+            shutil.rmtree(tree / "src/node_modules/left-pad")
+            runner.write_text(FIXTURE_HYDRATION_RUNNER)
+            os.chmod(runner, 0o755)
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(tree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "fixture", "sha256": "0" * 64},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+            with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "installed Node dependency tree"):
+                    task_runtime.managed_task_run(self.controller.resolve(), "X")
+        runs = self.controller / ".juno_task/runtime/lifecycle-runs/task/X"
+        journal = json.loads(sorted(runs.glob("*/journal.json"))[-1].read_text())
+        self.assertEqual(journal["attempts"]["attributable_test_repair"], 0)
+        self.assertEqual(journal["attempts"]["worker_launches"], 1)
+        self.assertEqual(journal["attempts"]["implementation"], 1)
+        self.assertEqual(
+            [item.get("kind") for item in journal["workers"]],
+            ["implementation"],
+            "no pending repair attempt may survive a failed repair gate")
+
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
         self.install_task_run_assets()
         ambiguous = ("---\nid: X\nstatus: todo\n---\n## Context\n"

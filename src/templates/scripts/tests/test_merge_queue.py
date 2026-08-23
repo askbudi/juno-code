@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ sys.path.insert(0, str(SCRIPTS))
 import merge_queue as merge_runtime  # noqa: E402
 import risk_policy as risk_runtime  # noqa: E402
 import task_workspace as task_runtime  # noqa: E402
+import test_task_workspace  # noqa: E402
 try:
     _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
 except task_runtime.TaskWorkspaceError as exc:
@@ -1705,6 +1707,194 @@ raise SystemExit(2)
         self.assertEqual(resumed["state"], "MERGED_THROUGH")
         self.assertEqual(resumed["attempts"]["transitions"], 2)
         self.assertEqual(calls, 2)
+
+    def test_merge_drive_semantic_repair_gates_hydration_before_launch(self) -> None:
+        self.install_merge_drive_assets()
+        package = self.repository / "src"
+        (package / ".gitignore").write_text("node_modules/\n")
+        (package / "package.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0",
+             "dependencies": {"left-pad": "1.3.0"}}) + "\n")
+        (package / "package-lock.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+             "packages": {"": {"name": "fixture", "version": "1.0.0",
+                               "dependencies": {"left-pad": "1.3.0"}},
+                          "node_modules/left-pad": {"version": "1.3.0",
+                                                     "resolved": "left-pad",
+                                                     "integrity": "sha512-fixture"}}}) + "\n")
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        # The fixture repository main worktree is detached; fixture target
+        # files land on the product branch through a temporary worktree.
+        setup = self.root / "hydration-fixture-target"
+        git(self.repository, "worktree", "add", str(setup), "product")
+        for relative in ("src/.gitignore", "src/package.json", "src/package-lock.json",
+                         ".juno_task/config/worktree-hydration.yaml"):
+            source = self.repository / relative
+            target = setup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        git(setup, "add", "src/.gitignore", "src/package.json", "src/package-lock.json",
+            ".juno_task/config/worktree-hydration.yaml")
+        git(setup, "commit", "-m", "fixture hydration workflow with exact lock")
+        git(self.repository, "worktree", "remove", str(setup))
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(task_runtime.SCRIPT.read_bytes()
+                                 if hasattr(task_runtime, "SCRIPT") else
+                                 (Path(__file__).resolve().parents[1]
+                                  / "task_workspace.py").read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(test_task_workspace.FIXTURE_INSTALLING_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+        worktree = Path(task_runtime.read_state(
+            self.controller)["tasks"]["X"]["worktree"])
+        (worktree / "src/security").mkdir(parents=True, exist_ok=True)
+        (worktree / "src/security/repair.py").write_text("unsafe = True\n")
+        git(worktree, "add", "src/security/repair.py")
+        git(worktree, "commit", "-m", "feature X")
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.finish(self.controller.resolve(), "X")
+        merge_runtime.merge_next(self.controller.resolve())
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+        tree_states: list[bool] = []
+
+        def repair(_controller: Path, _task_id: str, record: dict,
+                   run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            tree = Path(record["worktree"])
+            tree_states.append((tree / "src/node_modules/left-pad").is_dir())
+            before = git(tree, "rev-parse", "HEAD")
+            (tree / "src/security/repair.py").write_text("unsafe = False\n")
+            git(tree, "add", "src/security/repair.py")
+            git(tree, "commit", "-m", "repair semantic finding")
+            receipt = run_dir / "managed-agent/receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text(json.dumps({"terminal_result": {"state": "completed"},
+                                           "session_id": "repair"}) + "\n")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(tree, "rev-parse", "HEAD"),
+                    "receipt": {"path": str(receipt),
+                                "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()},
+                    "session_id": "repair"}
+
+        # Corrupt the installed dependency tree after the finding: the repair
+        # launch must run against a freshly healed exact-lock tree.
+        shutil.rmtree(worktree / "src/node_modules/left-pad")
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=repair), \
+             mock.patch.object(task_runtime, "__file__", str(fake_runtime)), \
+             mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            driven = merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(driven["state"], "MERGED_THROUGH")
+        self.assertEqual(tree_states, [True],
+                         "semantic repair must launch against a re-gated healed tree")
+        self.assertEqual(driven["attempts"]["semantic_repairs"], 1)
+
+    def test_merge_drive_semantic_repair_gate_failure_preserves_findings_state(self) -> None:
+        self.install_merge_drive_assets()
+        package = self.repository / "src"
+        (package / ".gitignore").write_text("node_modules/\n")
+        (package / "package.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0",
+             "dependencies": {"left-pad": "1.3.0"}}) + "\n")
+        (package / "package-lock.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+             "packages": {"": {"name": "fixture", "version": "1.0.0",
+                               "dependencies": {"left-pad": "1.3.0"}},
+                          "node_modules/left-pad": {"version": "1.3.0",
+                                                     "resolved": "left-pad",
+                                                     "integrity": "sha512-fixture"}}}) + "\n")
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        # The fixture repository main worktree is detached; fixture target
+        # files land on the product branch through a temporary worktree.
+        setup = self.root / "hydration-fixture-target"
+        git(self.repository, "worktree", "add", str(setup), "product")
+        for relative in ("src/.gitignore", "src/package.json", "src/package-lock.json",
+                         ".juno_task/config/worktree-hydration.yaml"):
+            source = self.repository / relative
+            target = setup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        git(setup, "add", "src/.gitignore", "src/package.json", "src/package-lock.json",
+            ".juno_task/config/worktree-hydration.yaml")
+        git(setup, "commit", "-m", "fixture hydration workflow with exact lock")
+        git(self.repository, "worktree", "remove", str(setup))
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes((Path(__file__).resolve().parents[1]
+                                  / "task_workspace.py").read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(test_task_workspace.FIXTURE_INSTALLING_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+        worktree = Path(task_runtime.read_state(
+            self.controller)["tasks"]["X"]["worktree"])
+        (worktree / "src/security").mkdir(parents=True, exist_ok=True)
+        (worktree / "src/security/repair.py").write_text("unsafe = True\n")
+        git(worktree, "add", "src/security/repair.py")
+        git(worktree, "commit", "-m", "feature X")
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.finish(self.controller.resolve(), "X")
+        merge_runtime.merge_next(self.controller.resolve())
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+        # Corrupt the tree and make the authorized rerun unable to heal it:
+        # the drive fails closed, consumes no semantic-repair budget, and the
+        # task remains exactly in REVIEW_FINDINGS.
+        shutil.rmtree(worktree / "src/node_modules/left-pad")
+        runner.write_text(test_task_workspace.FIXTURE_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        with mock.patch.object(task_runtime, "_launch_task_worker",
+                               side_effect=AssertionError("repair must not launch")), \
+             mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "installed Node dependency tree"):
+                merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "REVIEW_FINDINGS")
 
     def test_merge_drive_interrupted_repair_recovers_once_before_reopen(self) -> None:
         self.install_merge_drive_assets()

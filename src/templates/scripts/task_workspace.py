@@ -2325,7 +2325,7 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
             state = read_state(controller)
             record = state["tasks"].get(task_id)
             if not isinstance(record, dict) or record.get("state") not in {
-                    "WORKING", "HYDRATION_FAILED", "HYDRATING"}:
+                    "WORKING", "HYDRATION_FAILED", "HYDRATING", "REVIEW_FINDINGS"}:
                 raise TaskWorkspaceError(f"task cannot hydrate from {record.get('state') if isinstance(record, dict) else 'missing'}")
             receipt = record.get("creation_receipt", {})
             if stable_sha256(receipt) != record.get("workspace_identity", {}).get("create_receipt_sha256"):
@@ -2339,6 +2339,10 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
             frozen = receipt.get("hydration_workflow")
             if not isinstance(frozen, dict):
                 raise TaskWorkspaceError("task hydration identity is absent")
+            # A queue-owned repair state (REVIEW_FINDINGS) is preserved through
+            # both healing and failure: hydration refreshes evidence, it never
+            # reclassifies the task's lifecycle position.
+            repair_state = record.get("state") if record.get("state") == "REVIEW_FINDINGS" else None
             pending = {**record, "state": "HYDRATING"}
             state["tasks"][task_id] = pending
             write_state(controller, state)
@@ -2349,7 +2353,9 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
                 state = read_state(controller)
                 if state["tasks"].get(task_id) != pending:
                     raise TaskWorkspaceError("task state changed during hydration") from exc
-                failed = {**pending, "state": "HYDRATION_FAILED", "hydration": exc.evidence}
+                failed = {**pending,
+                          "state": repair_state or "HYDRATION_FAILED",
+                          "hydration": exc.evidence}
                 state["tasks"][task_id] = failed
                 write_state(controller, state)
             raise
@@ -2357,7 +2363,7 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
             state = read_state(controller)
             if state["tasks"].get(task_id) != pending:
                 raise TaskWorkspaceError("task state changed during hydration")
-            completed = {**pending, "state": "WORKING", "hydration": evidence}
+            completed = {**pending, "state": repair_state or "WORKING", "hydration": evidence}
             state["tasks"][task_id] = completed
             write_state(controller, state)
         return {**completed, "outcome": "hydrated"}
@@ -5207,6 +5213,14 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     if journal["attempts"]["attributable_test_repair"] >= int(
                             plan["budgets"]["attributable_test_repairs"]):
                         raise TaskWorkspaceError("attributable test repair budget exhausted")
+                    # The implementation commit may have changed the exact-lock
+                    # dependency tree; complete and verify a fresh hydration
+                    # gate BEFORE appending the repair attempt, incrementing
+                    # worker counters, or recording the launch PRE checkpoint,
+                    # so an unrecoverable gate consumes no repair budget and
+                    # leaves no pending repair attempt behind.
+                    repair_gate = _managed_hydration_gate(controller, state_record)
+                    state_record = repair_gate["record"]
                     index = journal["attempts"]["worker_launches"] + 1
                     attempt_dir = run_dir / "workers" / f"attributable-repair-{index:04d}"
                     repair = {"kind": "attributable_test_repair", "index": index,
@@ -5220,12 +5234,6 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     lifecycle_runtime.lifecycle_checkpoint(
                         journal_path, journal, phase=f"attributable-repair-{index}", boundary="PRE",
                         detail={"attempt_dir": repair["attempt_dir"], "before_sha": repair["before_sha"]})
-                    # The implementation commit may have changed the exact-lock
-                    # dependency tree; re-gate against the current record and
-                    # worktree immediately before the repair launch instead of
-                    # reusing the pre-implementation gate result.
-                    repair_gate = _managed_hydration_gate(controller, state_record)
-                    state_record = repair_gate["record"]
                     repaired = _launch_task_worker(
                         controller, task_id, state_record, attempt_dir,
                         Path(journal["frozen_prompts"][1]["path"]), repair=True,

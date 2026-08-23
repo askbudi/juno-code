@@ -5797,6 +5797,13 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     elif state == "REVIEW_FINDINGS_EXHAUSTED":
                         blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
                     elif state == "REVIEW_FINDINGS":
+                        # Gate semantic-repair recovery and launch on verified
+                        # hydration/dependency evidence BEFORE any recovery
+                        # attempt, budget increment, or launch checkpoint; the
+                        # gate heals the exact-lock tree when recoverable and
+                        # preserves the queue-owned REVIEW_FINDINGS state.
+                        semantic_gate = task_runtime._managed_hydration_gate(controller, record)
+                        record = semantic_gate["record"]
                         repair = journal["repairs"][0] if journal["repairs"] else None
                         repaired = (task_runtime._recover_task_worker(record, repair)
                                     if repair and not repair.get("terminal_state") else repair)
@@ -5822,7 +5829,8 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                                 timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
                                 context_bytes=lifecycle_runtime.canonical_bytes({
                                     "candidate_sha": (record.get("queue_attempt") or {}).get("candidate_sha"),
-                                    "risk": (record.get("queue_attempt") or {}).get("risk")})[:32768])
+                                    "risk": (record.get("queue_attempt") or {}).get("risk")})[:32768],
+                                hydration_gate=semantic_gate)
                         assert repair is not None
                         if isinstance(repaired, dict) and "terminal_state" in repaired:
                             repair.update(repaired)

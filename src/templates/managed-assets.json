@@ -353,8 +353,8 @@
       "destination": ".juno_task/scripts/task_workspace.py",
       "installClass": "script",
       "type": "script",
-      "installedSha256": "ad165052061ba8732ac018d2a845e8cda229bb5534f16d6678fedd3d6d2e1a92",
-      "sourceSha256": "ad165052061ba8732ac018d2a845e8cda229bb5534f16d6678fedd3d6d2e1a92"
+      "installedSha256": "3888959053f8db62211ed343dcfb89eaeee265563d8b4c5102689cbbfbce9c28",
+      "sourceSha256": "3888959053f8db62211ed343dcfb89eaeee265563d8b4c5102689cbbfbce9c28"
     },
     {
       "source": "scripts/target_runtime_provenance.py",
@@ -372,7 +372,9 @@
       "source": "scripts/merge_queue.py",
       "destination": ".juno_task/scripts/merge_queue.py",
       "installClass": "script",
-      "type": "script"
+      "type": "script",
+      "installedSha256": "3f54de4168fe6018564f4fb9ded3c03a66618626d96acbc0dec685881c0b831a",
+      "sourceSha256": "3f54de4168fe6018564f4fb9ded3c03a66618626d96acbc0dec685881c0b831a"
     },
     {
       "source": "scripts/release_train.py",
@@ -391,8 +393,8 @@
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
       "installClass": "script",
       "type": "script",
-      "installedSha256": "879347851211264a1b8c7f7cc36cfea9e70bcff00b4dac9753a4dd1446395c7c",
-      "sourceSha256": "879347851211264a1b8c7f7cc36cfea9e70bcff00b4dac9753a4dd1446395c7c"
+      "installedSha256": "075e01bf7ad41a8427b35de93cfb57c6ecd36bcbce1abd764b5200e46ac83d39",
+      "sourceSha256": "075e01bf7ad41a8427b35de93cfb57c6ecd36bcbce1abd764b5200e46ac83d39"
     },
     {
       "source": "scripts/tests/test_integration_workspace.py",
@@ -405,8 +407,8 @@
       "destination": ".juno_task/scripts/tests/test_merge_queue.py",
       "installClass": "script",
       "type": "script",
-      "installedSha256": "cdfb08af37e3407b3137e4e77d0d3d6f3960c015e508f507d66ff1fd48e03d72",
-      "sourceSha256": "cdfb08af37e3407b3137e4e77d0d3d6f3960c015e508f507d66ff1fd48e03d72"
+      "installedSha256": "b82ee901a0037e49dbd3da62bde3575747776ece36ea97b420492a7461c0637f",
+      "sourceSha256": "b82ee901a0037e49dbd3da62bde3575747776ece36ea97b420492a7461c0637f"
     },
     {
       "source": "scripts/task_workflow_helper.py",
