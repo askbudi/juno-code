@@ -157,14 +157,22 @@ describe('ypl wrapper', () => {
     try {
       const binDir = path.join(tempDir, 'bin');
       await fs.ensureDir(binDir);
-      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
-      await fs.chmod(path.join(binDir, 'yy'), 0o755);
+      // Complete fixture installation: the canonical yylo peer sits beside yy
+      // and yy resolves to it, so an ambient global @yylo/cli installation
+      // cannot turn this fixture into a refused mixed installation.
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo'));
+      await fs.chmod(path.join(binDir, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(binDir, 'yy'));
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
         `// YYLO_PREFLIGHT_ONLY\nif (process.env.YYLO_PREFLIGHT_ONLY !== '1') console.log(JSON.stringify(process.argv.slice(2)));\n`,
       );
 
-      const result = await execa(path.join(binDir, 'yy'), args, { cwd: tempDir, reject: false });
+      const result = await execa(path.join(binDir, 'yy'), args, {
+        cwd: tempDir,
+        reject: false,
+        env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
+      });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(args);
     } finally {
@@ -179,15 +187,20 @@ describe('ypl wrapper', () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       await fs.ensureDir(binDir);
       await fs.ensureDir(scriptsDir);
-      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
-      await fs.chmod(path.join(binDir, 'yy'), 0o755);
+      // Same complete fixture installation invariant as the free-form tests:
+      // yy resolves to its canonical yylo peer inside the fixture bin.
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo'));
+      await fs.chmod(path.join(binDir, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(binDir, 'yy'));
       await fs.writeFile(path.join(binDir, 'cli.mjs'), 'unused\n');
       await fs.writeFile(
         path.join(scriptsDir, 'bootstrap.sh'),
         '#!/usr/bin/env bash\nprintf "cwd=%s\\n" "$PWD"\nprintf "arg=%s\\n" "$@"\n',
       );
       const result = await execa(path.join(binDir, 'yy'), ['pi', '--cwd', tempDir, 'prompt'], {
-        cwd: tempDir, reject: false,
+        cwd: tempDir,
+        reject: false,
+        env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain(`cwd=${await fs.realpath(tempDir)}`);
@@ -233,9 +246,10 @@ describe('ypl wrapper', () => {
         path.join(PROJECT_ROOT, 'src/templates/scripts/controller_resolver.py'),
         path.join(packagedScripts, 'controller_resolver.py'),
       );
-      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yylo'));
+      await fs.chmod(path.join(launcherBin, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
-      await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
       await fs.writeFile(
         path.join(integration, '.juno_task', 'scripts', 'controller_resolver.py'),
         `#!/usr/bin/env python3\nfrom pathlib import Path\nPath(${JSON.stringify(untrustedResolverMarker)}).write_text('ran')\nraise SystemExit(97)\n`,
@@ -245,6 +259,7 @@ describe('ypl wrapper', () => {
       const result = await execa(path.join(launcherBin, 'yy'), ['task', 'preflight', 'T1'], {
         cwd: path.join(integration, 'nested', 'directory'),
         reject: false,
+        env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
@@ -261,6 +276,7 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--local', '--unset-all', 'juno.controller.branch'], { cwd: integration });
       const missingRegistration = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: path.join(integration, 'nested', 'directory'), reject: false,
+        env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(missingRegistration.exitCode).toBe(2);
       expect(missingRegistration.stdout).toBe('');
@@ -275,6 +291,7 @@ describe('ypl wrapper', () => {
 
       const leadingOption = await execa(path.join(launcherBin, 'yy'), ['--quiet', 'kanban', 'list'], {
         cwd: path.join(integration, 'nested', 'directory'), reject: false,
+        env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(leadingOption.exitCode).toBe(0);
       expect(JSON.parse(leadingOption.stdout).args).toEqual(['--quiet', 'kanban', 'list']);
@@ -283,6 +300,7 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--local', '--add', 'juno.controller.path', controller], { cwd: integration });
       const ambiguous = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: path.join(integration, 'nested'), reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(ambiguous.exitCode).toBe(2);
       expect(ambiguous.stdout).toBe('');
@@ -293,6 +311,7 @@ describe('ypl wrapper', () => {
 
       const localController = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: controller, reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(localController.exitCode).toBe(98);
       expect(localController.stdout).toBe('');
@@ -300,6 +319,7 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--worktree', 'juno.controller.runtimeExecutable', path.join(controller, 'missing-runtime.mjs')], { cwd: controller });
       const invalidRuntime = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
         cwd: path.join(integration, 'nested'), reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(invalidRuntime.exitCode).toBe(2);
       expect(invalidRuntime.stderr).toContain('registered controller runtime is missing or stale');
@@ -316,6 +336,7 @@ describe('ypl wrapper', () => {
       );
       const staleRuntime = await execa(path.join(launcherBin, 'yy'), ['integration', 'sync'], {
         cwd: path.join(integration, 'nested'), reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(staleRuntime.exitCode).toBe(2);
       expect(staleRuntime.stderr).toContain('selected controller runtime cannot be proven to support this explicit command');
@@ -328,6 +349,7 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--worktree', '--unset-all', 'juno.workspace.role'], { cwd: integration });
       const invalidRole = await execa(path.join(launcherBin, 'yy'), ['task', 'status', 'T1'], {
         cwd: path.join(integration, 'nested'), reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(invalidRole.exitCode).toBe(2);
       expect(invalidRole.stderr).toContain('no persisted workspace role registration');
@@ -385,8 +407,10 @@ describe('ypl wrapper', () => {
         );
         const launcher = path.join(launcherBin, 'yy');
         const launcherCli = path.join(launcherBin, 'cli.mjs');
-        await fs.copy(YYLO_SOURCE, launcher);
-        await fs.chmod(launcher, 0o755);
+        // Complete fixture installation: yy resolves to its canonical yylo peer.
+        await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yylo'));
+        await fs.chmod(path.join(launcherBin, 'yylo'), 0o755);
+        await fs.symlink('yylo', launcher);
         await fs.writeFile(
           launcherCli,
           `// YYLO_PREFLIGHT_ONLY\nif (process.argv.includes('--version')) console.log('2.1.2');\n`,
@@ -394,6 +418,7 @@ describe('ypl wrapper', () => {
 
         const result = await execa(launcher, ['task', operation, 'T1'], {
           cwd: task, reject: false,
+          env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
         });
         expect(result.exitCode).toBe(2);
         expect(result.stderr).toContain('selected controller runtime cannot be proven');
@@ -466,11 +491,18 @@ describe('ypl wrapper', () => {
           `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
         ].join('\n'),
       );
-      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
+      // Complete fixture installation: yy resolves to its canonical yylo peer
+      // inside the launcher bin so the wrapper accepts the fixture regardless
+      // of an ambient global @yylo/cli installation.
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yylo'));
+      await fs.chmod(path.join(launcherBin, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
-      await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
 
-      const result = await execa(path.join(launcherBin, 'yy'), args, { cwd: integration, reject: false });
+      const result = await execa(path.join(launcherBin, 'yy'), args, {
+        cwd: integration, reject: false,
+        env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
+      });
 
       expect(result.exitCode).toBe(2);
       if (operation === null) {
@@ -517,13 +549,18 @@ describe('ypl wrapper', () => {
           `print(json.dumps({'path': ${JSON.stringify(controller)}, 'current_root': ${JSON.stringify(integration)}, 'role': 'integration-owner', 'expected_branch': 'refs/heads/controller', 'source': 'registration'}))`,
         ].join('\n'),
       );
-      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yy'));
+      // Complete fixture installation: yy resolves to its canonical yylo peer
+      // inside the launcher bin so the wrapper accepts the fixture regardless
+      // of an ambient global @yylo/cli installation.
+      await fs.copy(YYLO_SOURCE, path.join(launcherBin, 'yylo'));
+      await fs.chmod(path.join(launcherBin, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(launcherBin, 'yy'));
       await fs.writeFile(path.join(launcherBin, 'cli.mjs'), 'process.exit(98)\n');
-      await fs.chmod(path.join(launcherBin, 'yy'), 0o755);
 
       const result = await execa(path.join(launcherBin, 'yy'), ['task', 'finish', 'T1'], {
         cwd: integration,
         reject: false,
+      env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
       });
       expect(result.exitCode).toBe(0);
       expect(await fs.readFile(runtimeMarker, 'utf8')).toBe('orchestration');
@@ -566,8 +603,10 @@ describe('ypl wrapper', () => {
       const scriptsDir = path.join(tempDir, '.juno_task', 'scripts');
       const record = path.join(tempDir, 'record.json');
       await Promise.all([binDir, preferredBin, runtimeBin, scriptsDir].map((directory) => fs.ensureDir(directory)));
-      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yy'));
-      await fs.chmod(path.join(binDir, 'yy'), 0o755);
+      // Complete fixture installation: yy resolves to its canonical yylo peer.
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo'));
+      await fs.chmod(path.join(binDir, 'yylo'), 0o755);
+      await fs.symlink('yylo', path.join(binDir, 'yy'));
       await fs.writeFile(
         path.join(binDir, 'cli.mjs'),
         [
@@ -589,7 +628,7 @@ describe('ypl wrapper', () => {
       await fs.writeFile(path.join(preferredBin, 'juno-benchmark'), '#!/bin/sh\nprintf preferred', { mode: 0o755 });
       await fs.writeFile(path.join(runtimeBin, 'juno-benchmark'), '#!/bin/sh\nprintf competitor', { mode: 0o755 });
       await fs.writeFile(path.join(scriptsDir, 'bootstrap.sh'), '#!/bin/sh\nexit 91', { mode: 0o755 });
-      const callerPath = `${preferredBin}${path.delimiter}${runtimeBin}${path.delimiter}${process.env.PATH ?? ''}`;
+      const callerPath = `${binDir}${path.delimiter}${preferredBin}${path.delimiter}${runtimeBin}${path.delimiter}${process.env.PATH ?? ''}`;
 
       const callerEnv = { ...process.env, PATH: callerPath, DELEGATE_MARKER: 'exact caller value' };
       delete callerEnv.YYLO_NODE_EXECUTABLE;
@@ -686,14 +725,21 @@ describe('ypl wrapper', () => {
     try {
       const binDir = path.join(tempDir, 'bin');
       await fs.ensureDir(binDir);
+      // Complete fixture installation: the canonical yylo peer sits beside yy.
+      await fs.copy(YYLO_SOURCE, path.join(binDir, 'yylo'));
+      await fs.chmod(path.join(binDir, 'yylo'), 0o755);
       const wrapper = path.join(binDir, fileName);
-      await fs.copy(YYLO_SOURCE, wrapper);
-      await fs.chmod(wrapper, 0o755);
+      if (fileName === 'yy') {
+        await fs.symlink('yylo', wrapper);
+      }
       await fs.writeFile(path.join(binDir, 'cli.mjs'), "console.log(process.argv0)\n");
       const result = await execa(wrapper, ['--version'], {
         cwd: tempDir,
         reject: false,
-        env: { YYLO_LAUNCH_SURFACE: 'ypl' },
+        env: {
+          YYLO_LAUNCH_SURFACE: 'ypl',
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        },
       });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe(launchSurface);
