@@ -1180,11 +1180,18 @@ async function ensureAndLoadProjectEnv(
   }
 
   // Load existing env files in both modes; read-only startup merely refuses to
-  // manufacture or migrate them.
-  if (await fs.pathExists(defaultEnvPath)) {
+  // manufacture or migrate them. A legacy-only project without an explicit
+  // custom path remains readable, while the canonical file always wins.
+  const defaultEnvExists = await fs.pathExists(defaultEnvPath);
+  let loadedPrimaryPath: string | null = null;
+  if (defaultEnvExists) {
     await loadEnvFileIntoProcess(defaultEnvPath);
+    loadedPrimaryPath = defaultEnvPath;
+  } else if (configuredEnvPathRaw === DEFAULT_PROJECT_ENV_FILE && await fs.pathExists(legacyEnvPath)) {
+    await loadEnvFileIntoProcess(legacyEnvPath);
+    loadedPrimaryPath = legacyEnvPath;
   }
-  if (configuredEnvPath !== defaultEnvPath && (await fs.pathExists(configuredEnvPath))) {
+  if (configuredEnvPath !== loadedPrimaryPath && (await fs.pathExists(configuredEnvPath))) {
     await loadEnvFileIntoProcess(configuredEnvPath);
   }
 }

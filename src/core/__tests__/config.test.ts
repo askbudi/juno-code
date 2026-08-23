@@ -1167,6 +1167,40 @@ logLevel: info
       }
     });
 
+    it('loads a legacy-only env file read-only without migrating project bytes', async () => {
+      const configPath = path.join(tempDir, '.juno_task', 'config.json');
+      const legacyEnvPath = path.join(tempDir, '.env.juno');
+      const canonicalEnvPath = path.join(tempDir, '.env.yylo');
+      await fs.ensureDir(path.dirname(configPath));
+      await fs.writeJson(configPath, { defaultSubagent: 'pi' });
+      await fs.writeFile(legacyEnvPath, 'YYLO_LOG_LEVEL=debug\n');
+      const beforeConfig = await fs.readFile(configPath);
+      const beforeLegacy = await fs.readFile(legacyEnvPath);
+
+      process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '0';
+      try {
+        const config = await loadConfig({ baseDir: tempDir });
+        expect(config.logLevel).toBe('debug');
+        expect(await fs.readFile(configPath)).toEqual(beforeConfig);
+        expect(await fs.readFile(legacyEnvPath)).toEqual(beforeLegacy);
+        expect(await fs.pathExists(canonicalEnvPath)).toBe(false);
+      } finally {
+        delete process.env.YYLO_PROJECT_BOOTSTRAP_WRITES;
+      }
+    });
+
+    it('prefers the canonical env file over a conflicting legacy file', async () => {
+      await fs.writeFile(path.join(tempDir, '.env.juno'), 'YYLO_LOG_LEVEL=error\n');
+      await fs.writeFile(path.join(tempDir, '.env.yylo'), 'YYLO_LOG_LEVEL=debug\n');
+
+      process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '0';
+      try {
+        expect((await loadConfig({ baseDir: tempDir })).logLevel).toBe('debug');
+      } finally {
+        delete process.env.YYLO_PROJECT_BOOTSTRAP_WRITES;
+      }
+    });
+
     it('should load env values from .env.yylo before reading environment mapping', async () => {
       await fs.writeFile(path.join(tempDir, '.env.yylo'), 'YYLO_DEFAULT_MAX_ITERATIONS=12\n');
 
