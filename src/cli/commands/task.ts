@@ -68,8 +68,7 @@ export async function selectTaskWorkspaceRuntime(
   const protocol = [
     'TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"',
     'def hydrate(controller:',
-    'def managed_task_run(controller:',
-    '"start", "run", "status", "hydrate", "preflight", "finish"',
+    '"start", "status", "hydrate", "preflight", "finish"',
   ];
   if (!protocol.every((marker) => source.includes(marker))) {
     throw new Error('Packaged task-hydrate recovery engine is incompatible; refusing stale controller fallback.');
