@@ -25,7 +25,18 @@ from typing import Any
 
 SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
-REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v2"
+REVIEW_FINDING_IMPACT_CATEGORIES = {
+    "bounded_product_defect", "maintainability", "clarity",
+    "supported_install", "supported_runtime", "supported_config",
+    "core_contract", "product_breaking", "security_privacy",
+    "destructive_data_loss",
+}
+BLOCKING_REVIEW_IMPACTS = {
+    "supported_install", "supported_runtime", "supported_config",
+    "core_contract", "product_breaking", "security_privacy",
+    "destructive_data_loss",
+}
 TERMINAL_RESULT_SCHEMA = "juno_managed_agent_terminal_result.v1"
 TERMINAL_STATES = {"completed", "blocked", "incomplete", "failed"}
 QUEUE_STATE_PATH = ".juno_task/state/tasks.json"
@@ -123,7 +134,7 @@ LEGACY_METADATA_POLICY = b'''{
   }
 }
 '''
-LEGACY_METADATA_POLICY_SHA256 = "d3137a8046b1ac5dd8f851d4893547205a2d243eaf783b6aa1baa6cf3eebdd4d"
+LEGACY_METADATA_POLICY_SHA256 = "ad2c1214fe89c67bd8d3e9646d939c4199b585c1d5ccbffdaf1ef87c43236693"
 LEGACY_METADATA_CONTROLLER_BRANCH = "refs/heads/juno/controller-metadata-2.1"
 LEGACY_METADATA_PRODUCT_REF = "refs/heads/juno-mono-002"
 
@@ -142,7 +153,7 @@ def _exact_json_island(data: bytes) -> Optional[dict[str, Any]]:
     """
     text = data.decode("utf-8", errors="replace")
     required = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-                "sequence", "verdict", "findings"}
+                "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
     decoder = json.JSONDecoder()
     candidates: list[dict[str, Any]] = []
     for index in (i for i, ch in enumerate(text) if ch == "{"):
@@ -168,7 +179,7 @@ def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, 
         if value is None:
             raise RunnerError("structured review result is not exact JSON") from None
     keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-            "sequence", "verdict", "findings"}
+            "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
     if (not isinstance(value, dict) or set(value) != keys
             or value.get("schema_version") != REVIEW_RESULT_SCHEMA
             or value.get("candidate_sha") != binding.get("candidate_sha")
@@ -178,15 +189,38 @@ def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, 
             or isinstance(value.get("sequence"), bool)
             or value.get("sequence") != binding.get("sequence")
             or value.get("verdict") not in {"pass", "findings"}
+            or not isinstance(value.get("truncated"), bool)
+            or not isinstance(value.get("omitted_finding_count"), int)
+            or isinstance(value.get("omitted_finding_count"), bool)
+            or value["omitted_finding_count"] < 0
+            or value["truncated"] != (value["omitted_finding_count"] > 0)
             or not isinstance(value.get("findings"), list) or len(value["findings"]) > 32):
         raise RunnerError("structured review result schema/binding is invalid")
-    finding_keys = {"code", "severity", "summary"}
+    finding_keys = {"code", "severity", "summary", "paths", "symbols", "evidence",
+                    "impact", "failure_condition", "acceptance_condition", "impact_categories"}
     for finding in value["findings"]:
-        if (not isinstance(finding, dict) or set(finding) != finding_keys
+        if not isinstance(finding, dict):
+            raise RunnerError("structured review finding is malformed or unbounded")
+        bounded_lists = (isinstance(finding.get("paths"), list)
+                         and 1 <= len(finding["paths"]) <= 16
+                         and all(isinstance(item, str) and item and len(item.encode()) <= 256
+                                 for item in finding["paths"])
+                         and isinstance(finding.get("symbols"), list)
+                         and len(finding["symbols"]) <= 16
+                         and all(isinstance(item, str) and item and len(item.encode()) <= 256
+                                 for item in finding["symbols"])
+                         and isinstance(finding.get("impact_categories"), list)
+                         and 1 <= len(finding["impact_categories"]) <= 4
+                         and len(set(finding["impact_categories"])) == len(finding["impact_categories"])
+                         and set(finding["impact_categories"]) <= REVIEW_FINDING_IMPACT_CATEGORIES)
+        if (set(finding) != finding_keys
                 or not isinstance(finding.get("code"), str) or not finding["code"]
                 or finding.get("severity") not in {"low", "medium", "high", "critical"}
-                or not isinstance(finding.get("summary"), str) or not finding["summary"]
-                or len(finding["code"].encode()) > 64 or len(finding["summary"].encode()) > 512):
+                or not bounded_lists or any(not isinstance(finding.get(field), str)
+                    or not finding[field] or len(finding[field].encode()) > 1024
+                    for field in ("summary", "evidence", "impact", "failure_condition",
+                                  "acceptance_condition"))
+                or len(finding["code"].encode()) > 64):
             raise RunnerError("structured review finding is malformed or unbounded")
     if (value["verdict"] == "pass") != (not value["findings"]):
         raise RunnerError("structured review verdict/findings are contradictory")
@@ -214,18 +248,25 @@ def review_prompt_contract(binding: dict[str, Any]) -> bytes:
                 "candidate_sha": binding["candidate_sha"],
                 "policy_identity": binding["policy_identity"],
                 "reviewer_role": binding["reviewer_role"], "sequence": binding["sequence"],
-                "verdict": "pass", "findings": []}
+                "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                "findings": []}
     return ("\n\n# Managed structured review output\n"
+            "Review the complete frozen candidate before answering. Return every independently "
+            "actionable supported finding; do not stop after the first or after a blocker. "
             "Return exactly one JSON object with these top-level fields and no unknown fields: "
-            "schema_version, candidate_sha, policy_identity, reviewer_role, sequence, verdict, findings.\n"
-            "Each findings item must contain exactly {code, severity, summary}. "
-            "severity must be one of low, medium, high, critical; code must be 1-64 UTF-8 bytes; "
-            "summary must be 1-512 UTF-8 bytes; findings must contain at most 32 items.\n"
-            "PASS: set verdict to pass and findings to []. "
-            "FAIL: set verdict to findings and include 1-32 valid finding items.\n"
-            "Emit no markdown, code fences, commentary, or text outside the JSON object. "
-            "Terminal whitespace is allowed. Example PASS object:\n"
-            + canonical(contract).decode()).encode()
+            "schema_version, candidate_sha, policy_identity, reviewer_role, sequence, verdict, "
+            "truncated, omitted_finding_count, findings.\n"
+            "Each finding must contain exactly {code, severity, summary, paths, symbols, evidence, "
+            "impact, failure_condition, acceptance_condition, impact_categories}. code is its stable "
+            "finding ID. severity is low|medium|high|critical. impact_categories contains 1-4 of: "
+            + ", ".join(sorted(REVIEW_FINDING_IMPACT_CATEGORIES)) + ". paths contains 1-16 entries; "
+            "symbols contains 0-16 entries; findings contains at most 32 items. Combine duplicate "
+            "symptoms sharing one root cause and keep independently repairable defects separate.\n"
+            "Set truncated=true and omitted_finding_count>0 whenever the bound prevents a complete "
+            "response; never represent a partial review as PASS. Set both to false/0 otherwise. "
+            "PASS is allowed only after complete inspection with findings=[]. A finding verdict has "
+            "1-32 items. Emit no markdown, fences, commentary, or text outside the JSON object. "
+            "Example PASS object:\n" + canonical(contract).decode()).encode()
 
 
 def now() -> str:
@@ -317,8 +358,11 @@ def review_binding(args: argparse.Namespace, identity: dict[str, Any]) -> dict[s
                 or not isinstance(prior.get("session_id"), str) or not prior["session_id"]
                 or not isinstance(prior.get("completed_at"), str)):
             raise RunnerError("predecessor is not a canonical Reviewer A receipt")
-        if receipt_review_result(prior, prior_binding).get("verdict") != "pass":
-            raise RunnerError("Reviewer B requires an exact response-derived Reviewer A PASS")
+        prior_result = receipt_review_result(prior, prior_binding)
+        if (prior_result.get("truncated")
+                or any(set(finding["impact_categories"]) & BLOCKING_REVIEW_IMPACTS
+                       for finding in prior_result["findings"])):
+            raise RunnerError("Reviewer B requires Reviewer A to have no blocking finding")
         normalized_predecessor = {
             "receipt_sha256": predecessor["receipt_sha256"], "tool_id": prior["tool_id"],
             "session_id": prior["session_id"], "completed_at": prior["completed_at"],

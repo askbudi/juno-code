@@ -2141,6 +2141,129 @@ def read_kanban_task(controller: Path, task_id: str) -> dict[str, Any]:
     return payload
 
 
+def consolidate_review_findings(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate normalized findings while retaining every reviewer receipt."""
+    consolidated: dict[str, dict[str, Any]] = {}
+    severity_rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    for review in reviews:
+        if not isinstance(review, dict) or not isinstance(review.get("findings"), list):
+            raise MergeQueueError("verified review findings projection is malformed")
+        runner = review.get("managed_runner")
+        if not isinstance(runner, dict):
+            raise MergeQueueError("verified review provenance is missing")
+        provenance = {"reviewer": review.get("reviewer"), "sequence": review.get("sequence"),
+                      "receipt_path": runner.get("receipt_path"),
+                      "receipt_sha256": runner.get("receipt_sha256"),
+                      "review_result_sha256": review.get("review_result_sha256")}
+        for finding in review["findings"]:
+            digest_value = finding.get("finding_digest") if isinstance(finding, dict) else None
+            if not isinstance(digest_value, str) or not re.fullmatch(r"[0-9a-f]{64}", digest_value):
+                raise MergeQueueError("verified finding identity is malformed")
+            existing = consolidated.get(digest_value)
+            if existing is None:
+                consolidated[digest_value] = {**finding, "provenance": [provenance]}
+                continue
+            if severity_rank[finding["normalized_severity"]] > severity_rank[existing["normalized_severity"]]:
+                existing["normalized_severity"] = finding["normalized_severity"]
+                existing["blocking"] = finding["blocking"]
+            if provenance not in existing["provenance"]:
+                existing["provenance"].append(provenance)
+    return [consolidated[key] for key in sorted(consolidated)]
+
+
+def persist_advisory_followups(controller: Path, task_id: str, candidate_sha: str,
+                               policy_identity: str,
+                               reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Create or verify one ordinary Kanban task for each exact advisory identity."""
+    wrapper = controller / ".juno_task/scripts/kanban.sh"
+    if not wrapper.is_file():
+        raise MergeQueueError("canonical Kanban wrapper is missing for advisory persistence")
+    created: list[dict[str, Any]] = []
+    for finding in consolidate_review_findings(reviews):
+        if finding["blocking"]:
+            continue
+        advisory_identity = digest({"task_id": task_id, "candidate_sha": candidate_sha,
+                                    "policy_identity": policy_identity,
+                                    "finding_digest": finding["finding_digest"]})
+        search = subprocess.run([
+            str(wrapper), "search", "--field", f"advisory_identity={advisory_identity}",
+            "--limit", "2", "--projection", "full", "-f", "json",
+        ], cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+        if search.returncode:
+            raise MergeQueueError(search.stderr.strip() or "advisory lookup failed")
+        try:
+            payload = json.loads(search.stdout)
+            matches = payload.get("tasks", []) if isinstance(payload, dict) else payload
+        except json.JSONDecodeError as exc:
+            raise MergeQueueError("advisory lookup is not valid JSON") from exc
+        if not isinstance(matches, list) or len(matches) > 1:
+            raise MergeQueueError("advisory identity is ambiguous")
+        if matches:
+            task = matches[0]
+            if (not isinstance(task, dict) or task.get("fields", {}).get("advisory_identity") != advisory_identity
+                    or task.get("fields", {}).get("source_candidate_sha") != candidate_sha
+                    or task.get("fields", {}).get("finding_digest") != finding["finding_digest"]):
+                raise MergeQueueError("existing advisory persistence evidence mismatched")
+            created.append({"task_id": task.get("id"), "advisory_identity": advisory_identity,
+                            "outcome": "reused"})
+            continue
+        body = (f"Source review advisory for [task_id]{task_id}[/task_id].\n\n"
+                f"Candidate: `{candidate_sha}`\nPolicy: `{policy_identity}`\n"
+                f"Finding policy: `{finding['finding_policy_revision']}`\n"
+                f"Finding digest: `{finding['finding_digest']}`\n"
+                f"Severity: `{finding['normalized_severity']}`\n"
+                f"Affected paths: {', '.join(finding['paths'])}\n"
+                f"Evidence: {finding['evidence']}\nImpact: {finding['impact']}\n"
+                f"Failure condition: {finding['failure_condition']}\n"
+                f"Acceptance condition: {finding['acceptance_condition']}\n"
+                f"Reviewer receipts: `{canonical(finding['provenance']).strip()}`\n")
+        receipt_path = (controller / ".juno_task/runtime/merge-queue/advisories" / task_id
+                        / candidate_sha / f"{advisory_identity}.json")
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        if receipt_path.exists():
+            raise MergeQueueError("advisory receipt exists without canonical task readback")
+        fd, body_path = tempfile.mkstemp(prefix=".advisory-", dir=receipt_path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(body)
+            result = subprocess.run([
+                str(wrapper), "create", "--title", f"[REVIEW_ADVISORY] {finding['code']}",
+                "--body-file", body_path, "--status", "backlog",
+                "--tags", "REVIEW_ADVISORY", "YY_MERGE", finding["normalized_severity"].upper(),
+                "--related-tasks", task_id,
+                "--field", f"advisory_identity={json.dumps(advisory_identity)}",
+                "--field", f"source_candidate_sha={json.dumps(candidate_sha)}",
+                "--field", f"policy_identity={json.dumps(policy_identity)}",
+                "--field", f"finding_digest={json.dumps(finding['finding_digest'])}",
+                "--receipt-file", str(receipt_path),
+            ], cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+        finally:
+            Path(body_path).unlink(missing_ok=True)
+        if result.returncode:
+            raise MergeQueueError(result.stderr.strip() or "advisory persistence failed")
+        try:
+            mutation = json.loads(result.stdout)
+            advisory_task_id = mutation.get("id") if isinstance(mutation, dict) else None
+        except json.JSONDecodeError:
+            advisory_task_id = None
+        # Mutation output differs across supported Kanban projections; the
+        # exact field lookup is the authoritative readback.
+        verify = subprocess.run([
+            str(wrapper), "search", "--field", f"advisory_identity={advisory_identity}",
+            "--limit", "2", "--projection", "full", "-f", "json",
+        ], cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+        if verify.returncode:
+            raise MergeQueueError("created advisory readback failed")
+        verify_payload = json.loads(verify.stdout)
+        verify_matches = verify_payload.get("tasks", []) if isinstance(verify_payload, dict) else verify_payload
+        if not isinstance(verify_matches, list) or len(verify_matches) != 1:
+            raise MergeQueueError("created advisory persistence cannot be proven")
+        advisory_task_id = verify_matches[0].get("id") or advisory_task_id
+        created.append({"task_id": advisory_task_id, "advisory_identity": advisory_identity,
+                        "outcome": "created", "receipt": evidence_reference(receipt_path)})
+    return created
+
+
 def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str, Any]:
     task_id, candidate = attempt["task_id"], attempt["candidate_sha"]
     task = read_kanban_task(controller, task_id)
@@ -3821,8 +3944,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                     step.get("reference"), reviewer, sequence, candidate_sha,
                     plan["policy_identity"], plan,
                 )
-                if compact != step.get("verified") or compact["verdict"] != "pass" \
-                        or compact["finding_count"]:
+                if compact != step.get("verified") or compact["blocking_count"]:
                     raise MergeQueueError("stored reviewer continuation evidence is no longer valid")
                 reviews.append(step["reference"])
                 predecessor = Path(step["reference"]["runner_receipt_path"])
@@ -3839,7 +3961,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                     reference, reviewer, sequence, candidate_sha,
                     plan["policy_identity"], plan,
                 )
-                if compact["verdict"] != "pass" or compact["finding_count"]:
+                if compact["blocking_count"]:
                     break
                 step = {"sequence": sequence, "reviewer": reviewer,
                         "reference": reference, "verified": compact}
@@ -3877,6 +3999,12 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
             reference = evidence_reference(path)
             verified = risk_runtime.verify_candidate_evidence(
                 policy, request, risk_flags(record), reference)
+            compact_reviews = [risk_runtime._compact_review(
+                review, plan["reviewer_sequence"][index], index + 1, candidate_sha,
+                plan["policy_identity"], plan) for index, review in enumerate(reviews)]
+            advisory_followups = persist_advisory_followups(
+                controller, task_id, candidate_sha, plan["policy_identity"], compact_reviews)
+            attempt = {**attempt, "advisory_followups": advisory_followups}
         except MergeValidationError as exc:
             if claimed is not None and exc.receipt_reference is not None:
                 failed_admission = (

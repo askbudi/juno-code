@@ -70,7 +70,8 @@ class RiskPolicyTest(unittest.TestCase):
         return str(path), hashlib.sha256(data).hexdigest()
 
     def review(self, plan: dict, role: str, sequence: int, session: str, *, findings: int = 0,
-               predecessor: dict | None = None, tool_id: str | None = None) -> dict:
+               predecessor: dict | None = None, tool_id: str | None = None,
+               severity: str = "high", impact_category: str = "supported_runtime") -> dict:
         predecessor_mark = None
         if predecessor:
             prior = json.loads(Path(predecessor["runner_receipt_path"]).read_text())
@@ -87,7 +88,12 @@ class RiskPolicyTest(unittest.TestCase):
                   "candidate_sha": binding["candidate_sha"],
                   "policy_identity": binding["policy_identity"], "reviewer_role": role,
                   "sequence": sequence, "verdict": "findings" if findings else "pass",
-                  "findings": [{"code": f"F{i}", "severity": "high", "summary": "finding"}
+                  "truncated": False, "omitted_finding_count": 0,
+                  "findings": [{"code": f"F{i}", "severity": severity, "summary": "finding",
+                                "paths": ["src/runtime.ts"], "symbols": ["run"],
+                                "evidence": "frozen candidate evidence", "impact": "runtime broken",
+                                "failure_condition": "supported invocation", "acceptance_condition": "works",
+                                "impact_categories": [impact_category]}
                                for i in range(findings)]}
         response_path, response_sha = self.object_file(f"response-{session}.json", result)
         receipt = {"schema_version": rp.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
@@ -331,6 +337,48 @@ class RiskPolicyTest(unittest.TestCase):
         first = self.review(high, "reviewer_a", 1, "a-find", findings=1)
         result = self.finish(high, [first, {"transcript": "never read"}])
         self.assertEqual(1, result["validation"]["review_dispatches"])
+
+    def test_exhaustive_bound_and_severity_disposition_are_deterministic(self) -> None:
+        normal = self.plan({"src/runtime.ts": "runtime\n"})
+        advisory = self.review(normal, "reviewer", 1, "advisory", findings=1,
+                               severity="medium", impact_category="bounded_product_defect")
+        accepted = self.finish(normal, [advisory])
+        compact = accepted["reviews"][0]
+        self.assertEqual(("passed", 1, 0),
+                         (accepted["status"], compact["advisory_count"], compact["blocking_count"]))
+        promoted = self.review(normal, "reviewer", 1, "promoted", findings=1,
+                               severity="low", impact_category="supported_install")
+        blocked = self.finish(normal, [promoted])
+        finding = blocked["reviews"][0]["findings"][0]
+        self.assertEqual(("failed", "high", True),
+                         (blocked["status"], finding["normalized_severity"], finding["blocking"]))
+        exhaustive = self.review(normal, "reviewer", 1, "thirty-two", findings=32)
+        bounded = self.finish(normal, [exhaustive])
+        self.assertEqual(("failed", 32),
+                         (bounded["status"], bounded["reviews"][0]["finding_count"]))
+
+    def test_truncated_review_fails_closed_as_policy_evidence(self) -> None:
+        plan = self.plan({"src/runtime.ts": "runtime\n"})
+        reference = self.review(plan, "reviewer", 1, "truncated")
+        receipt_path = Path(reference["runner_receipt_path"])
+        receipt = json.loads(receipt_path.read_text())
+        response_path = Path(receipt["artifacts"]["response"]["path"])
+        response = json.loads(response_path.read_text())
+        response.update({"verdict": "findings", "truncated": True,
+                         "omitted_finding_count": 1,
+                         "findings": [{"code": "F0", "severity": "medium", "summary": "bounded",
+                                       "paths": ["src/runtime.ts"], "symbols": [],
+                                       "evidence": "partial review", "impact": "bounded defect",
+                                       "failure_condition": "edge", "acceptance_condition": "fix edge",
+                                       "impact_categories": ["bounded_product_defect"]}]})
+        response_path.write_bytes(rp.canonical(response))
+        receipt["artifacts"]["response"].update({
+            "bytes": response_path.stat().st_size,
+            "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest()})
+        receipt_path.write_bytes(rp.canonical(receipt))
+        reference["runner_receipt_sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(rp.RiskPolicyError, "truncated"):
+            self.finish(plan, [reference])
 
     def test_reuse_requires_canonical_receipt_reference_and_reopens_artifacts(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})

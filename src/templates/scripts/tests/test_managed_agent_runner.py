@@ -84,11 +84,15 @@ else: time.sleep(10 if 'signal-wait' in prompt else .35)
 if 'transport-fail' in prompt: raise SystemExit(7)
 tool_id=os.environ.get('JUNO_TOOL_ID','managed_agent_runner')
 binding=json.loads(os.environ['JUNO_REVIEW_BINDING_JSON']) if os.environ.get('JUNO_REVIEW_BINDING_JSON') else None
-findings=([{'code':'FAKE_FINDING','severity':'high','summary':'fixture finding'}]
+findings=([{'code':'FAKE_FINDING','severity':'high','summary':'fixture finding',
+ 'paths':['src/runtime.py'],'symbols':['run'],'evidence':'frozen candidate evidence',
+ 'impact':'supported runtime broken','failure_condition':'supported invocation',
+ 'acceptance_condition':'restore runtime','impact_categories':['supported_runtime']}]
           if binding and 'review-findings' in prompt else [])
-review_result=({'schema_version':'juno_managed_review_result.v1','candidate_sha':binding['candidate_sha'],
+review_result=({'schema_version':'juno_managed_review_result.v2','candidate_sha':binding['candidate_sha'],
  'policy_identity':binding['policy_identity'],'reviewer_role':binding['reviewer_role'],
- 'sequence':binding['sequence'],'verdict':'findings' if findings else 'pass','findings':findings} if binding else 'answer')
+ 'sequence':binding['sequence'],'verdict':'findings' if findings else 'pass',
+ 'truncated':False,'omitted_finding_count':0,'findings':findings} if binding else 'answer')
 if binding:
  raw=json.dumps(review_result,sort_keys=True,separators=(',',':'))
  review_result=(raw+'\\r\\n \\t' if 'fixture-crlf' in prompt else raw+'\\n')
@@ -464,12 +468,16 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "candidate_sha": binding["candidate_sha"],
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_a", "sequence": 1,
-                   "verdict": "pass", "findings": []}
+                   "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                   "findings": []}
         raw = json.dumps(passing, separators=(",", ":")).encode()
         for data in (raw, raw + b"\n", raw + b"\r\n \t"):
             self.assertEqual(passing, runner.structured_review_result(data, binding))
         finding = {**passing, "verdict": "findings", "findings": [
-            {"code": "AUTH_BYPASS", "severity": "critical", "summary": "Missing guard"}]}
+            {"code": "AUTH_BYPASS", "severity": "critical", "summary": "Missing guard",
+             "paths": ["src/auth.py"], "symbols": ["authorize"], "evidence": "guard absent",
+             "impact": "authorization bypass", "failure_condition": "protected call",
+             "acceptance_condition": "restore guard", "impact_categories": ["security_privacy"]}]}
         self.assertEqual(finding, runner.structured_review_result(json.dumps(finding).encode(), binding))
 
         unknown = {**passing, "unknown": True}
@@ -492,7 +500,8 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "candidate_sha": binding["candidate_sha"],
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_b", "sequence": 2,
-                   "verdict": "pass", "findings": []}
+                   "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                   "findings": []}
         body = json.dumps(verdict)
         prose = (f"I verified all prior findings against the tip.\n\n"
                  f"Summary of the pass:\n\n```text\nJUNO_REVIEW_VERDICT: PASS\n```\n\n"
@@ -500,7 +509,10 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(verdict, runner.structured_review_result(prose, binding))
         finding_verdict = {**verdict, "verdict": "findings", "findings": [
             {"code": "NESTED", "severity": "medium",
-             "summary": "braces { inside } summaries stay one island"}]}
+             "summary": "braces { inside } summaries stay one island", "paths": ["src/a.py"],
+             "symbols": [], "evidence": "bounded defect", "impact": "bounded impact",
+             "failure_condition": "edge case", "acceptance_condition": "handle edge case",
+             "impact_categories": ["bounded_product_defect"]}]}
         nested = ("review prose\n" + json.dumps(finding_verdict) + "\nfooter\n").encode()
         self.assertEqual(finding_verdict,
                          runner.structured_review_result(nested, binding))
@@ -512,7 +524,8 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "candidate_sha": binding["candidate_sha"],
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_b", "sequence": 2,
-                   "verdict": "pass", "findings": []}
+                   "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                   "findings": []}
         other = {**verdict, "sequence": 3}
         two_islands = (json.dumps(verdict) + "\n" + json.dumps(other) + "\n").encode()
         unrelated_objects = b'{"summary": "prose quote with json"} and {"note": 1}\n'
@@ -533,7 +546,8 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "candidate_sha": binding["candidate_sha"],
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_a", "sequence": 1,
-                   "verdict": "pass", "findings": []}
+                   "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                   "findings": []}
         root = self.tmp / "stdout-finalizer"; root.mkdir()
         capture = root / "capture.json"; stdout = root / "stdout.log"
         metadata = root / "session_metadata"; metadata.mkdir()
@@ -586,8 +600,8 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(runner.canonical(parsed), response)
         self.assertNotIn(b"\r", response)
         shipped_prompt = (out / "prompt.md").read_text()
-        for instruction in ("{code, severity, summary}", "low, medium, high, critical",
-                            "PASS:", "FAIL:", "no markdown", "at most 32"):
+        for instruction in ("code, severity, summary, paths", "low|medium|high|critical",
+                            "PASS is allowed", "finding verdict", "no markdown", "at most 32"):
             self.assertIn(instruction, shipped_prompt)
         receipt_path = out / "receipt.json"
         self.assertLess(receipt_path.stat().st_size, policy["limits"]["max_receipt_bytes"])
@@ -748,7 +762,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         )
         second = subprocess.run(command_b, env=self.env(), capture_output=True, text=True)
         self.assertNotEqual(second.returncode, 0)
-        self.assertIn("Reviewer A PASS", second.stderr)
+        self.assertIn("no blocking finding", second.stderr)
         self.assertFalse((out_b / "launch.json").exists())
 
     def test_signal_is_forwarded_and_interruption_evidence_is_typed(self):

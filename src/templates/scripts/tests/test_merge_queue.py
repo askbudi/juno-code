@@ -138,6 +138,25 @@ if 'mark' in sys.argv:
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps({{'outcome': 'completed'}}) + '\\n')
     raise SystemExit(0)
+if 'search' in sys.argv:
+    field = sys.argv[sys.argv.index('--field') + 1]
+    key, expected = field.split('=', 1)
+    matches = [task for task in value.values() if task.get('fields', {{}}).get(key) == expected]
+    print(json.dumps({{'tasks': matches, 'summary': {{'count': len(matches)}}}})); raise SystemExit(0)
+if 'create' in sys.argv:
+    task_id = 'ADV' + str(1 + sum(key.startswith('ADV') for key in value))
+    fields = {{}}
+    for index, token in enumerate(sys.argv):
+        if token == '--field':
+            key, encoded = sys.argv[index + 1].split('=', 1); fields[key] = json.loads(encoded)
+    value[task_id] = {{'id': task_id, 'status': sys.argv[sys.argv.index('--status') + 1],
+                      'body': pathlib.Path(sys.argv[sys.argv.index('--body-file') + 1]).read_text(),
+                      'fields': fields, 'feature_tags': ['REVIEW_ADVISORY']}}
+    board.write_text(json.dumps(value) + '\\n')
+    receipt = pathlib.Path(sys.argv[sys.argv.index('--receipt-file') + 1])
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps({{'outcome': 'completed', 'task_id': task_id}}) + '\\n')
+    print(json.dumps({{'id': task_id}})); raise SystemExit(0)
 raise SystemExit(2)
 """)
         wrapper.chmod(0o755)
@@ -1250,7 +1269,7 @@ raise SystemExit(2)
     def fake_review(self, _controller: Path, _candidate: Path, plan: dict,
                     _task_id: str, reviewer: str, sequence: int,
                     predecessor_receipt: Optional[Path], _attempt_number: int,
-                    *, findings: bool = False) -> dict[str, str]:
+                    *, findings: bool = False, advisory: bool = False) -> dict[str, str]:
         predecessor = None
         if predecessor_receipt is not None:
             prior = json.loads(predecessor_receipt.read_text())
@@ -1268,9 +1287,18 @@ raise SystemExit(2)
         result = {"schema_version": risk_runtime.REVIEW_RESULT_SCHEMA,
                   "candidate_sha": binding["candidate_sha"],
                   "policy_identity": binding["policy_identity"], "reviewer_role": reviewer,
-                  "sequence": sequence, "verdict": "findings" if findings else "pass",
-                  "findings": ([{"code": "SEC", "severity": "high", "summary": "finding"}]
-                               if findings else [])}
+                  "sequence": sequence, "verdict": "findings" if findings or advisory else "pass",
+                  "truncated": False, "omitted_finding_count": 0,
+                  "findings": ([{"code": "SEC" if findings else "DOC_CLARITY",
+                                 "severity": "high" if findings else "low", "summary": "finding",
+                                 "paths": ["src/security/auth.py" if findings else "src/runtime.py"],
+                                 "symbols": ["authorize"] if findings else [],
+                                 "evidence": "guard absent" if findings else "message is unclear",
+                                 "impact": "supported runtime broken" if findings else "minor clarity debt",
+                                 "failure_condition": "invoke protected path" if findings else "read output",
+                                 "acceptance_condition": "restore guard" if findings else "clarify output",
+                                 "impact_categories": ["supported_runtime" if findings else "clarity"]}]
+                               if findings or advisory else [])}
         result_path, result_sha = self.object_file(f"result-{reviewer}-{sequence}.json", result)
         receipt = {"schema_version": risk_runtime.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
                    "state": "succeeded", "semantic_outcome": "completed",
@@ -1702,6 +1730,30 @@ raise SystemExit(2)
         self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+
+    def test_advisory_is_persisted_idempotently_and_same_candidate_continues(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "runtime\n")
+        self.queue_payload("next")
+        advisory = lambda *args, **kwargs: self.fake_review(*args, **kwargs, advisory=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=advisory):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual("RISK_EVIDENCE_READY", reviewed["outcome"])
+        self.assertEqual(tip, reviewed["candidate_sha"])
+        self.assertEqual(1, len(reviewed["advisory_followups"]))
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        advisories = [task for key, task in board.items() if key.startswith("ADV")]
+        self.assertEqual(1, len(advisories))
+        self.assertEqual(tip, advisories[0]["fields"]["source_candidate_sha"])
+        compact = risk_runtime._compact_review(
+            self.fake_review(self.controller, self.repository, reviewed["risk"]["plan"],
+                             "X", "reviewer_a", 1, None, 2, advisory=True),
+            "reviewer_a", 1, tip, reviewed["risk"]["plan"]["policy_identity"],
+            reviewed["risk"]["plan"])
+        repeated = merge_runtime.persist_advisory_followups(
+            self.controller, "X", tip, reviewed["risk"]["plan"]["policy_identity"], [compact])
+        self.assertEqual("reused", repeated[0]["outcome"])
+        self.assertEqual(tip, self.queue_payload("next", "X")["candidate_sha"])
 
     def test_one_repair_round_exhausts_instead_of_starting_an_unbounded_review_loop(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "broken\n")

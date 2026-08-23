@@ -24,7 +24,17 @@ RELEASE_PRODUCER_SCHEMA = "juno_bolt_release_gate_producer.v1"
 RELEASE_TOOL_ID = "yylo.release-gate"
 MANAGED_RUNNER_SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
-REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v1"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v2"
+FINDING_POLICY_REVISION = "yy_review_finding_policy.v1"
+REVIEW_FINDING_IMPACT_CATEGORIES = {
+    "bounded_product_defect", "maintainability", "clarity",
+    "supported_install", "supported_runtime", "supported_config",
+    "core_contract", "product_breaking", "security_privacy",
+    "destructive_data_loss",
+}
+HIGH_IMPACTS = {"supported_install", "supported_runtime", "supported_config",
+                "core_contract", "product_breaking"}
+CRITICAL_IMPACTS = {"security_privacy", "destructive_data_loss"}
 PLAN_PRODUCER_SCHEMA = "juno_bolt_risk_plan_producer.v1"
 PLAN_TOOL_ID = "yylo.risk-policy"
 EVIDENCE_PRODUCER_SCHEMA = "juno_bolt_candidate_evidence_producer.v1"
@@ -53,7 +63,7 @@ PLAN_KEYS = {
     "schema_version", "producer", "candidate", "policy_identity", "tier", "reasons", "changed_paths", "flags",
     "unknown_flags", "shared_infrastructure", "affected_validation_required",
     "full_suite_required", "reviewer_sequence", "min_reviews", "max_reviews",
-    "release_gate_required", "post_cas", "evidence_limits",
+    "finding_policy_revision", "release_gate_required", "post_cas", "evidence_limits",
 }
 EVIDENCE_KEYS = {
     "schema_version", "producer", "created_at", "status", "failure", "candidate", "policy",
@@ -190,6 +200,7 @@ def _classify_paths(policy: dict[str, Any], identity: dict[str, Any],
         "reviewer_sequence": review["sequence"],
         "min_reviews": review["min"],
         "max_reviews": review["max"],
+        "finding_policy_revision": FINDING_POLICY_REVISION,
         "release_gate_required": release,
         "post_cas": {"semantic_review": False, "checks": policy["post_cas_checks"]},
         "evidence_limits": {"max_metrics": policy["limits"]["max_metrics"],
@@ -332,6 +343,7 @@ def _policy_binding(plan: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(plan.get("max_reviews"), int)
             or not 0 <= plan["min_reviews"] <= plan["max_reviews"] <= len(plan["reviewer_sequence"])
             or not isinstance(plan.get("full_suite_required"), bool)
+            or plan.get("finding_policy_revision") != FINDING_POLICY_REVISION
             or not isinstance(plan.get("release_gate_required"), bool)
             or plan.get("affected_validation_required") is not True
             or not isinstance(plan.get("changed_paths"), list)
@@ -352,7 +364,7 @@ def _policy_binding(plan: dict[str, Any]) -> dict[str, Any]:
         raise RiskPolicyError("risk plan paths do not bind its Git candidate")
     return {key: plan[key] for key in (
         "producer", "policy_identity", "tier", "reasons", "reviewer_sequence", "min_reviews",
-        "max_reviews", "full_suite_required", "release_gate_required",
+        "max_reviews", "full_suite_required", "finding_policy_revision", "release_gate_required",
     )}
 
 
@@ -878,7 +890,8 @@ def verify_full_suite_admission_any(admission: Any, plan: dict[str, Any],
 def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
                                reviewer: str, max_string_bytes: int) -> None:
     keys = {"reviewer", "sequence", "candidate_sha", "session_id", "verdict",
-            "finding_count", "review_result_sha256", "tool_id", "completed_at",
+            "finding_count", "advisory_count", "blocking_count", "findings",
+            "finding_policy_revision", "review_result_sha256", "tool_id", "completed_at",
             "managed_runner", "review_binding"}
     if not isinstance(value, dict) or set(value) != keys:
         raise RiskPolicyError("persisted review schema is unsupported or contains unknown fields")
@@ -889,6 +902,14 @@ def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
             or value.get("verdict") not in {"pass", "findings"}
             or not isinstance(value.get("finding_count"), int)
             or isinstance(value.get("finding_count"), bool) or value["finding_count"] < 0
+            or not isinstance(value.get("advisory_count"), int)
+            or isinstance(value.get("advisory_count"), bool) or value["advisory_count"] < 0
+            or not isinstance(value.get("blocking_count"), int)
+            or isinstance(value.get("blocking_count"), bool) or value["blocking_count"] < 0
+            or value["finding_count"] != value["advisory_count"] + value["blocking_count"]
+            or not isinstance(value.get("findings"), list)
+            or len(value["findings"]) != value["finding_count"]
+            or value.get("finding_policy_revision") != FINDING_POLICY_REVISION
             or not isinstance(value.get("review_result_sha256"), str)
             or not DIGEST_RE.fullmatch(value["review_result_sha256"])
             or not isinstance(value.get("session_id"), str) or not value["session_id"]
@@ -981,8 +1002,8 @@ def _validate_previous(previous: Any, plan: dict[str, Any], identity: dict[str, 
         if rebuilt != review:
             raise RiskPolicyError("previous review does not match its immutable source artifacts")
     _validate_review_chain(evidence_reviews)
-    if any(review["verdict"] != "pass" or review["finding_count"] for review in evidence_reviews):
-        raise RiskPolicyError("previous semantic evidence contains findings")
+    if any(review["blocking_count"] for review in evidence_reviews):
+        raise RiskPolicyError("previous semantic evidence contains blocking findings")
     _metrics(plan, previous["metrics"])
     return (prior["product_digest"] == identity["product_digest"]
             and prior["composition_digest"] == identity["composition_digest"])
@@ -1025,6 +1046,26 @@ def reviewer_command(script_dir: Path, *, controller_root: Path, controller_bran
             "--out-dir", str(out_dir), "--task-id", task_id,
             "--review-binding", str(review_binding_path),
             "--tool-id", f"bolt_{reviewer}"]
+
+
+def normalize_review_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    """Verify and normalize one review finding against the exact compiled policy."""
+    categories = finding["impact_categories"]
+    if set(categories) & CRITICAL_IMPACTS:
+        severity = "critical"
+    elif set(categories) & HIGH_IMPACTS:
+        severity = "high"
+    elif "bounded_product_defect" in categories:
+        severity = "medium"
+    else:
+        severity = "low"
+    blocking = severity in {"high", "critical"}
+    identity = {key: finding[key] for key in (
+        "code", "paths", "symbols", "failure_condition", "acceptance_condition")}
+    return {**finding, "reviewer_severity": finding["severity"],
+            "normalized_severity": severity, "blocking": blocking,
+            "finding_digest": digest(identity),
+            "finding_policy_revision": FINDING_POLICY_REVISION}
 
 
 def _compact_review(value: Any, expected_reviewer: str, sequence: int,
@@ -1070,26 +1111,57 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
     result = _bounded_object(response.get("path"), response.get("sha256"), plan,
                              "managed runner review result")
     result_keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-                   "sequence", "verdict", "findings"}
+                   "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
     if (set(result) != result_keys or result.get("schema_version") != REVIEW_RESULT_SCHEMA
             or result.get("candidate_sha") != candidate_sha
             or result.get("policy_identity") != policy_identity
             or result.get("reviewer_role") != expected_reviewer
             or result.get("sequence") != sequence
             or result.get("verdict") not in {"pass", "findings"}
+            or not isinstance(result.get("truncated"), bool)
+            or not isinstance(result.get("omitted_finding_count"), int)
+            or isinstance(result.get("omitted_finding_count"), bool)
+            or result["omitted_finding_count"] < 0
+            or result["truncated"] != (result["omitted_finding_count"] > 0)
             or not isinstance(result.get("findings"), list) or len(result["findings"]) > 32
             or response["bytes"] != Path(response["path"]).stat().st_size):
         raise RiskPolicyError("managed runner review result schema/binding is invalid")
+    finding_keys = {"code", "severity", "summary", "paths", "symbols", "evidence",
+                    "impact", "failure_condition", "acceptance_condition", "impact_categories"}
+    normalized_findings = []
     for finding in result["findings"]:
-        if (not isinstance(finding, dict) or set(finding) != {"code", "severity", "summary"}
-                or not isinstance(finding.get("code"), str) or not finding["code"]
-                or finding.get("severity") not in {"low", "medium", "high", "critical"}
-                or not isinstance(finding.get("summary"), str) or not finding["summary"]
-                or len(finding["code"].encode()) > 64
-                or len(finding["summary"].encode()) > 512):
+        if not isinstance(finding, dict):
             raise RiskPolicyError("managed runner review finding is malformed or unbounded")
+        valid_lists = (isinstance(finding.get("paths"), list)
+                       and 1 <= len(finding["paths"]) <= 16
+                       and all(isinstance(item, str) and item and len(item.encode()) <= 256
+                               for item in finding["paths"])
+                       and isinstance(finding.get("symbols"), list)
+                       and len(finding["symbols"]) <= 16
+                       and all(isinstance(item, str) and item and len(item.encode()) <= 256
+                               for item in finding["symbols"])
+                       and isinstance(finding.get("impact_categories"), list)
+                       and 1 <= len(finding["impact_categories"]) <= 4
+                       and len(set(finding["impact_categories"])) == len(finding["impact_categories"])
+                       and set(finding["impact_categories"]) <= REVIEW_FINDING_IMPACT_CATEGORIES)
+        if (set(finding) != finding_keys or not valid_lists
+                or not isinstance(finding.get("code"), str) or not finding["code"]
+                or len(finding["code"].encode()) > 64
+                or finding.get("severity") not in {"low", "medium", "high", "critical"}
+                or any(not isinstance(finding.get(field), str) or not finding[field]
+                       or len(finding[field].encode()) > 1024
+                       for field in ("summary", "evidence", "impact", "failure_condition",
+                                     "acceptance_condition"))):
+            raise RiskPolicyError("managed runner review finding is malformed or unbounded")
+        normalized_findings.append(normalize_review_finding(finding))
+    if result["truncated"]:
+        raise RiskPolicyError("managed runner review result is truncated")
     if (result["verdict"] == "pass") != (not result["findings"]):
         raise RiskPolicyError("managed runner review verdict/findings are contradictory")
+    deduplicated = {finding["finding_digest"]: finding for finding in normalized_findings}
+    if len(deduplicated) != len(normalized_findings):
+        normalized_findings = [deduplicated[key] for key in sorted(deduplicated)]
+    blocking_count = sum(1 for finding in normalized_findings if finding["blocking"])
     tool_id, completed_at = receipt.get("tool_id"), receipt.get("completed_at")
     if (not isinstance(tool_id, str) or not tool_id or not isinstance(completed_at, str)
             or not completed_at
@@ -1099,7 +1171,10 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
     return {"reviewer": expected_reviewer, "sequence": sequence,
             "candidate_sha": candidate_sha, "session_id": session_id,
             "tool_id": tool_id, "completed_at": completed_at,
-            "verdict": result["verdict"], "finding_count": len(result["findings"]),
+            "verdict": result["verdict"], "finding_count": len(normalized_findings),
+            "advisory_count": len(normalized_findings) - blocking_count,
+            "blocking_count": blocking_count, "findings": normalized_findings,
+            "finding_policy_revision": FINDING_POLICY_REVISION,
             "review_result_sha256": response["sha256"],
             "managed_runner": {"schema_version": MANAGED_RUNNER_SCHEMA,
                                "receipt_path": str(Path(value["runner_receipt_path"]).resolve()),
@@ -1193,8 +1268,8 @@ def _revalidate_evidence_reviews(evidence: dict[str, Any], plan: dict[str, Any],
             raise RiskPolicyError("candidate evidence review differs from source artifacts")
         rebuilt.append(compact)
     _validate_review_chain(rebuilt)
-    if any(item["verdict"] != "pass" or item["finding_count"] for item in rebuilt):
-        raise RiskPolicyError("candidate evidence contains review findings")
+    if any(item["blocking_count"] for item in rebuilt):
+        raise RiskPolicyError("candidate evidence contains blocking review findings")
     return rebuilt
 
 
@@ -1345,7 +1420,7 @@ def finalize(plan: dict[str, Any], candidate_request: dict[str, Any], *, affecte
             identity["candidate_sha"], plan["policy_identity"], plan,
         ))
         _validate_review_chain(compact_reviews)
-        if compact_reviews[-1]["verdict"] != "pass" or compact_reviews[-1]["finding_count"]:
+        if compact_reviews[-1]["blocking_count"]:
             return _evidence(plan, identity, compact_metrics, status="failed",
                              failure="review_findings", affected="passed",
                              full_suite="passed" if plan["full_suite_required"] else "not_required",
