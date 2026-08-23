@@ -38,7 +38,8 @@
   "files": [
     "dist",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "yylo-icon.png"
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",

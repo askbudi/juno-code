@@ -66,6 +66,12 @@ describe('YYLO launch identity', () => {
     expect(securityGuidance).toContain('`YYLO_*` prefix for application settings');
   });
 
+  it('includes the active YYLO logo in the publishable npm file set', async () => {
+    const packed = await execa('npm', ['pack', '--dry-run', '--json', '--ignore-scripts']);
+    const report = JSON.parse(packed.stdout) as Array<{ files: Array<{ path: string }> }>;
+    expect(report[0]?.files.map((file) => file.path)).toContain('yylo-icon.png');
+  });
+
   it('maps a legacy-only environment value to the canonical name', async () => {
     const result = await migrationEnvironment({ JUNO_CODE_MODEL: 'legacy' });
     expect(result.exitCode).toBe(0);
