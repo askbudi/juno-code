@@ -186,6 +186,53 @@
     "active_name_patterns": [
       "(^|/)(CHANGELOG|RELEASE_NOTES)(\\.[^/]*)?$",
       "(^|/)MIGRATION[^/]*\\.md$"
+    ],
+    "public_identities": [
+      "https://github.com/askbudi/juno-mono",
+      "https://github.com/yylo-dev/yylo",
+      "https://github.com/yylo-dev/yylo-benchmark",
+      "https://github.com/yylo-dev/yylo-ledger",
+      "https://www.npmjs.com/package/%40yylo%2Fcli",
+      "https://www.npmjs.com/package/%40yylo%2Fbenchmark",
+      "https://pypi.org/project/yylo-ledger"
+    ],
+    "cli_top_level": [
+      "auth",
+      "benchmark",
+      "branches",
+      "cc",
+      "clone",
+      "completion",
+      "continue",
+      "continue-scope",
+      "continuity",
+      "doctor",
+      "evidence",
+      "feedback",
+      "help",
+      "info",
+      "init",
+      "integration",
+      "kanban",
+      "ledger",
+      "logs",
+      "merge",
+      "migrate",
+      "pi",
+      "release",
+      "scripts",
+      "services",
+      "session",
+      "setup-git",
+      "skills",
+      "start",
+      "switch",
+      "task",
+      "test",
+      "view-log",
+      "watch",
+      "where",
+      "wiki"
     ]
   }
 }

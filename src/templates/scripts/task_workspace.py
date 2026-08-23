@@ -49,6 +49,9 @@ SEMVER_RE = re.compile(
 )
 RUNTIME_PATH = ".juno_task/scripts/task_workspace.py"
 TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"
+# Stable package-router capability. Parser command ordering may evolve without
+# invalidating hydrate recovery selection.
+TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True
 RUNTIME_BOOTSTRAP_SCHEMA = "juno_target_task_runtime_bootstrap.v1"
 RUNTIME_BOOTSTRAP_ROOT = ".juno_task/runtime/task-runtime-bootstrap"
 MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"
@@ -283,7 +286,8 @@ def load_config(controller: Path) -> dict[str, Any]:
             or any(not isinstance(documentation.get(field), list)
                    or any(not isinstance(item, str) or not item for item in documentation[field])
                    for field in ("inert_exact_files", "inert_roots", "active_exact_files",
-                                 "active_roots", "active_name_patterns"))):
+                                 "active_roots", "active_name_patterns", "public_identities",
+                                 "cli_top_level"))):
         raise TaskWorkspaceError("documentation_validation policy is malformed")
     try:
         [re.compile(pattern) for pattern in documentation["active_name_patterns"]]
@@ -974,8 +978,7 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
                 "stdout_truncated_bytes": 0, "stderr_truncated_bytes": len(message) - len(tail),
                 "stdout_sha256": hashlib.sha256(b"").hexdigest(),
                 "stderr_sha256": hashlib.sha256(message).hexdigest()}
-    validation_env = {key: value for key, value in os.environ.items()
-                      if not key.startswith("JUNO_CONTROL_")}
+    validation_env = lifecycle_runtime.command_execution_environment()
     try:
         process = subprocess.Popen(row["argv"], cwd=cwd, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1052,7 +1055,7 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
         if stream is not None: stream.close()
     if resource_handle is not None: resource_handle.close()
     integrity = lifecycle_runtime.parsed_test_result_integrity(
-        row["argv"], log_path.read_bytes(), process_exit_code)
+        row["argv"], log_path, process_exit_code)
     if exit_code == 0 and not integrity["eligible_pass"]:
         exit_code = 65
     outcome = ("INTERRUPTED" if interrupted else "TIMED_OUT" if timed_out else
@@ -2967,7 +2970,7 @@ def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
         repository, head, row, config_sha256=stable_sha256(config),
         policy_sha256=(hashlib.sha256(policy_path.read_bytes()).hexdigest()
                        if policy_path.is_file() else None),
-        runtime_sha256=runtime["running_sha256"], environment={},
+        runtime_sha256=runtime["running_sha256"],
     )
 
 
@@ -3005,7 +3008,8 @@ def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
                for row in rows]
     coherence = lifecycle_runtime.grouped_coherence(
         controller, repository, head, changed,
-        active_doc_paths=documentation["active_paths"])
+        active_doc_paths=documentation["active_paths"],
+        documentation_policy=config["documentation_validation"])
     if coherence["outcome"] != "PASSED":
         raise TaskWorkspaceError(
             "grouped coherence failed: " + json.dumps(
@@ -3064,10 +3068,12 @@ def _standing_plan(controller: Path, task_id: str) -> tuple[dict[str, Any], Path
 
 
 def _active_documentation_validation(repository: Path, head: str,
-                                     plan: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+                                     plan: dict[str, Any], row: dict[str, Any],
+                                     documentation_policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     started = time.monotonic()
     audit = lifecycle_runtime.active_documentation_audit(
-        repository, head, plan["documentation_route"]["active_paths"])
+        repository, head, plan["documentation_route"]["active_paths"],
+        documentation_policy)
     output = lifecycle_runtime.canonical_bytes(audit)
     integrity = lifecycle_runtime.parsed_test_result_integrity(
         row["argv"], output, 0 if audit["outcome"] == "PASSED" else 1)
@@ -3162,7 +3168,9 @@ def standing_evidence_run(controller: Path, task_id: str,
                 try: cwd.relative_to(worktree)
                 except ValueError as exc:
                     raise TaskWorkspaceError("standing validation cwd escaped task worktree") from exc
-                evidence = (_active_documentation_validation(repository, head, plan, row)
+                evidence = (_active_documentation_validation(
+                                repository, head, plan, row,
+                                config["documentation_validation"])
                             if row["argv"] == lifecycle_runtime.ACTIVE_DOC_ARGV
                             else run_validation(row, cwd))
                 receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
@@ -4711,126 +4719,357 @@ def _launch_task_worker(controller: Path, task_id: str, record: dict[str, Any],
             "session_id": receipt.get("session_id")}
 
 
-def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
-    """Compile and execute the controller-owned typed task workflow."""
-    if not TASK_RE.fullmatch(task_id):
-        raise TaskWorkspaceError("unsafe task id")
-    task_path, task_bytes = task_manifest(controller, task_id)
-    plan = lifecycle_runtime.compile_lifecycle_template(
-        controller, "task-run", task_id, model_identity=os.environ.get("JUNO_MODEL"))
-    root = controller / TASK_RUN_ROOT / task_id
-    latest = root / "latest.json"
-    if latest.exists():
-        try:
-            prior = json.loads(latest.read_text())
-            prior_plan = prior.get("compiled_plan_sha256")
-        except (OSError, json.JSONDecodeError):
-            prior = {}
-            prior_plan = None
-        if prior_plan and prior_plan != plan["compiled_plan_sha256"]:
-            raise TaskWorkspaceError(
-                "active task-run attempt is immutable; template drift requires an explicit new lineage")
-        projection_path = Path(str(prior.get("projection_path", "")))
-        if prior.get("terminal") and projection_path.is_file():
-            return json.loads(projection_path.read_text())
-        current_task_revision = hashlib.sha256(task_bytes).hexdigest()
-        if (prior.get("task_revision_sha256") == current_task_revision
-                and projection_path.is_file()
-                and json.loads(projection_path.read_text()).get("state") == "NEEDS_DECISION"):
-            # Child settlement is terminal for this outer attempt. A changed,
-            # committed canonical task revision is required before resume.
-            return json.loads(projection_path.read_text())
-        run_id = prior.get("run_id")
-        if not isinstance(run_id, str):
-            raise TaskWorkspaceError("task-run latest attempt identity is malformed")
-    else:
-        run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
-    run_dir = root / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    lifecycle_runtime.atomic_json(run_dir / "compiled-plan.json", plan, exclusive=True)
-    questions = lifecycle_runtime.readiness_questions(task_bytes)
-    attempts = {"implementation": 0, "attributable_test_repair": 0}
-    artifacts = [{"path": str(run_dir / "compiled-plan.json"),
-                  "sha256": hashlib.sha256((run_dir / "compiled-plan.json").read_bytes()).hexdigest()}]
-    if questions:
-        decision = {"schema_version": "juno_task_run_decision.v1", "task_id": task_id,
-                    "task_revision_sha256": hashlib.sha256(task_bytes).hexdigest(),
-                    "questions": questions, "resume_command": f"yy task run {task_id}"}
-        decision_ref = lifecycle_runtime.atomic_json(
-            run_dir / "needs-decision.json", decision, exclusive=True)
-        projection = lifecycle_runtime.compact_projection(
-            kind="task-run", run_id=run_id, task_id=task_id, state="NEEDS_DECISION",
-            plan=plan, started=started,
-            counters={name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")},
-            attempts=attempts, blocker={"category": "ambiguity", "questions": questions},
-            next_action=f"resolve canonical task ambiguity, commit it, then yy task run {task_id}",
-            artifacts=[*artifacts, decision_ref], identities={"task_revision_sha256": hashlib.sha256(task_bytes).hexdigest()})
-        projection_ref = lifecycle_runtime.atomic_json(run_dir / "projection.json", projection)
-        lifecycle_runtime.atomic_json(latest, {"run_id": run_id,
-            "compiled_plan_sha256": plan["compiled_plan_sha256"], "terminal": False,
-            "task_revision_sha256": hashlib.sha256(task_bytes).hexdigest(),
-            "projection_path": projection_ref["path"]})
-        return projection
-    record = start(controller, task_id)
-    state_record = read_state(controller)["tasks"][task_id]
-    if state_record.get("state") != "WORKING":
-        raise TaskWorkspaceError(f"task run cannot implement from {state_record.get('state')}")
-    implementation_seed = controller / plan["prompts"][0]["path"]
-    attempts["implementation"] = 1
-    worker = _launch_task_worker(
-        controller, task_id, state_record, run_dir / "implementation",
-        implementation_seed, repair=False,
-        timeout_seconds=int(plan["budgets"]["total_wall_seconds"]))
-    artifacts.append(worker["receipt"])
-    if worker["terminal_state"] != "completed":
-        state_name = "NEEDS_DECISION" if worker["terminal_state"] == "blocked" else "BLOCKED"
-        blocker = {"category": "implementation", "terminal_state": worker["terminal_state"]}
-        counters = {name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
-    else:
-        try:
-            queued = finish(controller, task_id)
-        except TaskWorkspaceError as exc:
-            attributable = ("focused validation failed" in str(exc)
-                            or "parsed" in str(exc) or "test" in str(exc).lower())
-            if not attributable:
-                raise
-            attempts["attributable_test_repair"] = 1
-            repair_seed = controller / plan["prompts"][1]["path"]
-            repaired = _launch_task_worker(
-                controller, task_id, read_state(controller)["tasks"][task_id],
-                run_dir / "attributable-repair", repair_seed, repair=True,
-                timeout_seconds=max(1, int(plan["budgets"]["total_wall_seconds"])
-                                    - int(time.monotonic() - started)),
-                context_bytes=str(exc).encode("utf-8", errors="replace")[:32768])
-            artifacts.append(repaired["receipt"])
-            if repaired["terminal_state"] != "completed":
-                raise TaskWorkspaceError("attributable test repair did not complete")
-            queued = finish(controller, task_id)
-        standing = queued.get("review_ready_closure", {}).get("standing_validation", {})
-        counters = standing.get("counters") or {
-            name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
-        state_name, blocker = "QUEUED", None
-    next_action = ("yy merge drive --through " + task_id if state_name == "QUEUED"
-                   else f"inspect {run_dir} and resume yy task run {task_id}")
+def _task_plan_execution_identity(plan: dict[str, Any]) -> str:
+    return lifecycle_runtime.digest({key: value for key, value in plan.items()
+                                     if key not in {"controller_commit", "compiled_plan_sha256"}})
+
+
+def _recover_task_worker(record: dict[str, Any], attempt: dict[str, Any]) -> Optional[dict[str, Any]]:
+    attempt_dir = Path(str(attempt.get("attempt_dir", "")))
+    receipt_path = attempt_dir / "managed-agent/receipt.json"
+    if not receipt_path.is_file():
+        return None
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(receipt_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("interrupted managed worker receipt is malformed") from exc
+    terminal = receipt.get("terminal_result")
+    if not isinstance(terminal, dict) or terminal.get("state") not in {
+            "completed", "blocked", "incomplete"}:
+        raise TaskWorkspaceError("interrupted managed worker has no typed terminal receipt")
+    worktree = Path(record["worktree"])
+    before = attempt.get("before_sha")
+    after = git(worktree, "rev-parse", "HEAD")
+    clean = not git(worktree, "status", "--porcelain=v1", "--untracked-files=all")
+    if terminal["state"] == "completed":
+        if (not isinstance(before, str)
+                or git(worktree, "rev-list", "--count", f"{before}..{after}") != "1"
+                or not clean):
+            raise TaskWorkspaceError("interrupted completed worker commit is not exact and clean")
+    elif after != before or not clean:
+        raise TaskWorkspaceError("interrupted non-completed worker changed product bytes")
+    return {"terminal_state": terminal["state"], "before_sha": before,
+            "after_sha": after,
+            "receipt": {"path": str(receipt_path.resolve()),
+                        "sha256": hashlib.sha256(receipt_bytes).hexdigest()},
+            "session_id": receipt.get("session_id"), "recovered": True}
+
+
+def _task_projection(controller: Path, task_id: str, run_dir: Path,
+                     latest: Path, journal_path: Path, journal: dict[str, Any],
+                     plan: dict[str, Any], *, state_name: str,
+                     blocker: Optional[dict[str, Any]], counters: Optional[dict[str, int]] = None,
+                     terminal: bool = False) -> dict[str, Any]:
+    counters = counters or {name: 0 for name in
+                            ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+    attempts = journal["attempts"]
+    artifacts = [journal["compiled_plan"], *[item["receipt"] for item in
+                 journal.get("workers", []) if isinstance(item.get("receipt"), dict)]]
+    with state_lock(controller):
+        state_record = read_state(controller)["tasks"].get(task_id, {})
+    revision = hashlib.sha256(task_file(controller, task_id).read_bytes()).hexdigest()
     projection = lifecycle_runtime.compact_projection(
-        kind="task-run", run_id=run_id, task_id=task_id, state=state_name,
-        plan=plan, started=started, counters=counters, attempts=attempts,
-        blocker=blocker, next_action=next_action, artifacts=artifacts,
+        kind="task-run", run_id=journal["run_id"], task_id=task_id, state=state_name,
+        plan=plan, started=lifecycle_runtime.lifecycle_elapsed_started(journal),
+        counters=counters, attempts=attempts, blocker=blocker,
+        next_action=(f"yy merge drive --through {task_id}" if state_name == "QUEUED" else
+                     f"resolve the blocker and resume yy task run {task_id}"),
+        artifacts=artifacts,
         identities={"controller_commit": plan["controller_commit"],
-                    "task_revision_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+                    "task_revision_sha256": revision,
                     "base_sha": state_record.get("base_sha"),
-                    "tip_sha": read_state(controller)["tasks"][task_id].get("tip_sha")})
-    projection_ref = lifecycle_runtime.atomic_json(run_dir / "projection.json", projection)
-    summary = lifecycle_runtime.deterministic_summary(projection)
-    summary_ref = lifecycle_runtime.atomic_json(run_dir / "summary.json", summary)
-    lifecycle_runtime.atomic_json(latest, {"run_id": run_id,
+                    "tip_sha": state_record.get("tip_sha"),
+                    "deadline_unix_ns": journal["deadline_unix_ns"]})
+    projection_index = len(journal.get("projections", [])) + 1
+    projection_ref = lifecycle_runtime.atomic_json(
+        run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
+        projection, exclusive=True)
+    journal.setdefault("projections", []).append(projection_ref)
+    journal["state"] = state_name
+    journal["terminal"] = terminal
+    lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+    summary_ref = None
+    if terminal:
+        summary_ref = lifecycle_runtime.atomic_json(
+            run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection),
+            exclusive=not (run_dir / "summary.json").exists())
+    lifecycle_runtime.atomic_json(latest, {
+        "schema_version": "juno_managed_task_run_latest.v2", "run_id": journal["run_id"],
         "compiled_plan_sha256": plan["compiled_plan_sha256"],
-        "task_revision_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
-        "terminal": state_name in {"QUEUED", "BLOCKED"},
+        "execution_identity_sha256": journal["execution_identity_sha256"],
+        "task_revision_sha256": revision, "terminal": terminal,
         "projection_path": projection_ref["path"], "summary": summary_ref})
     return projection
 
+
+def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
+    """Resume one durably claimed controller-owned typed task workflow."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    root = controller / TASK_RUN_ROOT / task_id
+    latest = root / "latest.json"
+    lock_path = root / ".claim.lock"
+    with lifecycle_runtime.lifecycle_claim(lock_path):
+        task_path, task_bytes = task_manifest(controller, task_id)
+        current_plan = lifecycle_runtime.compile_lifecycle_template(
+            controller, "task-run", task_id, model_identity=os.environ.get("JUNO_MODEL"))
+        execution_identity = _task_plan_execution_identity(current_plan)
+        root.mkdir(parents=True, exist_ok=True)
+        if latest.is_file():
+            try:
+                latest_value = json.loads(latest.read_text())
+                run_id = latest_value["run_id"]
+                run_dir = root / run_id
+                journal_path = run_dir / "journal.json"
+                journal = json.loads(journal_path.read_text())
+                plan = json.loads((run_dir / "compiled-plan.json").read_text())
+            except (OSError, KeyError, json.JSONDecodeError) as exc:
+                raise TaskWorkspaceError("durable task-run claim is malformed") from exc
+            if (journal.get("schema_version") != "juno_managed_task_run_journal.v2"
+                    or journal.get("run_id") != run_id
+                    or journal.get("execution_identity_sha256") != execution_identity):
+                raise TaskWorkspaceError(
+                    "active task-run identity is incompatible; explicit reviewed replacement required")
+            projection_path = Path(str(latest_value.get("projection_path", "")))
+            if journal.get("terminal") and projection_path.is_file():
+                return json.loads(projection_path.read_text())
+        else:
+            run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
+            run_dir = root / run_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+            plan = current_plan
+            plan_ref = lifecycle_runtime.atomic_json(
+                run_dir / "compiled-plan.json", plan, exclusive=True)
+            frozen_prompts = []
+            for index, prompt in enumerate(plan["prompts"], 1):
+                source = controller / prompt["path"]
+                target = run_dir / "frozen-prompts" / f"{index}.md"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                payload = source.read_bytes()
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+                frozen_prompts.append({"path": str(target.resolve()),
+                                       "sha256": hashlib.sha256(payload).hexdigest()})
+            started_ns = time.time_ns()
+            journal = {
+                "schema_version": "juno_managed_task_run_journal.v2", "run_id": run_id,
+                "task_id": task_id, "execution_identity_sha256": execution_identity,
+                "compiled_plan": plan_ref, "frozen_prompts": frozen_prompts,
+                "started_at_unix_ns": started_ns,
+                "deadline_unix_ns": started_ns + int(plan["budgets"]["total_wall_seconds"]) * 1_000_000_000,
+                "attempts": {"implementation": 0, "decision_resumes": 0,
+                             "attributable_test_repair": 0, "worker_launches": 0},
+                "workers": [], "events": [], "projections": [], "state": "CLAIMED",
+                "terminal": False, "task_revisions": []}
+            journal_path = run_dir / "journal.json"
+            lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+            # Publish latest while the claim lock is held and before any product/Kanban side effect.
+            lifecycle_runtime.atomic_json(latest, {
+                "schema_version": "juno_managed_task_run_latest.v2", "run_id": run_id,
+                "compiled_plan_sha256": plan["compiled_plan_sha256"],
+                "execution_identity_sha256": execution_identity,
+                "task_revision_sha256": hashlib.sha256(task_bytes).hexdigest(),
+                "terminal": False, "projection_path": None, "summary": None})
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="claim", boundary="POST",
+                detail={"task_revision_sha256": hashlib.sha256(task_bytes).hexdigest()})
+        try:
+            lifecycle_runtime.lifecycle_remaining_seconds(journal)
+            # Recover orchestration boundaries whose side effect became durable
+            # before their POST checkpoint (for example process death after queueing).
+            for recoverable_phase in ("admit", "finish-initial", "finish-after-repair"):
+                matching = [event for event in journal["events"]
+                            if event.get("phase") == recoverable_phase]
+                if matching and matching[-1].get("boundary") == "PRE":
+                    with state_lock(controller):
+                        observed = read_state(controller)["tasks"].get(task_id, {})
+                    observed_state = observed.get("state") if isinstance(observed, dict) else None
+                    if ((recoverable_phase == "admit" and observed_state == "WORKING")
+                            or (recoverable_phase.startswith("finish")
+                                and observed_state == "QUEUED")):
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase=recoverable_phase,
+                            boundary="RECOVERED", detail={"state": observed_state})
+            task_revision = hashlib.sha256(task_bytes).hexdigest()
+            questions = lifecycle_runtime.readiness_questions(task_bytes)
+            prior_revision = journal["task_revisions"][-1] if journal["task_revisions"] else None
+            if prior_revision != task_revision:
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=f"readiness-{len(journal['task_revisions']) + 1}",
+                    boundary="PRE", detail={"task_revision_sha256": task_revision})
+                journal["task_revisions"].append(task_revision)
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=f"readiness-{len(journal['task_revisions'])}",
+                    boundary="POST", detail={"task_revision_sha256": task_revision,
+                                              "questions": questions})
+            if questions:
+                decision = {"schema_version": "juno_task_run_decision.v1", "task_id": task_id,
+                            "task_revision_sha256": task_revision, "questions": questions,
+                            "resume_command": f"yy task run {task_id}"}
+                decision_ref = lifecycle_runtime.atomic_json(
+                    run_dir / "decisions" / f"{len(journal['task_revisions']):04d}.json",
+                    decision, exclusive=True)
+                journal.setdefault("decision_receipts", []).append(decision_ref)
+                return _task_projection(
+                    controller, task_id, run_dir, latest, journal_path, journal, plan,
+                    state_name="NEEDS_DECISION",
+                    blocker={"category": "ambiguity", "questions": questions})
+
+            with state_lock(controller):
+                state_record = read_state(controller)["tasks"].get(task_id)
+            if not isinstance(state_record, dict):
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase="admit", boundary="PRE")
+                start(controller, task_id)
+                with state_lock(controller):
+                    state_record = read_state(controller)["tasks"][task_id]
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase="admit", boundary="POST",
+                    detail={"base_sha": state_record.get("base_sha")})
+            if state_record.get("state") == "QUEUED":
+                standing = state_record.get("review_ready_closure", {}).get("standing_validation", {})
+                return _task_projection(
+                    controller, task_id, run_dir, latest, journal_path, journal, plan,
+                    state_name="QUEUED", blocker=None, counters=standing.get("counters"), terminal=True)
+            if state_record.get("state") != "WORKING":
+                raise TaskWorkspaceError(f"task run cannot implement from {state_record.get('state')}")
+
+            completed_worker = next((item for item in journal["workers"]
+                                     if item.get("kind") == "implementation"
+                                     and item.get("terminal_state") == "completed"), None)
+            if completed_worker is None:
+                pending = next((item for item in reversed(journal["workers"])
+                                if item.get("kind") == "implementation"
+                                and item.get("terminal_state") is None), None)
+                worker = _recover_task_worker(state_record, pending) if pending else None
+                if pending and worker is None:
+                    raise TaskWorkspaceError(
+                        "implementation child was interrupted without terminal receipt; model budget is consumed")
+                blocked = next((item for item in reversed(journal["workers"])
+                                if item.get("kind") == "implementation"
+                                and item.get("terminal_state") == "blocked"), None)
+                if worker is None and blocked and blocked.get("task_revision_sha256") == task_revision:
+                    projection_path = Path(json.loads(latest.read_text()).get("projection_path"))
+                    return json.loads(projection_path.read_text())
+                if worker is None:
+                    is_resume = blocked is not None
+                    if is_resume and journal["attempts"]["decision_resumes"] >= int(
+                            plan["budgets"].get("decision_resumes", 1)):
+                        raise TaskWorkspaceError("managed decision-resume budget exhausted")
+                    if not is_resume and journal["attempts"]["implementation"] >= int(
+                            plan["budgets"]["implementation_attempts"]):
+                        raise TaskWorkspaceError("managed implementation budget exhausted")
+                    index = journal["attempts"]["worker_launches"] + 1
+                    attempt_dir = run_dir / "workers" / f"implementation-{index:04d}"
+                    attempt = {"kind": "implementation", "index": index,
+                               "attempt_dir": str(attempt_dir.resolve()),
+                               "task_revision_sha256": task_revision,
+                               "before_sha": git(Path(state_record["worktree"]), "rev-parse", "HEAD"),
+                               "terminal_state": None}
+                    journal["workers"].append(attempt)
+                    journal["attempts"]["worker_launches"] += 1
+                    journal["attempts"]["decision_resumes" if is_resume else "implementation"] += 1
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=f"implementation-{index}", boundary="PRE",
+                        detail={key: attempt[key] for key in
+                                ("attempt_dir", "task_revision_sha256", "before_sha")})
+                    worker = _launch_task_worker(
+                        controller, task_id, state_record, attempt_dir,
+                        Path(journal["frozen_prompts"][0]["path"]), repair=False,
+                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal))
+                target = pending if pending else journal["workers"][-1]
+                target.update(worker)
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=f"implementation-{target['index']}",
+                    boundary="RECOVERED" if worker.get("recovered") else "POST",
+                    detail={"terminal_state": worker["terminal_state"],
+                            "after_sha": worker["after_sha"], "receipt": worker["receipt"]})
+                if worker["terminal_state"] != "completed":
+                    state_name = "NEEDS_DECISION" if worker["terminal_state"] == "blocked" else "BLOCKED"
+                    return _task_projection(
+                        controller, task_id, run_dir, latest, journal_path, journal, plan,
+                        state_name=state_name,
+                        blocker={"category": "implementation",
+                                 "terminal_state": worker["terminal_state"]},
+                        terminal=state_name == "BLOCKED")
+
+            initial_error = next((event["detail"].get("error") for event in journal["events"]
+                                  if event["phase"] == "finish-initial"
+                                  and event["boundary"] == "POST"
+                                  and event["detail"].get("outcome") == "attributable_failure"), None)
+            if initial_error is None:
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase="finish-initial", boundary="PRE")
+                try:
+                    queued = finish(controller, task_id)
+                except TaskWorkspaceError as exc:
+                    attributable = ("focused validation failed" in str(exc)
+                                    or "parsed" in str(exc) or "test" in str(exc).lower())
+                    if not attributable:
+                        raise
+                    initial_error = str(exc)[:32768]
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase="finish-initial", boundary="POST",
+                        detail={"outcome": "attributable_failure", "error": initial_error})
+                else:
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase="finish-initial", boundary="POST",
+                        detail={"outcome": "queued", "tip_sha": queued.get("tip_sha")})
+            if initial_error is not None:
+                repair = next((item for item in journal["workers"]
+                               if item.get("kind") == "attributable_test_repair"), None)
+                repaired = _recover_task_worker(state_record, repair) if repair and not repair.get("terminal_state") else repair
+                if repaired is None:
+                    if journal["attempts"]["attributable_test_repair"] >= int(
+                            plan["budgets"]["attributable_test_repairs"]):
+                        raise TaskWorkspaceError("attributable test repair budget exhausted")
+                    index = journal["attempts"]["worker_launches"] + 1
+                    attempt_dir = run_dir / "workers" / f"attributable-repair-{index:04d}"
+                    repair = {"kind": "attributable_test_repair", "index": index,
+                              "attempt_dir": str(attempt_dir.resolve()),
+                              "task_revision_sha256": task_revision,
+                              "before_sha": git(Path(state_record["worktree"]), "rev-parse", "HEAD"),
+                              "terminal_state": None}
+                    journal["workers"].append(repair)
+                    journal["attempts"]["worker_launches"] += 1
+                    journal["attempts"]["attributable_test_repair"] += 1
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=f"attributable-repair-{index}", boundary="PRE",
+                        detail={"attempt_dir": repair["attempt_dir"], "before_sha": repair["before_sha"]})
+                    repaired = _launch_task_worker(
+                        controller, task_id, state_record, attempt_dir,
+                        Path(journal["frozen_prompts"][1]["path"]), repair=True,
+                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                        context_bytes=initial_error.encode("utf-8", errors="replace"))
+                assert repair is not None
+                if isinstance(repaired, dict) and "terminal_state" in repaired:
+                    repair.update(repaired)
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=f"attributable-repair-{repair['index']}",
+                    boundary="RECOVERED" if repaired.get("recovered") else "POST",
+                    detail={"terminal_state": repaired.get("terminal_state"),
+                            "after_sha": repaired.get("after_sha"), "receipt": repaired.get("receipt")})
+                if repaired.get("terminal_state") != "completed":
+                    raise TaskWorkspaceError("attributable test repair did not complete")
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase="finish-after-repair", boundary="PRE")
+                queued = finish(controller, task_id)
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase="finish-after-repair", boundary="POST",
+                    detail={"outcome": queued.get("outcome"), "tip_sha": queued.get("tip_sha")})
+            with state_lock(controller):
+                final_record = read_state(controller)["tasks"][task_id]
+            standing = final_record.get("review_ready_closure", {}).get("standing_validation", {})
+            return _task_projection(
+                controller, task_id, run_dir, latest, journal_path, journal, plan,
+                state_name="QUEUED", blocker=None, counters=standing.get("counters"), terminal=True)
+        except (TaskWorkspaceError, lifecycle_runtime.LifecycleContractError, OSError) as exc:
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="task-run", boundary="ERROR",
+                detail={"error_type": type(exc).__name__, "error": str(exc)[:1024]})
+            raise TaskWorkspaceError(str(exc)) from exc
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)

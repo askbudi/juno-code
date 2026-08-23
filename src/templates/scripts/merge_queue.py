@@ -1634,7 +1634,12 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                         if cancel_event is not None else
                         task_runtime.run_validation(row, cwd))
         retry_evidence = None
-        if evidence["timed_out"] or evidence["exit_code"]:
+        # A zero process exit contradicted by parsed reporter failures is a
+        # terminal result-integrity violation, not an absorbable flake: no
+        # isolated retry may convert it into reusable PASS evidence.
+        result_integrity = evidence.get("result_integrity") or {}
+        terminal_contradiction = bool(result_integrity.get("contradiction"))
+        if not terminal_contradiction and (evidence["timed_out"] or evidence["exit_code"]):
             retry_evidence = bounded_file_retry(row, cwd, evidence, candidate,
                                                 dependency_source)
             if retry_evidence is not None and retry_evidence["absorbed"]:
@@ -1656,6 +1661,11 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             "timing": evidence["timing"], "resource": evidence["resource"],
             "identity": evidence["identity"],
             "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
+                       "process_exit_code": evidence.get("process_exit_code"),
+                       "result_integrity": {
+                           "contradiction": terminal_contradiction,
+                           "eligible_pass": bool(result_integrity.get("eligible_pass")),
+                           "integrity_sha256": result_integrity.get("integrity_sha256")},
                        "stdout": {"sha256": evidence["stdout_sha256"],
                                   "tail": evidence["stdout_tail"],
                                   "truncated_bytes": evidence["stdout_truncated_bytes"]},
@@ -3770,7 +3780,8 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
     changed = record.get("changed_paths") or []
     active_paths = route.get("active_paths", []) if route.get("mode") == "active_audit" else []
     coherence = lifecycle_runtime.grouped_coherence(
-        controller, repository, candidate_sha, changed, active_doc_paths=active_paths)
+        controller, repository, candidate_sha, changed, active_doc_paths=active_paths,
+        documentation_policy=config["documentation_validation"])
     if coherence["outcome"] != "PASSED":
         raise MergeQueueError("grouped coherence failed before validation/review: " + ", ".join(
             finding["code"] for finding in coherence["findings"]))
@@ -3837,7 +3848,8 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
         if row["argv"] == lifecycle_runtime.ACTIVE_DOC_ARGV:
             result = task_runtime._active_documentation_validation(
                 repository, candidate_sha,
-                {"documentation_route": route}, row)
+                {"documentation_route": route}, row,
+                config["documentation_validation"])
         else:
             with validation_dependencies(candidate, cwd, dependency_source):
                 result = task_runtime.run_validation(row, cwd)
@@ -5486,113 +5498,27 @@ def _drive_scope(controller: Path, config: dict[str, Any], through: Optional[str
              "record_sha256": digest(row)} for row in rows]
 
 
-def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
-    """Advance one frozen FIFO scope by calling only typed queue operations."""
-    if through is not None and not task_runtime.TASK_RE.fullmatch(through):
-        raise MergeQueueError("unsafe --through task id")
-    plan = lifecycle_runtime.compile_lifecycle_template(
-        controller, "merge-drive", through, model_identity=os.environ.get("JUNO_MODEL"))
-    config = task_runtime.load_config(controller)
-    repository = task_runtime.product_repository(controller, config)
-    scope = _drive_scope(controller, config, through)
-    scope_identity = digest({"target_ref": config["target_ref"],
-                             "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
-                             "tasks": scope})
-    run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
-    run_dir = controller / MERGE_DRIVE_ROOT / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    started = time.monotonic()
-    plan_ref = lifecycle_runtime.atomic_json(run_dir / "compiled-plan.json", plan, exclusive=True)
-    scope_ref = lifecycle_runtime.atomic_json(run_dir / "fifo-scope.json", {
-        "schema_version": "juno_merge_drive_fifo_scope.v1", "scope_sha256": scope_identity,
-        "target_ref": config["target_ref"],
-        "target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
-        "through": through, "tasks": scope}, exclusive=True)
-    repairs = 0
-    transitions = 0
-    blocker: Optional[dict[str, Any]] = None
-    completed: list[str] = []
-    max_transitions = int(plan["budgets"]["max_transitions"])
-    for frozen in scope:
-        task_id = frozen["task_id"]
-        while transitions < max_transitions:
-            with task_runtime.state_lock(controller):
-                record = task_runtime.read_state(controller)["tasks"].get(task_id)
-            if not isinstance(record, dict):
-                raise MergeQueueError("frozen merge-drive task disappeared")
-            state = record.get("state")
-            if state == "MERGED":
-                completed.append(task_id); break
-            if state in {"CONFLICT", "CONFLICT_RESOLVED"}:
-                blocker = {"category": "conflict", "task_id": task_id, "state": state,
-                           "authority_required": "explicit conflict resolution"}
-                break
-            if state == "AWAITING_RELEASE":
-                blocker = {"category": "external_authority", "task_id": task_id,
-                           "authority_required": "release gate owner"}
-                break
-            if state == "REVIEW_FINDINGS_EXHAUSTED":
-                blocker = {"category": "review_findings_exhausted", "task_id": task_id}
-                break
-            if state == "REVIEW_FINDINGS":
-                if repairs >= int(plan["budgets"]["semantic_repairs"]):
-                    blocker = {"category": "review_findings_exhausted", "task_id": task_id}
-                    break
-                repairs += 1
-                repair_dir = run_dir / f"repair-{repairs}-{task_id}"
-                prompt = controller / plan["prompts"][0]["path"]
-                repaired = task_runtime._launch_task_worker(
-                    controller, task_id, record, repair_dir, prompt, repair=True,
-                    timeout_seconds=max(1, int(plan["budgets"]["total_wall_seconds"])
-                                        - int(time.monotonic() - started)),
-                    context_bytes=lifecycle_runtime.canonical_bytes({
-                        "candidate_sha": (record.get("queue_attempt") or {}).get("candidate_sha"),
-                        "risk": (record.get("queue_attempt") or {}).get("risk"),
-                    })[:32768])
-                if repaired["terminal_state"] != "completed":
-                    blocker = {"category": "semantic_repair", "task_id": task_id,
-                               "terminal_state": repaired["terminal_state"]}
-                    break
-                merge_reopen(controller, task_id)
-                transitions += 1
-                continue
-            if state == "AWAITING_RISK":
-                attempt = record.get("queue_attempt")
-                risk = attempt.get("risk") if isinstance(attempt, dict) else None
-                if isinstance(risk, dict) and risk.get("status") == "RISK_EVIDENCE_READY":
-                    merge_next(controller, task_id)
-                else:
-                    merge_review(controller, task_id, overlap_suite=True)
-                transitions += 1
-                continue
-            if state == "REQUEUING_STALE":
-                merge_next(controller, task_id)
-                transitions += 1
-                continue
-            if state == "MERGING":
-                merge_next(controller)
-                transitions += 1
-                continue
-            if state == "QUEUED":
-                # Bare next is the sole FIFO selector; never bypass a predecessor.
-                selected = select_next(controller, config)
-                if selected.get("task_id") != task_id:
-                    raise MergeQueueError("frozen FIFO scope no longer owns the next legal task")
-                merge_next(controller)
-                transitions += 1
-                continue
-            blocker = {"category": "unsupported_state", "task_id": task_id, "state": state}
-            break
-        if blocker is not None:
-            break
-    if transitions >= max_transitions and blocker is None:
-        blocker = {"category": "transition_budget", "max_transitions": max_transitions}
-    counters = {name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
-    artifacts = [plan_ref, scope_ref]
+def _merge_plan_execution_identity(plan: dict[str, Any]) -> str:
+    return lifecycle_runtime.digest({key: value for key, value in plan.items()
+                                     if key not in {"controller_commit", "compiled_plan_sha256"}})
+
+
+def _merge_drive_projection(controller: Path, repository: Path, config: dict[str, Any],
+                            through: Optional[str], run_dir: Path, latest_paths: list[Path],
+                            journal_path: Path, journal: dict[str, Any], plan: dict[str, Any],
+                            scope: list[dict[str, Any]], *, blocker: Optional[dict[str, Any]],
+                            terminal: bool) -> dict[str, Any]:
+    counters = {name: 0 for name in
+                ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+    artifacts = [journal["compiled_plan"], journal["fifo_scope"]]
     with task_runtime.state_lock(controller):
         final_tasks = task_runtime.read_state(controller)["tasks"]
+    completed = []
+    reviewer_attempts = 0
     for frozen in scope:
         row = final_tasks.get(frozen["task_id"], {})
+        if row.get("state") == "MERGED":
+            completed.append(frozen["task_id"])
         attempt = row.get("queue_attempt") if isinstance(row, dict) else None
         evidence = attempt.get("command_evidence") if isinstance(attempt, dict) else None
         if isinstance(evidence, dict):
@@ -5600,38 +5526,280 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                 if name in counters and isinstance(count, int):
                     counters[name] += count
         risk = attempt.get("risk") if isinstance(attempt, dict) else None
-        reference = risk.get("evidence") if isinstance(risk, dict) else None
-        if isinstance(reference, dict):
-            artifacts.append({"path": reference.get("receipt_path"),
-                              "sha256": reference.get("receipt_sha256")})
-    state_name = "MERGED_THROUGH" if blocker is None else "PAUSED"
-    next_action = ("none: frozen FIFO scope integrated" if blocker is None else
-                   "resolve the reported blocker, then rerun yy merge drive"
-                   + (f" --through {through}" if through else ""))
+        if isinstance(risk, dict):
+            progress = risk.get("review_progress")
+            if isinstance(progress, dict):
+                reviewer_attempts += int(progress.get("review_attempt_counter", 0))
+            reference = risk.get("evidence")
+            if isinstance(reference, dict):
+                artifacts.append({"path": reference.get("receipt_path"),
+                                  "sha256": reference.get("receipt_sha256")})
+    state_name = "MERGED_THROUGH" if terminal else "PAUSED"
     projection = lifecycle_runtime.compact_projection(
-        kind="merge-drive", run_id=run_id, task_id=through, state=state_name,
-        plan=plan, started=started, counters=counters,
-        attempts={"transitions": transitions, "semantic_repairs": repairs,
-                  "reviewer_attempts": sum(
-                      int((((row.get("queue_attempt") or {}).get("risk") or {})
-                           .get("review_progress") or {}).get("review_attempt_counter", 0))
-                      for row in final_tasks.values() if isinstance(row, dict)
-                      and row.get("task_id") in {item["task_id"] for item in scope})},
-        blocker=blocker, next_action=next_action, artifacts=artifacts,
-        identities={"scope_sha256": scope_identity, "target_ref": config["target_ref"],
-                    "initial_target_sha": json.loads((run_dir / "fifo-scope.json").read_text())["target_sha"],
+        kind="merge-drive", run_id=journal["run_id"], task_id=through, state=state_name,
+        plan=plan, started=lifecycle_runtime.lifecycle_elapsed_started(journal),
+        counters=counters,
+        attempts={"transitions": journal["attempts"]["transitions"],
+                  "semantic_repairs": journal["attempts"]["semantic_repairs"],
+                  "reviewer_attempts": reviewer_attempts},
+        blocker=blocker,
+        next_action=("none: frozen FIFO scope integrated" if terminal else
+                     "resolve the reported blocker, then resume the same yy merge drive"
+                     + (f" --through {through}" if through else "")),
+        artifacts=artifacts,
+        identities={"scope_sha256": journal["scope_sha256"],
+                    "target_ref": config["target_ref"],
+                    "initial_target_sha": journal["initial_target_sha"],
                     "current_target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
-                    "completed_task_ids": completed})
-    projection_ref = lifecycle_runtime.atomic_json(run_dir / "projection.json", projection)
-    summary_ref = lifecycle_runtime.atomic_json(
-        run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection))
-    lifecycle_runtime.atomic_json(controller / MERGE_DRIVE_ROOT / "latest.json", {
-        "run_id": run_id, "scope_sha256": scope_identity,
-        "compiled_plan_sha256": plan["compiled_plan_sha256"],
-        "projection": projection_ref, "summary": summary_ref,
-        "terminal": blocker is None})
+                    "completed_task_ids": completed,
+                    "deadline_unix_ns": journal["deadline_unix_ns"]})
+    projection_index = len(journal.get("projections", [])) + 1
+    projection_ref = lifecycle_runtime.atomic_json(
+        run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
+        projection, exclusive=True)
+    journal.setdefault("projections", []).append(projection_ref)
+    journal["state"] = state_name; journal["terminal"] = terminal; journal["blocker"] = blocker
+    lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+    summary_ref = None
+    if terminal:
+        summary_ref = lifecycle_runtime.atomic_json(
+            run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection),
+            exclusive=not (run_dir / "summary.json").exists())
+    pointer = {"schema_version": "juno_managed_merge_drive_latest.v2",
+               "run_id": journal["run_id"], "scope_sha256": journal["scope_sha256"],
+               "compiled_plan_sha256": plan["compiled_plan_sha256"],
+               "execution_identity_sha256": journal["execution_identity_sha256"],
+               "projection_path": projection_ref["path"], "summary": summary_ref,
+               "terminal": terminal}
+    for path in latest_paths:
+        lifecycle_runtime.atomic_json(path, pointer)
     return projection
 
+
+def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
+    """Resume one durably claimed frozen FIFO scope within cumulative budgets."""
+    if through is not None and not task_runtime.TASK_RE.fullmatch(through):
+        raise MergeQueueError("unsafe --through task id")
+    current_plan = lifecycle_runtime.compile_lifecycle_template(
+        controller, "merge-drive", through, model_identity=os.environ.get("JUNO_MODEL"))
+    execution_identity = _merge_plan_execution_identity(current_plan)
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    root = controller / MERGE_DRIVE_ROOT
+    selector_identity = digest({"repository_identity": repository_identity(repository),
+                                "target_ref": config["target_ref"], "through": through})
+    selector_root = root / "scopes" / selector_identity
+    selector_latest = selector_root / "latest.json"
+    global_latest = root / "latest.json"
+    with lifecycle_runtime.lifecycle_claim(selector_root / ".claim.lock"):
+        if selector_latest.is_file():
+            try:
+                pointer = json.loads(selector_latest.read_text())
+                run_dir = root / pointer["run_id"]
+                journal_path = run_dir / "journal.json"
+                journal = json.loads(journal_path.read_text())
+                plan = json.loads((run_dir / "compiled-plan.json").read_text())
+                scope_value = json.loads((run_dir / "fifo-scope.json").read_text())
+                scope = scope_value["tasks"]
+            except (OSError, KeyError, json.JSONDecodeError) as exc:
+                raise MergeQueueError(
+                    "frozen merge-drive claim is malformed; explicit reviewed replacement required") from exc
+            if (journal.get("schema_version") != "juno_managed_merge_drive_journal.v2"
+                    or journal.get("selector_identity_sha256") != selector_identity
+                    or journal.get("execution_identity_sha256") != execution_identity
+                    or journal.get("scope_sha256") != scope_value.get("scope_sha256")):
+                raise MergeQueueError(
+                    "frozen merge-drive identity is incompatible; explicit reviewed replacement required")
+            projection_path = Path(str(pointer.get("projection_path", "")))
+            if journal.get("terminal") and projection_path.is_file():
+                return json.loads(projection_path.read_text())
+        else:
+            scope = _drive_scope(controller, config, through)
+            target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+            scope_identity = digest({"target_ref": config["target_ref"],
+                                     "target_sha": target_sha, "tasks": scope})
+            run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
+            run_dir = root / run_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+            plan = current_plan
+            plan_ref = lifecycle_runtime.atomic_json(
+                run_dir / "compiled-plan.json", plan, exclusive=True)
+            scope_ref = lifecycle_runtime.atomic_json(run_dir / "fifo-scope.json", {
+                "schema_version": "juno_merge_drive_fifo_scope.v1",
+                "scope_sha256": scope_identity, "target_ref": config["target_ref"],
+                "target_sha": target_sha, "through": through, "tasks": scope}, exclusive=True)
+            prompt_source = controller / plan["prompts"][0]["path"]
+            prompt_target = run_dir / "frozen-prompts/semantic-repair.md"
+            prompt_target.parent.mkdir(parents=True, exist_ok=True)
+            prompt_bytes = prompt_source.read_bytes()
+            fd = os.open(prompt_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(prompt_bytes); stream.flush(); os.fsync(stream.fileno())
+            started_ns = time.time_ns()
+            journal = {"schema_version": "juno_managed_merge_drive_journal.v2",
+                       "run_id": run_id, "selector_identity_sha256": selector_identity,
+                       "execution_identity_sha256": execution_identity,
+                       "scope_sha256": scope_identity, "initial_target_sha": target_sha,
+                       "compiled_plan": plan_ref, "fifo_scope": scope_ref,
+                       "frozen_prompt": {"path": str(prompt_target.resolve()),
+                                         "sha256": hashlib.sha256(prompt_bytes).hexdigest()},
+                       "started_at_unix_ns": started_ns,
+                       "deadline_unix_ns": started_ns + int(plan["budgets"]["total_wall_seconds"]) * 1_000_000_000,
+                       "attempts": {"transitions": 0, "semantic_repairs": 0},
+                       "events": [], "operations": [], "repairs": [], "projections": [],
+                       "state": "CLAIMED", "terminal": False, "blocker": None}
+            journal_path = run_dir / "journal.json"
+            lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+            pointer = {"schema_version": "juno_managed_merge_drive_latest.v2",
+                       "run_id": run_id, "scope_sha256": scope_identity,
+                       "compiled_plan_sha256": plan["compiled_plan_sha256"],
+                       "execution_identity_sha256": execution_identity,
+                       "projection_path": None, "summary": None, "terminal": False}
+            # The scope pointer is durable before the first queue transition.
+            lifecycle_runtime.atomic_json(selector_latest, pointer)
+            lifecycle_runtime.atomic_json(global_latest, pointer)
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="claim", boundary="POST",
+                detail={"scope_sha256": scope_identity, "task_count": len(scope)})
+        latest_paths = [selector_latest, global_latest]
+        blocker: Optional[dict[str, Any]] = None
+        max_transitions = int(plan["budgets"]["max_transitions"])
+        try:
+            pending_operation = next((item for item in reversed(journal["operations"])
+                                      if item.get("post_state") is None), None)
+            if pending_operation is not None:
+                with task_runtime.state_lock(controller):
+                    recovered_record = task_runtime.read_state(controller)["tasks"].get(
+                        pending_operation["task_id"], {})
+                pending_operation["post_state"] = recovered_record.get("state")
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=pending_operation["phase"],
+                    boundary="RECOVERED",
+                    detail={"task_id": pending_operation["task_id"],
+                            "post_state": pending_operation["post_state"],
+                            "transition": journal["attempts"]["transitions"]})
+            lifecycle_runtime.lifecycle_remaining_seconds(journal)
+            for frozen in scope:
+                task_id = frozen["task_id"]
+                while True:
+                    lifecycle_runtime.lifecycle_remaining_seconds(journal)
+                    with task_runtime.state_lock(controller):
+                        record = task_runtime.read_state(controller)["tasks"].get(task_id)
+                    if not isinstance(record, dict):
+                        raise MergeQueueError("frozen merge-drive task disappeared")
+                    state = record.get("state")
+                    if state == "MERGED":
+                        break
+                    if state in {"CONFLICT", "CONFLICT_RESOLVED"}:
+                        blocker = {"category": "conflict", "task_id": task_id, "state": state,
+                                   "authority_required": "explicit conflict resolution"}; break
+                    if state == "AWAITING_RELEASE":
+                        blocker = {"category": "external_authority", "task_id": task_id,
+                                   "authority_required": "release gate owner"}; break
+                    if state == "REVIEW_FINDINGS_EXHAUSTED":
+                        blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
+                    if state == "REVIEW_FINDINGS":
+                        repair = journal["repairs"][0] if journal["repairs"] else None
+                        repaired = (task_runtime._recover_task_worker(record, repair)
+                                    if repair and not repair.get("terminal_state") else repair)
+                        if repaired is None:
+                            if journal["attempts"]["semantic_repairs"] >= int(
+                                    plan["budgets"]["semantic_repairs"]):
+                                blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
+                            repair_dir = run_dir / "workers/semantic-repair-0001"
+                            repair = {"kind": "semantic_repair", "index": 1,
+                                      "attempt_dir": str(repair_dir.resolve()),
+                                      "before_sha": task_runtime.git(Path(record["worktree"]),
+                                                                     "rev-parse", "HEAD"),
+                                      "task_id": task_id, "terminal_state": None}
+                            journal["repairs"].append(repair)
+                            journal["attempts"]["semantic_repairs"] += 1
+                            lifecycle_runtime.lifecycle_checkpoint(
+                                journal_path, journal, phase="semantic-repair-1", boundary="PRE",
+                                detail={"task_id": task_id, "attempt_dir": repair["attempt_dir"],
+                                        "before_sha": repair["before_sha"]})
+                            repaired = task_runtime._launch_task_worker(
+                                controller, task_id, record, repair_dir,
+                                Path(journal["frozen_prompt"]["path"]), repair=True,
+                                timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                                context_bytes=lifecycle_runtime.canonical_bytes({
+                                    "candidate_sha": (record.get("queue_attempt") or {}).get("candidate_sha"),
+                                    "risk": (record.get("queue_attempt") or {}).get("risk")})[:32768])
+                        assert repair is not None
+                        if isinstance(repaired, dict) and "terminal_state" in repaired:
+                            repair.update(repaired)
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase="semantic-repair-1",
+                            boundary="RECOVERED" if repaired.get("recovered") else "POST",
+                            detail={"task_id": task_id,
+                                    "terminal_state": repaired.get("terminal_state"),
+                                    "after_sha": repaired.get("after_sha"),
+                                    "receipt": repaired.get("receipt")})
+                        if repaired.get("terminal_state") != "completed":
+                            blocker = {"category": "semantic_repair", "task_id": task_id,
+                                       "terminal_state": repaired.get("terminal_state")}; break
+                        # The exact one-commit readback above is durable before reopen.
+                        operation = {"phase": "repair-reopen", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "AWAITING_RISK":
+                        attempt = record.get("queue_attempt")
+                        risk = attempt.get("risk") if isinstance(attempt, dict) else None
+                        operation = {"phase": "risk-ready-next" if isinstance(risk, dict)
+                                     and risk.get("status") == "RISK_EVIDENCE_READY" else "review",
+                                     "task_id": task_id, "pre_state": state, "post_state": None}
+                    elif state == "REQUEUING_STALE":
+                        operation = {"phase": "stale-next", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "MERGING":
+                        operation = {"phase": "cas-finalize", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "QUEUED":
+                        selected = select_next(controller, config)
+                        if selected.get("task_id") != task_id:
+                            raise MergeQueueError("frozen FIFO scope no longer owns the next legal task")
+                        operation = {"phase": "compose", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    else:
+                        blocker = {"category": "unsupported_state", "task_id": task_id,
+                                   "state": state}; break
+                    if journal["attempts"]["transitions"] >= max_transitions:
+                        blocker = {"category": "transition_budget",
+                                   "max_transitions": max_transitions}; break
+                    journal["attempts"]["transitions"] += 1
+                    journal["operations"].append(operation)
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=operation["phase"], boundary="PRE",
+                        detail={"task_id": task_id, "pre_state": state,
+                                "transition": journal["attempts"]["transitions"]})
+                    if operation["phase"] == "repair-reopen":
+                        merge_reopen(controller, task_id)
+                    elif operation["phase"] == "review":
+                        merge_review(controller, task_id, overlap_suite=True)
+                    elif operation["phase"] in {"risk-ready-next", "stale-next"}:
+                        merge_next(controller, task_id)
+                    elif operation["phase"] == "cas-finalize":
+                        merge_next(controller)
+                    elif operation["phase"] == "compose":
+                        merge_next(controller)
+                    with task_runtime.state_lock(controller):
+                        post = task_runtime.read_state(controller)["tasks"].get(task_id, {})
+                    operation["post_state"] = post.get("state")
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=operation["phase"], boundary="POST",
+                        detail={"task_id": task_id, "post_state": operation["post_state"],
+                                "transition": journal["attempts"]["transitions"]})
+                if blocker is not None:
+                    break
+            terminal = blocker is None
+            return _merge_drive_projection(
+                controller, repository, config, through, run_dir, latest_paths,
+                journal_path, journal, plan, scope, blocker=blocker, terminal=terminal)
+        except (MergeQueueError, task_runtime.TaskWorkspaceError,
+                lifecycle_runtime.LifecycleContractError, OSError) as exc:
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="merge-drive", boundary="ERROR",
+                detail={"error_type": type(exc).__name__, "error": str(exc)[:1024]})
+            raise MergeQueueError(str(exc)) from exc
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)

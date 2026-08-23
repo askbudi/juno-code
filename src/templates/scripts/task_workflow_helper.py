@@ -1141,11 +1141,15 @@ import subprocess
 import tempfile
 import threading
 import time
+import shutil
+import urllib.parse
+import fcntl
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
-COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v2"
+COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v3"
 COMMAND_DECISION_SCHEMA = "juno_command_evidence_decision.v1"
 DOCUMENTATION_ROUTE_SCHEMA = "juno_documentation_validation_route.v1"
 COHERENCE_SCHEMA = "juno_grouped_coherence_report.v1"
@@ -1211,6 +1215,52 @@ def atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -
     return {"path": str(path.resolve()), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
+@contextmanager
+def lifecycle_claim(path: Path) -> Any:
+    """Serialize one logical lifecycle identity for the complete invocation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def lifecycle_journal_write(path: Path, journal: dict[str, Any]) -> None:
+    journal["journal_revision"] = int(journal.get("journal_revision", 0)) + 1
+    journal["updated_at_unix_ns"] = time.time_ns()
+    atomic_json(path, journal)
+
+
+def lifecycle_checkpoint(path: Path, journal: dict[str, Any], *, phase: str,
+                         boundary: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if boundary not in {"PRE", "POST", "PAUSED", "ERROR", "RECOVERED"}:
+        raise LifecycleContractError("invalid lifecycle checkpoint boundary")
+    events = journal.setdefault("events", [])
+    if not isinstance(events, list) or len(events) >= 512:
+        raise LifecycleContractError("lifecycle journal event bound exhausted")
+    event = {"schema_version": "juno_lifecycle_phase_checkpoint.v1",
+             "sequence": len(events) + 1, "phase": phase, "boundary": boundary,
+             "recorded_at_unix_ns": time.time_ns(), "detail": detail or {}}
+    events.append(event)
+    lifecycle_journal_write(path, journal)
+    return event
+
+
+def lifecycle_remaining_seconds(journal: dict[str, Any]) -> int:
+    deadline = journal.get("deadline_unix_ns")
+    if not isinstance(deadline, int):
+        raise LifecycleContractError("lifecycle journal deadline is malformed")
+    remaining_ns = deadline - time.time_ns()
+    if remaining_ns <= 0:
+        raise LifecycleContractError("lifecycle cumulative wall budget exhausted")
+    return max(1, remaining_ns // 1_000_000_000)
+
+
+def lifecycle_elapsed_started(journal: dict[str, Any]) -> float:
+    started_ns = journal.get("started_at_unix_ns")
+    elapsed = max(0.0, (time.time_ns() - int(started_ns)) / 1_000_000_000)
+    return time.monotonic() - elapsed
+
+
 def _git(root: Path, *args: str, binary: bool = False) -> Any:
     result = subprocess.run(["git", "-C", str(root), *args], cwd=root,
                             stdin=subprocess.DEVNULL, capture_output=True,
@@ -1233,10 +1283,73 @@ def _blob(repository: Path, head: str, relative: str) -> Optional[str]:
     return value if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", value) else None
 
 
+COMMAND_ENVIRONMENT_ALLOWLIST = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TZ", "CI", "NODE_ENV", "NODE_OPTIONS",
+    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "NPM_CONFIG_CACHE",
+    "npm_config_cache", "NPM_CONFIG_REGISTRY", "npm_config_registry",
+    "NPM_CONFIG_USERCONFIG", "npm_config_userconfig",
+)
+
+
+def admitted_command_environment(source: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Return the small, explicit environment that validation may observe.
+
+    Absence is represented by omission. Values are bounded so a hostile parent
+    cannot turn a receipt into an environment dump.
+    """
+    source = os.environ if source is None else source
+    admitted: dict[str, str] = {}
+    for name in COMMAND_ENVIRONMENT_ALLOWLIST:
+        value = source.get(name)
+        if isinstance(value, str) and len(value.encode("utf-8", errors="replace")) <= 4096:
+            admitted[name] = value
+    return dict(sorted(admitted.items()))
+
+
+def _stream_sha256(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def _executable_identity(name: str, environment: dict[str, str]) -> dict[str, Any]:
+    resolved = shutil.which(name, path=environment.get("PATH"))
+    if not resolved:
+        return {"name": name, "resolved": None, "available": False}
+    path = Path(resolved).resolve()
+    try:
+        stat_result = path.stat()
+        return {"name": name, "resolved": str(path), "available": path.is_file(),
+                "mode": stat_result.st_mode & 0o7777, "bytes": stat_result.st_size,
+                "sha256": _stream_sha256(path) if path.is_file() else None}
+    except OSError:
+        return {"name": name, "resolved": str(path), "available": False}
+
+
+def _bounded_version(executable: dict[str, Any], environment: dict[str, str]) -> Optional[str]:
+    path = executable.get("resolved")
+    if not executable.get("available") or not isinstance(path, str):
+        return None
+    try:
+        result = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=5, env=environment)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout or result.stderr)[:4096]
+    return output.decode("utf-8", errors="replace").strip() if result.returncode == 0 else None
+
+
+def command_execution_environment() -> dict[str, str]:
+    """The exact allowlisted ambient environment used by validation children."""
+    return admitted_command_environment()
+
+
 def command_closure(repository: Path, head: str, row: dict[str, Any], *,
                     config_sha256: str, policy_sha256: Optional[str],
                     runtime_sha256: str, environment: Optional[dict[str, str]] = None,
-                    producer: str = "task_workspace.run_validation.v2") -> dict[str, Any]:
+                    producer: str = "task_workspace.run_validation.v3") -> dict[str, Any]:
     """Build one stage-neutral behavioral closure for a validation command."""
     cwd = str(row.get("cwd", "")).strip("/")
     revision = f"{head}:{cwd}" if cwd else f"{head}^{{tree}}"
@@ -1250,7 +1363,7 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
         observation_scope = "whole_tree_fallback"
     locks: dict[str, str] = {}
     for name in ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock",
-                 "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt"):
+                 "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt", ".npmrc"):
         relative = f"{cwd}/{name}" if cwd else name
         identity = _blob(repository, head, relative)
         if identity:
@@ -1264,6 +1377,16 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
     command = {key: row.get(key) for key in
                ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes", "resource")
                if key in row}
+    admitted_environment = admitted_command_environment(environment)
+    argv = row.get("argv") if isinstance(row.get("argv"), list) else []
+    executable_names = [str(argv[0])] if argv else []
+    if argv and Path(str(argv[0])).name.lower() in {"npm", "npm.cmd", "npx", "npx.cmd"}:
+        executable_names.append("node")
+    executables = [_executable_identity(name, admitted_environment)
+                   for name in dict.fromkeys(executable_names)]
+    command_runtime = {item["name"]: {"version": _bounded_version(item, admitted_environment),
+                                              "executable_sha256": item.get("sha256")}
+                       for item in executables}
     body = {
         "schema_version": COMMAND_CLOSURE_SCHEMA,
         "repository_identity": repository_identity(repository),
@@ -1278,7 +1401,10 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
         "runtime_sha256": runtime_sha256,
         "runner": {"class": producer, "python": list(__import__("sys").version_info[:3]),
                    "platform": __import__("sys").platform},
-        "environment": dict(sorted((environment or {}).items())),
+        "environment_allowlist": list(COMMAND_ENVIRONMENT_ALLOWLIST),
+        "environment": admitted_environment,
+        "executables": executables,
+        "command_runtime": command_runtime,
     }
     return {**body, "input_closure_sha256": digest(body)}
 
@@ -1338,6 +1464,20 @@ def default_documentation_policy() -> dict[str, Any]:
         "active_exact_files": ["README.md", "juno-code/README.md", "juno-benchmark/README.md"],
         "active_roots": ["docs", "juno-code/docs", "juno-benchmark/docs"],
         "active_name_patterns": [r"(^|/)(CHANGELOG|RELEASE_NOTES)(\.[^/]*)?$", r"(^|/)MIGRATION[^/]*\.md$"],
+        "public_identities": [
+            "https://github.com/askbudi/juno-mono", "https://github.com/yylo-dev/yylo",
+            "https://github.com/yylo-dev/yylo-benchmark", "https://github.com/yylo-dev/yylo-ledger",
+            "https://www.npmjs.com/package/%40yylo%2Fcli",
+            "https://www.npmjs.com/package/%40yylo%2Fbenchmark",
+            "https://pypi.org/project/yylo-ledger",
+        ],
+        "cli_top_level": [
+            "auth", "benchmark", "branches", "cc", "clone", "completion", "continue",
+            "continue-scope", "continuity", "doctor", "evidence", "feedback", "help", "info",
+            "init", "integration", "kanban", "ledger", "logs", "merge", "migrate", "pi",
+            "release", "scripts", "services", "session", "setup-git", "skills", "start",
+            "switch", "task", "test", "view-log", "watch", "where", "wiki",
+        ],
     }
 
 
@@ -1393,10 +1533,68 @@ def _git_file(repository: Path, head: str, path: str) -> Optional[bytes]:
     return result.stdout if result.returncode == 0 else None
 
 
-def active_documentation_audit(repository: Path, head: str, paths: list[str]) -> dict[str, Any]:
+def _documentation_cli_identity(repository: Path, head: str) -> dict[str, Any]:
+    tree = _git(repository, "ls-tree", "-r", "--name-only", head).splitlines()
+    sources = sorted(path for path in tree if (path == "juno-code/src/bin/cli.ts"
+                                               or (path.startswith("juno-code/src/cli/commands/")
+                                                   and path.endswith(".ts"))))
+    source_bytes = {path: _git_file(repository, head, path) or b"" for path in sources}
+    all_text = b"\n".join(source_bytes.values()).decode("utf-8", errors="replace")
+    options = sorted(set(re.findall(r"(?:requiredOption|option)\(\s*['\"](--[a-z0-9-]+)",
+                                    all_text, re.I)))
+    namespaces: dict[str, list[str]] = {}
+    for namespace in ("task", "merge", "evidence", "integration", "migrate", "watch"):
+        raw = source_bytes.get(f"juno-code/src/cli/commands/{namespace}.ts", b"")
+        names = re.findall(rb"\.command\(\s*['\"]([a-z][a-z0-9-]*)", raw)
+        # Include operation literals used by compact typed loops/unions; values
+        # containing prose, spaces, paths, or option syntax are excluded.
+        names.extend(re.findall(rb"['\"]([a-z][a-z0-9-]*)['\"]", raw))
+        namespaces[namespace] = sorted({item.decode() for item in names if item.decode() != namespace})
+    body = {"sources": sources,
+            "source_sha256": hashlib.sha256(b"\0".join(
+                path.encode() + b"\0" + source_bytes[path] for path in sources)).hexdigest(),
+            "options": options, "namespaces": namespaces}
+    return body
+
+
+def _documented_commands(text: str) -> list[list[str]]:
+    snippets = re.findall(r"(?ms)^```(?:bash|sh|shell)[ \t]*\n(.*?)^```[ \t]*$", text)
+    snippets.extend(re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text))
+    commands: list[list[str]] = []
+    for snippet in snippets:
+        for line in snippet.splitlines():
+            line = line.strip().removeprefix("$ ").strip()
+            if not re.match(r"^(?:yy|yylo|ypl)(?:\s|$)", line):
+                continue
+            try:
+                argv = shlex.split(line, comments=True)
+            except ValueError:
+                # Shell examples may deliberately continue quoted argv onto the
+                # next line; only fully tokenized command identities are audited.
+                continue
+            if argv:
+                commands.append(argv[:64])
+    return commands
+
+
+def _known_schema_identities(repository: Path, head: str) -> set[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "grep", "-h", "-o", "-E",
+         r"juno_[a-zA-Z0-9_.-]+\.v[0-9]+", head, "--", "*.py", "*.ts", "*.json", "*.yaml", "*.yml"],
+        cwd=repository, stdin=subprocess.DEVNULL, capture_output=True)
+    if result.returncode not in {0, 1} or len(result.stdout) > 4 * 1024 * 1024:
+        return set()
+    return set(result.stdout.decode("utf-8", errors="replace").splitlines())
+
+
+def active_documentation_audit(repository: Path, head: str, paths: list[str],
+                               policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Cheap offline audit of executable product guidance and public identities."""
+    policy = policy or default_documentation_policy()
     findings: list[dict[str, Any]] = []
     link_re = re.compile(r"(?<!!)\[[^\]]+\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)")
     package_names: set[str] = set()
+    package_versions: dict[str, str] = {}
     tree_paths = set(_git(repository, "ls-tree", "-r", "--name-only", head).splitlines())
     for manifest_path in ("juno-code/package.json", "juno-benchmark/package.json", "package.json"):
         raw = _git_file(repository, head, manifest_path)
@@ -1405,8 +1603,14 @@ def active_documentation_audit(repository: Path, head: str, paths: list[str]) ->
                 package = json.loads(raw)
                 if isinstance(package, dict) and isinstance(package.get("name"), str):
                     package_names.add(package["name"])
+                    if isinstance(package.get("version"), str):
+                        package_versions[package["name"]] = package["version"]
             except (UnicodeDecodeError, json.JSONDecodeError):
                 findings.append({"code": "active_doc.package_manifest_malformed", "path": manifest_path})
+    cli_identity = _documentation_cli_identity(repository, head)
+    configured_top = set(policy.get("cli_top_level", []))
+    public_identities = tuple(str(value).rstrip("/") for value in policy.get("public_identities", []))
+    known_schemas = _known_schema_identities(repository, head)
     for path in sorted(paths):
         raw = _git_file(repository, head, path)
         if raw is None:
@@ -1417,7 +1621,20 @@ def active_documentation_audit(repository: Path, head: str, paths: list[str]) ->
             findings.append({"code": "active_doc.non_utf8", "path": path}); continue
         for link in link_re.findall(text):
             target = link.split("#", 1)[0]
-            if not target or re.match(r"(?:https?|mailto):", target):
+            if not target or target.startswith("mailto:"):
+                continue
+            if re.match(r"https?://", target):
+                parsed = urllib.parse.urlsplit(target)
+                if (parsed.scheme not in {"http", "https"} or not parsed.netloc
+                        or parsed.username is not None or parsed.password is not None
+                        or any(ord(char) < 32 for char in target)):
+                    findings.append({"code": "active_doc.invalid_public_link", "path": path,
+                                     "target": link})
+                elif (public_identities and parsed.netloc.lower() in
+                      {"github.com", "www.npmjs.com", "pypi.org"}
+                      and not any(target.rstrip("/").startswith(value) for value in public_identities)):
+                    findings.append({"code": "active_doc.unknown_public_identity", "path": path,
+                                     "target": link})
                 continue
             target_path = (PurePosixPath(path).parent / target).as_posix()
             normalized = os.path.normpath(target_path).replace(os.sep, "/")
@@ -1431,11 +1648,56 @@ def active_documentation_audit(repository: Path, head: str, paths: list[str]) ->
             if coordinate.startswith("@yylo/") and coordinate not in package_names:
                 findings.append({"code": "active_doc.unknown_package_coordinate", "path": path,
                                  "coordinate": coordinate})
+        for coordinate, version in re.findall(
+                r"npm\s+(?:install|i)(?:\s+-g)?\s+(@[a-z0-9_.-]+/[a-z0-9_.-]+)(?:@([^\s`]+))?",
+                text, re.I):
+            expected = package_versions.get(coordinate)
+            if ((coordinate in package_names and version and expected and version != expected)
+                    or (coordinate.startswith("@yylo/") and coordinate not in package_names)):
+                findings.append({"code": "active_doc.install_identity_mismatch", "path": path,
+                                 "coordinate": coordinate, "documented_version": version or None,
+                                 "expected_version": expected})
+        for argv in _documented_commands(text):
+            top = argv[1] if len(argv) > 1 and not argv[1].startswith("-") else None
+            if argv[0] == "yy" and configured_top and top and top not in configured_top:
+                findings.append({"code": "active_doc.unknown_cli_command", "path": path,
+                                 "command": " ".join(argv[:3])})
+            namespace = top if top in cli_identity["namespaces"] else None
+            if namespace and len(argv) > 2 and not argv[2].startswith("-"):
+                subcommand = argv[2]
+                if (re.fullmatch(r"[a-z][a-z0-9-]*", subcommand)
+                        and subcommand not in cli_identity["namespaces"][namespace]):
+                    findings.append({"code": "active_doc.unknown_cli_subcommand", "path": path,
+                                     "command": " ".join(argv[:3])})
+            for option in (arg.split("=", 1)[0] for arg in argv if arg.startswith("--")):
+                if namespace and option not in cli_identity["options"]:
+                    findings.append({"code": "active_doc.unknown_cli_option", "path": path,
+                                     "option": option, "command": " ".join(argv[:4])})
+        for schema in sorted(set(re.findall(r"juno_[a-zA-Z0-9_.-]+\.v[0-9]+", text))):
+            if known_schemas and schema not in known_schemas:
+                findings.append({"code": "active_doc.unknown_schema_identity", "path": path,
+                                 "schema": schema})
+        if re.search(r"(^|/)MIGRATION[^/]*\.md$", path, re.I):
+            lowered = text.lower()
+            missing = [term for term in ("from", "to", "rollback") if term not in lowered]
+            if missing:
+                findings.append({"code": "active_doc.incoherent_migration_guidance", "path": path,
+                                 "missing": missing})
+        if re.search(r"(^|/)(CHANGELOG|RELEASE_NOTES)(\.[^/]*)?$", path, re.I):
+            current_versions = set(package_versions.values())
+            documented = set(re.findall(r"(?m)^#{1,3}\s+\[?v?([0-9]+\.[0-9]+\.[0-9][0-9A-Za-z.-]*)", text))
+            if current_versions and not current_versions.intersection(documented):
+                findings.append({"code": "active_doc.release_identity_mismatch", "path": path,
+                                 "expected_versions": sorted(current_versions)})
         if "```" in text and text.count("```") % 2:
             findings.append({"code": "active_doc.unclosed_fence", "path": path})
-    body = {"schema_version": "juno_active_documentation_audit.v1", "head": head,
+    findings = sorted(findings, key=lambda row: (row["code"], digest(row)))
+    body = {"schema_version": "juno_active_documentation_audit.v2", "head": head,
             "paths": sorted(paths), "findings": findings,
-            "checks": ["utf8", "relative_links", "package_coordinates", "markdown_fences"]}
+            "checks": ["utf8", "relative_links", "public_identities", "install_package_identity",
+                       "cli_help_schema_identity", "release_identity", "schema_references",
+                       "migration_coherence", "markdown_fences"],
+            "policy_sha256": digest(policy), "cli_schema_sha256": cli_identity["source_sha256"]}
     return {**body, "outcome": "PASSED" if not findings else "FAILED",
             "audit_sha256": digest(body)}
 
@@ -1448,24 +1710,56 @@ _FAILURE_PATTERNS = [
 ]
 
 
-def parsed_test_result_integrity(argv: list[str], output: bytes, process_exit_code: int) -> dict[str, Any]:
-    text = output[-2 * 1024 * 1024:].decode("utf-8", errors="replace")
-    failures = []
-    for parser, pattern in _FAILURE_PATTERNS:
-        for match in pattern.finditer(text):
-            count = int(match.group(1))
-            if count:
-                failures.append({"parser": parser, "failed": count})
-    contradiction = process_exit_code == 0 and bool(failures)
+def parsed_test_result_integrity(argv: list[str], output: Any,
+                                 process_exit_code: int) -> dict[str, Any]:
+    """Parse recognized summaries across the complete bounded stream.
+
+    Validation logs are disk-backed. Reading only a tail can turn an early test
+    failure into PASS after a large diagnostic epilogue, while reading the whole
+    log into memory is itself unsafe. This scanner keeps a small overlap, a
+    bounded finding list, and a streaming digest.
+    """
+    stream = output.open("rb") if isinstance(output, Path) else None
+    chunks = iter(lambda: stream.read(64 * 1024), b"") if stream is not None else iter((bytes(output),))
+    failures: list[dict[str, Any]] = []
+    failure_keys: set[tuple[str, int, int]] = set()
+    carry = ""
+    consumed_chars = 0
+    output_bytes = 0
+    output_hash = hashlib.sha256()
+    try:
+        for chunk in chunks:
+            output_bytes += len(chunk); output_hash.update(chunk)
+            text = carry + chunk.decode("utf-8", errors="replace")
+            base = max(0, consumed_chars - len(carry))
+            for parser, pattern in _FAILURE_PATTERNS:
+                for match in pattern.finditer(text):
+                    count = int(match.group(1))
+                    key = (parser, count, base + match.start())
+                    if count and key not in failure_keys:
+                        failure_keys.add(key)
+                        if len(failures) < 256:
+                            failures.append({"parser": parser, "failed": count,
+                                             "stream_offset": key[2]})
+            consumed_chars += max(0, len(text) - len(carry))
+            carry = text[-4096:]
+    finally:
+        if stream is not None:
+            stream.close()
+    contradiction = process_exit_code == 0 and bool(failure_keys)
     body = {"schema_version": INTEGRITY_SCHEMA, "argv_sha256": digest(argv),
             "process_exit_code": process_exit_code, "parsed_failures": failures,
-            "contradiction": contradiction, "output_sha256": hashlib.sha256(output).hexdigest()}
+            "parsed_failure_count": len(failure_keys),
+            "findings_truncated": len(failure_keys) > len(failures),
+            "contradiction": contradiction, "output_bytes": output_bytes,
+            "output_sha256": output_hash.hexdigest()}
     return {**body, "eligible_pass": process_exit_code == 0 and not contradiction,
             "integrity_sha256": digest(body)}
 
 
 def grouped_coherence(controller: Path, repository: Path, head: str,
-                      changed_paths: list[str], *, active_doc_paths: Optional[list[str]] = None) -> dict[str, Any]:
+                      changed_paths: list[str], *, active_doc_paths: Optional[list[str]] = None,
+                      documentation_policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Collect every cheap deterministic finding in one stable report."""
     findings: list[dict[str, Any]] = []
     checked: list[str] = []
@@ -1596,7 +1890,8 @@ def grouped_coherence(controller: Path, repository: Path, head: str,
                          "paths": controller_dirt[:32]})
     if active_doc_paths:
         checked.append("active_documentation")
-        audit = active_documentation_audit(repository, head, active_doc_paths)
+        audit = active_documentation_audit(
+            repository, head, active_doc_paths, documentation_policy)
         findings.extend(audit["findings"])
     findings = sorted(findings, key=lambda row: (str(row.get("code")), digest(row)))
     # Stable exact deduplication while retaining a complete grouped result.

@@ -1458,7 +1458,7 @@ raise SystemExit(2)
         self.assertEqual(self.counter.read_text().splitlines(), [])
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
-    def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
+    def install_merge_drive_assets(self) -> None:
         templates = Path(__file__).resolve().parents[2]
         if not (templates / "workflows/yy-merge-drive.yaml").is_file():
             templates = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
@@ -1471,6 +1471,9 @@ raise SystemExit(2)
         git(self.controller, "add", str(workflow.relative_to(self.controller)),
             str(prompt.relative_to(self.controller)))
         git(self.controller, "commit", "-m", "controller merge workflow")
+
+    def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
+        self.install_merge_drive_assets()
         tip = self.commit_feature("X", "docs/drive.md", "drive\n")
         projection = merge_runtime.merge_drive(self.controller.resolve(), "X")
         self.assertEqual(projection["state"], "MERGED_THROUGH")
@@ -1479,6 +1482,132 @@ raise SystemExit(2)
         self.assertEqual(projection["commands"]["reused"], 1)
         self.assertEqual(projection["commands"]["executed"], 0)
         self.assertEqual(projection["attempts"]["semantic_repairs"], 0)
+
+    def test_merge_drive_serializes_concurrent_active_scope(self) -> None:
+        self.install_merge_drive_assets()
+        tip = self.commit_feature("X", "docs/concurrent-active.md", "drive\n")
+        real_next = merge_runtime.merge_next
+        calls = 0
+        call_lock = threading.Lock()
+
+        def delayed(*args: object, **kwargs: object) -> dict:
+            nonlocal calls
+            with call_lock: calls += 1
+            __import__("time").sleep(0.15)
+            return real_next(*args, **kwargs)
+
+        with mock.patch.object(merge_runtime, "merge_next", side_effect=delayed):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [future.result(timeout=30) for future in
+                           [pool.submit(merge_runtime.merge_drive,
+                                        self.controller.resolve(), "X") for _ in range(2)]]
+        self.assertEqual(calls, 1)
+        self.assertEqual({row["state"] for row in results}, {"MERGED_THROUGH"})
+        self.assertEqual({row["run_id"] for row in results}, {results[0]["run_id"]})
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+
+    def test_merge_drive_serializes_concurrent_scope_and_recovers_post_cas_crash(self) -> None:
+        self.install_merge_drive_assets()
+        tip = self.commit_feature("X", "docs/concurrent-drive.md", "drive\n")
+        real_checkpoint = merge_runtime.lifecycle_runtime.lifecycle_checkpoint
+        crashed = False
+
+        def checkpoint(*args: object, **kwargs: object) -> dict:
+            nonlocal crashed
+            if kwargs.get("phase") == "compose" and kwargs.get("boundary") == "POST" and not crashed:
+                crashed = True
+                raise OSError("fixture crash after CAS")
+            return real_checkpoint(*args, **kwargs)
+
+        with mock.patch.object(merge_runtime.lifecycle_runtime, "lifecycle_checkpoint",
+                               side_effect=checkpoint):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "fixture crash after CAS"):
+                merge_runtime.merge_drive(self.controller.resolve(), "X")
+        resumed = merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertEqual(resumed["identities"]["current_target_sha"], tip)
+        self.assertEqual(resumed["attempts"]["transitions"], 1)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            repeated = [future.result(timeout=20) for future in
+                        [pool.submit(merge_runtime.merge_drive,
+                                     self.controller.resolve(), "X") for _ in range(2)]]
+        self.assertEqual({row["run_id"] for row in repeated}, {resumed["run_id"]})
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+
+    def test_merge_drive_resume_before_transition_preserves_cumulative_budget(self) -> None:
+        self.install_merge_drive_assets()
+        self.commit_feature("X", "docs/before-cas.md", "drive\n")
+        real_next = merge_runtime.merge_next
+        calls = 0
+
+        def interrupted(*args: object, **kwargs: object) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("fixture crash before queue transition")
+            return real_next(*args, **kwargs)
+
+        with mock.patch.object(merge_runtime, "merge_next", side_effect=interrupted):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "before queue transition"):
+                merge_runtime.merge_drive(self.controller.resolve(), "X")
+            resumed = merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertEqual(resumed["attempts"]["transitions"], 2)
+        self.assertEqual(calls, 2)
+
+    def test_merge_drive_interrupted_repair_recovers_once_before_reopen(self) -> None:
+        self.install_merge_drive_assets()
+        self.commit_feature("X", "src/security/repair.py", "unsafe = True\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)):
+            merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+        launches = 0
+        real_checkpoint = merge_runtime.lifecycle_runtime.lifecycle_checkpoint
+        crashed = False
+
+        def repair(_controller: Path, _task_id: str, record: dict,
+                   run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            nonlocal launches
+            launches += 1
+            worktree = Path(record["worktree"]); before = git(worktree, "rev-parse", "HEAD")
+            (worktree / "src/security/repair.py").write_text("unsafe = False\n")
+            git(worktree, "add", "src/security/repair.py")
+            git(worktree, "commit", "-m", "repair semantic finding")
+            receipt = run_dir / "managed-agent/receipt.json"; receipt.parent.mkdir(parents=True)
+            receipt.write_text(json.dumps({"terminal_result": {"state": "completed"},
+                                           "session_id": "repair"}) + "\n")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": str(receipt),
+                                "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()},
+                    "session_id": "repair"}
+
+        def checkpoint(*args: object, **kwargs: object) -> dict:
+            nonlocal crashed
+            if (kwargs.get("phase") == "semantic-repair-1"
+                    and kwargs.get("boundary") == "POST" and not crashed):
+                crashed = True
+                raise OSError("fixture crash after semantic repair")
+            return real_checkpoint(*args, **kwargs)
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=repair), \
+             mock.patch.object(merge_runtime.lifecycle_runtime, "lifecycle_checkpoint",
+                               side_effect=checkpoint):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "after semantic repair"):
+                merge_runtime.merge_drive(self.controller.resolve(), "X")
+        with mock.patch.object(task_runtime, "_launch_task_worker",
+                               side_effect=AssertionError("repair relaunched")), \
+             mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            resumed = merge_runtime.merge_drive(self.controller.resolve(), "X")
+            repeated = merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertEqual(repeated["run_id"], resumed["run_id"])
+        self.assertEqual(resumed["attempts"]["semantic_repairs"], 1)
+        self.assertEqual(launches, 1)
 
     def test_real_high_risk_overlap_keeps_a_before_b_while_suite_is_in_flight(self) -> None:
         full_code = ("import time; from pathlib import Path; time.sleep(0.4); "
@@ -3654,10 +3783,19 @@ def _retry_evidence(row_id: str, argv: list[str], *, exit_code: int,
                     timed_out: bool = False, stderr_tail: str = "",
                     stderr_truncated_bytes: Optional[int] = None,
                     log_path: Optional[str] = None,
-                    log_write_failed: bool = False) -> dict:
+                    log_write_failed: bool = False,
+                    process_exit_code: Optional[int] = None,
+                    contradiction: bool = False) -> dict:
     payload = (stderr_tail or "suite output").encode()
     truncated = max(0, len(payload) - 512) if stderr_truncated_bytes is None else stderr_truncated_bytes
+    resolved_process_exit = exit_code if process_exit_code is None else process_exit_code
     return {"id": row_id, "argv": argv, "exit_code": exit_code, "timed_out": timed_out,
+            "process_exit_code": resolved_process_exit,
+            "result_integrity": {
+                "schema_version": "juno_parsed_test_result_integrity.v1",
+                "contradiction": contradiction,
+                "eligible_pass": resolved_process_exit == 0 and not contradiction,
+                "integrity_sha256": ("3" if contradiction else "4") * 64},
             "timing": _retry_timing(), "resource": _retry_resource(),
             "identity": {"command_sha256": HEX64, "cwd_sha256": HEX64, "policy_sha256": HEX64,
                          "candidate_sha": "1" * 40, "candidate_tree": "2" * 40},
@@ -3703,7 +3841,9 @@ class FullSuiteFileRetryTests(unittest.TestCase):
                                    stderr_tail=spec.get("stderr_tail", ""),
                                    stderr_truncated_bytes=spec.get("stderr_truncated_bytes"),
                                    log_path=spec.get("log_path"),
-                                   log_write_failed=spec.get("log_write_failed", False))
+                                   log_write_failed=spec.get("log_write_failed", False),
+                                   process_exit_code=spec.get("process_exit_code"),
+                                   contradiction=spec.get("contradiction", False))
 
         with mock.patch.object(merge_runtime.task_runtime, "run_validation",
                                side_effect=fake_run_validation):
@@ -3711,6 +3851,28 @@ class FullSuiteFileRetryTests(unittest.TestCase):
                 self.commands, self.candidate, self.plan, self.identity,
                 self.receipt_paths, self.claim)
         self.executed = calls
+
+    def test_zero_exit_parsed_failure_contradiction_is_terminal_not_absorbed(self) -> None:
+        flake_tail = ("\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > case\n"
+                      "\n Test Files  1 failed | 25 passed (26)\n"
+                      "      Tests  1 failed | 100 passed (101)\n")
+        log_path = self.root / "contradiction-run.log"
+        log_path.write_text(flake_tail)
+        with self.assertRaises(merge_runtime.MergeValidationError) as raised:
+            self._run_suite([
+                {"exit_code": 65, "stderr_tail": flake_tail[:64],
+                 "stderr_truncated_bytes": 0, "log_path": str(log_path),
+                 "process_exit_code": 0, "contradiction": True},
+            ])
+        self.assertIn("full-suite validation failed", str(raised.exception))
+        # A terminal integrity contradiction must not consult isolated retries.
+        self.assertEqual(len(self.executed), 1)
+        receipt = json.loads(self.receipt_paths[0].read_text())
+        self.assertEqual(receipt["result"]["exit_code"], 65)
+        self.assertEqual(receipt["result"]["process_exit_code"], 0)
+        self.assertTrue(receipt["result"]["result_integrity"]["contradiction"])
+        self.assertFalse(receipt["result"]["result_integrity"]["eligible_pass"])
+        self.assertNotIn("retries", receipt["result"])
 
     def test_single_flaky_file_is_absorbed_and_the_receipt_verifies(self) -> None:
         flake_tail = ("\u001b[31m FAIL \u001b[39m src/utils/__tests__/flake.test.ts > boundary > case\n"
