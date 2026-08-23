@@ -4855,14 +4855,15 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 if journal_refs:
                     candidate = Path(str(journal_refs[-1]["path"]))
                     if candidate.is_file():
-                        authoritative = (candidate,
-                                         json.loads(candidate.read_text()),
-                                         journal_refs[-1].get("sha256"))
+                        projection_value = lifecycle_runtime.verified_projection_bytes(
+                            candidate, expected_sha256=journal_refs[-1].get("sha256"),
+                            kind="task-run", run_id=journal.get("run_id"))
+                        authoritative = (candidate, projection_value)
                 if authoritative is None and projection_path.is_file():
-                    authoritative = (projection_path,
-                                     json.loads(projection_path.read_text()), None)
+                    authoritative = (projection_path, lifecycle_runtime.verified_projection_bytes(
+                        projection_path, kind="task-run", run_id=journal.get("run_id")))
                 if authoritative is not None:
-                    path, projection_value, _ = authoritative
+                    path, projection_value = authoritative
                     summary_path = run_dir / "summary.json"
                     summary_ref = latest_value.get("summary")
                     if not summary_path.is_file():
@@ -4881,8 +4882,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         "task_revision_sha256": latest_value.get("task_revision_sha256"),
                         "terminal": True, "projection_path": str(path.resolve()),
                         "summary": summary_ref}
-                    if (str(path.resolve()) != str(projection_path)
-                            or latest_value.get("terminal") is not True):
+                    if latest_value != pointer_repaired:
                         lifecycle_runtime.atomic_json(latest, pointer_repaired)
                     return projection_value
         else:

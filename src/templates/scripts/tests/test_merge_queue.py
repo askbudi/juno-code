@@ -1495,27 +1495,93 @@ raise SystemExit(2)
         recovered = json.loads(journal_path.read_text())
         self.assertEqual(len(recovered["projections"]), 1)
         self.assertEqual(recovered["projections"][0]["path"], str(stranded.resolve()))
+        # Tampered stranded bytes never become authoritative.
+        journal["projections"] = []
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        tampered = json.loads(stranded.read_text())
+        tampered["attempts"]["transitions"] = 99
+        stranded.write_text(json.dumps(tampered, indent=1) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "artifact collision"):
+            merge_runtime.merge_drive(self.controller.resolve())
+
+    def test_merge_drive_repairs_each_latest_pointer_independently(self) -> None:
+        self.install_merge_drive_assets()
+        tip = self.commit_feature("X", "src/pointer-repair.txt", "drive\n")
+        first = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(first["state"], "MERGED_THROUGH")
+        root = self.controller / ".juno_task/runtime/lifecycle-runs/merge"
+        selector_pointer = next((root / "scopes").glob("*/latest.json"))
+        # Interrupt after the selector-pointer write but before the global one:
+        # the selector stays authoritative while the global pointer goes stale.
+        global_pointer = root / "latest.json"
+        global_pointer.write_text(json.dumps({
+            "schema_version": "juno_managed_merge_drive_latest.v2",
+            "run_id": first["run_id"], "terminal": False,
+            "projection_path": None, "summary": None}) + "\n")
+        resumed = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertEqual(resumed["run_id"], first["run_id"])
+        repaired = json.loads(global_pointer.read_text())
+        self.assertTrue(repaired["terminal"])
+        self.assertEqual(repaired["projection_path"],
+                         json.loads(selector_pointer.read_text())["projection_path"])
+        self.assertEqual(json.loads(selector_pointer.read_text())["summary"],
+                         repaired["summary"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
 
     def test_merge_drive_pauses_on_conflict_and_resumes_after_resolve(self) -> None:
         self.install_merge_drive_assets()
         first_tip = self.commit_feature("X", "src/order.txt", "first\n")
         second_tip = self.commit_feature("Y", "src/order.txt", "second\n")
+        third_tip = self.commit_feature("Z", "src/order.txt", "third\n")
         paused = merge_runtime.merge_drive(self.controller.resolve())
         self.assertEqual(paused["state"], "PAUSED")
         self.assertEqual(paused["blocker"]["category"], "conflict")
         self.assertEqual(paused["blocker"]["task_id"], "Y")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+        # Happy resolution: resolve Y to completion and resume the frozen drive.
         record = merge_runtime.task_runtime.read_state(self.controller.resolve())["tasks"]["Y"]
         checkout = Path(record["queue_attempt"]["candidate_checkout"])
         (checkout / "src/order.txt").write_text("first\nsecond\n")
         git(checkout, "add", "src/order.txt")
         merge_runtime.merge_resolve(self.controller.resolve(), "Y")
-        completed = merge_runtime.merge_drive(self.controller.resolve())
-        self.assertEqual(completed["state"], "MERGED_THROUGH")
-        self.assertEqual(completed["identities"]["completed_task_ids"], ["X", "Y"])
+        after_y = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(after_y["state"], "PAUSED")
+        self.assertEqual(after_y["blocker"]["category"], "conflict")
+        self.assertEqual(after_y["blocker"]["task_id"], "Z")
+        self.assertIn("Y", after_y["identities"]["completed_task_ids"])
+        # Interrupt the explicit Z resolve right after the durable
+        # CONFLICT_RESOLVED persist: the resumed drive must verify the durable
+        # resolution entry and continue within its cumulative transition budget.
+        real_rows = merge_runtime.authoritative_validation_rows
+        interrupted = False
+
+        def rows_once(*args: object, **kwargs: object) -> object:
+            nonlocal interrupted
+            if not interrupted:
+                interrupted = True
+                raise merge_runtime.MergeQueueError("fixture resolve interruption")
+            return real_rows(*args, **kwargs)
+
+        record_z = merge_runtime.task_runtime.read_state(self.controller.resolve())["tasks"]["Z"]
+        checkout_z = Path(record_z["queue_attempt"]["candidate_checkout"])
+        (checkout_z / "src/order.txt").write_text("first\nsecond\nthird\n")
+        git(checkout_z, "add", "src/order.txt")
+        with mock.patch.object(merge_runtime, "authoritative_validation_rows",
+                               side_effect=rows_once):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                        "fixture resolve interruption"):
+                merge_runtime.merge_resolve(self.controller.resolve(), "Z")
+        resolved_state = merge_runtime.task_runtime.read_state(
+            self.controller.resolve())["tasks"]["Z"]
+        self.assertEqual(resolved_state["state"], "CONFLICT_RESOLVED")
+        resumed = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertGreaterEqual(resumed["attempts"]["transitions"], 2)
+        self.assertEqual(resumed["identities"]["completed_task_ids"], ["X", "Y", "Z"])
         self.assertEqual(subprocess.run(
             ["git", "-C", str(self.repository), "merge-base", "--is-ancestor",
-             second_tip, "refs/heads/product"]).returncode, 0)
+             third_tip, "refs/heads/product"]).returncode, 0)
 
     def test_unscoped_merge_drive_opens_new_lineage_for_later_eligible_scope(self) -> None:
         self.install_merge_drive_assets()

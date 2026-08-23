@@ -5644,9 +5644,15 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     if journal_refs:
                         candidate = Path(str(journal_refs[-1]["path"]))
                         if candidate.is_file():
-                            authoritative = (candidate, json.loads(candidate.read_text()))
+                            projection_value = lifecycle_runtime.verified_projection_bytes(
+                                candidate, expected_sha256=journal_refs[-1].get("sha256"),
+                                kind="merge-drive", run_id=journal.get("run_id"))
+                            authoritative = (candidate, projection_value)
                     if authoritative is None and projection_path.is_file():
-                        authoritative = (projection_path, json.loads(projection_path.read_text()))
+                        authoritative = (projection_path,
+                                         lifecycle_runtime.verified_projection_bytes(
+                                             projection_path, kind="merge-drive",
+                                             run_id=journal.get("run_id")))
                     if authoritative is not None:
                         path, projection_value = authoritative
                         summary_path = run_dir / "summary.json"
@@ -5666,9 +5672,13 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                             "execution_identity_sha256": journal["execution_identity_sha256"],
                             "projection_path": str(path.resolve()), "summary": summary_ref,
                             "terminal": True}
-                        if (str(path.resolve()) != str(projection_path)
-                                or pointer.get("terminal") is not True):
-                            for latest_path in latest_paths:
+                        # Each latest pointer is compared and repaired
+                        # independently: an interruption between the selector
+                        # and global writes must not leave either stale.
+                        for latest_path in latest_paths:
+                            current = (json.loads(latest_path.read_text())
+                                       if latest_path.is_file() else None)
+                            if current != pointer_repaired:
                                 lifecycle_runtime.atomic_json(latest_path, pointer_repaired)
                         return projection_value
                 # A new immutable lineage is required for the changed FIFO scope:

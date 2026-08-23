@@ -2051,11 +2051,50 @@ def adopt_interrupted_projection(run_dir: Path, journal: dict[str, Any], index: 
     except (OSError, json.JSONDecodeError) as exc:
         raise LifecycleContractError(
             f"immutable lifecycle artifact collision: {path}") from exc
+    mismatch = None
+    if not isinstance(value, dict):
+        mismatch = "not an object"
+    elif value.get("schema_version") != RUN_PROJECTION_SCHEMA:
+        mismatch = f"schema={value.get('schema_version')}"
+    elif value.get("kind") != kind:
+        mismatch = f"kind={value.get('kind')}"
+    elif value.get("run_id") != journal.get("run_id"):
+        mismatch = f"run_id={value.get('run_id')}"
+    elif value.get("state") != state_name:
+        mismatch = f"state={value.get('state')}"
+    else:
+        # Exact-bytes discipline: the adopted artifact must still satisfy its
+        # own canonical internal digest. Tampered bytes never become
+        # authoritative.
+        body = {key: item for key, item in value.items() if key != "projection_sha256"}
+        if value.get("projection_sha256") != digest(body):
+            mismatch = "digest mismatch"
+    if mismatch is not None:
+        raise LifecycleContractError(
+            f"immutable lifecycle artifact collision ({mismatch}): {path}")
+    return value
+
+
+def verified_projection_bytes(path: Path, *, expected_sha256: Optional[str] = None,
+                              kind: Optional[str] = None,
+                              run_id: Optional[str] = None) -> dict[str, Any]:
+    """Return one persisted projection after exact byte and identity checks."""
+    raw = path.read_bytes()
+    if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise LifecycleContractError(
+            f"lifecycle projection bytes do not match their journal reference: {path}")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LifecycleContractError(f"lifecycle projection is malformed: {path}") from exc
     if (not isinstance(value, dict)
             or value.get("schema_version") != RUN_PROJECTION_SCHEMA
-            or value.get("kind") != kind or value.get("run_id") != journal.get("run_id")
-            or value.get("state") != state_name):
-        raise LifecycleContractError(f"immutable lifecycle artifact collision: {path}")
+            or (kind is not None and value.get("kind") != kind)
+            or (run_id is not None and value.get("run_id") != run_id)):
+        raise LifecycleContractError(f"lifecycle projection identity is invalid: {path}")
+    body = {key: item for key, item in value.items() if key != "projection_sha256"}
+    if value.get("projection_sha256") != digest(body):
+        raise LifecycleContractError(f"lifecycle projection digest is invalid: {path}")
     return value
 
 

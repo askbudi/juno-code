@@ -3946,6 +3946,14 @@ finished = time.monotonic()
         self.assertEqual(len(recovered["projections"]), 1)
         self.assertEqual(recovered["projections"][0]["path"], str(stranded.resolve()))
         self.assertEqual(len(list((run_dir / "projections").glob("*.json"))), 1)
+        # Tampered stranded bytes never become authoritative.
+        journal["projections"] = []
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        tampered = json.loads(stranded.read_text())
+        tampered["state"] = "QUEUED"
+        stranded.write_text(json.dumps(tampered, indent=1) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "collision"):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
 
     def test_task_run_repairs_stale_terminal_pointer_from_journal(self) -> None:
         self.install_task_run_assets()
@@ -3992,6 +4000,18 @@ finished = time.monotonic()
                          journal["projections"][-1]["path"])
         self.assertIsInstance(pointer["summary"], dict)
         self.assertTrue((run_dir / "summary.json").is_file())
+        # Tampered journal-referenced bytes are refused, not adopted.
+        referenced = Path(journal["projections"][-1]["path"])
+        tampered = json.loads(referenced.read_text())
+        tampered["attempts"]["implementation"] = 99
+        referenced.write_text(json.dumps(tampered, indent=1) + "\n")
+        latest.write_text(json.dumps({
+            "schema_version": "juno_managed_task_run_latest.v2",
+            "run_id": terminal["run_id"], "terminal": False,
+            "projection_path": None, "summary": None}) + "\n")
+        with self.assertRaises(
+                task_runtime.lifecycle_runtime.LifecycleContractError):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
 
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
         self.install_task_run_assets()
