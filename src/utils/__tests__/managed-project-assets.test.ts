@@ -184,7 +184,8 @@ describe('ManagedProjectAssets', {
     expect(reviewPrompt).toContain('Never use bare `pi`');
     expect(reviewPrompt).toContain('Review only');
     expect(reviewPrompt).toContain('do not edit, commit, update Kanban, launch another reviewer');
-    expect(reviewPrompt).toContain('JUNO_REVIEW_VERDICT: PASS');
+    expect(reviewPrompt).toContain('Return PASS only after reviewing the complete frozen candidate');
+    expect(reviewPrompt).toContain('structured `truncated=true` signal');
     expect(reviewPrompt).not.toContain('then resolve it');
     expect(
       await fs.readFile(
