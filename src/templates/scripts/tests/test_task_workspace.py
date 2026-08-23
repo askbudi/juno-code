@@ -1390,7 +1390,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                          [row["destination"] for row in bindings])
         worktree = self.workspaces / "X"
         destination = fixtures["ordinary_destination"]
-        (worktree / destination).write_text("independent controller config update\n")
+        (worktree / destination).write_text(
+            json.dumps({"independent_controller_config": True}, indent=4) + "\n")
         git(worktree, "add", destination)
         git(worktree, "commit", "-m", "update controller config independently")
         queued = self.payload("finish", "X")
