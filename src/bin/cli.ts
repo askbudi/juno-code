@@ -1973,8 +1973,7 @@ function configureEnvironment(): void {
     const args = process.argv.slice(2, delimiter === -1 ? undefined : delimiter);
     const names = [`--${option}`, ...(optionAliases[option] ?? [])];
     return args.some((arg) => names.some((name) =>
-      arg === name || arg.startsWith(`${name}=`) ||
-      (name.startsWith('-') && !name.startsWith('--') && arg.startsWith(name) && arg.length > name.length),
+      arg === name || arg.startsWith(`${name}=`),
     ));
   };
 

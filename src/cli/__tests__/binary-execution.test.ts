@@ -1122,6 +1122,17 @@ exit 1
       expect(result.all).not.toContain('--yylo-subagent');
     });
 
+    it('does not mistake -ip for explicit -i when applying YYLO_MAX_ITERATIONS', async () => {
+      const result = await executeCLI(['pi', '-ip'], {
+        expectError: true,
+        input: 'interactive precedence check',
+        env: { YYLO_MAX_ITERATIONS: 'invalid-from-environment' },
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.all).toContain('Max iterations must be a valid number');
+    });
+
     it('preserves an explicit --model=value over YYLO_MODEL', async () => {
       await createMockProject({
         '.juno_task': {
