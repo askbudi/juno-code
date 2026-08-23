@@ -2074,6 +2074,12 @@ def adopt_interrupted_projection(run_dir: Path, journal: dict[str, Any], index: 
             if key not in PROJECTION_VOLATILE_FIELDS and item != expected.get(key):
                 mismatch = f"field {key} differs from the reconstructed projection"
                 break
+    if mismatch is None:
+        # The artifact's own embedded digest must also hold for its complete
+        # body: a field-bound artifact with a stale internal digest is refused.
+        body = {key: item for key, item in value.items() if key != "projection_sha256"}
+        if value.get("projection_sha256") != digest(body):
+            mismatch = "embedded digest does not cover the artifact body"
     if mismatch is not None:
         raise LifecycleContractError(
             f"immutable lifecycle artifact collision ({mismatch}): {path}")

@@ -1,12 +1,28 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'fs-extra';
+import os from 'node:os';
+import path from 'node:path';
 import {
   checkpointTaskWorkspaceAfterFinalization,
   configureTaskWorkspaceCommand,
+  selectTaskWorkspaceRuntime,
   taskWorkspaceControlOperation,
 } from '../commands/task.js';
 
 describe('task workspace CLI', () => {
+  it('selects the real shipped template for hydrate by stable capability', async () => {
+    const controller = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-hydrate-capability-'));
+    const source = path.resolve(process.cwd(), 'src/templates/scripts/task_workspace.py');
+    expect(await fs.pathExists(source), source).toBe(true);
+    await expect(selectTaskWorkspaceRuntime(controller, 'hydrate', [source]))
+      .resolves.toBe(source);
+    const runtime = await fs.readFile(source, 'utf8');
+    expect(runtime).toContain('TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True');
+    expect(runtime).toContain('TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"');
+    expect(runtime).toContain('def hydrate(controller:');
+  });
+
   it.each(['run', 'start', 'status', 'hydrate', 'preflight', 'checkpoint', 'finish'] as const)(
     'forwards task %s and its positional ID to one managed-runtime invoker',
     async (operation) => {

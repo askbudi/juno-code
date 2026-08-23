@@ -1539,6 +1539,21 @@ raise SystemExit(2)
         self.assertEqual(json.loads(selector_pointer.read_text())["summary"],
                          repaired["summary"])
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+        # A missing final journal artifact fails closed even when the pointers
+        # reference an earlier valid projection.
+        journal = json.loads((root / first["run_id"] / "journal.json").read_text())
+        final_path = Path(journal["projections"][-1]["path"])
+        earlier = Path(journal["projections"][0]["path"])
+        final_path.unlink()
+        for pointer_path in (selector_pointer, global_pointer):
+            pointer_path.write_text(json.dumps({
+                "schema_version": "juno_managed_merge_drive_latest.v2",
+                "run_id": first["run_id"], "terminal": True,
+                "projection_path": str(earlier.resolve()),
+                "summary": None}) + "\n")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "artifact is missing"):
+            merge_runtime.merge_drive(self.controller.resolve())
 
     def test_merge_drive_pauses_on_conflict_and_resumes_after_resolve(self) -> None:
         self.install_merge_drive_assets()

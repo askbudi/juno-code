@@ -67,8 +67,10 @@ export async function selectTaskWorkspaceRuntime(
   const source = await fs.readFile(packaged, 'utf8');
   const protocol = [
     'TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"',
+    // Stable capability marker: the audited operation list evolves without
+    // invalidating hydrate recovery selection.
+    'TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True',
     'def hydrate(controller:',
-    '"start", "status", "hydrate", "preflight", "finish"',
   ];
   if (!protocol.every((marker) => source.includes(marker))) {
     throw new Error('Packaged task-hydrate recovery engine is incompatible; refusing stale controller fallback.');

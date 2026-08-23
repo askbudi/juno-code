@@ -5639,21 +5639,26 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     # terminal projection from it and repair stale pointers
                     # (crash between the terminal journal write and publication)
                     # before returning.
+                    # The journal's final reference is the sole authority: a
+                    # missing or malformed final artifact fails closed instead
+                    # of promoting whatever the pointer happens to reference.
                     journal_refs = [ref for ref in journal.get("projections", [])
                                     if isinstance(ref, dict) and ref.get("path")]
-                    authoritative = None
-                    if journal_refs:
-                        candidate = Path(str(journal_refs[-1]["path"]))
-                        if candidate.is_file():
-                            projection_value = lifecycle_runtime.verified_projection_bytes(
-                                candidate, expected_sha256=journal_refs[-1].get("sha256"),
-                                kind="merge-drive", run_id=journal.get("run_id"))
-                            authoritative = (candidate, projection_value)
-                    if authoritative is None and projection_path.is_file():
-                        authoritative = (projection_path,
-                                         lifecycle_runtime.verified_projection_bytes(
-                                             projection_path, kind="merge-drive",
-                                             run_id=journal.get("run_id")))
+                    if not journal_refs:
+                        raise MergeQueueError(
+                            "terminal merge-drive journal has no final projection reference")
+                    final_ref = journal_refs[-1]
+                    candidate = Path(str(final_ref["path"]))
+                    if not candidate.is_file():
+                        raise MergeQueueError(
+                            "terminal merge-drive journal projection artifact is missing")
+                    projection_value = lifecycle_runtime.verified_projection_bytes(
+                        candidate, expected_sha256=final_ref.get("sha256"),
+                        kind="merge-drive", run_id=journal.get("run_id"))
+                    if projection_value.get("state") != "MERGED_THROUGH":
+                        raise MergeQueueError(
+                            "terminal merge-drive journal projection is not terminal")
+                    authoritative = (candidate, projection_value)
                     if authoritative is not None:
                         path, projection_value = authoritative
                         # The expected canonical summary derives from the

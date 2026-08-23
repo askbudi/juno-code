@@ -3969,6 +3969,18 @@ finished = time.monotonic()
         stranded.write_text(lifecycle.canonical_bytes(semantically_tampered).decode())
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "collision"):
             task_runtime.managed_task_run(self.controller.resolve(), "X")
+        # An otherwise field-bound artifact whose embedded digest is invalid is
+        # refused even though every nonvolatile field matches.
+        journal["projections"] = []
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        valid = json.loads(stranded.read_text())
+        valid["attempts"]["implementation"] = 0
+        body = {k: v for k, v in valid.items() if k != "projection_sha256"}
+        valid["projection_sha256"] = "0" * 64
+        self.assertNotEqual(valid["projection_sha256"], lifecycle.digest(body))
+        stranded.write_text(lifecycle.canonical_bytes(valid).decode())
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "collision"):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
 
     def test_task_run_repairs_stale_terminal_pointer_from_journal(self) -> None:
         self.install_task_run_assets()
@@ -4026,6 +4038,18 @@ finished = time.monotonic()
             "projection_path": None, "summary": None}) + "\n")
         with self.assertRaises(
                 task_runtime.lifecycle_runtime.LifecycleContractError):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
+        # A missing final journal artifact fails closed even when the pointer
+        # references an earlier valid projection.
+        journal = json.loads((run_dir / "journal.json").read_text())
+        final_path = Path(journal["projections"][-1]["path"])
+        final_path.unlink()
+        latest.write_text(json.dumps({
+            "schema_version": "juno_managed_task_run_latest.v2",
+            "run_id": terminal["run_id"], "terminal": True,
+            "projection_path": str(final_path.resolve()), "summary": None}) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "artifact is missing"):
             task_runtime.managed_task_run(self.controller.resolve(), "X")
 
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
