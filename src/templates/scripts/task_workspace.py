@@ -5220,12 +5220,18 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     lifecycle_runtime.lifecycle_checkpoint(
                         journal_path, journal, phase=f"attributable-repair-{index}", boundary="PRE",
                         detail={"attempt_dir": repair["attempt_dir"], "before_sha": repair["before_sha"]})
+                    # The implementation commit may have changed the exact-lock
+                    # dependency tree; re-gate against the current record and
+                    # worktree immediately before the repair launch instead of
+                    # reusing the pre-implementation gate result.
+                    repair_gate = _managed_hydration_gate(controller, state_record)
+                    state_record = repair_gate["record"]
                     repaired = _launch_task_worker(
                         controller, task_id, state_record, attempt_dir,
                         Path(journal["frozen_prompts"][1]["path"]), repair=True,
                         timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
                         context_bytes=initial_error.encode("utf-8", errors="replace"),
-                        hydration_gate=hydration_gate)
+                        hydration_gate=repair_gate)
                 assert repair is not None
                 if isinstance(repaired, dict) and "terminal_state" in repaired:
                     repair.update(repaired)
