@@ -3222,6 +3222,33 @@ raise SystemExit(2)
         self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
         self.assertTrue(marker.exists()); self.assertFalse(checkout.exists())
 
+    def test_out_of_cwd_candidate_change_invalidates_reused_command_evidence(self) -> None:
+        # A validation command with a configured cwd can still observe tracked
+        # inputs outside that cwd, so reusable evidence binds the whole tree:
+        # an out-of-cwd target move must invalidate and rerun, not reuse.
+        x_tip = self.commit_feature("X", "docs/x.txt", "x\n")
+        z_tip = self.commit_feature("Z", "src/z.txt", "z\n")
+        first = self.queue_payload("next")
+        self.assertEqual(first["task_id"], "X")
+        self.assertEqual(first["candidate_sha"], x_tip)
+        self.assertEqual(first["strategy"], "direct")
+        self.assertEqual(first["command_evidence"]["counters"]["executed"], 0)
+        self.assertEqual(first["command_evidence"]["counters"]["reused"], 1)
+        second = self.queue_payload("next")
+        self.assertEqual(second["task_id"], "Z")
+        # The moved target added docs/x.txt outside the focused row's src cwd;
+        # the composed candidate tree changed, so the prior PASS must not be
+        # reused even though the src subtree is byte-identical.
+        self.assertEqual(second["command_evidence"]["counters"]["reused"], 0)
+        self.assertEqual(second["command_evidence"]["counters"]["invalidated"], 1)
+        self.assertEqual(second["command_evidence"]["counters"]["executed"], 1)
+        invalidation = next(row for row in second["command_evidence"]["decisions"]
+                            if row["decision"] == "invalidated")
+        self.assertIn("observable_tree",
+                      {row["field"] for row in invalidation["invalidation"]})
+        status = self.queue_payload("status")
+        self.assertEqual([row["state"] for row in status["tasks"]], ["MERGED", "MERGED"])
+
     def test_parallel_x_y_then_moved_target_uses_one_two_parent_composition(self) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:
             x = pool.submit(self.commit_feature, "X", "src/x.txt", "x\n")

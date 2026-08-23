@@ -4639,22 +4639,60 @@ def runtime_bootstrap(controller: Path, package_version: str,
 TASK_RUN_ROOT = ".juno_task/runtime/lifecycle-runs/task"
 
 
-def _managed_worker_receipts(run_dir: Path, record: dict[str, Any]) -> tuple[Path, Path, Path]:
+def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Verify frozen hydration/dependency evidence before any worker budget.
+
+    A resumed WORKING task must not spend its sole model attempt or receive
+    passed worker receipts against missing, stale, or lock-drifted
+    dependencies. One durable authorized exact-lock rerun is attempted when
+    the frozen evidence no longer verifies; an unrecoverable gate fails closed
+    before any worker launch.
+    """
+    worktree = exact_root(Path(record["worktree"]), "task worktree")
+    try:
+        verify_hydration_evidence(record, worktree)
+    except TaskWorkspaceError:
+        hydrate(controller, record["task_id"])
+        with state_lock(controller):
+            refreshed = read_state(controller)["tasks"].get(record["task_id"])
+        if not isinstance(refreshed, dict):
+            raise TaskWorkspaceError("managed hydration gate lost the task record")
+        verify_hydration_evidence(refreshed, worktree)
+        record = refreshed
+    dependency_evidence = validation_dependency_evidence(worktree, load_config(controller))
+    hydration = record.get("hydration") if isinstance(record.get("hydration"), dict) else {}
+    return {"record": record,
+            "dependency_evidence": dependency_evidence,
+            "hydration_manifest_sha256": hydration.get("manifest_sha256")}
+
+
+def _managed_worker_receipts(run_dir: Path, record: dict[str, Any],
+                             hydration_gate: dict[str, Any]) -> tuple[Path, Path, Path]:
     worktree = Path(record["worktree"])
     common = str(Path(git(worktree, "rev-parse", "--path-format=absolute",
                           "--git-common-dir")).resolve())
-    creation = record["creation_receipt"]
+    # Worker path authority is the effective admission: an authorized umbrella
+    # supersession union is authoritative over the historical creation receipt.
+    admitted_paths, _generated_admission, admission_kind = effective_admission(record)
     create = {"schema_version": "juno_managed_task_run_create.v1",
               "task_id": record["task_id"], "worktree": str(worktree.resolve()),
               "branch_ref": record["branch_ref"], "git_common_dir": common,
-              "expected_paths": creation["allowed_paths"],
-              "workspace_manifest_identity": creation["manifest_identity"]}
+              "expected_paths": admitted_paths,
+              "admission_kind": admission_kind,
+              "workspace_manifest_identity": record["creation_receipt"]["manifest_identity"]}
+    supersession_sha256 = record.get("admission_supersession_sha256")
+    if supersession_sha256:
+        create["admission_supersession_sha256"] = supersession_sha256
+    # The verify receipt reports the hydration gate that actually ran before
+    # this launch; passed=True is truthful because the gate raised otherwise.
     verify = {"schema_version": "juno_managed_task_run_verify.v1",
               "task_id": record["task_id"], "passed": True,
-              "tip_sha": git(worktree, "rev-parse", "HEAD")}
+              "tip_sha": git(worktree, "rev-parse", "HEAD"),
+              "hydration_manifest_sha256": hydration_gate.get("hydration_manifest_sha256"),
+              "dependency_evidence": hydration_gate.get("dependency_evidence", [])}
     edit = {"schema_version": "juno_managed_task_run_edit_preflight.v1",
             "task_id": record["task_id"], "passed": True,
-            "allowed_paths_sha256": stable_sha256(creation["allowed_paths"])}
+            "allowed_paths_sha256": stable_sha256(admitted_paths)}
     paths = (run_dir / "create-receipt.json", run_dir / "verify-receipt.json",
              run_dir / "edit-preflight-receipt.json")
     for path, value in zip(paths, (create, verify, edit)):
@@ -4665,10 +4703,14 @@ def _managed_worker_receipts(run_dir: Path, record: dict[str, Any]) -> tuple[Pat
 def _launch_task_worker(controller: Path, task_id: str, record: dict[str, Any],
                         run_dir: Path, prompt_seed: Path, *, repair: bool,
                         timeout_seconds: int,
-                        context_bytes: bytes = b"") -> dict[str, Any]:
+                        context_bytes: bytes = b"",
+                        hydration_gate: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     worktree = Path(record["worktree"])
     before = git(worktree, "rev-parse", "HEAD")
-    create, verify, edit = _managed_worker_receipts(run_dir, record)
+    if hydration_gate is None:
+        hydration_gate = _managed_hydration_gate(controller, record)
+        record = hydration_gate["record"]
+    create, verify, edit = _managed_worker_receipts(run_dir, record, hydration_gate)
     prompt = run_dir / "worker-prompt.md"
     task_data = task_file(controller, task_id).read_bytes()
     seed = prompt_seed.read_bytes()
@@ -4774,7 +4816,12 @@ def _task_projection(controller: Path, task_id: str, run_dir: Path,
         plan=plan, started=lifecycle_runtime.lifecycle_elapsed_started(journal),
         counters=counters, attempts=attempts, blocker=blocker,
         next_action=(f"yy merge drive --through {task_id}" if state_name == "QUEUED" else
-                     f"resolve the blocker and resume yy task run {task_id}"),
+                    (f"resolve the blocker and resume yy task run {task_id}"
+                     if state_name == "NEEDS_DECISION" else
+                     # BLOCKED is terminal: replaying yy task run returns this
+                     # same verified projection; continuation requires an
+                     # explicit reviewed task-run replacement.
+                     f"resolve the blocker, then request an explicit reviewed task-run replacement for {task_id}")),
         artifacts=artifacts,
         identities={"controller_commit": plan["controller_commit"],
                     "task_revision_sha256": revision,
@@ -4866,7 +4913,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 projection_value = lifecycle_runtime.verified_projection_bytes(
                     candidate, expected_sha256=final_ref.get("sha256"),
                     kind="task-run", run_id=journal.get("run_id"))
-                if projection_value.get("state") != "QUEUED":
+                if projection_value.get("state") not in {"QUEUED", "BLOCKED"}:
                     raise TaskWorkspaceError(
                         "terminal task-run journal projection is not terminal")
                 authoritative = (candidate, projection_value)
@@ -5022,6 +5069,12 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     state_name="QUEUED", blocker=None, counters=standing.get("counters"), terminal=True)
             if state_record.get("state") != "WORKING":
                 raise TaskWorkspaceError(f"task run cannot implement from {state_record.get('state')}")
+            # Gate every first worker launch and every recovery on verified
+            # frozen hydration/dependency evidence, with one durable authorized
+            # exact-lock rerun when the evidence is stale. No worker receipt,
+            # model budget, or product edit is spent before this gate passes.
+            hydration_gate = _managed_hydration_gate(controller, state_record)
+            state_record = hydration_gate["record"]
 
             completed_worker = next((item for item in journal["workers"]
                                      if item.get("kind") == "implementation"
@@ -5065,7 +5118,8 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     worker = _launch_task_worker(
                         controller, task_id, state_record, attempt_dir,
                         Path(journal["frozen_prompts"][0]["path"]), repair=False,
-                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal))
+                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                        hydration_gate=hydration_gate)
                 target = pending if pending else journal["workers"][-1]
                 target.update(worker)
                 lifecycle_runtime.lifecycle_checkpoint(
@@ -5129,7 +5183,8 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         controller, task_id, state_record, attempt_dir,
                         Path(journal["frozen_prompts"][1]["path"]), repair=True,
                         timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
-                        context_bytes=initial_error.encode("utf-8", errors="replace"))
+                        context_bytes=initial_error.encode("utf-8", errors="replace"),
+                        hydration_gate=hydration_gate)
                 assert repair is not None
                 if isinstance(repaired, dict) and "terminal_state" in repaired:
                     repair.update(repaired)

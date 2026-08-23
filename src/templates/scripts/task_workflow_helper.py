@@ -1352,15 +1352,17 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
                     producer: str = "task_workspace.run_validation.v3") -> dict[str, Any]:
     """Build one stage-neutral behavioral closure for a validation command."""
     cwd = str(row.get("cwd", "")).strip("/")
-    revision = f"{head}:{cwd}" if cwd else f"{head}^{{tree}}"
-    result = subprocess.run(["git", "-C", str(repository), "rev-parse", revision],
-                            cwd=repository, stdin=subprocess.DEVNULL,
-                            text=True, capture_output=True)
-    tree = result.stdout.strip()
-    observation_scope = "cwd_tree"
-    if result.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", tree):
-        tree = _git(repository, "rev-parse", f"{head}^{{tree}}").strip()
-        observation_scope = "whole_tree_fallback"
+    # Reusable command evidence binds to the whole candidate tree. Configured
+    # argv is unrestricted and may read tracked inputs outside the configured
+    # cwd (parent or sibling files), so a cwd-only observable tree could reuse
+    # a stale PASS after out-of-cwd candidate changes (for example target
+    # movement). A narrower hermetic observation closure would have to prove
+    # every readable tracked input before it could narrow this scope.
+    revision = f"{head}^{{tree}}"
+    tree = _git(repository, "rev-parse", revision).strip()
+    observation_scope = "whole_tree"
+    if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        raise RuntimeError("command closure cannot resolve the candidate tree")
     locks: dict[str, str] = {}
     for name in ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock",
                  "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt", ".npmrc"):

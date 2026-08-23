@@ -23,6 +23,18 @@ from pathlib import Path
 from typing import Optional
 
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
+
+# Minimal workflow runner used by hydration-gate fixtures: lint passes and the
+# run stage writes a passing manifest to the requested --out-dir.
+FIXTURE_HYDRATION_RUNNER = """#!/usr/bin/env python3
+import json, pathlib, sys
+if len(sys.argv) > 1 and sys.argv[1] == 'lint':
+    print('Workflow lint / OK: no issues found')
+    raise SystemExit(0)
+out = pathlib.Path(sys.argv[sys.argv.index('--out-dir') + 1])
+out.mkdir(parents=True, exist_ok=True)
+(out / 'manifest.json').write_text(json.dumps({'outcome': 'passed'}) + chr(10))
+"""
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
 import target_runtime_provenance as provenance_runtime  # noqa: E402
@@ -4051,6 +4063,216 @@ finished = time.monotonic()
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
                                     "artifact is missing"):
             task_runtime.managed_task_run(self.controller.resolve(), "X")
+
+    def test_task_run_hydration_gate_reruns_stale_evidence_before_worker_budget(self) -> None:
+        self.install_task_run_assets()
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        git(self.repository, "add", str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(SCRIPT.read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(FIXTURE_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "hydrated managed task")
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            self.assertEqual(record["state"], "WORKING")
+            self.assertEqual(record["hydration"]["status"], "passed")
+            # Stale evidence: the frozen manifest artifact disappeared after start.
+            Path(record["hydration"]["manifest_path"]).unlink()
+            calls: list[str] = []
+
+            def implement(_controller: Path, _task_id: str, rec: dict,
+                          run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+                calls.append(run_dir.name)
+                worktree = Path(rec["worktree"])
+                before = git(worktree, "rev-parse", "HEAD")
+                (worktree / "src/managed.txt").write_text("managed\n")
+                git(worktree, "add", "src/managed.txt")
+                git(worktree, "commit", "-m", "managed implementation")
+                return {"terminal_state": "completed", "before_sha": before,
+                        "after_sha": git(worktree, "rev-parse", "HEAD"),
+                        "receipt": {"path": "fixture", "sha256": "0" * 64},
+                        "session_id": "fixture"}
+
+            with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+                projection = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "QUEUED")
+        self.assertEqual(calls, ["implementation-0001"])
+        refreshed = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(refreshed["hydration"]["status"], "passed")
+        self.assertTrue(Path(refreshed["hydration"]["manifest_path"]).is_file())
+
+    def test_task_run_hydration_gate_fails_closed_without_worker_budget(self) -> None:
+        self.install_task_run_assets()
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        git(self.repository, "add", str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(SCRIPT.read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(FIXTURE_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "hydrated managed task")
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            Path(record["hydration"]["manifest_path"]).unlink()
+            # The authorized rerun itself fails: no receipts, no budget, no worker.
+            runner.write_text("#!/usr/bin/env python3\nimport sys\n"
+                              "print('hydration unrecoverable', file=sys.stderr)\n"
+                              "raise SystemExit(9)\n")
+            calls: list[str] = []
+
+            def implement(*_args: object, **_kwargs: object) -> dict:
+                calls.append("worker")
+                raise AssertionError("worker must not launch while the gate fails")
+
+            with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "task hydration"):
+                    task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(calls, [])
+        runs = self.controller / ".juno_task/runtime/lifecycle-runs/task/X"
+        journals = sorted(runs.glob("*/journal.json"))
+        self.assertEqual(len(journals), 1)
+        journal = json.loads(journals[0].read_text())
+        self.assertEqual(journal["attempts"]["worker_launches"], 0)
+        self.assertEqual(journal["attempts"]["implementation"], 0)
+        self.assertEqual(list((journals[0].parent / "workers").glob("*")), [])
+
+    def test_task_run_incomplete_terminal_blocks_and_replays_idempotently(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "incomplete managed task")
+
+        def implement(_controller: Path, _task_id: str, record: dict,
+                      run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            worktree = Path(record["worktree"])
+            before = git(worktree, "rev-parse", "HEAD")
+            receipt = run_dir / "managed-agent/receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text(json.dumps({"terminal_result": {"state": "incomplete"},
+                                           "session_id": "fixture"}) + "\n")
+            return {"terminal_state": "incomplete", "before_sha": before,
+                    "after_sha": before,
+                    "receipt": {"path": str(receipt),
+                                "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+            blocked = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(blocked["state"], "BLOCKED")
+        self.assertIn("explicit reviewed task-run replacement",
+                      blocked["next_legal_action"])
+        run_dir = self.controller / ".juno_task/runtime/lifecycle-runs/task/X" / blocked["run_id"]
+        journal = json.loads((run_dir / "journal.json").read_text())
+        self.assertTrue(journal["terminal"])
+        # A second invocation replays the exact terminal BLOCKED projection
+        # instead of rejecting its own valid terminal artifact.
+        replay = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(replay["state"], "BLOCKED")
+        self.assertEqual(replay["run_id"], blocked["run_id"])
+        self.assertEqual(replay["next_legal_action"], blocked["next_legal_action"])
+        replay_journal = json.loads((run_dir / "journal.json").read_text())
+        self.assertEqual(replay_journal["projections"], journal["projections"])
+
+    def test_managed_worker_receipts_use_effective_admission(self) -> None:
+        self.install_task_run_assets()
+        self.payload("start", "X")
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        supersession = {
+            "schema_version": task_runtime.UMBRELLA_SUPERSESSION_SCHEMA,
+            "umbrella_admission": {
+                "union_paths": [*record["creation_receipt"]["allowed_paths"],
+                                 "newly/authorized.txt"],
+            },
+            "generated_output_admission": {
+                "schema_version": "juno_task_generated_output_admission.v1",
+                "bindings": [], "declarations": {}, "destinations": []},
+        }
+        record["admission_supersessions"] = [supersession]
+        record["admission_supersession_sha256"] = task_runtime.stable_sha256(supersession)
+        run_dir = self.controller / ".juno_task/runtime/lifecycle-runs/task/X/receipt-fixture"
+        run_dir.mkdir(parents=True)
+        gate = {"dependency_evidence": [], "hydration_manifest_sha256": None}
+        _create, verify, edit = task_runtime._managed_worker_receipts(run_dir, record, gate)
+        create = json.loads((run_dir / "create-receipt.json").read_text())
+        self.assertEqual(create["expected_paths"], supersession["umbrella_admission"]["union_paths"])
+        self.assertEqual(create["admission_kind"], "superseding")
+        self.assertEqual(create["admission_supersession_sha256"],
+                         record["admission_supersession_sha256"])
+        verify_value = json.loads(verify.read_text())
+        self.assertTrue(verify_value["passed"])
+        self.assertIn("dependency_evidence", verify_value)
+        self.assertIn("hydration_manifest_sha256", verify_value)
+        edit_value = json.loads(edit.read_text())
+        self.assertEqual(edit_value["allowed_paths_sha256"],
+                         task_runtime.stable_sha256(
+                             supersession["umbrella_admission"]["union_paths"]))
+        # Without a supersession the historical creation admission remains
+        # the effective worker authority.
+        plain = task_runtime.read_state(self.controller)["tasks"]["X"]
+        run_dir2 = run_dir.parent / "receipt-fixture-plain"
+        run_dir2.mkdir(parents=True)
+        task_runtime._managed_worker_receipts(run_dir2, plain, gate)
+        create2 = json.loads((run_dir2 / "create-receipt.json").read_text())
+        self.assertEqual(create2["expected_paths"],
+                         plain["creation_receipt"]["allowed_paths"])
+        self.assertEqual(create2["admission_kind"], "historical_creation")
+        self.assertNotIn("admission_supersession_sha256", create2)
 
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
         self.install_task_run_assets()
