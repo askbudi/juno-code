@@ -163,5 +163,29 @@
         }
       ]
     }
-  ]
+  ],
+  "documentation_validation": {
+    "schema_version": "juno_documentation_validation_policy.v1",
+    "inert_exact_files": [
+      "AGENTS.md",
+      "CLAUDE.md"
+    ],
+    "inert_roots": [
+      ".juno_task/wiki"
+    ],
+    "active_exact_files": [
+      "README.md",
+      "juno-code/README.md",
+      "juno-benchmark/README.md"
+    ],
+    "active_roots": [
+      "docs",
+      "juno-code/docs",
+      "juno-benchmark/docs"
+    ],
+    "active_name_patterns": [
+      "(^|/)(CHANGELOG|RELEASE_NOTES)(\\.[^/]*)?$",
+      "(^|/)MIGRATION[^/]*\\.md$"
+    ]
+  }
 }

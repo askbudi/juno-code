@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -240,7 +241,9 @@ raise SystemExit(2)
         git(worktree, "add", "src/package-lock.json",
             *(["src/package.json"] if include_manifest else []))
         git(worktree, "commit", "-m", "update package pair")
-        (worktree / "src/node_modules").mkdir(exist_ok=True)
+        modules = worktree / "src/node_modules"
+        modules.mkdir(exist_ok=True)
+        (modules / ".package-lock.json").write_text("hydrated\n")
 
     def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
         owner = self.root / "integration-owner"
@@ -714,7 +717,7 @@ raise SystemExit(2)
 
     def test_terminal_findings_reconciliation_is_receipt_bound_idempotent_and_review_free(self) -> None:
         tip, target, before = self.prepare_terminal_reconciliation()
-        validation_before = self.counter.read_bytes()
+        validation_before = self.counter.read_bytes() if self.counter.exists() else b""
         with (mock.patch.object(merge_runtime, "validation_rows") as validation,
               mock.patch.object(merge_runtime, "review_candidate") as review,
               mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch):
@@ -734,13 +737,13 @@ raise SystemExit(2)
                          state_before_retry)
         self.assertEqual(applied["queue_attempt"], before["queue_attempt"])
         self.assertEqual(applied["review_round"], before["review_round"])
-        self.assertEqual(self.counter.read_bytes(), validation_before)
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"", validation_before)
         self.assertTrue(Path(plan["receipt"]["path"]).is_file())
         validation.assert_not_called(); review.assert_not_called(); dispatch.assert_not_called()
 
     def test_reconcile_cli_forwards_plan_and_apply_with_orchestration_audits(self) -> None:
         _, _, before = self.prepare_terminal_reconciliation()
-        validation_before = self.counter.read_bytes()
+        validation_before = self.counter.read_bytes() if self.counter.exists() else b""
 
         planned = json.loads(self.command(QUEUE, ["reconcile", "plan", "X"]).stdout)
         applied = json.loads(self.command(QUEUE, [
@@ -760,7 +763,7 @@ raise SystemExit(2)
             )
         self.assertEqual(applied["queue_attempt"], before["queue_attempt"])
         self.assertEqual(applied["review_round"], before["review_round"])
-        self.assertEqual(self.counter.read_bytes(), validation_before)
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"", validation_before)
 
     def test_terminal_reconciliation_supports_exhausted_but_refuses_nonancestor_and_nonterminal(self) -> None:
         self.prepare_terminal_reconciliation(state_name="REVIEW_FINDINGS_EXHAUSTED")
@@ -1031,7 +1034,7 @@ raise SystemExit(2)
         git(checkout, "merge", "--no-ff", "--no-edit", tip)
         target = git(checkout, "rev-parse", "HEAD")
         git(self.repository, "worktree", "remove", str(checkout))
-        validation_before = self.counter.read_bytes()
+        validation_before = self.counter.read_bytes() if self.counter.exists() else b""
 
         reconciled = merge_runtime.merge_next(self.controller.resolve())
 
@@ -1041,7 +1044,7 @@ raise SystemExit(2)
                          (tip, target))
         self.assertEqual(reconciled["validation"], [])
         self.assertEqual(self.task("status", "X")["state"], "MERGED")
-        self.assertEqual(self.counter.read_bytes(), validation_before)
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"", validation_before)
 
     def test_target_refresh_composed_authored_repair_and_retry_are_idempotent(self) -> None:
         self.install_merge_planner_runtime()
@@ -1198,8 +1201,9 @@ raise SystemExit(2)
         (a_worktree / "src/shared.txt").write_text("target side\n")
         git(a_worktree, "add", "src/shared.txt")
         git(a_worktree, "commit", "-m", "target side")
-        self.task("finish", "A")
         (a_worktree / "src/node_modules").mkdir()
+        (a_worktree / "src/node_modules/.package-lock.json").write_text("hydrated\n")
+        self.task("finish", "A")
         self.queue_payload("next")
         worktree = self.workspaces / "B"
         (worktree / "src/shared.txt").write_text("feature side\n")
@@ -1207,17 +1211,19 @@ raise SystemExit(2)
         (worktree / "src/package.json").write_text('{"version":"01.2.3"}\n')
         git(worktree, "add", "src")
         git(worktree, "commit", "-m", "conflicting stale package")
+        (worktree / "src/node_modules").mkdir()
+        (worktree / "src/node_modules/.package-lock.json").write_text("hydrated\n")
         self.task("finish", "B")
         holder = self.root / "target-holder"
         git(self.repository, "worktree", "add", str(holder), "product")
-        validation_before = self.counter.read_bytes()
+        validation_before = self.counter.read_bytes() if self.counter.exists() else b""
         report = merge_runtime.merge_plan(self.controller.resolve(), "B")
         codes = {row["code"] for row in report["findings"]}
         self.assertTrue({"composition.conflicts", "topology.target_checked_out",
                          "package.invalid_semver"}.issubset(codes))
         self.assertIn("src/shared.txt", report["composition"]["conflict_paths"])
         self.assertFalse(report["ready"])
-        self.assertEqual(self.counter.read_bytes(), validation_before)
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"", validation_before)
 
     def test_feasibility_plan_missing_runtime_malformed_policy_and_stale_identity_fail_closed(self) -> None:
         self.commit_feature("X", "docs/plan.txt", "ready\n")
@@ -1447,8 +1453,69 @@ raise SystemExit(2)
         self.assertEqual(merged["candidate_sha"], tip)
         self.assertEqual(merged["outcome"], "MERGED")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
-        self.assertEqual(self.counter.read_text().splitlines(), ["run"])
+        # Finish evidence is authoritative: clearing this process counter proves
+        # merge consumed the exact closure without equivalent execution.
+        self.assertEqual(self.counter.read_text().splitlines(), [])
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+
+    def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
+        templates = Path(__file__).resolve().parents[2]
+        if not (templates / "workflows/yy-merge-drive.yaml").is_file():
+            templates = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
+        workflow = self.controller / ".juno_task/workflows/yy-merge-drive.yaml"
+        prompt = self.controller / ".juno_task/prompts/lifecycle/merge-semantic-repair.md"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_bytes((templates / "workflows/yy-merge-drive.yaml").read_bytes())
+        prompt.write_bytes((templates / "prompts/lifecycle/merge-semantic-repair.md").read_bytes())
+        git(self.controller, "add", str(workflow.relative_to(self.controller)),
+            str(prompt.relative_to(self.controller)))
+        git(self.controller, "commit", "-m", "controller merge workflow")
+        tip = self.commit_feature("X", "docs/drive.md", "drive\n")
+        projection = merge_runtime.merge_drive(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "MERGED_THROUGH")
+        self.assertEqual(projection["identities"]["completed_task_ids"], ["X"])
+        self.assertEqual(projection["identities"]["current_target_sha"], tip)
+        self.assertEqual(projection["commands"]["reused"], 1)
+        self.assertEqual(projection["commands"]["executed"], 0)
+        self.assertEqual(projection["attempts"]["semantic_repairs"], 0)
+
+    def test_real_high_risk_overlap_keeps_a_before_b_while_suite_is_in_flight(self) -> None:
+        full_code = ("import time; from pathlib import Path; time.sleep(0.4); "
+                     f"Path({str(self.full_counter)!r}).open('a').write('run\\n')")
+        self.write_policy(full_code=full_code)
+        self.commit_feature("X", "src/security/overlap.py", "secure = True\n")
+        self.queue_payload("next")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review) as dispatch:
+            reviewed = merge_runtime.merge_review(
+                self.controller.resolve(), "X", overlap_suite=True)
+        self.assertEqual(reviewed["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(dispatch.call_count, 2)
+        names = [row["event"] for row in reviewed["review_suite_overlap"]["events"]]
+        self.assertLess(names.index("suite_started"), names.index("reviewer_started"))
+        self.assertLess(names.index("reviewer_completed"),
+                        names.index("reviewer_started", names.index("reviewer_started") + 1))
+        self.assertLess(names.index("reviewer_started", names.index("reviewer_started") + 1),
+                        names.index("suite_completed"))
+
+    def test_real_blocking_a_cancels_suite_immutably_and_never_launches_b(self) -> None:
+        self.write_policy(full_code="import time; time.sleep(10)")
+        self.commit_feature("X", "src/security/cancel.py", "secure = False\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "dispatch_reviewer",
+                side_effect=lambda *args, **kwargs: self.fake_review(
+                    *args, **kwargs, findings=True)) as dispatch:
+            reviewed = merge_runtime.merge_review(
+                self.controller.resolve(), "X", overlap_suite=True)
+        self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
+        self.assertEqual(dispatch.call_count, 1)
+        cancellation = reviewed["risk"]["suite_cancellation"]
+        path = Path(cancellation["path"])
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), cancellation["sha256"])
+        evidence = json.loads(path.read_text())
+        self.assertTrue(evidence["suite_cancelled"])
+        self.assertEqual(evidence["reason"], "blocking_reviewer_a")
 
     def test_merge_status_returns_a_durable_controller_audit_receipt(self) -> None:
         result = self.queue_payload("status")
@@ -1478,15 +1545,41 @@ raise SystemExit(2)
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "AWAITING_RISK")
 
-    def test_low_risk_docs_candidate_uses_zero_review_canonical_evidence(self) -> None:
+    def test_low_risk_active_docs_run_only_cheap_audit_and_reuse_it_at_merge(self) -> None:
         tip = self.commit_feature("X", "docs/flow.md", "flow\n")
+        standing = self.task("status", "X")["review_ready_closure"]["standing_validation"]
+        self.assertEqual(standing["documentation_route"]["mode"], "active_audit")
+        self.assertEqual(standing["counters"]["executed"], 1)
+        self.assertFalse(self.counter.exists())
         with mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch:
             merged = merge_runtime.merge_next(self.controller.resolve())
         self.assertEqual(merged["outcome"], "MERGED")
         self.assertEqual(merged["candidate_sha"], tip)
         self.assertEqual(merged["risk"]["plan"]["tier"], "low")
         self.assertEqual(merged["risk"]["plan"]["reviewer_sequence"], [])
+        self.assertEqual(merged["command_evidence"]["counters"]["reused"], 1)
+        self.assertEqual(merged["command_evidence"]["counters"]["executed"], 0)
+        self.assertFalse(self.counter.exists())
         dispatch.assert_not_called()
+
+    def test_inert_operator_text_executes_zero_commands_at_finish_and_merge(self) -> None:
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["allowed_paths"].append(".juno_task/wiki")
+        policy_path.write_text(json.dumps(policy) + "\n")
+        git(self.controller, "add", str(policy_path.relative_to(self.controller)))
+        git(self.controller, "commit", "-m", "admit inert operator text")
+        self.base = self.advance_target(".juno_task/wiki/operator.md", "base\n")
+        tip = self.commit_feature("X", ".juno_task/wiki/operator.md", "operator guidance\n")
+        standing = self.task("status", "X")["review_ready_closure"]["standing_validation"]
+        self.assertEqual(standing["documentation_route"]["mode"], "inert_zero_command")
+        self.assertEqual(standing["counters"]["skipped"], 1)
+        self.assertEqual(standing["counters"]["executed"], 0)
+        self.assertFalse(self.counter.exists())
+        merged = merge_runtime.merge_next(self.controller.resolve())
+        self.assertEqual((merged["outcome"], merged["candidate_sha"]), ("MERGED", tip))
+        self.assertEqual(merged["command_evidence"]["counters"]["executed"], 0)
+        self.assertFalse(self.counter.exists())
 
     def test_merge_next_persists_truthful_partial_owner_advancement_after_cas(self) -> None:
         owner = self.root / "merge-next-integration-owner"
@@ -2524,6 +2617,7 @@ raise SystemExit(2)
         git(worktree, "add", "src/package-lock.json")
         git(worktree, "commit", "-m", "feature lock drift")
         (worktree / "src/node_modules").mkdir()
+        (worktree / "src/node_modules/.package-lock.json").write_text("hydrated\n")
         self.task("finish", "A")
         report = merge_runtime.merge_plan(self.controller.resolve(), "A")
         self.assertIn("package.lock_diverged", {row["code"] for row in report["findings"]})
@@ -2743,11 +2837,11 @@ raise SystemExit(2)
         self.commit_resolved_repair()
         self.write_policy()
 
-        def validate_then_move(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        def validate_then_move(*_args: object, **_kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
             self.advance_target("src/reopen-target.txt")
-            return []
+            return [], {"decisions": [], "counters": {}}
 
-        with mock.patch.object(merge_runtime, "validation_rows", side_effect=validate_then_move):
+        with mock.patch.object(merge_runtime, "authoritative_validation_rows", side_effect=validate_then_move):
             with self.assertRaisesRegex(merge_runtime.MergeQueueError,
                                         "target moved during resolved candidate reopen"):
                 merge_runtime.merge_reopen(self.controller.resolve(), "B")
@@ -2764,7 +2858,8 @@ raise SystemExit(2)
 
         planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "B")
         self.assertEqual(planned["source_state"], "REOPENING")
-        with mock.patch.object(merge_runtime, "validation_rows", return_value=[]):
+        with mock.patch.object(merge_runtime, "authoritative_validation_rows",
+                               return_value=([], {"decisions": [], "counters": {}})):
             recovered = merge_runtime.apply_target_refresh(
                 self.controller.resolve(), "B", planned["receipt"]["path"],
                 planned["receipt"]["sha256"])
@@ -2857,16 +2952,23 @@ raise SystemExit(2)
         self.assertEqual(first["strategy"], "direct")
         tips = {"X": x_tip, "Y": y_tip}
         self.assertEqual(first["candidate_sha"], tips[first["task_id"]])
+        self.assertEqual(first["command_evidence"]["counters"]["executed"], 0)
+        self.assertEqual(first["command_evidence"]["counters"]["reused"], 1)
         second = self.queue_payload("next")
         self.assertEqual({first["task_id"], second["task_id"]}, {"X", "Y"})
         self.assertEqual(second["strategy"], "merge_both_parents")
+        self.assertEqual(second["command_evidence"]["counters"]["invalidated"], 1)
+        self.assertEqual(second["command_evidence"]["counters"]["executed"], 1)
+        invalidation = next(row for row in second["command_evidence"]["decisions"]
+                            if row["decision"] == "invalidated")
+        self.assertIn("observable_tree", {row["field"] for row in invalidation["invalidation"]})
         merged = git(self.repository, "rev-parse", "refs/heads/product")
         self.assertEqual(merged, second["candidate_sha"])
         self.assertEqual(git(self.repository, "show", "-s", "--format=%P", merged).split(),
                          [tips[first["task_id"]], tips[second["task_id"]]])
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/x.txt"), "x")
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
-        self.assertEqual(len(self.counter.read_text().splitlines()), 4)  # finish + final candidate, once each
+        self.assertEqual(len(self.counter.read_text().splitlines()), 3)  # two finish rows + one invalid moved closure
         status = self.queue_payload("status")
         self.assertEqual([row["state"] for row in status["tasks"]], ["MERGED", "MERGED"])
 
@@ -2892,7 +2994,7 @@ raise SystemExit(2)
         self.assertEqual(second["strategy"], "merge_both_parents")
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/x.txt"), "x")
         self.assertEqual(git(self.repository, "show", "refs/heads/product:src/y.txt"), "y")
-        self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+        self.assertEqual(len(self.counter.read_text().splitlines()), 3)
 
     def test_direct_hydrated_review_reuses_dependencies_and_retries_prior_failed_claim(self) -> None:
         self.add_validation_dependency_base()
@@ -2907,6 +3009,7 @@ raise SystemExit(2)
         security.write_text("auth\n")
         modules = worktree / "src/node_modules"
         modules.mkdir()
+        (modules / ".package-lock.json").write_text("hydrated\n")
         (modules / "probe.txt").write_text("ready\n")
         provenance = (modules.resolve(), modules.stat().st_dev, modules.stat().st_ino)
         git(worktree, "add", "src/security/auth.py")
@@ -2947,7 +3050,10 @@ raise SystemExit(2)
         security.write_text("auth\n")
         git(worktree, "add", "src/security/auth.py")
         git(worktree, "commit", "-m", "unhydrated high risk feature")
+        modules = worktree / "src/node_modules"
+        modules.mkdir(); (modules / ".package-lock.json").write_text("hydrated\n")
         self.task("finish", "X")
+        shutil.rmtree(modules)
         with (mock.patch.object(merge_runtime, "validation_rows") as validation,
               mock.patch.object(merge_runtime, "dispatch_reviewer") as dispatch):
             with self.assertRaisesRegex(merge_runtime.MergeQueueError,
@@ -2972,6 +3078,7 @@ raise SystemExit(2)
             (worktree / path).write_text(f"{task_id}\n")
             modules = worktree / "src/node_modules"
             modules.mkdir()
+            (modules / ".package-lock.json").write_text("hydrated\n")
             (modules / "probe.txt").write_text("ready\n")
             git(worktree, "add", path)
             git(worktree, "commit", "-m", f"feature {task_id}")
@@ -2980,7 +3087,7 @@ raise SystemExit(2)
         self.assertEqual(self.queue_payload("next")["strategy"], "direct")
         composed = self.queue_payload("next")
         self.assertEqual(composed["strategy"], "merge_both_parents")
-        self.assertEqual(len(self.counter.read_text().splitlines()), 4)
+        self.assertEqual(len(self.counter.read_text().splitlines()), 3)
         self.assertEqual(self.registered_candidate_paths(), [])
         for task_id in ("X", "Y"):
             modules = self.workspaces / task_id / "src/node_modules"
@@ -3338,8 +3445,11 @@ raise SystemExit(2)
         pkg_counter = self.write_profiled_policy()
         self.install_merge_planner_runtime()
         tip = self.commit_feature("X", "pkg/security/auth.py", "package change\n")
-        self.assertNotIn(
-            "standing_validation", self.task("status", "X")["review_ready_closure"])
+        standing = self.task("status", "X")["review_ready_closure"]["standing_validation"]
+        self.assertEqual(standing["counters"], {
+            "executed": 0, "reused": 0, "invalidated": 0,
+            "skipped": 0, "not_applicable": 1,
+        })
         waiting = self.queue_payload("next")
         self.assertEqual(waiting["outcome"], "AWAITING_RISK")
         self.assertFalse(self.full_counter.exists())
@@ -3981,6 +4091,60 @@ class StandingValidationVerificationTests(unittest.TestCase):
             receipt_path.write_text("{}\n")
             with self.assertRaisesRegex(merge_runtime.MergeQueueError, "identity or verdict"):
                 merge_runtime.verify_standing_validation(record)
+
+
+class MinimumRcMergeDriverContractTests(unittest.TestCase):
+    def test_suite_overlaps_a_but_b_never_precedes_a_pass(self) -> None:
+        lifecycle = merge_runtime.lifecycle_runtime
+        events: list[str] = []
+        suite_started = threading.Event()
+        release_suite = threading.Event()
+        def suite(cancel: threading.Event) -> str:
+            events.append("suite-start"); suite_started.set()
+            release_suite.wait(2)
+            self.assertFalse(cancel.is_set())
+            events.append("suite-pass")
+            return "pass"
+        def reviewer_a() -> dict[str, object]:
+            self.assertTrue(suite_started.wait(1)); events.append("a-pass")
+            return {"blocking_count": 0}
+        def reviewer_b() -> dict[str, object]:
+            self.assertIn("a-pass", events); events.append("b-pass")
+            release_suite.set()
+            return {"blocking_count": 0}
+        result = lifecycle.run_overlap(suite, [reviewer_a, reviewer_b])
+        self.assertIsNone(result["suite_error"])
+        self.assertLess(events.index("suite-start"), events.index("a-pass"))
+        self.assertLess(events.index("a-pass"), events.index("b-pass"))
+        self.assertLess(events.index("b-pass"), events.index("suite-pass"))
+
+    def test_blocking_a_requests_safe_suite_cancellation_and_never_launches_b(self) -> None:
+        lifecycle = merge_runtime.lifecycle_runtime
+        launched: list[str] = []
+        suite_started = threading.Event()
+        def suite(cancel: threading.Event) -> str:
+            suite_started.set()
+            self.assertTrue(cancel.wait(2))
+            raise RuntimeError("safely cancelled")
+        def reviewer_a() -> dict[str, object]:
+            self.assertTrue(suite_started.wait(1)); launched.append("A")
+            return {"blocking_count": 1}
+        def reviewer_b() -> dict[str, object]:
+            launched.append("B")
+            return {"blocking_count": 0}
+        result = lifecycle.run_overlap(suite, [reviewer_a, reviewer_b])
+        self.assertEqual(launched, ["A"])
+        self.assertTrue(result["cancelled"])
+        self.assertIsInstance(result["suite_error"], RuntimeError)
+        names = [row["event"] for row in result["events"]]
+        self.assertIn("suite_cancellation_requested", names)
+
+    def test_drive_parser_exposes_through_without_external_authority_flags(self) -> None:
+        args = merge_runtime.parser().parse_args(["drive", "--through", "T1"])
+        self.assertEqual(args.operation, "drive")
+        self.assertEqual(args.through, "T1")
+        self.assertFalse(hasattr(args, "release"))
+        self.assertFalse(hasattr(args, "push"))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import { checkpointControllerAfterFinalization } from '../../utils/controller-ch
 
 export type TaskWorkspaceOperation =
   | 'start'
+  | 'run'
   | 'status'
   | 'hydrate'
   | 'preflight'
@@ -67,8 +68,8 @@ export async function selectTaskWorkspaceRuntime(
   const protocol = [
     'TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"',
     'def hydrate(controller:',
-    '"start", "status", "hydrate", "preflight", "finish"',
-    '"start", "status", "hydrate", "preflight", "finish",',
+    'def managed_task_run(controller:',
+    '"start", "run", "status", "hydrate", "preflight", "finish"',
   ];
   if (!protocol.every((marker) => source.includes(marker))) {
     throw new Error('Packaged task-hydrate recovery engine is incompatible; refusing stale controller fallback.');
@@ -166,6 +167,11 @@ export function configureTaskWorkspaceCommand(
   const task = program
     .command('task')
     .description('Create, inspect, and queue one exact-base feature worktree');
+  task
+    .command('run')
+    .description('Execute the controller-owned typed task workflow through QUEUED')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .action((taskId: string) => invoke('run', taskId, []));
   task
     .command('start')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')

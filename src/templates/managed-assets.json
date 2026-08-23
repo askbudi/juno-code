@@ -413,6 +413,36 @@
       "destination": ".juno_task/scripts/workflow_run_evidence.py",
       "installClass": "script",
       "type": "script"
+    },
+    {
+      "source": "workflows/yy-task-run.yaml",
+      "destination": ".juno_task/workflows/yy-task-run.yaml",
+      "installClass": "controller",
+      "type": "workflow"
+    },
+    {
+      "source": "workflows/yy-merge-drive.yaml",
+      "destination": ".juno_task/workflows/yy-merge-drive.yaml",
+      "installClass": "controller",
+      "type": "workflow"
+    },
+    {
+      "source": "prompts/lifecycle/task-implementation.md",
+      "destination": ".juno_task/prompts/lifecycle/task-implementation.md",
+      "installClass": "controller",
+      "type": "prompt"
+    },
+    {
+      "source": "prompts/lifecycle/task-test-repair.md",
+      "destination": ".juno_task/prompts/lifecycle/task-test-repair.md",
+      "installClass": "controller",
+      "type": "prompt"
+    },
+    {
+      "source": "prompts/lifecycle/merge-semantic-repair.md",
+      "destination": ".juno_task/prompts/lifecycle/merge-semantic-repair.md",
+      "installClass": "controller",
+      "type": "prompt"
     }
   ]
 }

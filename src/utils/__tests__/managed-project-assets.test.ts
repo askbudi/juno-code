@@ -8,6 +8,7 @@ import { ConfigLoader, getPromptMacroDictionary } from '../../core/config.js';
 import { ScriptInstaller } from '../script-installer.js';
 import {
   MANAGED_ASSETS,
+  MANAGED_CONTROLLER_ASSETS,
   MANAGED_PROMPT_MACROS,
   ManagedProjectAssets,
 } from '../managed-project-assets.js';
@@ -60,6 +61,27 @@ describe('ManagedProjectAssets', {
       expect(identity.installedSha256, destination).toBe(actual);
       expect(identity.sourceSha256, destination).toBe(actual);
     }
+  });
+
+  it('installs controller-only workflow seeds only in metadata controllers and preserves customization', async () => {
+    const configPath = path.join(projectDir, '.juno_task', 'config.json');
+    const config = await fs.readJson(configPath);
+    config.controllerWorkspace = {
+      mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json',
+    };
+    await fs.writeJson(configPath, config);
+    const installed = await ManagedProjectAssets.update(projectDir, { silent: true });
+    for (const asset of MANAGED_CONTROLLER_ASSETS) {
+      expect(installed.installed).toContain(asset.destination);
+      expect(await fs.pathExists(path.join(projectDir, asset.destination))).toBe(true);
+    }
+    const workflow = path.join(projectDir, '.juno_task/workflows/yy-task-run.yaml');
+    await fs.writeFile(workflow, '{"owner":"customized"}\n');
+    const preserved = await ManagedProjectAssets.update(projectDir, { silent: true });
+    expect(preserved.conflicts).toContainEqual(expect.objectContaining({
+      destination: '.juno_task/workflows/yy-task-run.yaml',
+    }));
+    expect(await fs.readFile(workflow, 'utf8')).toBe('{"owner":"customized"}\n');
   });
 
   it('installs every managed asset and registers resolvable file-backed macros', async () => {
@@ -184,7 +206,8 @@ describe('ManagedProjectAssets', {
     expect(reviewPrompt).toContain('Never use bare `pi`');
     expect(reviewPrompt).toContain('Review only');
     expect(reviewPrompt).toContain('do not edit, commit, update Kanban, launch another reviewer');
-    expect(reviewPrompt).toContain('JUNO_REVIEW_VERDICT: PASS');
+    expect(reviewPrompt).toContain('Return every independently actionable issue');
+    expect(reviewPrompt).toContain('structured `truncated=true` signal');
     expect(reviewPrompt).not.toContain('then resolve it');
     expect(
       await fs.readFile(

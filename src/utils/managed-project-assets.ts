@@ -13,18 +13,33 @@ import {
 type ManagedAssetDefinition = {
   source: string;
   destination: string;
-  installClass: 'project' | 'script';
+  installClass: 'project' | 'script' | 'controller';
   type: string;
   macro?: string;
 };
 
 const MANAGED_ASSET_DEFINITIONS = managedAssetManifest.assets as ManagedAssetDefinition[];
 
-export const MANAGED_ASSETS = MANAGED_ASSET_DEFINITIONS;
+export const MANAGED_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
+  (asset) => asset.installClass !== 'controller',
+);
+export const MANAGED_CONTROLLER_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
+  (asset) => asset.installClass === 'controller',
+);
 
 export const MANAGED_PROJECT_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
   (asset) => asset.installClass === 'project',
 );
+
+function managedAssetsForProject(projectConfig: Record<string, any>): ManagedAssetDefinition[] {
+  const controllerWorkspace = projectConfig?.controllerWorkspace;
+  const metadataOnlyController =
+    controllerWorkspace?.mode === 'metadata-only' &&
+    controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
+  return MANAGED_ASSET_DEFINITIONS.filter(
+    (asset) => asset.installClass !== 'controller' || metadataOnlyController,
+  );
+}
 
 export const MANAGED_PROMPT_MACROS = Object.fromEntries(
   MANAGED_ASSET_DEFINITIONS.filter((asset) => asset.macro).map((asset) => [
@@ -87,7 +102,7 @@ export interface ManagedAssetGenerationReport {
   coherent: boolean;
   entries: Array<{
     destination: string;
-    installClass: 'project' | 'script';
+    installClass: 'project' | 'script' | 'controller';
     state: ManagedAssetGenerationState;
   }>;
 }
@@ -187,7 +202,7 @@ export class ManagedProjectAssets {
         '.juno_task/config.json.candidate',
       ),
     ];
-    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+    for (const asset of managedAssetsForProject(projectConfig)) {
       const sourcePath = path.join(templatesDir, asset.source);
       await assertPackageSource(sourcePath, templatesDir, 'file');
       possiblePaths.push(
@@ -296,7 +311,8 @@ export class ManagedProjectAssets {
       projectDir,
       path.join(projectDir, RETIRED_SPECIALIZATION_RECEIPT),
     );
-    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+    const applicableAssets = managedAssetsForProject(projectConfig);
+    for (const asset of applicableAssets) {
       await assertSafeManagedWritePath(projectDir, path.join(projectDir, asset.destination));
       await assertSafeManagedWritePath(
         projectDir,
@@ -320,7 +336,7 @@ export class ManagedProjectAssets {
     // generation. Candidate files are review aids; installed bytes and the
     // manifest stay untouched until the whole generation is admissible.
     if (!options.force) {
-      for (const asset of MANAGED_ASSET_DEFINITIONS) {
+      for (const asset of applicableAssets) {
         const sourcePath = path.join(templatesDir, asset.source);
         if (!(await fs.pathExists(sourcePath))) {
           throw new Error(`Missing managed package asset: ${sourcePath}`);
@@ -384,7 +400,7 @@ export class ManagedProjectAssets {
     // Scripts and project guidance are one migration generation.  Handling only
     // prompts/config here and letting ScriptInstaller overwrite scripts later
     // would bypass checksum conflict detection for customized runtime bytes.
-    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+    for (const asset of applicableAssets) {
       const sourcePath = path.join(templatesDir, asset.source);
       if (!(await fs.pathExists(sourcePath))) {
         throw new Error(`Missing managed package asset: ${sourcePath}`);
@@ -636,6 +652,9 @@ export class ManagedProjectAssets {
       manifest = parsed as ManagedAssetManifest;
     }
 
+    let projectConfig: Record<string, any> = {};
+    const projectConfigPath = path.join(projectDir, '.juno_task', 'config.json');
+    if (await fs.pathExists(projectConfigPath)) projectConfig = await fs.readJson(projectConfigPath);
     const specializationReceipt = path.join(
       projectDir,
       '.juno_task',
@@ -644,7 +663,7 @@ export class ManagedProjectAssets {
     );
     const retiredSpecializationPresent = await fs.pathExists(specializationReceipt);
     const entries: ManagedAssetGenerationReport['entries'] = [];
-    for (const asset of MANAGED_ASSET_DEFINITIONS) {
+    for (const asset of managedAssetsForProject(projectConfig)) {
       const sourceContent = await fs.readFile(path.join(templatesDir, asset.source));
       const sourceHash = sha256(sourceContent);
       const destinationPath = path.join(projectDir, asset.destination);
@@ -677,7 +696,7 @@ export class ManagedProjectAssets {
     const scripts = entries.filter((entry) => entry.installClass === 'script');
     const guidance = entries.filter(
       (entry) =>
-        entry.installClass === 'project' &&
+        ['project', 'controller'].includes(entry.installClass) &&
         entry.destination !== '.juno_task/prompts/clean_worktree.md',
     );
     const cleanPolicy = entries.find(

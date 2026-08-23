@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh' | 'withdraw';
+export type MergeQueueOperation = 'status' | 'drive' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh' | 'withdraw';
 export type MergeQueueInvoker = (
   operation: MergeQueueOperation,
   taskId?: string,
@@ -137,6 +137,13 @@ export function configureMergeQueueCommand(
 ): void {
   const merge = program.command('merge').description('Inspect or advance the conflict-aware product merge queue');
   merge.command('status').action(() => invoke('status'));
+  merge
+    .command('drive')
+    .description('Advance a frozen FIFO scope with the controller-owned typed merge workflow')
+    .option('--through <task-id>', 'Stop after this FIFO-authorized task')
+    .action((options: { through?: string }) => options.through
+      ? invoke('drive', undefined, ['--through', options.through])
+      : invoke('drive'));
   merge
     .command('plan')
     .description('Compute an offline, non-mutating candidate feasibility report')

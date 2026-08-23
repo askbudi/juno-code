@@ -599,6 +599,23 @@ class TaskWorkspaceTests(unittest.TestCase):
                 (SCRIPT.parent.parent / "config/risk-policy.json").read_bytes()
             )
 
+    def install_task_run_assets(self) -> None:
+        templates = Path(__file__).resolve().parents[2]
+        if not (templates / "workflows/yy-task-run.yaml").is_file():
+            templates = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
+        paths = [
+            ("workflows/yy-task-run.yaml", ".juno_task/workflows/yy-task-run.yaml"),
+            ("prompts/lifecycle/task-implementation.md",
+             ".juno_task/prompts/lifecycle/task-implementation.md"),
+            ("prompts/lifecycle/task-test-repair.md",
+             ".juno_task/prompts/lifecycle/task-test-repair.md"),
+        ]
+        for source, destination in paths:
+            target = self.controller / destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((templates / source).read_bytes())
+        git(self.controller, "add", *[destination for _, destination in paths])
+
     def command(self, operation: str, task_id: str, check: bool = True,
                 extra: Optional[list[str]] = None) -> subprocess.CompletedProcess[str]:
         return run(["python3", str(SCRIPT), operation, "--task", task_id,
@@ -1617,7 +1634,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         changed = []
         for runtime, template in RUNTIME_TEMPLATE_PARITY:
             for relative in (runtime, template):
-                (worktree / relative).write_text(f"paired update {relative}\n")
+                (worktree / relative).write_text("paired update\n")
                 changed.append(relative)
         git(worktree, "add", *changed)
         git(worktree, "commit", "-m", "update runtime template parity")
@@ -3774,6 +3791,52 @@ finished = time.monotonic()
                          {"mode": "profile", "profile_ids": ["pkg-suite"],
                           "authored_path_count": 1})
 
+    def test_task_run_persists_needs_decision_before_product_editing(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Context\nTBD owner decision required\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "ambiguous typed task run")
+        projection = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "NEEDS_DECISION")
+        self.assertEqual(projection["attempts"]["implementation"], 0)
+        repeated = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(repeated["run_id"], projection["run_id"])
+        self.assertEqual(repeated["attempts"]["implementation"], 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def test_task_run_compiles_typed_operations_and_queues_one_logical_commit(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip one file.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "ready typed task run")
+
+        def implement(_controller: Path, _task_id: str, record: dict,
+                      _run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            worktree = Path(record["worktree"])
+            (worktree / "src/managed.txt").write_text("managed\n")
+            git(worktree, "add", "src/managed.txt")
+            before = git(worktree, "rev-parse", "HEAD")
+            git(worktree, "commit", "-m", "managed implementation")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "fixture", "sha256": "0" * 64},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+            projection = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "QUEUED")
+        self.assertEqual(projection["attempts"]["implementation"], 1)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "QUEUED")
+        self.assertEqual(git(Path(record["worktree"]), "rev-list", "--count",
+                             f"{record['base_sha']}..{record['tip_sha']}"), "1")
+
     def test_standing_evidence_replay_cuts_redundant_runs_by_eighty_percent(self) -> None:
         counter = self.root / "standing-counter.txt"
         code = f"from pathlib import Path; Path({str(counter)!r}).open('a').write('run\\n')"
@@ -3799,6 +3862,137 @@ finished = time.monotonic()
                       first_plan["plan_sha256"] /
                       f"superseded-by-{repaired['plan_sha256']}.json")
         self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
+
+
+class MinimumRcLifecycleContractTests(unittest.TestCase):
+    def test_documentation_routes_inert_active_and_unsafe_without_process_guessing(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        inert = lifecycle.documentation_route([{"status": "M", "path": "AGENTS.md"}])
+        self.assertEqual(inert["mode"], "inert_zero_command")
+        active = lifecycle.documentation_route([{"status": "M", "path": "README.md"}])
+        self.assertEqual(active["mode"], "active_audit")
+        for rows in ([{"status": "M", "path": "README.md"}, {"status": "M", "path": "src/a.ts"}],
+                     [{"status": "D", "path": "AGENTS.md"}],
+                     [{"status": "M", "path": "package-lock.json"}]):
+            self.assertEqual(lifecycle.documentation_route(rows)["mode"], "fallback")
+
+    def test_zero_exit_with_parsed_failures_is_not_reusable_pass(self) -> None:
+        integrity = task_runtime.lifecycle_runtime.parsed_test_result_integrity(
+            ["npm", "test"], b"Test Files  2 failed\nTests  4 failed\n", 0)
+        self.assertTrue(integrity["contradiction"])
+        self.assertFalse(integrity["eligible_pass"])
+        self.assertTrue(task_runtime.lifecycle_runtime.parsed_test_result_integrity(
+            ["npm", "test"], b"Test Files  9 passed\n", 0)["eligible_pass"])
+
+    def test_real_zero_exit_with_failed_test_summary_becomes_terminal_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("x\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            result = task_runtime.run_validation({
+                "id": "contradictory", "cwd": "src",
+                "argv": [sys.executable, "-c", "print('Test Files  1 failed')"],
+                "timeout_seconds": 10, "max_output_bytes": 4096,
+            }, root)
+            self.assertEqual(result["process_exit_code"], 0)
+            self.assertEqual(result["exit_code"], 65)
+            self.assertFalse(result["result_integrity"]["eligible_pass"])
+
+    def test_readiness_gate_is_deterministic_and_edits_no_product_bytes(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        self.assertEqual(lifecycle.readiness_questions(
+            b"## Goal\nShip it\n## Acceptance\n- proven\n"), [])
+        questions = lifecycle.readiness_questions(b"## Context\nTBD owner decision required\n")
+        self.assertGreaterEqual(len(questions), 3)
+
+    def test_command_closure_names_each_changed_identity_field(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        previous = {"input_closure_sha256": "a", "runtime_sha256": "old",
+                    "dependency_locks": {"x": "1"}, "observable_tree": "tree"}
+        current = {"input_closure_sha256": "b", "runtime_sha256": "new",
+                   "dependency_locks": {"x": "2"}, "observable_tree": "tree"}
+        self.assertEqual([row["field"] for row in lifecycle.closure_invalidation(previous, current)],
+                         ["dependency_locks", "runtime_sha256"])
+        decisions = [lifecycle.evidence_decision("a", "reused", closure=current),
+                     lifecycle.evidence_decision("b", "executed", closure=current),
+                     lifecycle.evidence_decision("c", "invalidated", closure=current)]
+        self.assertEqual(lifecycle.evidence_counters(decisions)["reused"], 1)
+        self.assertEqual(lifecycle.evidence_counters(decisions)["executed"], 1)
+
+    def test_grouped_coherence_collects_all_seeded_cheap_defects_in_one_report(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "product"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            files = {
+                ".juno_task/config/task-workspace.json": "{}\n",
+                "juno-code/package.json": json.dumps({"name": "pkg", "version": "1.0.0"}) + "\n",
+                "juno-code/package-lock.json": json.dumps({"packages": {"": {"name": "pkg", "version": "1.0.0"}}}) + "\n",
+                "juno-code/scripts/implementation-contract.json": json.dumps({"source": "canonical.txt", "destinations": ["generated.txt"]}) + "\n",
+                "canonical.txt": "same\n", "generated.txt": "same\n",
+                "juno-code/src/templates/managed-assets.json": json.dumps({"admissionOutputs": [{"source": "canonical.txt", "destination": "managed.txt"}]}) + "\n",
+                "juno-code/src/templates/canonical.txt": "managed\n", "managed.txt": "managed\n",
+            }
+            for relative, content in files.items():
+                path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            (root / "juno-code/package.json").write_text(json.dumps({
+                "name": "pkg", "version": "2.0.0", "bin": {"missing": "dist/missing.js"}}) + "\n")
+            (root / ".juno_task/config/task-workspace.json").write_text("{malformed\n")
+            (root / "canonical.txt").write_text("new source\n")
+            (root / "juno-code/src/templates/canonical.txt").write_text("new managed source\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "seed defects"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", "HEAD^..HEAD"], cwd=root, text=True).splitlines()
+            report = lifecycle.grouped_coherence(root, root, head, changed)
+            codes = {row["code"] for row in report["findings"]}
+            self.assertTrue({"coherence.package_lock_identity",
+                             "coherence.executable_delegate_missing",
+                             "coherence.config_malformed",
+                             "coherence.generated_output_mismatch",
+                             "coherence.managed_output_mismatch"}.issubset(codes))
+            self.assertEqual(report["outcome"], "FAILED")
+
+    def test_compiler_binds_committed_template_prompt_and_refuses_mutation(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "controller"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".juno_task/workflows/yy-task-run.yaml"
+            prompt_a = root / ".juno_task/prompts/lifecycle/task-implementation.md"
+            prompt_b = root / ".juno_task/prompts/lifecycle/task-test-repair.md"
+            workflow.parent.mkdir(parents=True); prompt_a.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2]
+            if not (source / "workflows/yy-task-run.yaml").is_file():
+                source = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
+            workflow.write_bytes((source / "workflows/yy-task-run.yaml").read_bytes())
+            prompt_a.write_bytes((source / "prompts/lifecycle/task-implementation.md").read_bytes())
+            prompt_b.write_bytes((source / "prompts/lifecycle/task-test-repair.md").read_bytes())
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "assets"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            plan = lifecycle.compile_lifecycle_template(root, "task-run", "T1")
+            self.assertEqual(plan["template"]["id"], "canonical-task-run")
+            prompt_a.write_text("model-authored mutation\n")
+            with self.assertRaisesRegex(lifecycle.LifecycleContractError, "uncommitted|drifted"):
+                lifecycle.compile_lifecycle_template(root, "task-run", "T1")
 
 
 if __name__ == "__main__":

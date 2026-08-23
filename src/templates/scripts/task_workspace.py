@@ -34,6 +34,8 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
+import task_workflow_helper as lifecycle_runtime
+
 CONFIG_SCHEMA = "juno_task_workspace_config.v1"
 STATE_SCHEMA = "juno_task_workspace_state.v1"
 RECORD_SCHEMA = "juno_task_workspace_record.v1"
@@ -267,12 +269,26 @@ def load_config(controller: Path) -> dict[str, Any]:
     required = {"schema_version", "repository", "target_ref", "workspace_root", "branch_prefix",
                 "allowed_paths", "controller_private_paths", "focused_validation",
                 "full_suite_validation"}
-    optional = {"selectable_paths", "hydration_workflow", "validation_profiles"}
+    optional = {"selectable_paths", "hydration_workflow", "validation_profiles", "documentation_validation"}
     if (not isinstance(value, dict) or not required.issubset(value) or set(value) - required - optional
             or value.get("schema_version") != CONFIG_SCHEMA):
         raise TaskWorkspaceError(f"task workspace policy must contain exactly the {CONFIG_SCHEMA} fields")
     value.setdefault("selectable_paths", [])
     value.setdefault("hydration_workflow", ".juno_task/config/worktree-hydration.yaml")
+    documentation = value.setdefault(
+        "documentation_validation", lifecycle_runtime.default_documentation_policy())
+    expected_documentation_keys = set(lifecycle_runtime.default_documentation_policy())
+    if (not isinstance(documentation, dict) or set(documentation) != expected_documentation_keys
+            or documentation.get("schema_version") != "juno_documentation_validation_policy.v1"
+            or any(not isinstance(documentation.get(field), list)
+                   or any(not isinstance(item, str) or not item for item in documentation[field])
+                   for field in ("inert_exact_files", "inert_roots", "active_exact_files",
+                                 "active_roots", "active_name_patterns"))):
+        raise TaskWorkspaceError("documentation_validation policy is malformed")
+    try:
+        [re.compile(pattern) for pattern in documentation["active_name_patterns"]]
+    except re.error as exc:
+        raise TaskWorkspaceError(f"documentation_validation pattern is invalid: {exc}") from exc
     value["hydration_workflow"] = normalized_relative(
         value["hydration_workflow"], "hydration_workflow")
     repository = Path(value["repository"])
@@ -908,7 +924,8 @@ def _validation_subject(row: dict[str, Any], cwd: Path) -> dict[str, Any]:
 
 
 def run_validation(row: dict[str, Any], cwd: Path, *,
-                   clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+                   clock: Callable[[], float] = time.monotonic,
+                   cancel_event: Any = None) -> dict[str, Any]:
     """Run argv-only validation with separate resource and operation budgets."""
     limit = row["max_output_bytes"]
     timing = ValidationTiming(clock)
@@ -998,6 +1015,10 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
             if process.poll() is not None and not in_teardown:
                 timing.transition("TEARDOWN")
                 in_teardown = True
+            if cancel_event is not None and cancel_event.is_set() and not interrupted and not in_teardown:
+                interrupted = True
+                try: os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
             if clock() >= deadline and not timed_out and not in_teardown:
                 timed_out = True
                 try: os.killpg(process.pid, signal.SIGKILL)
@@ -1022,18 +1043,26 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
         except ProcessLookupError: pass
     if not in_teardown:
         timing.transition("TEARDOWN")
-    exit_code = process.wait()
+    process_exit_code = process.wait()
+    exit_code = process_exit_code
     if interrupted: exit_code = 130
     if log_write_error is not None: exit_code = 74
     log_handle.close(); selector.close()
     for stream in stream_info:
         if stream is not None: stream.close()
     if resource_handle is not None: resource_handle.close()
+    integrity = lifecycle_runtime.parsed_test_result_integrity(
+        row["argv"], log_path.read_bytes(), process_exit_code)
+    if exit_code == 0 and not integrity["eligible_pass"]:
+        exit_code = 65
     outcome = ("INTERRUPTED" if interrupted else "TIMED_OUT" if timed_out else
                "PASSED" if exit_code == 0 else "FAILED")
     timed = timing.finish(outcome)
     completed_at, _ = _announce_long_run_completion(timing.started, exit_code, timed_out, log_path)
-    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code, "timed_out": timed_out,
+    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
+            "process_exit_code": process_exit_code, "timed_out": timed_out,
+            "cancelled": interrupted and cancel_event is not None and cancel_event.is_set(),
+            "result_integrity": integrity,
             "timeout_seconds": row["timeout_seconds"], "duration_ms": timed["wall_duration_ms"],
             "started_at": started_at, "completed_at": completed_at,
             "timing": timed, "resource": resource_evidence, "identity": _validation_subject(row, cwd),
@@ -1824,11 +1853,11 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+            "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
             "checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
-    if surface == "merge" and operation not in {"status", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
+    if surface == "merge" and operation not in {"status", "drive", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
     if forwarded_policy is not None and forwarded_policy != expected_policy:
         raise TaskWorkspaceError(
@@ -2933,30 +2962,13 @@ def _git_blob(repository: Path, head: str, relative: str) -> Optional[str]:
 
 def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
                            config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
-    cwd = str(row["cwd"]).strip("/")
-    tree = git(repository, "rev-parse", f"{head}:{cwd}" if cwd else f"{head}^{{tree}}",
-               check=False)
-    if not SHA_RE.fullmatch(tree):
-        tree = git(repository, "rev-parse", f"{head}^{{tree}}")
-    locks: dict[str, str] = {}
-    for name in ("package-lock.json", "npm-shrinkwrap.json", "pyproject.toml", "uv.lock", "poetry.lock"):
-        relative = f"{cwd}/{name}" if cwd else name
-        blob = _git_blob(repository, head, relative)
-        if blob:
-            locks[relative] = blob
-    policy_path = config.get("risk_policy_path") or ".juno_task/config/risk-policy.json"
-    policy_file = repository / str(policy_path)
-    policy_sha = hashlib.sha256(policy_file.read_bytes()).hexdigest() if policy_file.is_file() else None
-    body = {
-        "cwd": cwd, "cwd_tree": tree, "locks": locks,
-        "command_sha256": stable_sha256(row),
-        "task_workspace_config_sha256": stable_sha256(config),
-        "risk_policy_sha256": policy_sha,
-        "runtime_sha256": runtime["running_sha256"],
-        "runner_class": {"kind": "local", "platform": sys.platform,
-                         "python": list(sys.version_info[:3])},
-    }
-    return {**body, "input_closure_sha256": stable_sha256(body)}
+    policy_path = repository / ".juno_task/config/risk-policy.json"
+    return lifecycle_runtime.command_closure(
+        repository, head, row, config_sha256=stable_sha256(config),
+        policy_sha256=(hashlib.sha256(policy_path.read_bytes()).hexdigest()
+                       if policy_path.is_file() else None),
+        runtime_sha256=runtime["running_sha256"], environment={},
+    )
 
 
 def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
@@ -2974,17 +2986,36 @@ def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
         frozen, repository, config, task_id)
     if head == frozen["base_sha"] or not changed:
         raise TaskWorkspaceError("standing checkpoint requires a committed product diff")
-    rows = selected_focused_rows(config, changed)
+    path_status = lifecycle_runtime.changed_path_status(
+        repository, frozen["base_sha"], head)
+    documentation = lifecycle_runtime.documentation_route(
+        path_status, config["documentation_validation"])
     routing = validation_profile_selection(config, changed)
+    if documentation["mode"] == "inert_zero_command":
+        rows, selection_reason = [], "exact inert-documentation zero-command proof"
+    elif documentation["mode"] == "active_audit":
+        rows, selection_reason = [lifecycle_runtime.active_documentation_row()], "exact active-documentation audit"
+    else:
+        rows = selected_focused_rows(config, changed)
+        selection_reason = ("single registered package profile" if routing["mode"] == "profile"
+                            else "conservative focused fallback")
     planned = [{"command": row,
                 "input_closure": _command_input_closure(repository, head, row, config, runtime),
-                "reason": ("single registered package profile" if routing["mode"] == "profile"
-                           else "conservative focused fallback")}
+                "reason": selection_reason}
                for row in rows]
+    coherence = lifecycle_runtime.grouped_coherence(
+        controller, repository, head, changed,
+        active_doc_paths=documentation["active_paths"])
+    if coherence["outcome"] != "PASSED":
+        raise TaskWorkspaceError(
+            "grouped coherence failed: " + json.dumps(
+                coherence["findings"], sort_keys=True))
     body = {"schema_version": STANDING_PLAN_SCHEMA, "task_id": task_id,
             "base_sha": frozen["base_sha"], "tip_sha": head,
             "tree_sha": git(repository, "rev-parse", f"{head}^{{tree}}"),
             "branch_ref": frozen["branch_ref"], "changed_paths": changed,
+            "changed_path_status": path_status, "documentation_route": documentation,
+            "grouped_coherence": coherence,
             "selection": routing, "commands": planned,
             "created_at_unix_ns": time.time_ns()}
     identity_body = {key: value for key, value in body.items() if key != "created_at_unix_ns"}
@@ -3032,6 +3063,48 @@ def _standing_plan(controller: Path, task_id: str) -> tuple[dict[str, Any], Path
     return plan, plan_path
 
 
+def _active_documentation_validation(repository: Path, head: str,
+                                     plan: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    audit = lifecycle_runtime.active_documentation_audit(
+        repository, head, plan["documentation_route"]["active_paths"])
+    output = lifecycle_runtime.canonical_bytes(audit)
+    integrity = lifecycle_runtime.parsed_test_result_integrity(
+        row["argv"], output, 0 if audit["outcome"] == "PASSED" else 1)
+    exit_code = 0 if audit["outcome"] == "PASSED" and integrity["eligible_pass"] else 65
+    elapsed = int((time.monotonic() - started) * 1000)
+    return {"id": row["id"], "argv": row["argv"], "exit_code": exit_code,
+            "process_exit_code": 0 if audit["outcome"] == "PASSED" else 1,
+            "timed_out": False, "cancelled": False,
+            "timeout_seconds": row["timeout_seconds"], "duration_ms": elapsed,
+            "started_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "result_integrity": integrity, "active_documentation_audit": audit,
+            "stdout_tail": output[-row["max_output_bytes"]:].decode(errors="replace"),
+            "stderr_tail": "", "stdout_truncated_bytes": max(0, len(output)-row["max_output_bytes"]),
+            "stderr_truncated_bytes": 0, "stdout_sha256": hashlib.sha256(output).hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(), "log_path": None,
+            "log_sha256": hashlib.sha256(output).hexdigest(), "log_write_failed": False,
+            "log_write_error": None,
+            "timing": {"schema_version": VALIDATION_TIMING_SCHEMA,
+                       "states": [{"state": "WAITING_FOR_RESOURCE", "duration_ms": 0},
+                                  {"state": "SETUP", "duration_ms": 0},
+                                  {"state": "RUNNING", "duration_ms": elapsed},
+                                  {"state": "TEARDOWN", "duration_ms": 0},
+                                  {"state": "PASSED" if exit_code == 0 else "FAILED", "duration_ms": 0}],
+                       "wall_duration_ms": elapsed, "critical_path_contribution_ms": elapsed},
+            "resource": {"id": None, "lock_identity_sha256": None,
+                         "wait_timeout_seconds": None, "owner_diagnostics": None},
+            "identity": {"command_sha256": stable_sha256(row["argv"]),
+                         "candidate_sha": head}}
+
+
+def _standing_readiness_identity(record: dict[str, Any], worktree: Path,
+                                  config: dict[str, Any]) -> str:
+    return stable_sha256({"hydration": record.get("hydration"),
+                          "dependencies": validation_dependency_evidence(worktree, config)})
+
+
 def standing_evidence_run(controller: Path, task_id: str,
                           *, raise_on_failure: bool = True) -> dict[str, Any]:
     plan, plan_path = _standing_plan(controller, task_id)
@@ -3047,44 +3120,88 @@ def standing_evidence_run(controller: Path, task_id: str,
     lane = _standing_root(controller, task_id) / ".local-lane.lock"
     lane.parent.mkdir(parents=True, exist_ok=True)
     receipts: list[dict[str, Any]] = []
-    executed = reused = 0
+    decisions: list[dict[str, Any]] = []
+    executed = reused = invalidated = 0
     failure: Optional[tuple[dict[str, Any], dict[str, Any]]] = None
+    readiness_sha256 = _standing_readiness_identity(record, worktree, config)
     with lane.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         for index, planned in enumerate(plan["commands"]):
             row, closure = planned["command"], planned["input_closure"]
             key = closure["input_closure_sha256"]
-            receipt_path = _standing_root(controller, task_id) / plan["plan_sha256"] / f"command-{index}-{key}.json"
+            base_receipt_path = (_standing_root(controller, task_id) / plan["plan_sha256"]
+                                 / f"command-{index}-{key}.json")
+            receipt_path = base_receipt_path
             receipt: Optional[dict[str, Any]] = None
-            if receipt_path.exists():
-                try: receipt = json.loads(receipt_path.read_text())
+            if base_receipt_path.exists():
+                try: receipt = json.loads(base_receipt_path.read_text())
                 except (OSError, json.JSONDecodeError): receipt = None
                 if (not isinstance(receipt, dict) or receipt.get("schema_version") != STANDING_EVIDENCE_SCHEMA
                         or receipt.get("input_closure") != closure or receipt.get("command") != row
                         or not isinstance(receipt.get("result"), dict)):
                     raise TaskWorkspaceError("standing command receipt is malformed")
+                failed_prior = bool(receipt["result"].get("timed_out") or receipt["result"].get("exit_code"))
+                if failed_prior:
+                    prior_readiness = receipt.get("readiness_sha256")
+                    if prior_readiness == readiness_sha256:
+                        failure = (row, receipt["result"])
+                    else:
+                        receipt_path = base_receipt_path.with_name(
+                            base_receipt_path.stem + f".readiness-{readiness_sha256}.json")
+                        if receipt_path.exists():
+                            raise TaskWorkspaceError(
+                                "failed evidence already consumed its one readiness supersession")
+                        receipt = None; invalidated += 1
+                        decisions.append(lifecycle_runtime.evidence_decision(
+                            row["id"], "invalidated", closure=closure,
+                            invalidation=[{"field": "readiness_sha256",
+                                           "old": prior_readiness, "new": readiness_sha256}],
+                            reason="failed evidence remains immutable; readiness changed"))
             if receipt is None:
                 cwd = (worktree / row["cwd"]).resolve()
                 try: cwd.relative_to(worktree)
                 except ValueError as exc:
                     raise TaskWorkspaceError("standing validation cwd escaped task worktree") from exc
-                evidence = run_validation(row, cwd)
+                evidence = (_active_documentation_validation(repository, head, plan, row)
+                            if row["argv"] == lifecycle_runtime.ACTIVE_DOC_ARGV
+                            else run_validation(row, cwd))
                 receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
                            "task_id": task_id, "plan_sha256": plan["plan_sha256"],
                            "tip_sha": head, "command_index": index, "command": row,
-                           "input_closure": closure, "result": evidence,
-                           "recorded_at_unix_ns": time.time_ns()}
+                           "input_closure": closure, "readiness_sha256": readiness_sha256,
+                           "result": evidence, "recorded_at_unix_ns": time.time_ns()}
                 _standing_atomic(receipt_path, receipt); executed += 1
-            else: reused += 1
+                decisions.append(lifecycle_runtime.evidence_decision(
+                    row["id"], "executed", closure=closure,
+                    source={"path": str(receipt_path)}))
+            elif failure is None:
+                reused += 1
+                decisions.append(lifecycle_runtime.evidence_decision(
+                    row["id"], "reused", closure=closure,
+                    source={"path": str(receipt_path),
+                            "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}))
             receipts.append({"path": str(receipt_path),
                              "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
                              "command_id": row["id"]})
             if receipt["result"]["timed_out"] or receipt["result"]["exit_code"]:
                 failure = (row, receipt["result"]); break
+        if not plan["commands"]:
+            inert = plan["documentation_route"]["mode"] == "inert_zero_command"
+            decisions.append(lifecycle_runtime.evidence_decision(
+                "documentation-zero-command" if inert else "focused-validation",
+                "skipped" if inert else "not_applicable",
+                closure={"input_closure_sha256": plan["documentation_route"]["route_sha256"]},
+                reason=("exact inert-documentation profile proof" if inert
+                        else "selected package profile has no matching focused command")))
         summary = {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
                    "plan_sha256": plan["plan_sha256"], "tip_sha": head,
                    "outcome": "FAILED" if failure else "PASSED",
-                   "executed": executed, "reused": reused, "receipts": receipts,
+                   "executed": executed, "reused": reused, "invalidated": invalidated,
+                   "decisions": decisions,
+                   "counters": lifecycle_runtime.evidence_counters(decisions),
+                   "documentation_route": plan["documentation_route"],
+                   "grouped_coherence": plan["grouped_coherence"],
+                   "readiness_sha256": readiness_sha256, "receipts": receipts,
                    "completed_at_unix_ns": time.time_ns()}
         _standing_atomic(plan_path.parent / "summary.json", summary)
     if failure and raise_on_failure:
@@ -3171,21 +3288,23 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
     )
     routing = validation_profile_selection(config, changed)
-    selected_focused = selected_focused_rows(config, changed)
     checkpoint_plan = standing_checkpoint(controller, task_id)
+    selected_focused = [planned["command"] for planned in checkpoint_plan["commands"]]
     standing = standing_evidence_run(controller, task_id, raise_on_failure=False)
     if checkpoint_plan["plan_sha256"] != standing["plan_sha256"]:
         raise TaskWorkspaceError("standing evidence plan changed during finish")
     validations = [json.loads(Path(reference["path"]).read_text())["result"]
                    for reference in standing["receipts"]]
     closure_body = {key: value for key, value in closure.items() if key != "closure_sha256"}
-    if standing["receipts"]:
-        closure_body["standing_validation"] = {
-            "schema_version": STANDING_EVIDENCE_SCHEMA,
-            "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
-            "outcome": standing["outcome"], "receipts": standing["receipts"],
-            "summary_sha256": stable_sha256(standing),
-        }
+    closure_body["standing_validation"] = {
+        "schema_version": STANDING_EVIDENCE_SCHEMA,
+        "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
+        "outcome": standing["outcome"], "receipts": standing["receipts"],
+        "decisions": standing["decisions"], "counters": standing["counters"],
+        "documentation_route": standing["documentation_route"],
+        "grouped_coherence": standing["grouped_coherence"],
+        "summary_sha256": stable_sha256(standing),
+    }
     closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
     for row, evidence in zip(selected_focused, validations):
         if evidence["timed_out"] or evidence["exit_code"]:
@@ -4509,10 +4628,214 @@ def runtime_bootstrap(controller: Path, package_version: str,
                                      package_runtime_sha256, receipt_path))
 
 
+TASK_RUN_ROOT = ".juno_task/runtime/lifecycle-runs/task"
+
+
+def _managed_worker_receipts(run_dir: Path, record: dict[str, Any]) -> tuple[Path, Path, Path]:
+    worktree = Path(record["worktree"])
+    common = str(Path(git(worktree, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir")).resolve())
+    creation = record["creation_receipt"]
+    create = {"schema_version": "juno_managed_task_run_create.v1",
+              "task_id": record["task_id"], "worktree": str(worktree.resolve()),
+              "branch_ref": record["branch_ref"], "git_common_dir": common,
+              "expected_paths": creation["allowed_paths"],
+              "workspace_manifest_identity": creation["manifest_identity"]}
+    verify = {"schema_version": "juno_managed_task_run_verify.v1",
+              "task_id": record["task_id"], "passed": True,
+              "tip_sha": git(worktree, "rev-parse", "HEAD")}
+    edit = {"schema_version": "juno_managed_task_run_edit_preflight.v1",
+            "task_id": record["task_id"], "passed": True,
+            "allowed_paths_sha256": stable_sha256(creation["allowed_paths"])}
+    paths = (run_dir / "create-receipt.json", run_dir / "verify-receipt.json",
+             run_dir / "edit-preflight-receipt.json")
+    for path, value in zip(paths, (create, verify, edit)):
+        lifecycle_runtime.atomic_json(path, value, exclusive=True)
+    return paths
+
+
+def _launch_task_worker(controller: Path, task_id: str, record: dict[str, Any],
+                        run_dir: Path, prompt_seed: Path, *, repair: bool,
+                        timeout_seconds: int,
+                        context_bytes: bytes = b"") -> dict[str, Any]:
+    worktree = Path(record["worktree"])
+    before = git(worktree, "rev-parse", "HEAD")
+    create, verify, edit = _managed_worker_receipts(run_dir, record)
+    prompt = run_dir / "worker-prompt.md"
+    task_data = task_file(controller, task_id).read_bytes()
+    seed = prompt_seed.read_bytes()
+    if not seed or len(seed) + len(task_data) + len(context_bytes) > 4 * 1024 * 1024:
+        raise TaskWorkspaceError("managed task-run prompt is empty or unbounded")
+    prompt.write_bytes(seed + b"\n\n# Canonical task\n\n" + task_data
+                       + (b"\n\n# Exact failure context\n\n" + context_bytes
+                          if context_bytes else b""))
+    out_dir = run_dir / "managed-agent"
+    runner = controller / ".juno_task/scripts/managed_agent_runner.py"
+    branch = git(controller, "symbolic-ref", "-q", "HEAD")
+    command = [sys.executable, str(runner), "run", "--mode", "worker",
+               "--controller-root", str(controller), "--controller-branch", branch,
+               "--agent-root", str(worktree), "--prompt-file", str(prompt),
+               "--out-dir", str(out_dir), "--tool-id",
+               "yy_task_test_repair" if repair else "yy_task_implementation",
+               "--task-id", task_id, "--create-receipt", str(create),
+               "--verify-receipt", str(verify), "--edit-preflight-receipt", str(edit),
+               "--require-terminal-result", "--timeout-seconds", str(timeout_seconds),
+               "--external-side-effects", "forbidden", "--lifecycle-hooks", "disabled"]
+    completed = subprocess.run(command, cwd=controller, stdin=subprocess.DEVNULL,
+                               text=True, capture_output=True)
+    receipt_path = out_dir / "receipt.json"
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError("managed task worker has no immutable receipt") from exc
+    reference = {"path": str(receipt_path.resolve()),
+                 "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+    if completed.returncode:
+        raise TaskWorkspaceError(
+            f"managed task worker failed: {(completed.stderr or completed.stdout)[-512:]} receipt={reference}")
+    terminal = receipt.get("terminal_result")
+    if (not isinstance(terminal, dict)
+            or terminal.get("state") not in {"completed", "blocked", "incomplete"}):
+        raise TaskWorkspaceError("managed task worker omitted its typed terminal result")
+    after = git(worktree, "rev-parse", "HEAD")
+    if terminal["state"] == "completed":
+        commits = git(worktree, "rev-list", "--count", f"{before}..{after}")
+        if commits != "1" or git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+            raise TaskWorkspaceError(
+                "managed task worker must produce exactly one logical commit and a clean worktree")
+    elif after != before or git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise TaskWorkspaceError(
+            "blocked or ambiguous managed worker must edit zero product bytes")
+    return {"terminal_state": terminal["state"], "before_sha": before,
+            "after_sha": after, "receipt": reference,
+            "session_id": receipt.get("session_id")}
+
+
+def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
+    """Compile and execute the controller-owned typed task workflow."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    task_path, task_bytes = task_manifest(controller, task_id)
+    plan = lifecycle_runtime.compile_lifecycle_template(
+        controller, "task-run", task_id, model_identity=os.environ.get("JUNO_MODEL"))
+    root = controller / TASK_RUN_ROOT / task_id
+    latest = root / "latest.json"
+    if latest.exists():
+        try:
+            prior = json.loads(latest.read_text())
+            prior_plan = prior.get("compiled_plan_sha256")
+        except (OSError, json.JSONDecodeError):
+            prior = {}
+            prior_plan = None
+        if prior_plan and prior_plan != plan["compiled_plan_sha256"]:
+            raise TaskWorkspaceError(
+                "active task-run attempt is immutable; template drift requires an explicit new lineage")
+        projection_path = Path(str(prior.get("projection_path", "")))
+        if prior.get("terminal") and projection_path.is_file():
+            return json.loads(projection_path.read_text())
+        current_task_revision = hashlib.sha256(task_bytes).hexdigest()
+        if (prior.get("task_revision_sha256") == current_task_revision
+                and projection_path.is_file()
+                and json.loads(projection_path.read_text()).get("state") == "NEEDS_DECISION"):
+            # Child settlement is terminal for this outer attempt. A changed,
+            # committed canonical task revision is required before resume.
+            return json.loads(projection_path.read_text())
+        run_id = prior.get("run_id")
+        if not isinstance(run_id, str):
+            raise TaskWorkspaceError("task-run latest attempt identity is malformed")
+    else:
+        run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    lifecycle_runtime.atomic_json(run_dir / "compiled-plan.json", plan, exclusive=True)
+    questions = lifecycle_runtime.readiness_questions(task_bytes)
+    attempts = {"implementation": 0, "attributable_test_repair": 0}
+    artifacts = [{"path": str(run_dir / "compiled-plan.json"),
+                  "sha256": hashlib.sha256((run_dir / "compiled-plan.json").read_bytes()).hexdigest()}]
+    if questions:
+        decision = {"schema_version": "juno_task_run_decision.v1", "task_id": task_id,
+                    "task_revision_sha256": hashlib.sha256(task_bytes).hexdigest(),
+                    "questions": questions, "resume_command": f"yy task run {task_id}"}
+        decision_ref = lifecycle_runtime.atomic_json(
+            run_dir / "needs-decision.json", decision, exclusive=True)
+        projection = lifecycle_runtime.compact_projection(
+            kind="task-run", run_id=run_id, task_id=task_id, state="NEEDS_DECISION",
+            plan=plan, started=started,
+            counters={name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")},
+            attempts=attempts, blocker={"category": "ambiguity", "questions": questions},
+            next_action=f"resolve canonical task ambiguity, commit it, then yy task run {task_id}",
+            artifacts=[*artifacts, decision_ref], identities={"task_revision_sha256": hashlib.sha256(task_bytes).hexdigest()})
+        projection_ref = lifecycle_runtime.atomic_json(run_dir / "projection.json", projection)
+        lifecycle_runtime.atomic_json(latest, {"run_id": run_id,
+            "compiled_plan_sha256": plan["compiled_plan_sha256"], "terminal": False,
+            "task_revision_sha256": hashlib.sha256(task_bytes).hexdigest(),
+            "projection_path": projection_ref["path"]})
+        return projection
+    record = start(controller, task_id)
+    state_record = read_state(controller)["tasks"][task_id]
+    if state_record.get("state") != "WORKING":
+        raise TaskWorkspaceError(f"task run cannot implement from {state_record.get('state')}")
+    implementation_seed = controller / plan["prompts"][0]["path"]
+    attempts["implementation"] = 1
+    worker = _launch_task_worker(
+        controller, task_id, state_record, run_dir / "implementation",
+        implementation_seed, repair=False,
+        timeout_seconds=int(plan["budgets"]["total_wall_seconds"]))
+    artifacts.append(worker["receipt"])
+    if worker["terminal_state"] != "completed":
+        state_name = "NEEDS_DECISION" if worker["terminal_state"] == "blocked" else "BLOCKED"
+        blocker = {"category": "implementation", "terminal_state": worker["terminal_state"]}
+        counters = {name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+    else:
+        try:
+            queued = finish(controller, task_id)
+        except TaskWorkspaceError as exc:
+            attributable = ("focused validation failed" in str(exc)
+                            or "parsed" in str(exc) or "test" in str(exc).lower())
+            if not attributable:
+                raise
+            attempts["attributable_test_repair"] = 1
+            repair_seed = controller / plan["prompts"][1]["path"]
+            repaired = _launch_task_worker(
+                controller, task_id, read_state(controller)["tasks"][task_id],
+                run_dir / "attributable-repair", repair_seed, repair=True,
+                timeout_seconds=max(1, int(plan["budgets"]["total_wall_seconds"])
+                                    - int(time.monotonic() - started)),
+                context_bytes=str(exc).encode("utf-8", errors="replace")[:32768])
+            artifacts.append(repaired["receipt"])
+            if repaired["terminal_state"] != "completed":
+                raise TaskWorkspaceError("attributable test repair did not complete")
+            queued = finish(controller, task_id)
+        standing = queued.get("review_ready_closure", {}).get("standing_validation", {})
+        counters = standing.get("counters") or {
+            name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+        state_name, blocker = "QUEUED", None
+    next_action = ("yy merge drive --through " + task_id if state_name == "QUEUED"
+                   else f"inspect {run_dir} and resume yy task run {task_id}")
+    projection = lifecycle_runtime.compact_projection(
+        kind="task-run", run_id=run_id, task_id=task_id, state=state_name,
+        plan=plan, started=started, counters=counters, attempts=attempts,
+        blocker=blocker, next_action=next_action, artifacts=artifacts,
+        identities={"controller_commit": plan["controller_commit"],
+                    "task_revision_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+                    "base_sha": state_record.get("base_sha"),
+                    "tip_sha": read_state(controller)["tasks"][task_id].get("tip_sha")})
+    projection_ref = lifecycle_runtime.atomic_json(run_dir / "projection.json", projection)
+    summary = lifecycle_runtime.deterministic_summary(projection)
+    summary_ref = lifecycle_runtime.atomic_json(run_dir / "summary.json", summary)
+    lifecycle_runtime.atomic_json(latest, {"run_id": run_id,
+        "compiled_plan_sha256": plan["compiled_plan_sha256"],
+        "task_revision_sha256": hashlib.sha256(task_path.read_bytes()).hexdigest(),
+        "terminal": state_name in {"QUEUED", "BLOCKED"},
+        "projection_path": projection_ref["path"], "summary": summary_ref})
+    return projection
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+        "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
         "checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
     value.add_argument("--task")
@@ -4590,7 +4913,9 @@ def main(argv: list[str] | None = None) -> int:
                 if args.umbrella_admission or args.plan or args.output or args.authorization_receipt:
                     raise TaskWorkspaceError(
                         "admission/recovery options are unsupported for this operation")
-                if args.operation == "contract":
+                if args.operation == "run":
+                    result = managed_task_run(controller, args.task)
+                elif args.operation == "contract":
                     result = preimplementation_contract(controller, args.task)
                 elif args.operation == "handoff":
                     result = run_handoff(controller, args.task)
