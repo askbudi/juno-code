@@ -35,6 +35,36 @@ out = pathlib.Path(sys.argv[sys.argv.index('--out-dir') + 1])
 out.mkdir(parents=True, exist_ok=True)
 (out / 'manifest.json').write_text(json.dumps({'outcome': 'passed'}) + chr(10))
 """
+
+# Installing variant: also materializes an exact-lock dependency tree
+# (node_modules/left-pad, npm sentinel, and the .yylo-package-lock.sha256 lock
+# stamp) so the managed hydration gate's dependency-tree verification can be
+# exercised end to end, including healing reruns.
+FIXTURE_INSTALLING_HYDRATION_RUNNER = """#!/usr/bin/env python3
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[sys.argv.index('--project-root') + 1])
+package = root / 'src'
+if len(sys.argv) > 1 and sys.argv[1] == 'lint':
+    print('Workflow lint / OK: no issues found')
+    raise SystemExit(0)
+out = pathlib.Path(sys.argv[sys.argv.index('--out-dir') + 1])
+out.mkdir(parents=True, exist_ok=True)
+node_modules = package / 'node_modules'
+dep = node_modules / 'left-pad'
+dep.mkdir(parents=True, exist_ok=True)
+(dep / 'package.json').write_text(json.dumps(
+    {'name': 'left-pad', 'version': '1.3.0'}) + chr(10))
+(node_modules / '.package-lock.json').write_text(json.dumps(
+    {'name': 'fixture', 'version': '1.0.0', 'lockfileVersion': 3,
+     'packages': {'node_modules/left-pad': {'version': '1.3.0',
+                                            'resolved': 'left-pad',
+                                            'integrity': 'sha512-fixture'}}}) + chr(10))
+lock = (package / 'package-lock.json').read_bytes()
+(node_modules / '.yylo-package-lock.sha256').write_text(
+    hashlib.sha256(lock).hexdigest() + chr(10))
+(out / 'manifest.json').write_text(json.dumps(
+    {'outcome': 'passed', 'status': 'success', 'failed_steps': []}) + chr(10))
+"""
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
 import target_runtime_provenance as provenance_runtime  # noqa: E402
@@ -4273,6 +4303,103 @@ steps:
                          plain["creation_receipt"]["allowed_paths"])
         self.assertEqual(create2["admission_kind"], "historical_creation")
         self.assertNotIn("admission_supersession_sha256", create2)
+
+    def test_task_run_hydration_gate_detects_dependency_tree_drift_and_heals(self) -> None:
+        self.install_task_run_assets()
+        package = self.repository / "src"
+        (package / ".gitignore").write_text("node_modules/\n")
+        (package / "package.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0",
+             "dependencies": {"left-pad": "1.3.0"}}) + "\n")
+        (package / "package-lock.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+             "packages": {"": {"name": "fixture", "version": "1.0.0",
+                               "dependencies": {"left-pad": "1.3.0"}},
+                          "node_modules/left-pad": {"version": "1.3.0",
+                                                     "resolved": "left-pad",
+                                                     "integrity": "sha512-fixture"}}}) + "\n")
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        git(self.repository, "add", "src/.gitignore", "src/package.json", "src/package-lock.json",
+            str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow with exact lock")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(SCRIPT.read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(FIXTURE_INSTALLING_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "hydrated managed task")
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            worktree = Path(record["worktree"])
+            self.assertTrue((worktree / "src/node_modules/left-pad").is_dir())
+            # Corrupt the installed dependency tree: the lock, stamp, and
+            # sentinel all remain intact, so only package-tree validation
+            # can detect the drift.
+            shutil.rmtree(worktree / "src/node_modules/left-pad")
+            calls: list[str] = []
+
+            def implement(_controller: Path, _task_id: str, rec: dict,
+                          run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+                calls.append(run_dir.name)
+                tree = Path(rec["worktree"])
+                before = git(tree, "rev-parse", "HEAD")
+                (tree / "src/managed.txt").write_text("managed\n")
+                git(tree, "add", "src/managed.txt")
+                git(tree, "commit", "-m", "managed implementation")
+                return {"terminal_state": "completed", "before_sha": before,
+                        "after_sha": git(tree, "rev-parse", "HEAD"),
+                        "receipt": {"path": "fixture", "sha256": "0" * 64},
+                        "session_id": "fixture"}
+
+            # An unrecoverable rerun (hydration "passes" without healing)
+            # fails closed before any worker budget; the tree stays corrupt
+            # from the drift above.
+            runner.write_text(FIXTURE_HYDRATION_RUNNER)
+            os.chmod(runner, 0o755)
+            with mock.patch.object(
+                    task_runtime, "_launch_task_worker",
+                    side_effect=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("worker must not launch"))):
+                with self.assertRaisesRegex(
+                        task_runtime.TaskWorkspaceError,
+                        "installed Node dependency tree"):
+                    task_runtime.managed_task_run(self.controller.resolve(), "X")
+
+            # A healing rerun restores the exact installed tree and the worker
+            # proceeds only after the gate re-verifies it.
+            runner.write_text(FIXTURE_INSTALLING_HYDRATION_RUNNER)
+            os.chmod(runner, 0o755)
+            with mock.patch.object(task_runtime, "_launch_task_worker",
+                                   side_effect=implement):
+                projection = task_runtime.managed_task_run(
+                    self.controller.resolve(), "X")
+            self.assertEqual(projection["state"], "QUEUED")
+            self.assertEqual(calls, ["implementation-0001"])
+            self.assertTrue((worktree / "src/node_modules/left-pad").is_dir())
 
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
         self.install_task_run_assets()

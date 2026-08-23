@@ -4639,6 +4639,44 @@ def runtime_bootstrap(controller: Path, package_version: str,
 TASK_RUN_ROOT = ".juno_task/runtime/lifecycle-runs/task"
 
 
+def _verify_dependency_tree(worktree: Path, config: dict[str, Any]) -> None:
+    """Verify installed dependency-tree integrity per configured lock cwd.
+
+    Mirrors the frozen hydration workflow's non-mutating verify-node-lock
+    probe: the lock stamp must equal the checked-in lock digest (catching a
+    stale install) and npm must validate the installed tree against the exact
+    lock (catching deleted or corrupted installed packages that leave the
+    lock, stamp, and sentinel files intact).
+    """
+    rows = [*config["focused_validation"], config["full_suite_validation"]]
+    for profile in config.get("validation_profiles") or []:
+        rows.extend(profile["commands"])
+    seen: set[str] = set()
+    for row in rows:
+        relative = normalized_relative(row["cwd"], "validation cwd")
+        if relative in seen:
+            continue
+        seen.add(relative)
+        package = worktree / relative
+        lock = package / "package-lock.json"
+        if not lock.is_file():
+            continue
+        stamp = package / "node_modules/.yylo-package-lock.sha256"
+        if (not stamp.is_file() or stamp.is_symlink()
+                or stamp.read_text().strip() != hashlib.sha256(lock.read_bytes()).hexdigest()):
+            raise TaskWorkspaceError(
+                f"validation_dependencies_missing: {relative} installed Node dependencies "
+                "are missing or stale for package-lock.json")
+        result = subprocess.run(
+            ["npm", "ls", "--depth=0", "--ignore-scripts"], cwd=package,
+            stdin=subprocess.DEVNULL, text=True, capture_output=True, check=False)
+        if result.returncode:
+            detail = (result.stdout or "").strip() or (result.stderr or "").strip()
+            raise TaskWorkspaceError(
+                f"validation_dependencies_missing: {relative} installed Node dependency "
+                f"tree does not satisfy the exact lock: {detail[-300:]}")
+
+
 def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[str, Any]:
     """Verify frozen hydration/dependency evidence before any worker budget.
 
@@ -4649,8 +4687,10 @@ def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[st
     before any worker launch.
     """
     worktree = exact_root(Path(record["worktree"]), "task worktree")
+    config = load_config(controller)
     try:
         verify_hydration_evidence(record, worktree)
+        _verify_dependency_tree(worktree, config)
     except TaskWorkspaceError:
         hydrate(controller, record["task_id"])
         with state_lock(controller):
@@ -4658,8 +4698,9 @@ def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[st
         if not isinstance(refreshed, dict):
             raise TaskWorkspaceError("managed hydration gate lost the task record")
         verify_hydration_evidence(refreshed, worktree)
+        _verify_dependency_tree(worktree, config)
         record = refreshed
-    dependency_evidence = validation_dependency_evidence(worktree, load_config(controller))
+    dependency_evidence = validation_dependency_evidence(worktree, config)
     hydration = record.get("hydration") if isinstance(record.get("hydration"), dict) else {}
     return {"record": record,
             "dependency_evidence": dependency_evidence,
