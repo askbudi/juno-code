@@ -131,7 +131,6 @@ For auth, payment, admin, and other public backend routes changed by a batch, ve
 Failure mode prevented: internal helper params becoming client inputs. Runtime contract enforced: public route truth comes from declared inputs and server dependencies; internal reuse stays private. Exact validation gate: route-surface assertion plus matrix row for method/path/body/query/auth/response.
 
 ## Write-capable CLI review
-
 For CLIs or jobs that can write production data, verify dangerous operator paths before closure. A project-local `task_contract_schema.md`, when present, may define structured contract fields. Create deploy/E2E tasks only after this review fixes final commit/tag, or mark expected commit/tag as `TBD pending spec-invariant review` and update it before running deploy/E2E.
 
 Minimum evidence to record: dry-run writes zero rows; authorized write path requires the named approval/control and writes only the approved target; resume existing skips completed work; repeated run-id without resume cannot duplicate completed work; partial existing output hard-stops before more writes; failed child/retry behavior is observable and retry-safe; wrapper-generated IDs/paths satisfy downstream CLI and DB schemas; no unintended DDL, latest/live mutation, fallback, adapter, replay, or alternate SOT when forbidden.
