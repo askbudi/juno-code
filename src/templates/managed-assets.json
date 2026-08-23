@@ -353,8 +353,8 @@
       "destination": ".juno_task/scripts/task_workspace.py",
       "installClass": "script",
       "type": "script",
-      "installedSha256": "3888959053f8db62211ed343dcfb89eaeee265563d8b4c5102689cbbfbce9c28",
-      "sourceSha256": "3888959053f8db62211ed343dcfb89eaeee265563d8b4c5102689cbbfbce9c28"
+      "installedSha256": "c1c9b64a8738805cbf44ed52846a907f79d0d766bc1360fc24a27bac5a0cd144",
+      "sourceSha256": "c1c9b64a8738805cbf44ed52846a907f79d0d766bc1360fc24a27bac5a0cd144"
     },
     {
       "source": "scripts/target_runtime_provenance.py",
@@ -393,8 +393,8 @@
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
       "installClass": "script",
       "type": "script",
-      "installedSha256": "075e01bf7ad41a8427b35de93cfb57c6ecd36bcbce1abd764b5200e46ac83d39",
-      "sourceSha256": "075e01bf7ad41a8427b35de93cfb57c6ecd36bcbce1abd764b5200e46ac83d39"
+      "installedSha256": "2f75daa4c8c8f497aa2052a8879b18a3fdce89b874999c97d18455468e904871",
+      "sourceSha256": "2f75daa4c8c8f497aa2052a8879b18a3fdce89b874999c97d18455468e904871"
     },
     {
       "source": "scripts/tests/test_integration_workspace.py",

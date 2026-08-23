@@ -2012,6 +2012,38 @@ def _hydration_manifest_evidence(run_dir: Path) -> dict[str, Optional[str]]:
     }
 
 
+def _dependency_content_manifest(worktree: Path, config: dict[str, Any]) -> dict[str, str]:
+    """Content-address every installed dependency file per configured lock cwd.
+
+    npm metadata validation cannot detect tampered or corrupted installed
+    bytes, so hydration records a byte manifest of every regular file and
+    symlink under each lock cwd's node_modules. The manifest is stored as a
+    controller-side artifact and verified before any worker budget is spent.
+    """
+    manifest: dict[str, str] = {}
+    rows = [*config["focused_validation"], config["full_suite_validation"]]
+    for profile in config.get("validation_profiles") or []:
+        rows.extend(profile["commands"])
+    seen: set[str] = set()
+    for row in rows:
+        relative = normalized_relative(row["cwd"], "validation cwd")
+        if relative in seen:
+            continue
+        seen.add(relative)
+        node_modules = worktree / relative / "node_modules"
+        if not (worktree / relative / "package-lock.json").is_file():
+            continue
+        if not node_modules.is_dir():
+            continue
+        for path in sorted(node_modules.rglob("*")):
+            entry = path.relative_to(worktree).as_posix()
+            if path.is_symlink():
+                manifest[entry] = f"link:{os.readlink(path)}"
+            elif path.is_file():
+                manifest[entry] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return manifest
+
+
 def run_task_hydration(controller: Path, worktree: Path, task_id: str,
                        frozen: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if not frozen.get("configured"):
@@ -2098,11 +2130,25 @@ def run_task_hydration(controller: Path, worktree: Path, task_id: str,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "artifact_dir": str(out_dir), "recovery_command": f"yy task hydrate {task_id}",
         }) from exc
+    # Record a content manifest of every installed dependency byte so later
+    # gates can detect tampering that npm metadata validation cannot see.
+    content_manifest = _dependency_content_manifest(worktree, config)
+    manifest_bytes = json.dumps(content_manifest, sort_keys=True,
+                                separators=(",", ":")).encode("utf-8")
+    manifest_path = out_dir / "content-manifest.json"
+    temporary = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(manifest_bytes)
+    os.replace(temporary, manifest_path)
     return {"status": "passed", "workflow": frozen,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "artifact_dir": str(out_dir),
             **_hydration_manifest_evidence(run_dir),
             "dependency_locks": dependencies,
+            "content_manifest": {
+                "path": str(manifest_path.resolve()),
+                "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                "file_count": len(content_manifest),
+            },
             "recovery_command": f"yy task hydrate {task_id}"}
 
 
@@ -2339,11 +2385,21 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
             frozen = receipt.get("hydration_workflow")
             if not isinstance(frozen, dict):
                 raise TaskWorkspaceError("task hydration identity is absent")
-            # A queue-owned repair state (REVIEW_FINDINGS) is preserved through
-            # both healing and failure: hydration refreshes evidence, it never
-            # reclassifies the task's lifecycle position.
-            repair_state = record.get("state") if record.get("state") == "REVIEW_FINDINGS" else None
-            pending = {**record, "state": "HYDRATING"}
+            # A queue-owned repair state (REVIEW_FINDINGS) is preserved
+            # through both healing and failure: hydration refreshes evidence,
+            # it never reclassifies the task's lifecycle position. The return
+            # state is persisted inside the HYDRATING record so an interrupted
+            # hydration resumes to the same origin state after a crash.
+            if record.get("state") == "REVIEW_FINDINGS":
+                repair_state: Optional[str] = "REVIEW_FINDINGS"
+            elif record.get("state") == "HYDRATING":
+                repair_state = record.get("hydration_return_state")
+                if repair_state not in (None, "REVIEW_FINDINGS"):
+                    raise TaskWorkspaceError("task hydration return state is invalid")
+            else:
+                repair_state = None
+            pending = {**record, "state": "HYDRATING",
+                       "hydration_return_state": repair_state}
             state["tasks"][task_id] = pending
             write_state(controller, state)
         try:
@@ -4645,19 +4701,23 @@ def runtime_bootstrap(controller: Path, package_version: str,
 TASK_RUN_ROOT = ".juno_task/runtime/lifecycle-runs/task"
 
 
-def _verify_dependency_tree(worktree: Path, config: dict[str, Any]) -> None:
+def _verify_dependency_tree(worktree: Path, config: dict[str, Any],
+                             hydration: Optional[dict[str, Any]] = None) -> None:
     """Verify installed dependency-tree integrity per configured lock cwd.
 
     Mirrors the frozen hydration workflow's non-mutating verify-node-lock
     probe: the lock stamp must equal the checked-in lock digest (catching a
     stale install) and npm must validate the installed tree against the exact
-    lock (catching deleted or corrupted installed packages that leave the
-    lock, stamp, and sentinel files intact).
+    lock. Beyond metadata, every installed dependency byte is verified against
+    the hydration-time content manifest bound into the task record, so
+    tampered or corrupted installed files that preserve all manifests are
+    still detected before any worker budget is spent.
     """
     rows = [*config["focused_validation"], config["full_suite_validation"]]
     for profile in config.get("validation_profiles") or []:
         rows.extend(profile["commands"])
     seen: set[str] = set()
+    had_locks = False
     for row in rows:
         relative = normalized_relative(row["cwd"], "validation cwd")
         if relative in seen:
@@ -4667,6 +4727,7 @@ def _verify_dependency_tree(worktree: Path, config: dict[str, Any]) -> None:
         lock = package / "package-lock.json"
         if not lock.is_file():
             continue
+        had_locks = True
         stamp = package / "node_modules/.yylo-package-lock.sha256"
         if (not stamp.is_file() or stamp.is_symlink()
                 or stamp.read_text().strip() != hashlib.sha256(lock.read_bytes()).hexdigest()):
@@ -4681,6 +4742,33 @@ def _verify_dependency_tree(worktree: Path, config: dict[str, Any]) -> None:
             raise TaskWorkspaceError(
                 f"validation_dependencies_missing: {relative} installed Node dependency "
                 f"tree does not satisfy the exact lock: {detail[-300:]}")
+    if not had_locks:
+        return
+    manifest_reference = (hydration or {}).get("content_manifest")
+    if not isinstance(manifest_reference, dict) or not manifest_reference.get("path"):
+        raise TaskWorkspaceError(
+            "validation_dependencies_missing: hydration recorded no installed-content "
+            "manifest; rerun the authorized exact-lock hydration")
+    try:
+        manifest_bytes = Path(str(manifest_reference["path"])).read_bytes()
+    except OSError as exc:
+        raise TaskWorkspaceError(
+            "validation_dependencies_missing: hydration content manifest is unavailable") from exc
+    if hashlib.sha256(manifest_bytes).hexdigest() != manifest_reference.get("sha256"):
+        raise TaskWorkspaceError(
+            "validation_dependencies_missing: hydration content manifest digest drifted")
+    try:
+        expected = json.loads(manifest_bytes)
+    except json.JSONDecodeError as exc:
+        raise TaskWorkspaceError(
+            "validation_dependencies_missing: hydration content manifest is malformed") from exc
+    actual = _dependency_content_manifest(worktree, config)
+    drift = [path for path in sorted(set(expected) | set(actual))
+             if expected.get(path) != actual.get(path)][:8]
+    if drift:
+        raise TaskWorkspaceError(
+            "validation_dependencies_missing: installed dependency contents drifted from "
+            f"the hydration manifest: {', '.join(drift)}")
 
 
 def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[str, Any]:
@@ -4696,7 +4784,7 @@ def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[st
     config = load_config(controller)
     try:
         verify_hydration_evidence(record, worktree)
-        _verify_dependency_tree(worktree, config)
+        _verify_dependency_tree(worktree, config, record.get("hydration"))
     except TaskWorkspaceError:
         hydrate(controller, record["task_id"])
         with state_lock(controller):
@@ -4704,7 +4792,7 @@ def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[st
         if not isinstance(refreshed, dict):
             raise TaskWorkspaceError("managed hydration gate lost the task record")
         verify_hydration_evidence(refreshed, worktree)
-        _verify_dependency_tree(worktree, config)
+        _verify_dependency_tree(worktree, config, refreshed.get("hydration"))
         record = refreshed
     dependency_evidence = validation_dependency_evidence(worktree, config)
     hydration = record.get("hydration") if isinstance(record.get("hydration"), dict) else {}

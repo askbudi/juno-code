@@ -4569,6 +4569,150 @@ steps:
             ["implementation"],
             "no pending repair attempt may survive a failed repair gate")
 
+    def _install_managed_hydration_fixture(self, task_id: str = "X") -> Path:
+        self.install_task_run_assets()
+        package = self.repository / "src"
+        (package / ".gitignore").write_text("node_modules/\n")
+        (package / "package.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0",
+             "dependencies": {"left-pad": "1.3.0"}}) + "\n")
+        (package / "package-lock.json").write_text(json.dumps(
+            {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+             "packages": {"": {"name": "fixture", "version": "1.0.0",
+                               "dependencies": {"left-pad": "1.3.0"}},
+                          "node_modules/left-pad": {"version": "1.3.0",
+                                                     "resolved": "left-pad",
+                                                     "integrity": "sha512-fixture"}}}) + "\n")
+        workflow = self.repository / ".juno_task/config/worktree-hydration.yaml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("""schema_version: v1
+workflow_id: hydration-gate-fixture
+workflow_class: task_hydration
+steps:
+  - id: ready
+    name: Verify fixture readiness
+    probe: ["true"]
+    command: ["true"]
+    timeout_seconds: 30
+    fail_workflow: true
+    non_interactive: true
+    network: false
+    sensitive: false
+    outputs: []
+""")
+        git(self.repository, "add", "src/.gitignore", "src/package.json", "src/package-lock.json",
+            str(workflow.relative_to(self.repository)))
+        git(self.repository, "commit", "-m", "fixture hydration workflow with exact lock")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        fake_runtime = self.root / "fake-runtime/task_workspace.py"
+        fake_runtime.parent.mkdir(parents=True, exist_ok=True)
+        fake_runtime.write_bytes(SCRIPT.read_bytes())
+        runner = fake_runtime.with_name("workflow_runner.sh")
+        runner.write_text(FIXTURE_INSTALLING_HYDRATION_RUNNER)
+        os.chmod(runner, 0o755)
+        task_runtime.task_file(self.controller, task_id).write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "hydrated managed task")
+        return fake_runtime
+
+    def test_hydration_resume_restores_persisted_return_state(self) -> None:
+        fake_runtime = self._install_managed_hydration_fixture()
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            self.assertIn("content_manifest", record["hydration"])
+            # Simulate a crash after the pending write while a queue-owned
+            # REVIEW_FINDINGS repair was healing: the persisted return state
+            # must survive and govern both resumed outcomes.
+            with task_runtime.state_lock(self.controller):
+                state = task_runtime.read_state(self.controller)
+                state["tasks"]["X"] = {**state["tasks"]["X"], "state": "HYDRATING",
+                                       "hydration_return_state": "REVIEW_FINDINGS"}
+                task_runtime.write_state(self.controller, state)
+            healed = task_runtime.hydrate(self.controller.resolve(), "X")
+            self.assertEqual(healed["state"], "REVIEW_FINDINGS")
+            # A failed resumed hydration also restores REVIEW_FINDINGS.
+            runner = fake_runtime.with_name("workflow_runner.sh")
+            runner.write_text("#!/usr/bin/env python3\nimport sys\n"
+                              "print('unrecoverable', file=sys.stderr)\n"
+                              "raise SystemExit(9)\n")
+            os.chmod(runner, 0o755)
+            with task_runtime.state_lock(self.controller):
+                state = task_runtime.read_state(self.controller)
+                state["tasks"]["X"] = {**state["tasks"]["X"], "state": "HYDRATING",
+                                       "hydration_return_state": "REVIEW_FINDINGS"}
+                task_runtime.write_state(self.controller, state)
+            with self.assertRaises(task_runtime.TaskWorkspaceError):
+                task_runtime.hydrate(self.controller.resolve(), "X")
+            self.assertEqual(
+                task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
+                "REVIEW_FINDINGS")
+
+    def test_task_run_hydration_gate_detects_installed_byte_tamper(self) -> None:
+        fake_runtime = self._install_managed_hydration_fixture()
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            worktree = Path(record["worktree"])
+            # Tamper installed bytes while preserving every manifest npm sees:
+            # stamp, sentinel, lock, and package metadata all stay valid.
+            target = worktree / "src/node_modules/left-pad/package.json"
+            tampered = json.loads(target.read_text())
+            tampered["tampered"] = True
+            target.write_text(json.dumps(tampered) + "\n")
+            calls: list[str] = []
+
+            def implement(_controller: Path, _task_id: str, rec: dict,
+                          run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+                calls.append(run_dir.name)
+                tree = Path(rec["worktree"])
+                before = git(tree, "rev-parse", "HEAD")
+                (tree / "src/managed.txt").write_text("managed\n")
+                git(tree, "add", "src/managed.txt")
+                git(tree, "commit", "-m", "managed implementation")
+                return {"terminal_state": "completed", "before_sha": before,
+                        "after_sha": git(tree, "rev-parse", "HEAD"),
+                        "receipt": {"path": "fixture", "sha256": "0" * 64},
+                        "session_id": "fixture"}
+
+            # The authorized healing rerun restores exact installed bytes and
+            # records a fresh content manifest before the worker proceeds.
+            with mock.patch.object(task_runtime, "_launch_task_worker",
+                                   side_effect=implement):
+                projection = task_runtime.managed_task_run(
+                    self.controller.resolve(), "X")
+            self.assertEqual(projection["state"], "QUEUED")
+            self.assertEqual(calls, ["implementation-0001"])
+            self.assertNotIn("tampered", json.loads(target.read_text()))
+
+    def test_task_run_hydration_gate_byte_tamper_fails_closed(self) -> None:
+        fake_runtime = self._install_managed_hydration_fixture()
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            record = task_runtime.read_state(self.controller)["tasks"]["X"]
+            worktree = Path(record["worktree"])
+            target = worktree / "src/node_modules/left-pad/package.json"
+            tampered = json.loads(target.read_text())
+            tampered["tampered"] = True
+            target.write_text(json.dumps(tampered) + "\n")
+            # An unrecoverable rerun (the authorized workflow itself fails)
+            # fails closed on the byte drift before any worker budget.
+            runner = fake_runtime.with_name("workflow_runner.sh")
+            runner.write_text("#!/usr/bin/env python3\nimport sys\n"
+                              "print('hydration unrecoverable', file=sys.stderr)\n"
+                              "raise SystemExit(9)\n")
+            os.chmod(runner, 0o755)
+            with mock.patch.object(
+                    task_runtime, "_launch_task_worker",
+                    side_effect=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("worker must not launch"))):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "task hydration"):
+                    task_runtime.managed_task_run(self.controller.resolve(), "X")
+
     def test_task_run_decision_receipt_is_idempotent_and_refuses_mismatch(self) -> None:
         self.install_task_run_assets()
         ambiguous = ("---\nid: X\nstatus: todo\n---\n## Context\n"
