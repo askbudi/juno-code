@@ -4786,7 +4786,8 @@ def _task_projection(controller: Path, task_id: str, run_dir: Path,
     # append leaves the exact next numbered artifact on disk. Adopt it (its
     # identity fields are immutable) instead of colliding on recomputed bytes.
     adopted = lifecycle_runtime.adopt_interrupted_projection(
-        run_dir, journal, projection_index, state_name, kind="task-run")
+        run_dir, journal, projection_index, state_name, kind="task-run",
+        expected=projection)
     if adopted is not None:
         projection = adopted
         projection_path = run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json"
@@ -4864,22 +4865,29 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         projection_path, kind="task-run", run_id=journal.get("run_id")))
                 if authoritative is not None:
                     path, projection_value = authoritative
+                    # The expected canonical summary derives from the verified
+                    # projection; existing bytes are verified, not trusted.
+                    expected_summary = lifecycle_runtime.deterministic_summary(
+                        projection_value)
+                    expected_summary_bytes = lifecycle_runtime.canonical_bytes(
+                        expected_summary)
                     summary_path = run_dir / "summary.json"
-                    summary_ref = latest_value.get("summary")
-                    if not summary_path.is_file():
+                    if (not summary_path.is_file()
+                            or summary_path.read_bytes() != expected_summary_bytes):
                         summary_ref = lifecycle_runtime.atomic_json(
-                            summary_path,
-                            lifecycle_runtime.deterministic_summary(projection_value))
-                    elif not isinstance(summary_ref, dict):
+                            summary_path, expected_summary)
+                    else:
                         summary_ref = {"path": str(summary_path.resolve()),
                                        "sha256": hashlib.sha256(
-                                           summary_path.read_bytes()).hexdigest()}
+                                           expected_summary_bytes).hexdigest()}
                     pointer_repaired = {
                         "schema_version": "juno_managed_task_run_latest.v2",
                         "run_id": journal["run_id"],
                         "compiled_plan_sha256": plan["compiled_plan_sha256"],
                         "execution_identity_sha256": journal["execution_identity_sha256"],
-                        "task_revision_sha256": latest_value.get("task_revision_sha256"),
+                        "task_revision_sha256":
+                            (projection_value.get("identities") or {}).get(
+                                "task_revision_sha256"),
                         "terminal": True, "projection_path": str(path.resolve()),
                         "summary": summary_ref}
                     if latest_value != pointer_repaired:
@@ -4960,26 +4968,30 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                             "task_revision_sha256": task_revision, "questions": questions,
                             "resume_command": f"yy task run {task_id}"}
                 decision_path = run_dir / "decisions" / f"{len(journal['task_revisions']):04d}.json"
+                # The receipt is immutable canonical bytes: reuse requires exact
+                # byte equality, not semantic JSON equality.
+                expected_decision_bytes = lifecycle_runtime.canonical_bytes(decision)
                 if decision_path.is_file():
-                    # Idempotent resume: an unchanged rerun, or a crash after
-                    # the immutable decision receipt was written, must reuse the
-                    # exact prior decision and republish NEEDS_DECISION. Only
-                    # bytes for a different task/revision/question set refuse.
-                    existing = json.loads(decision_path.read_text())
-                    if existing != decision:
+                    if decision_path.read_bytes() != expected_decision_bytes:
                         raise TaskWorkspaceError(
                             "ambiguous task-run decision receipt collision: "
                             f"{decision_path}")
                     decision_ref = {"path": str(decision_path.resolve()),
                                     "sha256": hashlib.sha256(
-                                        decision_path.read_bytes()).hexdigest()}
+                                        expected_decision_bytes).hexdigest()}
                 else:
                     decision_ref = lifecycle_runtime.atomic_json(
                         decision_path, decision, exclusive=True)
-                known = [ref.get("path") for ref in journal.get("decision_receipts", [])
-                         if isinstance(ref, dict)]
-                if decision_ref["path"] not in known:
+                # The journal reference is verified against the receipt bytes and
+                # repaired when a crash left it missing or stale.
+                references = [ref for ref in journal.get("decision_receipts", [])
+                              if isinstance(ref, dict)]
+                known = next((ref for ref in references
+                              if ref.get("path") == decision_ref["path"]), None)
+                if known is None:
                     journal.setdefault("decision_receipts", []).append(decision_ref)
+                elif known.get("sha256") != decision_ref["sha256"]:
+                    known["sha256"] = decision_ref["sha256"]
                 return _task_projection(
                     controller, task_id, run_dir, latest, journal_path, journal, plan,
                     state_name="NEEDS_DECISION",

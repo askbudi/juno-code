@@ -1503,6 +1503,17 @@ raise SystemExit(2)
         stranded.write_text(json.dumps(tampered, indent=1) + "\n")
         with self.assertRaisesRegex(merge_runtime.MergeQueueError, "artifact collision"):
             merge_runtime.merge_drive(self.controller.resolve())
+        # A self-consistent artifact with a recomputed embedded digest still
+        # refuses: adoption binds to the reconstructed projection, not to the
+        # artifact's own attestation.
+        journal["projections"] = []
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        lifecycle = merge_runtime.lifecycle_runtime
+        body = {k: v for k, v in tampered.items() if k != "projection_sha256"}
+        tampered["projection_sha256"] = lifecycle.digest(body)
+        stranded.write_text(lifecycle.canonical_bytes(tampered).decode())
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "artifact collision"):
+            merge_runtime.merge_drive(self.controller.resolve())
 
     def test_merge_drive_repairs_each_latest_pointer_independently(self) -> None:
         self.install_merge_drive_assets()

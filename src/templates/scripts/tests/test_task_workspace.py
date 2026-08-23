@@ -3954,6 +3954,21 @@ finished = time.monotonic()
         stranded.write_text(json.dumps(tampered, indent=1) + "\n")
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "collision"):
             task_runtime.managed_task_run(self.controller.resolve(), "X")
+        # A self-consistent artifact with a recomputed embedded digest still
+        # refuses: adoption binds to the reconstructed projection, not to the
+        # artifact's own attestation.
+        journal["projections"] = []
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        semantically_tampered = json.loads(stranded.read_text())
+        semantically_tampered["state"] = "NEEDS_DECISION"
+        semantically_tampered["attempts"]["implementation"] = 99
+        lifecycle = task_runtime.lifecycle_runtime
+        body = {k: v for k, v in semantically_tampered.items()
+                if k != "projection_sha256"}
+        semantically_tampered["projection_sha256"] = lifecycle.digest(body)
+        stranded.write_text(lifecycle.canonical_bytes(semantically_tampered).decode())
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "collision"):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
 
     def test_task_run_repairs_stale_terminal_pointer_from_journal(self) -> None:
         self.install_task_run_assets()
@@ -4032,13 +4047,33 @@ finished = time.monotonic()
         self.assertEqual(sorted((run_dir / "decisions").glob("*.json")), decisions)
         journal = json.loads((run_dir / "journal.json").read_text())
         self.assertEqual(len(journal.get("decision_receipts", [])), 1)
-        # Only mismatched bytes refuse.
+        original_bytes = decisions[0].read_bytes()
+        # Semantically different bytes refuse.
         tampered = json.loads(decisions[0].read_text())
         tampered["questions"] = ["different question?"]
         decisions[0].write_text(json.dumps(tampered, indent=1) + "\n")
         with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
                                     "decision receipt collision"):
             task_runtime.managed_task_run(self.controller.resolve(), "X")
+        # Byte-only differences refuse even when the JSON value is unchanged.
+        equivalent = json.loads(decisions[0].read_text())
+        decisions[0].write_text(json.dumps(equivalent, indent=4, sort_keys=True) + "\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "decision receipt collision"):
+            task_runtime.managed_task_run(self.controller.resolve(), "X")
+        # Restoring the exact canonical bytes resumes and repairs a journal
+        # reference whose hash went stale.
+        decisions[0].write_bytes(original_bytes)
+        run_journal = json.loads((run_dir / "journal.json").read_text())
+        run_journal["decision_receipts"] = [{"path": str(decisions[0].resolve()),
+                                             "sha256": "0" * 64}]
+        (run_dir / "journal.json").write_text(json.dumps(run_journal, indent=1) + "\n")
+        resumed = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(resumed["state"], "NEEDS_DECISION")
+        repaired = json.loads((run_dir / "journal.json").read_text())
+        import hashlib as _hashlib
+        self.assertEqual(repaired["decision_receipts"][0]["sha256"],
+                         _hashlib.sha256(decisions[0].read_bytes()).hexdigest())
 
     def test_task_run_recovers_after_implementation_commit_checkpoint_crash(self) -> None:
         self.install_task_run_assets()

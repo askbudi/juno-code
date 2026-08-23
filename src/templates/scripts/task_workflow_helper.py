@@ -2033,15 +2033,20 @@ def run_overlap(suite: Callable[[threading.Event], Any],
             "elapsed_ms": int((time.monotonic() - started) * 1000)}
 
 
+PROJECTION_VOLATILE_FIELDS = frozenset({"elapsed_ms", "critical_path_ms",
+                                         "projection_sha256"})
+
+
 def adopt_interrupted_projection(run_dir: Path, journal: dict[str, Any], index: int,
-                                 state_name: str, kind: str) -> Optional[dict[str, Any]]:
+                                 state_name: str, kind: str,
+                                 expected: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Adopt an exact preexisting projection left by an interrupted publication.
 
     A crash after the numbered projection write but before the journal append
-    must not strand the run. Wall-time fields advance between attempts, so a
-    recomputed projection can never be byte-identical; adoption is therefore
-    bound to the immutable identity fields of the artifact instead, and the
-    journal records the recovered reference exactly once.
+    must not strand the run. The artifact never self-attests: every nonvolatile
+    field must equal the projection reconstructed from authoritative journal
+    and controller state, and only explicitly volatile wall-time fields may
+    differ. The journal then records the recovered reference exactly once.
     """
     path = run_dir / "projections" / f"{index:04d}-{state_name.lower()}.json"
     if not path.is_file():
@@ -2062,13 +2067,13 @@ def adopt_interrupted_projection(run_dir: Path, journal: dict[str, Any], index: 
         mismatch = f"run_id={value.get('run_id')}"
     elif value.get("state") != state_name:
         mismatch = f"state={value.get('state')}"
+    elif set(value) != set(expected):
+        mismatch = "field set differs from the reconstructed projection"
     else:
-        # Exact-bytes discipline: the adopted artifact must still satisfy its
-        # own canonical internal digest. Tampered bytes never become
-        # authoritative.
-        body = {key: item for key, item in value.items() if key != "projection_sha256"}
-        if value.get("projection_sha256") != digest(body):
-            mismatch = "digest mismatch"
+        for key, item in value.items():
+            if key not in PROJECTION_VOLATILE_FIELDS and item != expected.get(key):
+                mismatch = f"field {key} differs from the reconstructed projection"
+                break
     if mismatch is not None:
         raise LifecycleContractError(
             f"immutable lifecycle artifact collision ({mismatch}): {path}")

@@ -5558,7 +5558,8 @@ def _merge_drive_projection(controller: Path, repository: Path, config: dict[str
     # numbered write and the journal append; wall-time fields advance, so the
     # immutable identity fields bind the adoption instead of recomputed bytes.
     adopted = lifecycle_runtime.adopt_interrupted_projection(
-        run_dir, journal, projection_index, state_name, kind="merge-drive")
+        run_dir, journal, projection_index, state_name, kind="merge-drive",
+        expected=projection)
     if adopted is not None:
         projection = adopted
         adopted_path = run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json"
@@ -5655,16 +5656,22 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                                              run_id=journal.get("run_id")))
                     if authoritative is not None:
                         path, projection_value = authoritative
+                        # The expected canonical summary derives from the
+                        # verified projection; existing bytes are verified.
+                        expected_summary = lifecycle_runtime.deterministic_summary(
+                            projection_value)
+                        expected_summary_bytes = lifecycle_runtime.canonical_bytes(
+                            expected_summary)
                         summary_path = run_dir / "summary.json"
-                        summary_ref = pointer.get("summary")
-                        if not summary_path.is_file():
+                        if (not summary_path.is_file()
+                                or summary_path.read_bytes() != expected_summary_bytes):
                             summary_ref = lifecycle_runtime.atomic_json(
-                                summary_path,
-                                lifecycle_runtime.deterministic_summary(projection_value))
-                        elif not isinstance(summary_ref, dict):
-                            summary_ref = {"path": str(summary_path.resolve()),
-                                           "sha256": hashlib.sha256(
-                                               summary_path.read_bytes()).hexdigest()}
+                                summary_path, expected_summary)
+                        else:
+                            summary_ref = {
+                                "path": str(summary_path.resolve()),
+                                "sha256": hashlib.sha256(
+                                    expected_summary_bytes).hexdigest()}
                         pointer_repaired = {
                             "schema_version": "juno_managed_merge_drive_latest.v2",
                             "run_id": journal["run_id"], "scope_sha256": journal["scope_sha256"],
