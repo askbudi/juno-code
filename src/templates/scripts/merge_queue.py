@@ -5554,17 +5554,29 @@ def _merge_drive_projection(controller: Path, repository: Path, config: dict[str
                     "completed_task_ids": completed,
                     "deadline_unix_ns": journal["deadline_unix_ns"]})
     projection_index = len(journal.get("projections", [])) + 1
-    projection_ref = lifecycle_runtime.atomic_json(
-        run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
-        projection, exclusive=True)
+    # Crash recovery: adopt an exact preexisting projection left between the
+    # numbered write and the journal append; wall-time fields advance, so the
+    # immutable identity fields bind the adoption instead of recomputed bytes.
+    adopted = lifecycle_runtime.adopt_interrupted_projection(
+        run_dir, journal, projection_index, state_name, kind="merge-drive")
+    if adopted is not None:
+        projection = adopted
+        adopted_path = run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json"
+        projection_ref = {"path": str(adopted_path.resolve()),
+                          "sha256": hashlib.sha256(adopted_path.read_bytes()).hexdigest()}
+    else:
+        projection_ref = lifecycle_runtime.atomic_json(
+            run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
+            projection, exclusive=True)
     journal.setdefault("projections", []).append(projection_ref)
     journal["state"] = state_name; journal["terminal"] = terminal; journal["blocker"] = blocker
     lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
     summary_ref = None
     if terminal:
-        summary_ref = lifecycle_runtime.atomic_json(
-            run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection),
-            exclusive=not (run_dir / "summary.json").exists())
+        # The summary derives deterministically from the published projection,
+        # so an interrupted publication is repaired by an exact rewrite.
+        summary = lifecycle_runtime.deterministic_summary(projection)
+        summary_ref = lifecycle_runtime.atomic_json(run_dir / "summary.json", summary)
     pointer = {"schema_version": "juno_managed_merge_drive_latest.v2",
                "run_id": journal["run_id"], "scope_sha256": journal["scope_sha256"],
                "compiled_plan_sha256": plan["compiled_plan_sha256"],
@@ -5591,6 +5603,7 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
     selector_root = root / "scopes" / selector_identity
     selector_latest = selector_root / "latest.json"
     global_latest = root / "latest.json"
+    latest_paths = [selector_latest, global_latest]
     with lifecycle_runtime.lifecycle_claim(selector_root / ".claim.lock"):
         if selector_latest.is_file():
             try:
@@ -5611,9 +5624,57 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                 raise MergeQueueError(
                     "frozen merge-drive identity is incompatible; explicit reviewed replacement required")
             projection_path = Path(str(pointer.get("projection_path", "")))
-            if journal.get("terminal") and projection_path.is_file():
-                return json.loads(projection_path.read_text())
-        else:
+            if journal.get("terminal"):
+                # Terminal reuse is bound to the current requested FIFO scope:
+                # after one completed unscoped drive, a later eligible task must
+                # open a fresh immutable lineage instead of replaying the old
+                # MERGED_THROUGH result.
+                frozen_ids = [row.get("task_id") for row in scope if isinstance(row, dict)]
+                current_scope = (_drive_scope(controller, config, through)
+                                 if through is None else scope)
+                current_ids = [row.get("task_id") for row in current_scope if isinstance(row, dict)]
+                if frozen_ids == current_ids:
+                    # The journal is the authority: derive the authoritative
+                    # terminal projection from it and repair stale pointers
+                    # (crash between the terminal journal write and publication)
+                    # before returning.
+                    journal_refs = [ref for ref in journal.get("projections", [])
+                                    if isinstance(ref, dict) and ref.get("path")]
+                    authoritative = None
+                    if journal_refs:
+                        candidate = Path(str(journal_refs[-1]["path"]))
+                        if candidate.is_file():
+                            authoritative = (candidate, json.loads(candidate.read_text()))
+                    if authoritative is None and projection_path.is_file():
+                        authoritative = (projection_path, json.loads(projection_path.read_text()))
+                    if authoritative is not None:
+                        path, projection_value = authoritative
+                        summary_path = run_dir / "summary.json"
+                        summary_ref = pointer.get("summary")
+                        if not summary_path.is_file():
+                            summary_ref = lifecycle_runtime.atomic_json(
+                                summary_path,
+                                lifecycle_runtime.deterministic_summary(projection_value))
+                        elif not isinstance(summary_ref, dict):
+                            summary_ref = {"path": str(summary_path.resolve()),
+                                           "sha256": hashlib.sha256(
+                                               summary_path.read_bytes()).hexdigest()}
+                        pointer_repaired = {
+                            "schema_version": "juno_managed_merge_drive_latest.v2",
+                            "run_id": journal["run_id"], "scope_sha256": journal["scope_sha256"],
+                            "compiled_plan_sha256": plan["compiled_plan_sha256"],
+                            "execution_identity_sha256": journal["execution_identity_sha256"],
+                            "projection_path": str(path.resolve()), "summary": summary_ref,
+                            "terminal": True}
+                        if (str(path.resolve()) != str(projection_path)
+                                or pointer.get("terminal") is not True):
+                            for latest_path in latest_paths:
+                                lifecycle_runtime.atomic_json(latest_path, pointer_repaired)
+                        return projection_value
+                # A new immutable lineage is required for the changed FIFO scope:
+                # archive the completed pointer and fall through to creation.
+                selector_latest.unlink(missing_ok=True)
+        if not selector_latest.is_file():
             scope = _drive_scope(controller, config, through)
             target_sha = task_runtime.ref_sha(repository, config["target_ref"])
             scope_identity = digest({"target_ref": config["target_ref"],
@@ -5661,7 +5722,6 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
             lifecycle_runtime.lifecycle_checkpoint(
                 journal_path, journal, phase="claim", boundary="POST",
                 detail={"scope_sha256": scope_identity, "task_count": len(scope)})
-        latest_paths = [selector_latest, global_latest]
         blocker: Optional[dict[str, Any]] = None
         max_transitions = int(plan["budgets"]["max_transitions"])
         try:
@@ -5690,15 +5750,31 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     state = record.get("state")
                     if state == "MERGED":
                         break
-                    if state in {"CONFLICT", "CONFLICT_RESOLVED"}:
+                    if state == "CONFLICT":
                         blocker = {"category": "conflict", "task_id": task_id, "state": state,
                                    "authority_required": "explicit conflict resolution"}; break
-                    if state == "AWAITING_RELEASE":
+                    if state == "CONFLICT_RESOLVED":
+                        # An explicitly resolved conflict is not terminal for the
+                        # frozen scope: verify the durable resolution state and
+                        # schedule the authorized continuation within the same
+                        # cumulative transition budget.
+                        with task_runtime.state_lock(controller):
+                            conflict_entry = target_entry(
+                                task_runtime.read_state(controller), repository,
+                                config["target_ref"])["conflicts"].get(task_id)
+                        if (not isinstance(conflict_entry, dict)
+                                or conflict_entry.get("resolution_state") != "RESOLVED"):
+                            blocker = {"category": "conflict", "task_id": task_id,
+                                       "state": state,
+                                       "authority_required": "explicit conflict resolution"}; break
+                        operation = {"phase": "resolve-continue", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "AWAITING_RELEASE":
                         blocker = {"category": "external_authority", "task_id": task_id,
                                    "authority_required": "release gate owner"}; break
-                    if state == "REVIEW_FINDINGS_EXHAUSTED":
+                    elif state == "REVIEW_FINDINGS_EXHAUSTED":
                         blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
-                    if state == "REVIEW_FINDINGS":
+                    elif state == "REVIEW_FINDINGS":
                         repair = journal["repairs"][0] if journal["repairs"] else None
                         repaired = (task_runtime._recover_task_worker(record, repair)
                                     if repair and not repair.get("terminal_state") else repair)
@@ -5773,6 +5849,8 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                                 "transition": journal["attempts"]["transitions"]})
                     if operation["phase"] == "repair-reopen":
                         merge_reopen(controller, task_id)
+                    elif operation["phase"] == "resolve-continue":
+                        merge_resolve(controller, task_id)
                     elif operation["phase"] == "review":
                         merge_review(controller, task_id, overlap_suite=True)
                     elif operation["phase"] in {"risk-ready-next", "stale-next"}:

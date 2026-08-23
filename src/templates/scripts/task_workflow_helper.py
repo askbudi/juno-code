@@ -2033,6 +2033,32 @@ def run_overlap(suite: Callable[[threading.Event], Any],
             "elapsed_ms": int((time.monotonic() - started) * 1000)}
 
 
+def adopt_interrupted_projection(run_dir: Path, journal: dict[str, Any], index: int,
+                                 state_name: str, kind: str) -> Optional[dict[str, Any]]:
+    """Adopt an exact preexisting projection left by an interrupted publication.
+
+    A crash after the numbered projection write but before the journal append
+    must not strand the run. Wall-time fields advance between attempts, so a
+    recomputed projection can never be byte-identical; adoption is therefore
+    bound to the immutable identity fields of the artifact instead, and the
+    journal records the recovered reference exactly once.
+    """
+    path = run_dir / "projections" / f"{index:04d}-{state_name.lower()}.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LifecycleContractError(
+            f"immutable lifecycle artifact collision: {path}") from exc
+    if (not isinstance(value, dict)
+            or value.get("schema_version") != RUN_PROJECTION_SCHEMA
+            or value.get("kind") != kind or value.get("run_id") != journal.get("run_id")
+            or value.get("state") != state_name):
+        raise LifecycleContractError(f"immutable lifecycle artifact collision: {path}")
+    return value
+
+
 def compact_projection(*, kind: str, run_id: str, task_id: Optional[str], state: str,
                        plan: dict[str, Any], started: float, counters: dict[str, int],
                        attempts: dict[str, int], blocker: Optional[dict[str, Any]],

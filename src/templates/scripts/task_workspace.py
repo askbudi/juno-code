@@ -4782,18 +4782,30 @@ def _task_projection(controller: Path, task_id: str, run_dir: Path,
                     "tip_sha": state_record.get("tip_sha"),
                     "deadline_unix_ns": journal["deadline_unix_ns"]})
     projection_index = len(journal.get("projections", [])) + 1
-    projection_ref = lifecycle_runtime.atomic_json(
-        run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
-        projection, exclusive=True)
+    # Crash recovery: a crash after the projection write but before the journal
+    # append leaves the exact next numbered artifact on disk. Adopt it (its
+    # identity fields are immutable) instead of colliding on recomputed bytes.
+    adopted = lifecycle_runtime.adopt_interrupted_projection(
+        run_dir, journal, projection_index, state_name, kind="task-run")
+    if adopted is not None:
+        projection = adopted
+        projection_path = run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json"
+        projection_ref = {"path": str(projection_path.resolve()),
+                          "sha256": hashlib.sha256(projection_path.read_bytes()).hexdigest()}
+    else:
+        projection_ref = lifecycle_runtime.atomic_json(
+            run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
+            projection, exclusive=True)
     journal.setdefault("projections", []).append(projection_ref)
     journal["state"] = state_name
     journal["terminal"] = terminal
     lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
     summary_ref = None
     if terminal:
-        summary_ref = lifecycle_runtime.atomic_json(
-            run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection),
-            exclusive=not (run_dir / "summary.json").exists())
+        # The summary derives deterministically from the published projection,
+        # so an interrupted publication is repaired by an exact rewrite.
+        summary = lifecycle_runtime.deterministic_summary(projection)
+        summary_ref = lifecycle_runtime.atomic_json(run_dir / "summary.json", summary)
     lifecycle_runtime.atomic_json(latest, {
         "schema_version": "juno_managed_task_run_latest.v2", "run_id": journal["run_id"],
         "compiled_plan_sha256": plan["compiled_plan_sha256"],
@@ -4832,8 +4844,47 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 raise TaskWorkspaceError(
                     "active task-run identity is incompatible; explicit reviewed replacement required")
             projection_path = Path(str(latest_value.get("projection_path", "")))
-            if journal.get("terminal") and projection_path.is_file():
-                return json.loads(projection_path.read_text())
+            if journal.get("terminal"):
+                # The journal is the authority: a crash between the terminal
+                # journal write and latest-pointer publication leaves the
+                # pointer stale, so derive the authoritative projection from
+                # the journal and repair the pointer before returning.
+                journal_refs = [ref for ref in journal.get("projections", [])
+                                if isinstance(ref, dict) and ref.get("path")]
+                authoritative = None
+                if journal_refs:
+                    candidate = Path(str(journal_refs[-1]["path"]))
+                    if candidate.is_file():
+                        authoritative = (candidate,
+                                         json.loads(candidate.read_text()),
+                                         journal_refs[-1].get("sha256"))
+                if authoritative is None and projection_path.is_file():
+                    authoritative = (projection_path,
+                                     json.loads(projection_path.read_text()), None)
+                if authoritative is not None:
+                    path, projection_value, _ = authoritative
+                    summary_path = run_dir / "summary.json"
+                    summary_ref = latest_value.get("summary")
+                    if not summary_path.is_file():
+                        summary_ref = lifecycle_runtime.atomic_json(
+                            summary_path,
+                            lifecycle_runtime.deterministic_summary(projection_value))
+                    elif not isinstance(summary_ref, dict):
+                        summary_ref = {"path": str(summary_path.resolve()),
+                                       "sha256": hashlib.sha256(
+                                           summary_path.read_bytes()).hexdigest()}
+                    pointer_repaired = {
+                        "schema_version": "juno_managed_task_run_latest.v2",
+                        "run_id": journal["run_id"],
+                        "compiled_plan_sha256": plan["compiled_plan_sha256"],
+                        "execution_identity_sha256": journal["execution_identity_sha256"],
+                        "task_revision_sha256": latest_value.get("task_revision_sha256"),
+                        "terminal": True, "projection_path": str(path.resolve()),
+                        "summary": summary_ref}
+                    if (str(path.resolve()) != str(projection_path)
+                            or latest_value.get("terminal") is not True):
+                        lifecycle_runtime.atomic_json(latest, pointer_repaired)
+                    return projection_value
         else:
             run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
             run_dir = root / run_id
@@ -4908,10 +4959,27 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 decision = {"schema_version": "juno_task_run_decision.v1", "task_id": task_id,
                             "task_revision_sha256": task_revision, "questions": questions,
                             "resume_command": f"yy task run {task_id}"}
-                decision_ref = lifecycle_runtime.atomic_json(
-                    run_dir / "decisions" / f"{len(journal['task_revisions']):04d}.json",
-                    decision, exclusive=True)
-                journal.setdefault("decision_receipts", []).append(decision_ref)
+                decision_path = run_dir / "decisions" / f"{len(journal['task_revisions']):04d}.json"
+                if decision_path.is_file():
+                    # Idempotent resume: an unchanged rerun, or a crash after
+                    # the immutable decision receipt was written, must reuse the
+                    # exact prior decision and republish NEEDS_DECISION. Only
+                    # bytes for a different task/revision/question set refuse.
+                    existing = json.loads(decision_path.read_text())
+                    if existing != decision:
+                        raise TaskWorkspaceError(
+                            "ambiguous task-run decision receipt collision: "
+                            f"{decision_path}")
+                    decision_ref = {"path": str(decision_path.resolve()),
+                                    "sha256": hashlib.sha256(
+                                        decision_path.read_bytes()).hexdigest()}
+                else:
+                    decision_ref = lifecycle_runtime.atomic_json(
+                        decision_path, decision, exclusive=True)
+                known = [ref.get("path") for ref in journal.get("decision_receipts", [])
+                         if isinstance(ref, dict)]
+                if decision_ref["path"] not in known:
+                    journal.setdefault("decision_receipts", []).append(decision_ref)
                 return _task_projection(
                     controller, task_id, run_dir, latest, journal_path, journal, plan,
                     state_name="NEEDS_DECISION",

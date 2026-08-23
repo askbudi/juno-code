@@ -1472,6 +1472,65 @@ raise SystemExit(2)
             str(prompt.relative_to(self.controller)))
         git(self.controller, "commit", "-m", "controller merge workflow")
 
+    def test_merge_drive_adopts_interrupted_projection_publication(self) -> None:
+        self.install_merge_drive_assets()
+        first_tip = self.commit_feature("X", "src/adopt.txt", "first\n")
+        self.commit_feature("Y", "src/adopt.txt", "second\n")
+        paused = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(paused["state"], "PAUSED")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+        pointer = json.loads((self.controller /
+                              ".juno_task/runtime/lifecycle-runs/merge/latest.json").read_text())
+        journal_path = (self.controller / ".juno_task/runtime/lifecycle-runs/merge"
+                        / pointer["run_id"] / "journal.json")
+        journal = json.loads(journal_path.read_text())
+        stranded = (journal_path.parent / "projections/0001-paused.json")
+        self.assertTrue(stranded.is_file())
+        # Crash between the projection write and the journal append.
+        journal["projections"] = []
+        journal["state"] = "CLAIMED"
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        resumed = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(resumed["state"], "PAUSED")
+        recovered = json.loads(journal_path.read_text())
+        self.assertEqual(len(recovered["projections"]), 1)
+        self.assertEqual(recovered["projections"][0]["path"], str(stranded.resolve()))
+
+    def test_merge_drive_pauses_on_conflict_and_resumes_after_resolve(self) -> None:
+        self.install_merge_drive_assets()
+        first_tip = self.commit_feature("X", "src/order.txt", "first\n")
+        second_tip = self.commit_feature("Y", "src/order.txt", "second\n")
+        paused = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(paused["state"], "PAUSED")
+        self.assertEqual(paused["blocker"]["category"], "conflict")
+        self.assertEqual(paused["blocker"]["task_id"], "Y")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+        record = merge_runtime.task_runtime.read_state(self.controller.resolve())["tasks"]["Y"]
+        checkout = Path(record["queue_attempt"]["candidate_checkout"])
+        (checkout / "src/order.txt").write_text("first\nsecond\n")
+        git(checkout, "add", "src/order.txt")
+        merge_runtime.merge_resolve(self.controller.resolve(), "Y")
+        completed = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(completed["state"], "MERGED_THROUGH")
+        self.assertEqual(completed["identities"]["completed_task_ids"], ["X", "Y"])
+        self.assertEqual(subprocess.run(
+            ["git", "-C", str(self.repository), "merge-base", "--is-ancestor",
+             second_tip, "refs/heads/product"]).returncode, 0)
+
+    def test_unscoped_merge_drive_opens_new_lineage_for_later_eligible_scope(self) -> None:
+        self.install_merge_drive_assets()
+        first_tip = self.commit_feature("X", "src/lineage-first.txt", "first\n")
+        first = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(first["state"], "MERGED_THROUGH")
+        self.assertEqual(first["identities"]["completed_task_ids"], ["X"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+        second_tip = self.commit_feature("Y", "src/lineage-second.txt", "second\n")
+        second = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(second["state"], "MERGED_THROUGH")
+        self.assertEqual(second["identities"]["completed_task_ids"], ["X", "Y"])
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), second_tip)
+
     def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
         self.install_merge_drive_assets()
         tip = self.commit_feature("X", "docs/drive.md", "drive\n")
