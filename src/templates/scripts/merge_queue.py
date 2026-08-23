@@ -17,6 +17,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -24,6 +25,7 @@ from typing import Any, Iterator, Optional
 import integration_workspace as integration_runtime
 import task_workspace as task_runtime
 import risk_policy as risk_runtime
+import task_workflow_helper as lifecycle_runtime
 
 QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
@@ -1562,7 +1564,8 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                           receipt_paths: list[Path], claim: dict[str, Any],
                           dependency_source: Optional[Path] = None,
                           controller: Optional[Path] = None,
-                          repository: Optional[Path] = None
+                          repository: Optional[Path] = None,
+                          cancel_event: Any = None
                           ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     """Run the routed suite in order; write one immutable receipt per command.
 
@@ -1580,6 +1583,9 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
     references: list[dict[str, str]] = []
     reuse_rows: list[dict[str, Any]] = []
     for index, (row, receipt_path) in enumerate(zip(commands, receipt_paths)):
+        if cancel_event is not None and cancel_event.is_set():
+            raise MergeValidationError("full-suite validation cancelled by blocking Reviewer A", [],
+                                       references[-1] if references else None)
         if receipt_path.exists():
             reference = evidence_reference(receipt_path)
             verified = risk_runtime.verify_full_suite_receipt_v3(
@@ -1624,9 +1630,16 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             continue
         started_at = risk_runtime.utc_now()
         with validation_dependencies(candidate, cwd, dependency_source):
-            evidence = task_runtime.run_validation(row, cwd)
+            evidence = (task_runtime.run_validation(row, cwd, cancel_event=cancel_event)
+                        if cancel_event is not None else
+                        task_runtime.run_validation(row, cwd))
         retry_evidence = None
-        if evidence["timed_out"] or evidence["exit_code"]:
+        # A zero process exit contradicted by parsed reporter failures is a
+        # terminal result-integrity violation, not an absorbable flake: no
+        # isolated retry may convert it into reusable PASS evidence.
+        result_integrity = evidence.get("result_integrity") or {}
+        terminal_contradiction = bool(result_integrity.get("contradiction"))
+        if not terminal_contradiction and (evidence["timed_out"] or evidence["exit_code"]):
             retry_evidence = bounded_file_retry(row, cwd, evidence, candidate,
                                                 dependency_source)
             if retry_evidence is not None and retry_evidence["absorbed"]:
@@ -1648,6 +1661,11 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             "timing": evidence["timing"], "resource": evidence["resource"],
             "identity": evidence["identity"],
             "result": {"exit_code": evidence["exit_code"], "timed_out": evidence["timed_out"],
+                       "process_exit_code": evidence.get("process_exit_code"),
+                       "result_integrity": {
+                           "contradiction": terminal_contradiction,
+                           "eligible_pass": bool(result_integrity.get("eligible_pass")),
+                           "integrity_sha256": result_integrity.get("integrity_sha256")},
                        "stdout": {"sha256": evidence["stdout_sha256"],
                                   "tail": evidence["stdout_tail"],
                                   "truncated_bytes": evidence["stdout_truncated_bytes"]},
@@ -2525,9 +2543,9 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
         attempt["candidate_sha"] = candidate_sha
         attempt["candidate_tree"] = task_runtime.git(repository, "rev-parse", f"{candidate_sha}^{{tree}}")
         try:
-            attempt["validation"] = validation_rows(
-                config, validation_root, feature_worktree if checkout is not None else None,
-                record.get("changed_paths"),
+            attempt["validation"], attempt["command_evidence"] = authoritative_validation_rows(
+                controller, config, repository, record, validation_root, candidate_sha,
+                feature_worktree if checkout is not None else None,
             )
             assert_frozen_candidate(controller, config, validation_root, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != target_sha:
@@ -2706,9 +2724,9 @@ def merge_resolve(controller: Path, task_id: str,
             # reviewed pre-resolution identity was checked above.
             assert_static_plan(controller, task_id, "resolve-validation")
             attempt["feasibility_plan_id"] = initial_plan["plan_id"]
-            attempt["validation"] = validation_rows(
-                config, checkout, task_runtime.exact_root(
-                    Path(record["worktree"]), "resolved feature worktree")
+            attempt["validation"], attempt["command_evidence"] = authoritative_validation_rows(
+                controller, config, repository, record, checkout, candidate_sha,
+                task_runtime.exact_root(Path(record["worktree"]), "resolved feature worktree")
             )
             assert_frozen_candidate(controller, config, checkout, candidate_sha)
             if task_runtime.ref_sha(repository, config["target_ref"]) != conflict["expected_target_sha"]:
@@ -2863,7 +2881,25 @@ def prior_findings_summary(controller: Path, record: dict[str, Any],
     prior_sha = explicit_sha
     paths = sorted(evidence_root.glob(f"{prior_sha}.attempt-*.json")) if prior_sha else []
     if explicit_sha and not paths:
-        raise MergeQueueError("prior review findings evidence is missing")
+        compact_findings = record.get("prior_review_findings")
+        if not isinstance(compact_findings, list) or not compact_findings:
+            raise MergeQueueError("prior review findings evidence is missing")
+        summaries = []
+        references = []
+        for review in compact_findings:
+            if (not isinstance(review, dict) or not isinstance(review.get("findings"), list)
+                    or not isinstance(review.get("managed_runner"), dict)):
+                raise MergeQueueError("prior cancellation-bound findings are malformed")
+            runner = review["managed_runner"]
+            references.append(
+                f"{runner.get('receipt_path')} sha256={runner.get('receipt_sha256')}")
+            for finding in review["findings"]:
+                summaries.append(
+                    f"- {finding.get('code', 'UNKNOWN')} "
+                    f"[{finding.get('normalized_severity', 'unknown')}]: "
+                    f"{finding.get('summary', finding.get('impact', ''))}")
+        return (f"Immediate prior candidate: {explicit_sha}\n" + "\n".join(summaries),
+                "; ".join(references))
     if not paths:
         legacy_sha = record.get("reopened_from_candidate_sha")
         legacy_paths = (sorted(evidence_root.glob(f"{legacy_sha}.attempt-*.json"))
@@ -3637,7 +3673,8 @@ def review_target_checkpoint(controller: Path, config: dict[str, Any], repositor
     return None
 
 
-def verify_standing_validation(record: dict[str, Any]) -> dict[str, Any]:
+def verify_standing_validation(record: dict[str, Any],
+                               controller: Optional[Path] = None) -> dict[str, Any]:
     """Re-verify task-finish standing evidence before expensive queue work."""
     closure = record.get("review_ready_closure")
     standing = closure.get("standing_validation") if isinstance(closure, dict) else None
@@ -3647,9 +3684,17 @@ def verify_standing_validation(record: dict[str, Any]) -> dict[str, Any]:
             or standing.get("outcome") != "PASSED"
             or standing.get("tip_sha") != record.get("tip_sha")
             or not isinstance(standing.get("plan_sha256"), str)
-            or not isinstance(standing.get("receipts"), list)
-            or not standing["receipts"]):
+            or not isinstance(standing.get("receipts"), list)):
         raise MergeQueueError("standing validation closure is malformed or failed")
+    documentation_route = standing.get("documentation_route")
+    if documentation_route is None:
+        documentation_route = {"mode": "legacy_focused", "active_paths": []}
+    counters = standing.get("counters")
+    if counters is None:
+        counters = {"executed": len(standing["receipts"]), "reused": 0,
+                    "invalidated": 0, "skipped": 0, "not_applicable": 0}
+    if not isinstance(documentation_route, dict) or not isinstance(counters, dict):
+        raise MergeQueueError("standing validation route/counters are malformed")
     verified: list[dict[str, str]] = []
     summary_parent: Optional[Path] = None
     for reference in standing["receipts"]:
@@ -3670,22 +3715,155 @@ def verify_standing_validation(record: dict[str, Any]) -> dict[str, Any]:
                 or receipt.get("plan_sha256") != standing["plan_sha256"]
                 or receipt.get("command", {}).get("id") != reference["command_id"]
                 or receipt.get("result", {}).get("exit_code") != 0
-                or receipt.get("result", {}).get("timed_out")):
+                or receipt.get("result", {}).get("timed_out")
+                or receipt.get("result", {}).get("result_integrity", {}).get("eligible_pass") is False):
             raise MergeQueueError("standing validation receipt identity or verdict is invalid")
         summary_parent = path.parent if summary_parent is None else summary_parent
         if path.parent != summary_parent:
             raise MergeQueueError("standing validation receipts do not share one plan root")
         verified.append({"command_id": reference["command_id"], "sha256": reference["sha256"]})
-    try:
-        summary = json.loads((summary_parent / "summary.json").read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MergeQueueError("standing validation summary is unavailable") from exc
-    if (task_runtime.stable_sha256(summary) != standing.get("summary_sha256")
-            or summary.get("outcome") != "PASSED"
+    if summary_parent is None:
+        root = None
+        route = documentation_route
+        zero_route = (route.get("mode") == "inert_zero_command"
+                      and route.get("authored_path_count", 0) >= 1)
+        no_matching_command = (counters.get("executed") == 0
+                               and counters.get("not_applicable", 0) >= 1)
+        if not zero_route and not no_matching_command:
+            raise MergeQueueError("receipt-free standing validation has no exact zero/not-applicable proof")
+        if controller is None:
+            raise MergeQueueError("zero-command standing proof requires its canonical controller root")
+        summary_path = (controller / task_runtime.STANDING_ROOT / str(record.get("task_id"))
+                        / standing["plan_sha256"] / "summary.json")
+        try:
+            summary = json.loads(summary_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MergeQueueError("zero-command standing summary is unavailable") from exc
+        if task_runtime.stable_sha256(summary) != standing.get("summary_sha256"):
+            raise MergeQueueError("zero-command standing summary identity is invalid")
+    else:
+        try:
+            summary = json.loads((summary_parent / "summary.json").read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MergeQueueError("standing validation summary is unavailable") from exc
+        if task_runtime.stable_sha256(summary) != standing.get("summary_sha256"):
+            raise MergeQueueError("standing validation summary identity is invalid")
+    if (summary.get("outcome") != "PASSED"
             or summary.get("plan_sha256") != standing["plan_sha256"]):
         raise MergeQueueError("standing validation summary identity is invalid")
     return {"status": "verified", "commands": verified,
-            "plan_sha256": standing["plan_sha256"]}
+            "plan_sha256": standing["plan_sha256"],
+            "documentation_route": documentation_route,
+            "counters": counters}
+
+
+def authoritative_validation_rows(controller: Path, config: dict[str, Any],
+                                  repository: Path, record: dict[str, Any],
+                                  candidate: Path, candidate_sha: str,
+                                  dependency_source: Optional[Path] = None) -> tuple[
+                                      list[dict[str, Any]], dict[str, Any]]:
+    """Consume exact finish evidence and execute only invalid command closures."""
+    closure = record.get("review_ready_closure")
+    standing = closure.get("standing_validation") if isinstance(closure, dict) else None
+    if not isinstance(standing, dict):
+        validations = validation_rows(
+            config, candidate, dependency_source, record.get("changed_paths"))
+        decisions = [{"schema_version": lifecycle_runtime.COMMAND_DECISION_SCHEMA,
+                      "command_id": row.get("id"), "decision": "executed",
+                      "input_closure_sha256": None, "source": None,
+                      "invalidation": [], "reason": "legacy task has no command closure"}
+                     for row in validations]
+        return validations, {"decisions": decisions,
+                             "counters": lifecycle_runtime.evidence_counters(decisions),
+                             "source": "legacy_conservative_execution"}
+    route = standing.get("documentation_route", {})
+    changed = record.get("changed_paths") or []
+    active_paths = route.get("active_paths", []) if route.get("mode") == "active_audit" else []
+    coherence = lifecycle_runtime.grouped_coherence(
+        controller, repository, candidate_sha, changed, active_doc_paths=active_paths,
+        documentation_policy=config["documentation_validation"])
+    if coherence["outcome"] != "PASSED":
+        raise MergeQueueError("grouped coherence failed before validation/review: " + ", ".join(
+            finding["code"] for finding in coherence["findings"]))
+    if route.get("mode") == "inert_zero_command":
+        exact = candidate_sha == standing.get("tip_sha")
+        decision = lifecycle_runtime.evidence_decision(
+            "documentation-zero-command", "reused" if exact else "invalidated",
+            closure={"input_closure_sha256": route.get("route_sha256")},
+            source={"plan_sha256": standing.get("plan_sha256")},
+            invalidation=[] if exact else [{"field": "tip_sha", "old": standing.get("tip_sha"),
+                                            "new": candidate_sha}],
+            reason="exact zero-command proof" if exact else "candidate identity changed; recomputed structural proof")
+        # An invalidated inert proof is recomputed without launching an executable command.
+        decisions = [decision]
+        if not exact:
+            decisions.append(lifecycle_runtime.evidence_decision(
+                "documentation-zero-command", "skipped",
+                closure={"input_closure_sha256": route.get("route_sha256")},
+                reason="recomputed inert zero-command proof"))
+        return [], {"decisions": decisions,
+                    "counters": lifecycle_runtime.evidence_counters(decisions),
+                    "coherence": coherence, "source": "standing_zero_command"}
+    rows = ([lifecycle_runtime.active_documentation_row()]
+            if route.get("mode") == "active_audit"
+            else task_runtime.selected_focused_rows(config, changed))
+    source_receipts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
+    for reference in standing.get("receipts", []):
+        try:
+            path = Path(reference["path"]); raw = path.read_bytes(); receipt = json.loads(raw)
+        except (OSError, KeyError, json.JSONDecodeError) as exc:
+            raise MergeQueueError("standing validation receipt is unavailable") from exc
+        if hashlib.sha256(raw).hexdigest() != reference.get("sha256"):
+            raise MergeQueueError("standing validation receipt digest drifted")
+        source_receipts[str(reference.get("command_id"))] = (receipt, reference)
+    runtime = task_runtime.runtime_generation(
+        repository, task_runtime.ref_sha(repository, config["target_ref"]))
+    validations: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
+    for row in rows:
+        current = task_runtime._command_input_closure(
+            repository, candidate_sha, row, config, runtime)
+        source = source_receipts.get(row["id"])
+        if source is not None:
+            receipt, reference = source
+            invalidation = lifecycle_runtime.closure_invalidation(
+                receipt.get("input_closure"), current)
+            result = receipt.get("result")
+            if (not invalidation and isinstance(result, dict)
+                    and result.get("exit_code") == 0 and not result.get("timed_out")
+                    and result.get("result_integrity", {}).get("eligible_pass") is not False):
+                validations.append(result)
+                decisions.append(lifecycle_runtime.evidence_decision(
+                    row["id"], "reused", closure=current, source=reference))
+                continue
+            decisions.append(lifecycle_runtime.evidence_decision(
+                row["id"], "invalidated", closure=current, source=reference,
+                invalidation=invalidation or [{"field": "result_integrity",
+                                                "reason": "source is not reusable PASS"}]))
+        cwd = (candidate / row["cwd"]).resolve()
+        try:
+            cwd.relative_to(candidate.resolve())
+        except ValueError as exc:
+            raise MergeQueueError("authoritative validation cwd escaped candidate") from exc
+        if row["argv"] == lifecycle_runtime.ACTIVE_DOC_ARGV:
+            result = task_runtime._active_documentation_validation(
+                repository, candidate_sha,
+                {"documentation_route": route}, row,
+                config["documentation_validation"])
+        else:
+            with validation_dependencies(candidate, cwd, dependency_source):
+                result = task_runtime.run_validation(row, cwd)
+        validations.append(result)
+        decisions.append(lifecycle_runtime.evidence_decision(
+            row["id"], "executed", closure=current,
+            reason="no exact reusable PASS closure"))
+        if result.get("timed_out") or result.get("exit_code"):
+            detail = result.get("stderr_tail") or result.get("stdout_tail")
+            raise MergeValidationError(
+                f"affected validation failed ({row['id']}): {detail}", validations)
+    return validations, {"decisions": decisions,
+                         "counters": lifecycle_runtime.evidence_counters(decisions),
+                         "coherence": coherence, "source": "authoritative_cross_stage"}
 
 
 def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None:
@@ -3708,7 +3886,170 @@ def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None
             "commit or checkpoint controller metadata, then rerun") from exc
 
 
-def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
+def _overlapped_review_and_suite(
+        controller: Path, task_id: str, config: dict[str, Any], repository: Path,
+        record: dict[str, Any], attempt: dict[str, Any], stored: dict[str, Any],
+        progress: dict[str, Any], policy: dict[str, Any], request: dict[str, str],
+        plan: dict[str, Any], candidate_root: Path, candidate_sha: str,
+        expected: str, claimed: dict[str, Any], validation_identity: dict[str, str],
+        suite_commands: list[dict[str, Any]], suite_routing: dict[str, Any],
+        review_attempt_number: int) -> dict[str, Any]:
+    """Fresh-claim path: overlap A/suite while retaining durable A-before-B."""
+    references: list[dict[str, str]] = []
+    predecessor: Optional[Path] = None
+    mutable = {"attempt": attempt, "stored": stored, "progress": progress}
+
+    def reviewer_callback(sequence: int, reviewer: str) -> Any:
+        def run_reviewer() -> dict[str, Any]:
+            nonlocal predecessor
+            reference = dispatch_reviewer(
+                controller, candidate_root, plan, task_id, reviewer, sequence,
+                predecessor, review_attempt_number)
+            references.append(reference)
+            predecessor = Path(reference["runner_receipt_path"])
+            assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
+            compact = risk_runtime._compact_review(
+                reference, reviewer, sequence, candidate_sha,
+                plan["policy_identity"], plan)
+            compact["reference"] = reference
+            if not compact["blocking_count"]:
+                step = {"sequence": sequence, "reviewer": reviewer,
+                        "reference": reference,
+                        "verified": {key: value for key, value in compact.items()
+                                     if key != "reference"}}
+                current_progress = {**mutable["progress"],
+                                    "steps": [*mutable["progress"]["steps"], step]}
+                current_stored = {**mutable["stored"],
+                                  "review_progress": current_progress}
+                current_attempt = {**mutable["attempt"], "risk": current_stored,
+                                   "review": current_stored,
+                                   "outcome": "REVIEWING_OVERLAPPED"}
+                # Reviewer A PASS is durable before Reviewer B dispatch begins.
+                persist_attempt(controller, current_attempt, state_name="AWAITING_RISK")
+                mutable.update(attempt=current_attempt, stored=current_stored,
+                               progress=current_progress)
+            return compact
+        return run_reviewer
+
+    callbacks = [reviewer_callback(index + 1, reviewer)
+                 for index, reviewer in enumerate(plan["reviewer_sequence"])]
+    claim_binding = {"claim_path": claimed["claim"]["claim_path"],
+                     "claim_sha256": claimed["claim"]["claim_sha256"],
+                     "token": claimed["token"],
+                     "attempt_number": claimed["attempt_number"]}
+    receipt_paths = [Path(path) for path in claimed["expected_receipt_paths"]]
+
+    def suite(cancel_event: Any) -> Any:
+        with full_suite_producer_lock(
+                controller, task_id, candidate_sha, claimed["attempt_number"]):
+            return full_suite_validation(
+                suite_commands, candidate_root, plan, validation_identity,
+                receipt_paths, claim_binding,
+                task_runtime.exact_root(Path(record["worktree"]),
+                                        "review feature worktree"),
+                controller=controller, repository=repository,
+                cancel_event=cancel_event)
+
+    overlap = lifecycle_runtime.run_overlap(suite, callbacks)
+    compact_reviews = [{key: value for key, value in row.items()
+                        if key != "reference"} for row in overlap["reviews"]]
+    blocking = next((row for row in overlap["reviews"]
+                     if row.get("blocking_count")), None)
+    if blocking is not None:
+        cancellation_body = {
+            "schema_version": "juno_review_suite_cancellation.v1",
+            "task_id": task_id, "candidate_sha": candidate_sha,
+            "policy_identity": plan["policy_identity"],
+            "reason": "blocking_reviewer_a" if overlap["reviews"].index(blocking) == 0
+                      else "blocking_selected_reviewer",
+            "events": overlap["events"],
+            "cancellation_requested": overlap["cancelled"],
+            "suite_cancelled": overlap["cancelled"] and overlap["suite_error"] is not None,
+            "suite_terminal": ("stopped" if overlap["suite_error"] is not None else "completed"),
+            "suite_error": (str(overlap["suite_error"])[:512]
+                            if overlap["suite_error"] is not None else None),
+            "review_receipts": references,
+            "written_suite_receipts": [evidence_reference(path)
+                                       for path in receipt_paths if path.exists()],
+        }
+        cancellation_path = (controller / ".juno_task/state/merge-queue/cancellations"
+                             / task_id / candidate_sha
+                             / f"attempt-{claimed['attempt_number']}.json")
+        cancellation = lifecycle_runtime.atomic_json(
+            cancellation_path, cancellation_body, exclusive=True)
+        advisories = persist_advisory_followups(
+            controller, task_id, candidate_sha, plan["policy_identity"],
+            compact_reviews)
+        review_round = record.get("review_round", 1)
+        outcome = ("REVIEW_FINDINGS_EXHAUSTED" if review_round >= 2
+                   else "REVIEW_FINDINGS")
+        risk_state = {**mutable["stored"], "status": outcome,
+                      "suite_cancellation": cancellation,
+                      "blocking_review": blocking["reference"]}
+        updated = {**mutable["attempt"], "risk": risk_state,
+                   "review": risk_state, "outcome": outcome,
+                   "review_suite_overlap": {"events": overlap["events"],
+                                            "elapsed_ms": overlap["elapsed_ms"]},
+                   "blocking_findings": compact_reviews,
+                   "advisory_followups": advisories}
+        persist_attempt(controller, updated, state_name=outcome)
+        return updated
+    if overlap["suite_error"] is not None:
+        exc = overlap["suite_error"]
+        failed = {**mutable["attempt"], "outcome": "FAILED_FULL_SUITE",
+                  "review_suite_overlap": {"events": overlap["events"],
+                                           "elapsed_ms": overlap["elapsed_ms"]}}
+        persist_attempt(controller, failed, state_name="AWAITING_RISK")
+        if isinstance(exc, BaseException):
+            raise exc
+        raise MergeQueueError("overlapped full suite failed")
+    suite_references, reuse = overlap["suite_result"]
+    complete = {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+                "state": "COMPLETE", "attempt_number": claimed["attempt_number"],
+                "token": claimed["token"], "claim": claimed["claim"],
+                "receipts": suite_references}
+    suite_admission = verify_queue_full_suite_admission(
+        controller, task_id, plan, validation_identity,
+        suite_commands, suite_routing, complete)
+    current_progress = {**mutable["progress"],
+                        "full_suite_admission": suite_admission}
+    current_stored = {**mutable["stored"], "review_progress": current_progress}
+    current_attempt = {**mutable["attempt"], "risk": current_stored,
+                       "review": current_stored,
+                       "review_suite_overlap": {"events": overlap["events"],
+                                                "elapsed_ms": overlap["elapsed_ms"]}}
+    if reuse:
+        current_attempt["evidence_reuse"] = reuse
+    persist_attempt(controller, current_attempt, state_name="AWAITING_RISK")
+    stale = review_target_checkpoint(
+        controller, config, repository, task_id, candidate_sha, expected)
+    if stale is not None:
+        return stale
+    receipt = risk_runtime.finalize(
+        plan, request, affected_tests_passed=True,
+        full_suite_admission=suite_admission, reviews=references,
+        metrics={"model_calls": len(references), "affected_test_runs": 1,
+                 "full_suite_runs": 1}, policy=policy)
+    evidence_file = evidence_path(controller, task_id, candidate_sha,
+                                  review_attempt_number)
+    if evidence_file.exists():
+        raise MergeQueueError("review evidence attempt path already exists")
+    risk_runtime.atomic_receipt(evidence_file, receipt, policy)
+    reference = evidence_reference(evidence_file)
+    verified = risk_runtime.verify_candidate_evidence(
+        policy, request, risk_flags(record), reference)
+    advisories = persist_advisory_followups(
+        controller, task_id, candidate_sha, plan["policy_identity"], compact_reviews)
+    outcome = "RISK_EVIDENCE_READY" if verified["eligible"] else "REVIEW_FINDINGS"
+    risk_state = {**current_stored, "status": outcome, "evidence": reference}
+    updated = {**current_attempt, "risk": risk_state, "review": risk_state,
+               "outcome": outcome, "advisory_followups": advisories}
+    persist_attempt(controller, updated,
+                    state_name="AWAITING_RISK" if verified["eligible"] else outcome)
+    return updated
+
+
+def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
     _assert_controller_clean_before_expensive_evidence(controller)
@@ -3738,7 +4079,7 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
         candidate_root = (task_runtime.exact_root(Path(checkout_value), "review candidate")
                           if checkout_value else validate_record(config, repository, record))
         assert_frozen_candidate(controller, config, candidate_root, candidate_sha)
-        standing_validation = verify_standing_validation(record)
+        standing_validation = verify_standing_validation(record, controller)
         claimed: Optional[dict[str, Any]] = None
         try:
             policy = risk_runtime.load_policy(risk_policy_path(controller))
@@ -3884,6 +4225,23 @@ def merge_review(controller: Path, task_id: str) -> dict[str, Any]:
                             suite_commands, suite_routing, suite_attempt_number))
                 stored = attempt["risk"]
                 progress = stored["review_progress"]
+            if (overlap_suite and plan["full_suite_required"]
+                    and suite_admission is None and claimed is not None
+                    and not progress["steps"] and plan["reviewer_sequence"]):
+                if progress["review_attempt_counter"] >= 10000:
+                    raise MergeQueueError("bounded reviewer attempt namespace is exhausted")
+                review_attempt_number = progress["review_attempt_counter"] + 1
+                progress = {**progress,
+                            "review_attempt_counter": review_attempt_number}
+                stored = {**stored, "review_progress": progress}
+                attempt = {**attempt, "risk": stored, "review": stored,
+                           "outcome": "REVIEWING_OVERLAPPED"}
+                persist_attempt(controller, attempt, state_name="AWAITING_RISK")
+                return _overlapped_review_and_suite(
+                    controller, task_id, config, repository, record, attempt,
+                    stored, progress, policy, request, plan, candidate_root,
+                    candidate_sha, expected, claimed, current_validation_identity,
+                    suite_commands, suite_routing, review_attempt_number)
             if plan["full_suite_required"] and suite_admission is None:
                 claim_binding = {"claim_path": claimed["claim"]["claim_path"],
                                  "claim_sha256": claimed["claim"]["claim_sha256"],
@@ -4424,8 +4782,8 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
         # the immutable queue record still binds the original admission.
         static = assert_static_plan(controller, task_id, "target-refresh")
         worktree = task_runtime.exact_root(Path(plan["worktree"]), "feature worktree")
-        validations = validation_rows(config, worktree,
-                                      changed_paths=plan["authored_paths"])
+        validations, command_evidence = authoritative_validation_rows(
+            controller, config, repository, record, worktree, plan["refreshed_tip"])
         if (task_runtime.ref_sha(repository, config["target_ref"]) != plan["target_sha"]
                 or task_runtime.git(worktree, "rev-parse", "HEAD") != plan["refreshed_tip"]
                 or task_runtime.git(repository, "rev-parse", plan["branch_ref"], check=False)
@@ -4442,6 +4800,7 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
                                   "review_ready_closure"}}
         updated.update({"state": "QUEUED", "tip_sha": plan["refreshed_tip"],
                         "changed_paths": plan["authored_paths"], "validation": validations,
+                        "command_evidence": command_evidence,
                         "last_validation_outcome": "PASSED",
                         "target_refreshes": [*references, reference]})
         with task_runtime.state_lock(controller):
@@ -4648,7 +5007,8 @@ def merge_reopen(controller: Path, task_id: str,
                        if not task_runtime.path_within(path, frozen_allowed)]
             if not changed or forbidden or outside:
                 raise MergeQueueError("reopened feature tip has empty or disallowed product changes")
-            validations = validation_rows(config, worktree, changed_paths=changed)
+            validations, command_evidence = authoritative_validation_rows(
+                controller, config, repository, record, worktree, new_tip)
             if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
                     or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
                 raise MergeQueueError("feature tip changed during reopen validation")
@@ -4735,7 +5095,7 @@ def merge_reopen(controller: Path, task_id: str,
                 "branch_ref": record["branch_ref"],
                 "new_feature_tip": new_tip,
                 "changed_paths": changed,
-                "validations": validations,
+                "validations": validations, "command_evidence": command_evidence,
                 "validation_identity": digest({
                     "new_feature_tip": new_tip, "changed_paths": changed,
                     "task_workspace_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
@@ -4834,6 +5194,7 @@ def merge_reopen(controller: Path, task_id: str,
         queued.update({"state": "QUEUED", "tip_sha": new_tip,
                        "changed_paths": reopen_attempt["changed_paths"],
                        "validation": reopen_attempt["validations"],
+                       "command_evidence": reopen_attempt.get("command_evidence"),
                        "last_validation_outcome": "PASSED",
                        "review_round": next_review_round,
                        "reopened_from_candidate_sha": reopen_attempt["old_candidate_sha"]})
@@ -4842,6 +5203,11 @@ def merge_reopen(controller: Path, task_id: str,
             prior_findings_sha = reopen_attempt["old_candidate_sha"]
         if isinstance(prior_findings_sha, str):
             queued["prior_findings_candidate_sha"] = prior_findings_sha
+        source_attempt = record.get("queue_attempt")
+        if (reopen_attempt.get("source_state") == "REVIEW_FINDINGS"
+                and isinstance(source_attempt, dict)
+                and isinstance(source_attempt.get("blocking_findings"), list)):
+            queued["prior_review_findings"] = source_attempt["blocking_findings"]
         failure_evidence = reopen_attempt.get("source_failure_evidence")
         if isinstance(failure_evidence, dict):
             queued["prior_queue_failure"] = failure_evidence
@@ -5107,10 +5473,340 @@ def status(controller: Path) -> dict[str, Any]:
             "conflict_task_ids": sorted(entry["conflicts"])}
 
 
+MERGE_DRIVE_ROOT = ".juno_task/runtime/lifecycle-runs/merge"
+
+
+def _drive_scope(controller: Path, config: dict[str, Any], through: Optional[str]) -> list[dict[str, Any]]:
+    with task_runtime.state_lock(controller):
+        tasks = task_runtime.read_state(controller)["tasks"]
+    eligible = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE",
+                "CONFLICT", "CONFLICT_RESOLVED", "REVIEW_FINDINGS",
+                "REVIEW_FINDINGS_EXHAUSTED", "REOPENING", "MERGING", "MERGED"}
+    rows = [row for row in tasks.values() if isinstance(row, dict)
+            and row.get("target_ref") == config["target_ref"]
+            and row.get("state") in eligible]
+    rows.sort(key=lambda row: (row.get("enqueue_sequence", 2**63 - 1), row["task_id"]))
+    if through is not None:
+        positions = [index for index, row in enumerate(rows) if row.get("task_id") == through]
+        if not positions:
+            raise MergeQueueError("--through task is not in the current FIFO-authorized scope")
+        rows = rows[:positions[0] + 1]
+    if not rows:
+        raise MergeQueueError("merge drive has no FIFO-authorized tasks")
+    return [{"task_id": row["task_id"], "enqueue_sequence": row.get("enqueue_sequence"),
+             "initial_state": row.get("state"), "initial_tip_sha": row.get("tip_sha"),
+             "record_sha256": digest(row)} for row in rows]
+
+
+def _merge_plan_execution_identity(plan: dict[str, Any]) -> str:
+    return lifecycle_runtime.digest({key: value for key, value in plan.items()
+                                     if key not in {"controller_commit", "compiled_plan_sha256"}})
+
+
+def _merge_drive_projection(controller: Path, repository: Path, config: dict[str, Any],
+                            through: Optional[str], run_dir: Path, latest_paths: list[Path],
+                            journal_path: Path, journal: dict[str, Any], plan: dict[str, Any],
+                            scope: list[dict[str, Any]], *, blocker: Optional[dict[str, Any]],
+                            terminal: bool) -> dict[str, Any]:
+    counters = {name: 0 for name in
+                ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+    artifacts = [journal["compiled_plan"], journal["fifo_scope"]]
+    with task_runtime.state_lock(controller):
+        final_tasks = task_runtime.read_state(controller)["tasks"]
+    completed = []
+    reviewer_attempts = 0
+    for frozen in scope:
+        row = final_tasks.get(frozen["task_id"], {})
+        if row.get("state") == "MERGED":
+            completed.append(frozen["task_id"])
+        attempt = row.get("queue_attempt") if isinstance(row, dict) else None
+        evidence = attempt.get("command_evidence") if isinstance(attempt, dict) else None
+        if isinstance(evidence, dict):
+            for name, count in (evidence.get("counters") or {}).items():
+                if name in counters and isinstance(count, int):
+                    counters[name] += count
+        risk = attempt.get("risk") if isinstance(attempt, dict) else None
+        if isinstance(risk, dict):
+            progress = risk.get("review_progress")
+            if isinstance(progress, dict):
+                reviewer_attempts += int(progress.get("review_attempt_counter", 0))
+            reference = risk.get("evidence")
+            if isinstance(reference, dict):
+                artifacts.append({"path": reference.get("receipt_path"),
+                                  "sha256": reference.get("receipt_sha256")})
+    state_name = "MERGED_THROUGH" if terminal else "PAUSED"
+    projection = lifecycle_runtime.compact_projection(
+        kind="merge-drive", run_id=journal["run_id"], task_id=through, state=state_name,
+        plan=plan, started=lifecycle_runtime.lifecycle_elapsed_started(journal),
+        counters=counters,
+        attempts={"transitions": journal["attempts"]["transitions"],
+                  "semantic_repairs": journal["attempts"]["semantic_repairs"],
+                  "reviewer_attempts": reviewer_attempts},
+        blocker=blocker,
+        next_action=("none: frozen FIFO scope integrated" if terminal else
+                     "resolve the reported blocker, then resume the same yy merge drive"
+                     + (f" --through {through}" if through else "")),
+        artifacts=artifacts,
+        identities={"scope_sha256": journal["scope_sha256"],
+                    "target_ref": config["target_ref"],
+                    "initial_target_sha": journal["initial_target_sha"],
+                    "current_target_sha": task_runtime.ref_sha(repository, config["target_ref"]),
+                    "completed_task_ids": completed,
+                    "deadline_unix_ns": journal["deadline_unix_ns"]})
+    projection_index = len(journal.get("projections", [])) + 1
+    projection_ref = lifecycle_runtime.atomic_json(
+        run_dir / "projections" / f"{projection_index:04d}-{state_name.lower()}.json",
+        projection, exclusive=True)
+    journal.setdefault("projections", []).append(projection_ref)
+    journal["state"] = state_name; journal["terminal"] = terminal; journal["blocker"] = blocker
+    lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+    summary_ref = None
+    if terminal:
+        summary_ref = lifecycle_runtime.atomic_json(
+            run_dir / "summary.json", lifecycle_runtime.deterministic_summary(projection),
+            exclusive=not (run_dir / "summary.json").exists())
+    pointer = {"schema_version": "juno_managed_merge_drive_latest.v2",
+               "run_id": journal["run_id"], "scope_sha256": journal["scope_sha256"],
+               "compiled_plan_sha256": plan["compiled_plan_sha256"],
+               "execution_identity_sha256": journal["execution_identity_sha256"],
+               "projection_path": projection_ref["path"], "summary": summary_ref,
+               "terminal": terminal}
+    for path in latest_paths:
+        lifecycle_runtime.atomic_json(path, pointer)
+    return projection
+
+
+def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
+    """Resume one durably claimed frozen FIFO scope within cumulative budgets."""
+    if through is not None and not task_runtime.TASK_RE.fullmatch(through):
+        raise MergeQueueError("unsafe --through task id")
+    current_plan = lifecycle_runtime.compile_lifecycle_template(
+        controller, "merge-drive", through, model_identity=os.environ.get("JUNO_MODEL"))
+    execution_identity = _merge_plan_execution_identity(current_plan)
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    root = controller / MERGE_DRIVE_ROOT
+    selector_identity = digest({"repository_identity": repository_identity(repository),
+                                "target_ref": config["target_ref"], "through": through})
+    selector_root = root / "scopes" / selector_identity
+    selector_latest = selector_root / "latest.json"
+    global_latest = root / "latest.json"
+    with lifecycle_runtime.lifecycle_claim(selector_root / ".claim.lock"):
+        if selector_latest.is_file():
+            try:
+                pointer = json.loads(selector_latest.read_text())
+                run_dir = root / pointer["run_id"]
+                journal_path = run_dir / "journal.json"
+                journal = json.loads(journal_path.read_text())
+                plan = json.loads((run_dir / "compiled-plan.json").read_text())
+                scope_value = json.loads((run_dir / "fifo-scope.json").read_text())
+                scope = scope_value["tasks"]
+            except (OSError, KeyError, json.JSONDecodeError) as exc:
+                raise MergeQueueError(
+                    "frozen merge-drive claim is malformed; explicit reviewed replacement required") from exc
+            if (journal.get("schema_version") != "juno_managed_merge_drive_journal.v2"
+                    or journal.get("selector_identity_sha256") != selector_identity
+                    or journal.get("execution_identity_sha256") != execution_identity
+                    or journal.get("scope_sha256") != scope_value.get("scope_sha256")):
+                raise MergeQueueError(
+                    "frozen merge-drive identity is incompatible; explicit reviewed replacement required")
+            projection_path = Path(str(pointer.get("projection_path", "")))
+            if journal.get("terminal") and projection_path.is_file():
+                return json.loads(projection_path.read_text())
+        else:
+            scope = _drive_scope(controller, config, through)
+            target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+            scope_identity = digest({"target_ref": config["target_ref"],
+                                     "target_sha": target_sha, "tasks": scope})
+            run_id = f"{time.time_ns()}-{secrets.token_hex(8)}"
+            run_dir = root / run_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+            plan = current_plan
+            plan_ref = lifecycle_runtime.atomic_json(
+                run_dir / "compiled-plan.json", plan, exclusive=True)
+            scope_ref = lifecycle_runtime.atomic_json(run_dir / "fifo-scope.json", {
+                "schema_version": "juno_merge_drive_fifo_scope.v1",
+                "scope_sha256": scope_identity, "target_ref": config["target_ref"],
+                "target_sha": target_sha, "through": through, "tasks": scope}, exclusive=True)
+            prompt_source = controller / plan["prompts"][0]["path"]
+            prompt_target = run_dir / "frozen-prompts/semantic-repair.md"
+            prompt_target.parent.mkdir(parents=True, exist_ok=True)
+            prompt_bytes = prompt_source.read_bytes()
+            fd = os.open(prompt_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(prompt_bytes); stream.flush(); os.fsync(stream.fileno())
+            started_ns = time.time_ns()
+            journal = {"schema_version": "juno_managed_merge_drive_journal.v2",
+                       "run_id": run_id, "selector_identity_sha256": selector_identity,
+                       "execution_identity_sha256": execution_identity,
+                       "scope_sha256": scope_identity, "initial_target_sha": target_sha,
+                       "compiled_plan": plan_ref, "fifo_scope": scope_ref,
+                       "frozen_prompt": {"path": str(prompt_target.resolve()),
+                                         "sha256": hashlib.sha256(prompt_bytes).hexdigest()},
+                       "started_at_unix_ns": started_ns,
+                       "deadline_unix_ns": started_ns + int(plan["budgets"]["total_wall_seconds"]) * 1_000_000_000,
+                       "attempts": {"transitions": 0, "semantic_repairs": 0},
+                       "events": [], "operations": [], "repairs": [], "projections": [],
+                       "state": "CLAIMED", "terminal": False, "blocker": None}
+            journal_path = run_dir / "journal.json"
+            lifecycle_runtime.lifecycle_journal_write(journal_path, journal)
+            pointer = {"schema_version": "juno_managed_merge_drive_latest.v2",
+                       "run_id": run_id, "scope_sha256": scope_identity,
+                       "compiled_plan_sha256": plan["compiled_plan_sha256"],
+                       "execution_identity_sha256": execution_identity,
+                       "projection_path": None, "summary": None, "terminal": False}
+            # The scope pointer is durable before the first queue transition.
+            lifecycle_runtime.atomic_json(selector_latest, pointer)
+            lifecycle_runtime.atomic_json(global_latest, pointer)
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="claim", boundary="POST",
+                detail={"scope_sha256": scope_identity, "task_count": len(scope)})
+        latest_paths = [selector_latest, global_latest]
+        blocker: Optional[dict[str, Any]] = None
+        max_transitions = int(plan["budgets"]["max_transitions"])
+        try:
+            pending_operation = next((item for item in reversed(journal["operations"])
+                                      if item.get("post_state") is None), None)
+            if pending_operation is not None:
+                with task_runtime.state_lock(controller):
+                    recovered_record = task_runtime.read_state(controller)["tasks"].get(
+                        pending_operation["task_id"], {})
+                pending_operation["post_state"] = recovered_record.get("state")
+                lifecycle_runtime.lifecycle_checkpoint(
+                    journal_path, journal, phase=pending_operation["phase"],
+                    boundary="RECOVERED",
+                    detail={"task_id": pending_operation["task_id"],
+                            "post_state": pending_operation["post_state"],
+                            "transition": journal["attempts"]["transitions"]})
+            lifecycle_runtime.lifecycle_remaining_seconds(journal)
+            for frozen in scope:
+                task_id = frozen["task_id"]
+                while True:
+                    lifecycle_runtime.lifecycle_remaining_seconds(journal)
+                    with task_runtime.state_lock(controller):
+                        record = task_runtime.read_state(controller)["tasks"].get(task_id)
+                    if not isinstance(record, dict):
+                        raise MergeQueueError("frozen merge-drive task disappeared")
+                    state = record.get("state")
+                    if state == "MERGED":
+                        break
+                    if state in {"CONFLICT", "CONFLICT_RESOLVED"}:
+                        blocker = {"category": "conflict", "task_id": task_id, "state": state,
+                                   "authority_required": "explicit conflict resolution"}; break
+                    if state == "AWAITING_RELEASE":
+                        blocker = {"category": "external_authority", "task_id": task_id,
+                                   "authority_required": "release gate owner"}; break
+                    if state == "REVIEW_FINDINGS_EXHAUSTED":
+                        blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
+                    if state == "REVIEW_FINDINGS":
+                        repair = journal["repairs"][0] if journal["repairs"] else None
+                        repaired = (task_runtime._recover_task_worker(record, repair)
+                                    if repair and not repair.get("terminal_state") else repair)
+                        if repaired is None:
+                            if journal["attempts"]["semantic_repairs"] >= int(
+                                    plan["budgets"]["semantic_repairs"]):
+                                blocker = {"category": "review_findings_exhausted", "task_id": task_id}; break
+                            repair_dir = run_dir / "workers/semantic-repair-0001"
+                            repair = {"kind": "semantic_repair", "index": 1,
+                                      "attempt_dir": str(repair_dir.resolve()),
+                                      "before_sha": task_runtime.git(Path(record["worktree"]),
+                                                                     "rev-parse", "HEAD"),
+                                      "task_id": task_id, "terminal_state": None}
+                            journal["repairs"].append(repair)
+                            journal["attempts"]["semantic_repairs"] += 1
+                            lifecycle_runtime.lifecycle_checkpoint(
+                                journal_path, journal, phase="semantic-repair-1", boundary="PRE",
+                                detail={"task_id": task_id, "attempt_dir": repair["attempt_dir"],
+                                        "before_sha": repair["before_sha"]})
+                            repaired = task_runtime._launch_task_worker(
+                                controller, task_id, record, repair_dir,
+                                Path(journal["frozen_prompt"]["path"]), repair=True,
+                                timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                                context_bytes=lifecycle_runtime.canonical_bytes({
+                                    "candidate_sha": (record.get("queue_attempt") or {}).get("candidate_sha"),
+                                    "risk": (record.get("queue_attempt") or {}).get("risk")})[:32768])
+                        assert repair is not None
+                        if isinstance(repaired, dict) and "terminal_state" in repaired:
+                            repair.update(repaired)
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase="semantic-repair-1",
+                            boundary="RECOVERED" if repaired.get("recovered") else "POST",
+                            detail={"task_id": task_id,
+                                    "terminal_state": repaired.get("terminal_state"),
+                                    "after_sha": repaired.get("after_sha"),
+                                    "receipt": repaired.get("receipt")})
+                        if repaired.get("terminal_state") != "completed":
+                            blocker = {"category": "semantic_repair", "task_id": task_id,
+                                       "terminal_state": repaired.get("terminal_state")}; break
+                        # The exact one-commit readback above is durable before reopen.
+                        operation = {"phase": "repair-reopen", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "AWAITING_RISK":
+                        attempt = record.get("queue_attempt")
+                        risk = attempt.get("risk") if isinstance(attempt, dict) else None
+                        operation = {"phase": "risk-ready-next" if isinstance(risk, dict)
+                                     and risk.get("status") == "RISK_EVIDENCE_READY" else "review",
+                                     "task_id": task_id, "pre_state": state, "post_state": None}
+                    elif state == "REQUEUING_STALE":
+                        operation = {"phase": "stale-next", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "MERGING":
+                        operation = {"phase": "cas-finalize", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    elif state == "QUEUED":
+                        selected = select_next(controller, config)
+                        if selected.get("task_id") != task_id:
+                            raise MergeQueueError("frozen FIFO scope no longer owns the next legal task")
+                        operation = {"phase": "compose", "task_id": task_id,
+                                     "pre_state": state, "post_state": None}
+                    else:
+                        blocker = {"category": "unsupported_state", "task_id": task_id,
+                                   "state": state}; break
+                    if journal["attempts"]["transitions"] >= max_transitions:
+                        blocker = {"category": "transition_budget",
+                                   "max_transitions": max_transitions}; break
+                    journal["attempts"]["transitions"] += 1
+                    journal["operations"].append(operation)
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=operation["phase"], boundary="PRE",
+                        detail={"task_id": task_id, "pre_state": state,
+                                "transition": journal["attempts"]["transitions"]})
+                    if operation["phase"] == "repair-reopen":
+                        merge_reopen(controller, task_id)
+                    elif operation["phase"] == "review":
+                        merge_review(controller, task_id, overlap_suite=True)
+                    elif operation["phase"] in {"risk-ready-next", "stale-next"}:
+                        merge_next(controller, task_id)
+                    elif operation["phase"] == "cas-finalize":
+                        merge_next(controller)
+                    elif operation["phase"] == "compose":
+                        merge_next(controller)
+                    with task_runtime.state_lock(controller):
+                        post = task_runtime.read_state(controller)["tasks"].get(task_id, {})
+                    operation["post_state"] = post.get("state")
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=operation["phase"], boundary="POST",
+                        detail={"task_id": task_id, "post_state": operation["post_state"],
+                                "transition": journal["attempts"]["transitions"]})
+                if blocker is not None:
+                    break
+            terminal = blocker is None
+            return _merge_drive_projection(
+                controller, repository, config, through, run_dir, latest_paths,
+                journal_path, journal, plan, scope, blocker=blocker, terminal=terminal)
+        except (MergeQueueError, task_runtime.TaskWorkspaceError,
+                lifecycle_runtime.LifecycleContractError, OSError) as exc:
+            lifecycle_runtime.lifecycle_checkpoint(
+                journal_path, journal, phase="merge-drive", boundary="ERROR",
+                detail={"error_type": type(exc).__name__, "error": str(exc)[:1024]})
+            raise MergeQueueError(str(exc)) from exc
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="operation", required=True)
     sub.add_parser("status")
+    drive = sub.add_parser("drive")
+    drive.add_argument("--through")
     plan = sub.add_parser("plan")
     plan.add_argument("task_id")
     plan.add_argument("--against")
@@ -5188,6 +5884,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             controller, "merge", args.operation, getattr(args, "task_id", None))
         if args.operation == "status":
             result = status(controller)
+        elif args.operation == "drive":
+            result = merge_drive(controller, args.through)
         elif args.operation == "next":
             result = merge_next(controller, args.task_id, args.plan_id)
         elif args.operation == "resolve":

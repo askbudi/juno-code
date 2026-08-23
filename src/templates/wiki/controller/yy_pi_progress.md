@@ -94,3 +94,26 @@ state; deletion is a separate cleanup action.
 strict observer for a pre-existing producer. It never signals that producer.
 New producers should use `yy watch exec` so PID publication, logging, footer
 publication, timeout handling, and descendant settlement are not hand-written.
+
+## Managed task and merge drivers
+
+Use `yy task run TASK_ID` for the controller-owned typed implementation path and
+`yy merge drive --through TASK_ID` for the frozen FIFO delivery path. Both write
+compact projections and immutable artifacts under
+`.juno_task/runtime/lifecycle-runs/`; they stop rather than inherit conflict,
+release, push, deploy, or other external authority. `yy task start|checkpoint|
+preflight|finish`, `yy evidence run|status|await`, and `yy merge status|next|
+resolve` remain the diagnostic and explicit recovery primitives.
+
+Lifecycle YAML and prompts are controller-owned committed assets. A run freezes
+the controller commit, raw/semantic template digest, prompt digests, compiler,
+runtime, model, and budget identities. Customized assets are preserved by
+ordinary managed updates, active attempts are immutable, and automatic
+model-authored template or prompt mutation is refused.
+
+Command decisions report `executed`, `reused`, `invalidated`, `skipped`, or
+`not_applicable`. Inert configured text has an exact zero-command proof; active
+product documentation runs its cheap audit. Grouped coherence and parsed test
+result integrity run before suites/review. High-risk work overlaps Reviewer A
+with the suite but still launches B only after A PASS; blocking A cancellation
+is receipt-backed.

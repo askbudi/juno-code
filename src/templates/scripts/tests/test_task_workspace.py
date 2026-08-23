@@ -599,6 +599,23 @@ class TaskWorkspaceTests(unittest.TestCase):
                 (SCRIPT.parent.parent / "config/risk-policy.json").read_bytes()
             )
 
+    def install_task_run_assets(self) -> None:
+        templates = Path(__file__).resolve().parents[2]
+        if not (templates / "workflows/yy-task-run.yaml").is_file():
+            templates = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
+        paths = [
+            ("workflows/yy-task-run.yaml", ".juno_task/workflows/yy-task-run.yaml"),
+            ("prompts/lifecycle/task-implementation.md",
+             ".juno_task/prompts/lifecycle/task-implementation.md"),
+            ("prompts/lifecycle/task-test-repair.md",
+             ".juno_task/prompts/lifecycle/task-test-repair.md"),
+        ]
+        for source, destination in paths:
+            target = self.controller / destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((templates / source).read_bytes())
+        git(self.controller, "add", *[destination for _, destination in paths])
+
     def command(self, operation: str, task_id: str, check: bool = True,
                 extra: Optional[list[str]] = None) -> subprocess.CompletedProcess[str]:
         return run(["python3", str(SCRIPT), operation, "--task", task_id,
@@ -1373,7 +1390,8 @@ class TaskWorkspaceTests(unittest.TestCase):
                          [row["destination"] for row in bindings])
         worktree = self.workspaces / "X"
         destination = fixtures["ordinary_destination"]
-        (worktree / destination).write_text("independent controller config update\n")
+        (worktree / destination).write_text(
+            json.dumps({"independent_controller_config": True}, indent=4) + "\n")
         git(worktree, "add", destination)
         git(worktree, "commit", "-m", "update controller config independently")
         queued = self.payload("finish", "X")
@@ -1617,7 +1635,7 @@ class TaskWorkspaceTests(unittest.TestCase):
         changed = []
         for runtime, template in RUNTIME_TEMPLATE_PARITY:
             for relative in (runtime, template):
-                (worktree / relative).write_text(f"paired update {relative}\n")
+                (worktree / relative).write_text("paired update\n")
                 changed.append(relative)
         git(worktree, "add", *changed)
         git(worktree, "commit", "-m", "update runtime template parity")
@@ -3774,6 +3792,180 @@ finished = time.monotonic()
                          {"mode": "profile", "profile_ids": ["pkg-suite"],
                           "authored_path_count": 1})
 
+    def test_task_run_persists_needs_decision_before_product_editing(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Context\nTBD owner decision required\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "ambiguous typed task run")
+        projection = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "NEEDS_DECISION")
+        self.assertEqual(projection["attempts"]["implementation"], 0)
+        repeated = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(repeated["run_id"], projection["run_id"])
+        self.assertEqual(repeated["attempts"]["implementation"], 0)
+        self.assertNotIn("X", task_runtime.read_state(self.controller)["tasks"])
+        self.assertFalse((self.workspaces / "X").exists())
+
+    def test_task_run_compiles_typed_operations_and_queues_one_logical_commit(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip one file.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "ready typed task run")
+
+        def implement(_controller: Path, _task_id: str, record: dict,
+                      _run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            worktree = Path(record["worktree"])
+            (worktree / "src/managed.txt").write_text("managed\n")
+            git(worktree, "add", "src/managed.txt")
+            before = git(worktree, "rev-parse", "HEAD")
+            git(worktree, "commit", "-m", "managed implementation")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "fixture", "sha256": "0" * 64},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+            projection = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(projection["state"], "QUEUED")
+        self.assertEqual(projection["attempts"]["implementation"], 1)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "QUEUED")
+        self.assertEqual(git(Path(record["worktree"]), "rev-list", "--count",
+                             f"{record['base_sha']}..{record['tip_sha']}"), "1")
+
+    def test_task_run_serializes_concurrent_callers_and_dispatches_one_worker(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "concurrent managed task")
+        calls = 0
+        call_lock = __import__("threading").Lock()
+
+        def implement(_controller: Path, _task_id: str, record: dict,
+                      _run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            nonlocal calls
+            with call_lock: calls += 1
+            worktree = Path(record["worktree"])
+            before = git(worktree, "rev-parse", "HEAD")
+            (worktree / "src/managed.txt").write_text("managed\n")
+            git(worktree, "add", "src/managed.txt")
+            git(worktree, "commit", "-m", "managed implementation")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "fixture", "sha256": "0" * 64},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [future.result(timeout=20) for future in
+                           [pool.submit(task_runtime.managed_task_run,
+                                        self.controller.resolve(), "X") for _ in range(2)]]
+        self.assertEqual(calls, 1)
+        self.assertEqual({row["state"] for row in results}, {"QUEUED"})
+        self.assertEqual({row["run_id"] for row in results}, {results[0]["run_id"]})
+
+    def test_task_run_recovers_committed_worker_and_resumes_blocked_revision_in_child(self) -> None:
+        self.install_task_run_assets()
+        task_path = task_runtime.task_file(self.controller, "X")
+        task_path.write_text("---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+                             "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "managed task revision one")
+        calls: list[str] = []
+
+        def worker(_controller: Path, _task_id: str, record: dict,
+                   run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            calls.append(run_dir.name)
+            worktree = Path(record["worktree"])
+            before = git(worktree, "rev-parse", "HEAD")
+            if len(calls) == 1:
+                return {"terminal_state": "blocked", "before_sha": before,
+                        "after_sha": before, "receipt": {"path": "blocked", "sha256": "1" * 64},
+                        "session_id": "blocked"}
+            (worktree / "src/managed.txt").write_text("resolved\n")
+            git(worktree, "add", "src/managed.txt")
+            git(worktree, "commit", "-m", "resolved managed implementation")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "completed", "sha256": "2" * 64},
+                    "session_id": "completed"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=worker):
+            blocked = task_runtime.managed_task_run(self.controller.resolve(), "X")
+            self.assertEqual(blocked["state"], "NEEDS_DECISION")
+            repeated = task_runtime.managed_task_run(self.controller.resolve(), "X")
+            self.assertEqual(repeated["run_id"], blocked["run_id"])
+            self.assertEqual(len(calls), 1)
+            task_path.write_text(task_path.read_text() + "\nOwner decision: proceed with resolved scope.\n")
+            git(self.controller, "add", str(task_path.relative_to(self.controller)))
+            git(self.controller, "commit", "-m", "resolve managed task decision")
+            queued = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        self.assertEqual(queued["run_id"], blocked["run_id"])
+        self.assertEqual(calls, ["implementation-0001", "implementation-0002"])
+        run_dir = self.controller / task_runtime.TASK_RUN_ROOT / "X" / queued["run_id"]
+        prompts = sorted(run_dir.glob("workers/implementation-*/worker-prompt.md"))
+        self.assertEqual(len(prompts), 0)  # mocked workers never materialize prompts
+        journal = json.loads((run_dir / "journal.json").read_text())
+        self.assertEqual(journal["attempts"]["decision_resumes"], 1)
+        self.assertEqual(journal["attempts"]["worker_launches"], 2)
+
+    def test_task_run_recovers_after_implementation_commit_checkpoint_crash(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "crash managed task")
+        real_checkpoint = task_runtime.lifecycle_runtime.lifecycle_checkpoint
+        crashed = False
+        launches = 0
+
+        def implement(_controller: Path, _task_id: str, record: dict,
+                      run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            nonlocal launches
+            launches += 1
+            worktree = Path(record["worktree"]); before = git(worktree, "rev-parse", "HEAD")
+            (worktree / "src/managed.txt").write_text("managed\n")
+            git(worktree, "add", "src/managed.txt"); git(worktree, "commit", "-m", "managed")
+            receipt = run_dir / "managed-agent/receipt.json"; receipt.parent.mkdir(parents=True)
+            receipt.write_text(json.dumps({"terminal_result": {"state": "completed"},
+                                           "session_id": "fixture"}) + "\n")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": str(receipt),
+                                "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()},
+                    "session_id": "fixture"}
+
+        def checkpoint(*args: object, **kwargs: object) -> dict:
+            nonlocal crashed
+            if (kwargs.get("phase") == "implementation-1"
+                    and kwargs.get("boundary") == "POST" and not crashed):
+                crashed = True
+                raise OSError("fixture crash after implementation commit")
+            return real_checkpoint(*args, **kwargs)
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=implement), \
+             mock.patch.object(task_runtime.lifecycle_runtime, "lifecycle_checkpoint",
+                               side_effect=checkpoint):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "fixture crash"):
+                task_runtime.managed_task_run(self.controller.resolve(), "X")
+        with mock.patch.object(task_runtime, "_launch_task_worker",
+                               side_effect=AssertionError("worker relaunched")):
+            queued = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        self.assertEqual(launches, 1)
+
     def test_standing_evidence_replay_cuts_redundant_runs_by_eighty_percent(self) -> None:
         counter = self.root / "standing-counter.txt"
         code = f"from pathlib import Path; Path({str(counter)!r}).open('a').write('run\\n')"
@@ -3799,6 +3991,265 @@ finished = time.monotonic()
                       first_plan["plan_sha256"] /
                       f"superseded-by-{repaired['plan_sha256']}.json")
         self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
+
+
+class MinimumRcLifecycleContractTests(unittest.TestCase):
+    def test_documentation_routes_inert_active_and_unsafe_without_process_guessing(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        inert = lifecycle.documentation_route([{"status": "M", "path": "AGENTS.md"}])
+        self.assertEqual(inert["mode"], "inert_zero_command")
+        active = lifecycle.documentation_route([{"status": "M", "path": "README.md"}])
+        self.assertEqual(active["mode"], "active_audit")
+        for rows in ([{"status": "M", "path": "README.md"}, {"status": "M", "path": "src/a.ts"}],
+                     [{"status": "D", "path": "AGENTS.md"}],
+                     [{"status": "M", "path": "package-lock.json"}]):
+            self.assertEqual(lifecycle.documentation_route(rows)["mode"], "fallback")
+
+    def test_zero_exit_with_parsed_failures_is_not_reusable_pass(self) -> None:
+        integrity = task_runtime.lifecycle_runtime.parsed_test_result_integrity(
+            ["npm", "test"], b"Test Files  2 failed\nTests  4 failed\n", 0)
+        self.assertTrue(integrity["contradiction"])
+        self.assertFalse(integrity["eligible_pass"])
+        self.assertTrue(task_runtime.lifecycle_runtime.parsed_test_result_integrity(
+            ["npm", "test"], b"Test Files  9 passed\n", 0)["eligible_pass"])
+
+    def test_real_zero_exit_with_failed_test_summary_becomes_terminal_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("x\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            result = task_runtime.run_validation({
+                "id": "contradictory", "cwd": "src",
+                "argv": [sys.executable, "-c", "print('Test Files  1 failed')"],
+                "timeout_seconds": 10, "max_output_bytes": 4096,
+            }, root)
+            self.assertEqual(result["process_exit_code"], 0)
+            self.assertEqual(result["exit_code"], 65)
+            self.assertFalse(result["result_integrity"]["eligible_pass"])
+
+    def test_failure_summary_before_large_diagnostics_is_never_pass_eligible(self) -> None:
+        output = b"Tests  1 failed\n" + (b"diagnostic payload\n" * 140000)
+        self.assertGreater(len(output), 2 * 1024 * 1024)
+        integrity = task_runtime.lifecycle_runtime.parsed_test_result_integrity(
+            ["npm", "test"], output, 0)
+        self.assertFalse(integrity["eligible_pass"])
+        self.assertTrue(integrity["contradiction"])
+        self.assertGreaterEqual(integrity["parsed_failure_count"], 1)
+        self.assertEqual(integrity["output_bytes"], len(output))
+
+    def test_readiness_gate_is_deterministic_and_edits_no_product_bytes(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        self.assertEqual(lifecycle.readiness_questions(
+            b"## Goal\nShip it\n## Acceptance\n- proven\n"), [])
+        questions = lifecycle.readiness_questions(b"## Context\nTBD owner decision required\n")
+        self.assertGreaterEqual(len(questions), 3)
+
+    def test_command_closure_names_each_changed_identity_field(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        previous = {"input_closure_sha256": "a", "runtime_sha256": "old",
+                    "dependency_locks": {"x": "1"}, "observable_tree": "tree"}
+        current = {"input_closure_sha256": "b", "runtime_sha256": "new",
+                   "dependency_locks": {"x": "2"}, "observable_tree": "tree"}
+        self.assertEqual([row["field"] for row in lifecycle.closure_invalidation(previous, current)],
+                         ["dependency_locks", "runtime_sha256"])
+        decisions = [lifecycle.evidence_decision("a", "reused", closure=current),
+                     lifecycle.evidence_decision("b", "executed", closure=current),
+                     lifecycle.evidence_decision("c", "invalidated", closure=current)]
+        self.assertEqual(lifecycle.evidence_counters(decisions)["reused"], 1)
+        self.assertEqual(lifecycle.evidence_counters(decisions)["executed"], 1)
+
+    def test_command_closure_binds_allowlisted_environment_and_npm_toolchain_fieldwise(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); bin_dir = root / "bin"; bin_dir.mkdir()
+            (bin_dir / "node").write_text("#!/bin/sh\necho v22.1.0\n")
+            (bin_dir / "npm").write_text("#!/bin/sh\necho 10.2.0\n")
+            (bin_dir / "node").chmod(0o755); (bin_dir / "npm").chmod(0o755)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "package-lock.json").write_text("{}\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                           text=True).strip()
+            row = {"id": "npm", "cwd": "", "argv": ["npm", "test"],
+                   "timeout_seconds": 10, "max_output_bytes": 4096}
+            first_env = {"PATH": str(bin_dir), "HOME": str(root), "CI": "1",
+                         "SECRET_TOKEN": "must-not-bind"}
+            first = lifecycle.command_closure(
+                root, head, row, config_sha256="a" * 64, policy_sha256=None,
+                runtime_sha256="b" * 64, environment=first_env)
+            self.assertEqual(first["environment"], {
+                "CI": "1", "HOME": str(root), "PATH": str(bin_dir)})
+            self.assertNotIn("SECRET_TOKEN", first["environment"])
+            self.assertEqual({item["name"] for item in first["executables"]}, {"npm", "node"})
+            self.assertEqual(first["command_runtime"]["npm"]["version"], "10.2.0")
+            drifted = lifecycle.command_closure(
+                root, head, row, config_sha256="a" * 64, policy_sha256=None,
+                runtime_sha256="b" * 64, environment={**first_env, "CI": "0"})
+            self.assertEqual([row["field"] for row in
+                              lifecycle.closure_invalidation(first, drifted)], ["environment"])
+            (bin_dir / "npm").write_text("#!/bin/sh\necho 10.3.0\n")
+            tool_drift = lifecycle.command_closure(
+                root, head, row, config_sha256="a" * 64, policy_sha256=None,
+                runtime_sha256="b" * 64, environment=first_env)
+            fields = [row["field"] for row in lifecycle.closure_invalidation(first, tool_drift)]
+            self.assertEqual(fields, ["command_runtime", "executables"])
+
+    def test_active_documentation_audits_false_guidance_then_reuses_corrected_identity(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            files = {
+                "juno-code/package.json": json.dumps({"name": "@yylo/cli", "version": "1.2.3"}) + "\n",
+                "juno-code/src/cli/commands/task.ts": "task.command('task'); task.command('run').option('--path <path>');\n",
+                "juno-code/src/bin/cli.ts": "program.command('task');\n",
+                "src/schema.py": "SCHEMA = 'juno_known_schema.v1'\n",
+                "README.md": ("[wrong](https://github.com/example/not-yylo)\n"
+                              "```bash\nyy task imaginary --invented\n"
+                              "npm install -g @yylo/cli@9.9.9\n```\n"
+                              "`juno_unknown_schema.v9`\n"),
+                "MIGRATION.md": "Move to the new runtime.\n",
+                "RELEASE_NOTES.md": "# Release 9.9.9\n",
+            }
+            for relative, content in files.items():
+                target = root / relative; target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "bad docs"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            bad_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                               text=True).strip()
+            policy = lifecycle.default_documentation_policy()
+            paths = ["README.md", "MIGRATION.md", "RELEASE_NOTES.md"]
+            bad = lifecycle.active_documentation_audit(root, bad_head, paths, policy)
+            codes = {finding["code"] for finding in bad["findings"]}
+            self.assertTrue({"active_doc.unknown_public_identity",
+                             "active_doc.unknown_cli_subcommand",
+                             "active_doc.unknown_cli_option",
+                             "active_doc.install_identity_mismatch",
+                             "active_doc.unknown_schema_identity",
+                             "active_doc.incoherent_migration_guidance",
+                             "active_doc.release_identity_mismatch"}.issubset(codes),
+                            bad["findings"])
+            (root / "README.md").write_text(
+                "[project](https://github.com/yylo-dev/yylo)\n"
+                "```bash\nyy task run TASK_ID --path src\n"
+                "npm install -g @yylo/cli@1.2.3\n```\n`juno_known_schema.v1`\n")
+            (root / "MIGRATION.md").write_text(
+                "Migrate from 1.2.2 to 1.2.3. Rollback restores 1.2.2.\n")
+            (root / "RELEASE_NOTES.md").write_text("# 1.2.3\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "correct docs"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                           text=True).strip()
+            corrected = lifecycle.active_documentation_audit(root, head, paths, policy)
+            repeated = lifecycle.active_documentation_audit(root, head, paths, policy)
+            self.assertEqual(corrected["outcome"], "PASSED", corrected["findings"])
+            self.assertEqual(repeated["audit_sha256"], corrected["audit_sha256"])
+
+    def test_active_documentation_accepts_tracked_directory_links_and_rejects_missing_links(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "docs").mkdir(); (root / "docs/guide.md").write_text("guide\n")
+            (root / "README.md").write_text("[docs](./docs/) [missing](./missing/)\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "docs"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            audit = lifecycle.active_documentation_audit(root, head, ["README.md"])
+            self.assertEqual(audit["findings"], [{
+                "code": "active_doc.broken_relative_link", "path": "README.md",
+                "target": "./missing/",
+            }])
+
+    def test_grouped_coherence_collects_all_seeded_cheap_defects_in_one_report(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "product"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            files = {
+                ".juno_task/config/task-workspace.json": "{}\n",
+                "juno-code/package.json": json.dumps({"name": "pkg", "version": "1.0.0"}) + "\n",
+                "juno-code/package-lock.json": json.dumps({"packages": {"": {"name": "pkg", "version": "1.0.0"}}}) + "\n",
+                "juno-code/scripts/implementation-contract.json": json.dumps({"source": "canonical.txt", "destinations": ["generated.txt"]}) + "\n",
+                "canonical.txt": "same\n", "generated.txt": "same\n",
+                "juno-code/src/templates/managed-assets.json": json.dumps({"admissionOutputs": [{"source": "canonical.txt", "destination": "managed.txt"}]}) + "\n",
+                "juno-code/src/templates/canonical.txt": "managed\n", "managed.txt": "managed\n",
+            }
+            for relative, content in files.items():
+                path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            (root / "juno-code/package.json").write_text(json.dumps({
+                "name": "pkg", "version": "2.0.0", "bin": {"missing": "dist/missing.js"}}) + "\n")
+            (root / ".juno_task/config/task-workspace.json").write_text("{malformed\n")
+            (root / "canonical.txt").write_text("new source\n")
+            (root / "juno-code/src/templates/canonical.txt").write_text("new managed source\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "seed defects"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", "HEAD^..HEAD"], cwd=root, text=True).splitlines()
+            report = lifecycle.grouped_coherence(root, root, head, changed)
+            codes = {row["code"] for row in report["findings"]}
+            self.assertTrue({"coherence.package_lock_identity",
+                             "coherence.executable_delegate_missing",
+                             "coherence.config_malformed",
+                             "coherence.generated_output_mismatch",
+                             "coherence.managed_output_mismatch"}.issubset(codes))
+            self.assertEqual(report["outcome"], "FAILED")
+
+    def test_compiler_binds_committed_template_prompt_and_refuses_mutation(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "controller"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".juno_task/workflows/yy-task-run.yaml"
+            prompt_a = root / ".juno_task/prompts/lifecycle/task-implementation.md"
+            prompt_b = root / ".juno_task/prompts/lifecycle/task-test-repair.md"
+            workflow.parent.mkdir(parents=True); prompt_a.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2]
+            if not (source / "workflows/yy-task-run.yaml").is_file():
+                source = Path(__file__).resolve().parents[3] / "juno-code/src/templates"
+            workflow.write_bytes((source / "workflows/yy-task-run.yaml").read_bytes())
+            prompt_a.write_bytes((source / "prompts/lifecycle/task-implementation.md").read_bytes())
+            prompt_b.write_bytes((source / "prompts/lifecycle/task-test-repair.md").read_bytes())
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "assets"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            plan = lifecycle.compile_lifecycle_template(root, "task-run", "T1")
+            self.assertEqual(plan["template"]["id"], "canonical-task-run")
+            prompt_a.write_text("model-authored mutation\n")
+            with self.assertRaisesRegex(lifecycle.LifecycleContractError, "uncommitted|drifted"):
+                lifecycle.compile_lifecycle_template(root, "task-run", "T1")
 
 
 if __name__ == "__main__":

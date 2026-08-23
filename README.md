@@ -321,8 +321,9 @@ link without making product search or staging cross the authority boundary.
 For a tiny fix, the process is intentionally short but still isolated:
 
 ```text
-create/choose task -> yy task start ID -> edit + focused test + commit
-                   -> yy task preflight ID -> yy task finish ID -> yy merge next
+managed path        -> yy task run ID -> QUEUED -> yy merge drive --through ID
+recovery primitives -> yy task start ID -> edit + focused test + commit
+                    -> yy task preflight ID -> yy task finish ID -> yy merge next
 ```
 
 There is no size-based exception that permits product edits in the controller or
@@ -333,6 +334,11 @@ full suites.
 ### Bolt task and merge flow
 
 ```bash
+# managed normal path
+yy task run TASK_ID
+yy merge drive --through TASK_ID
+
+# low-level recovery and diagnostics
 yy task start TASK_ID
 # implement, run focused tests, and commit in the returned worktree
 yy task preflight TASK_ID
@@ -344,6 +350,7 @@ yy task runtime-bootstrap --apply RECEIPT
 # source targets use a matching controller runtime, or update source identities atomically
 
 yy merge status
+yy merge drive --through TASK_ID
 yy merge plan TASK_ID --json
 yy merge next
 # if a queued/reopen branch intentionally merged the current protected target:
@@ -588,18 +595,20 @@ The first attempt writes `run_contract.json`, the single checkpoint and attempt 
 Product mutation uses the Bolt task and merge interfaces rather than Workflow Runner integration choreography:
 
 ```bash
+yy task run TASK_ID
 yy task start TASK_ID
 yy task status TASK_ID
 yy task preflight TASK_ID
 yy task finish TASK_ID
 yy merge status
+yy merge drive --through TASK_ID
 yy merge next
 yy merge resolve TASK_ID
 ```
 
-The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Task start freezes the target SHA; read-only task preflight reports closure defects before expensive final gates; task finish queues a clean committed tip. Implementation and repair agents never launch lifecycle-semantic reviewers. The merge queue solely owns moved-target composition, conflict preservation, affected validation, bounded risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. It permits one repair candidate and one delta review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`. Release remains outside this reusable flow.
+The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Controller-owned committed task/merge YAML and lifecycle prompts compile only to typed engine operations; active attempts bind their exact commit and digests, and automatic model-authored template mutation is refused. Inert configured text produces an exact zero-command proof, active product documentation runs only the cheap identity/link/schema/coherence audit, and mixed or unknown paths fall back. Verified command closures cross finish, refresh, and merge with executed/reused/invalidated counters; grouped coherence and parsed test-result integrity gate suites and review. Task start freezes the target SHA; read-only task preflight reports closure defects before expensive final gates; task finish queues a clean committed tip. Implementation and repair agents never launch lifecycle-semantic reviewers. The merge queue solely owns moved-target composition, conflict preservation, affected validation, bounded risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. It permits one repair candidate and one delta review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`. Release remains outside this reusable flow.
 
-Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only reviewer. High risk runs Reviewer A then Reviewer B sequentially on the same frozen tip. A replacement tip invalidates prior evidence. Byte-identical post-CAS delivery does not trigger another semantic review.
+Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only reviewer. High risk preserves Reviewer A then Reviewer B sequentially on the same frozen tip. After cheap gates, Reviewer A overlaps the complete suite; B launches only after A PASS while the suite may remain in flight, and a blocking A safely cancels the suite with immutable evidence. A replacement tip invalidates prior evidence. Byte-identical post-CAS delivery does not trigger another semantic review.
 
 `workflow_class: local_integration` is hard-rejected for lint/start/resume/recovery/amendment. Existing artifacts remain immutable and doctor-readable, and generic non-lifecycle workflows remain supported. There is no adapter or dual integration runtime. Why tests and implementation both matter: the state machine enforces phase/ref/review/cleanup boundaries, while real-Git, exact-tip clone, package-parity, and medium/high canary tests prove installed users receive those guarantees.
 

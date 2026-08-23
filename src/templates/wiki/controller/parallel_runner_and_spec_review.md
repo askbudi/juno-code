@@ -20,7 +20,6 @@ wiki_contract:
 ---
 
 # Parallel Runner + Spec-Invariant Review
-
 Use this guide after `./.juno_task/scripts/parallel_runner.sh` finishes, before accepting subagent work, and before marking root work done for production jobs, write-capable CLIs, submodules, or multi-task implementation batches. Project-local task-authoring/schema guides may specialize those concerns without becoming package-managed files. For isolated checkout integration and cleanup, see [`git_worktree_lifecycle.md`](git_worktree_lifecycle.md); for replacement inventories, limit provenance, feasibility, cleanup ledgers, and validation ownership, see [`runtime_migration_and_replacement_contract.md`](runtime_migration_and_replacement_contract.md).
 
 ## Workflow and task-lifecycle guidance ownership

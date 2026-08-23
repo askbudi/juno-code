@@ -1129,3 +1129,935 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
+
+# --- Minimum-RC shared lifecycle contracts (typed engines remain task/merge owners) ---
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import subprocess
+import tempfile
+import threading
+import time
+import shutil
+import urllib.parse
+import fcntl
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Optional
+
+COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v3"
+COMMAND_DECISION_SCHEMA = "juno_command_evidence_decision.v1"
+DOCUMENTATION_ROUTE_SCHEMA = "juno_documentation_validation_route.v1"
+COHERENCE_SCHEMA = "juno_grouped_coherence_report.v1"
+COMPILED_PLAN_SCHEMA = "juno_compiled_lifecycle_plan.v1"
+RUN_PROJECTION_SCHEMA = "juno_lifecycle_run_projection.v1"
+RUN_SUMMARY_SCHEMA = "juno_lifecycle_run_summary.v1"
+ACTIVE_DOC_COMMAND_ID = "active-documentation-audit"
+ACTIVE_DOC_ARGV = ["@juno/active-documentation-audit"]
+INTEGRITY_SCHEMA = "juno_parsed_test_result_integrity.v1"
+
+TASK_OPERATIONS = (
+    "task.admit", "task.require_implementation_ready", "task.hydrate_exact_lock",
+    "task.implementation", "task.closure", "evidence.consume_or_execute",
+    "task.attributable_repair", "task.finish",
+)
+MERGE_OPERATIONS = (
+    "merge.freeze_fifo", "merge.compose_or_refresh", "evidence.consume_or_execute",
+    "merge.grouped_coherence", "merge.classify_risk", "merge.review_and_suite",
+    "merge.cas_and_finalize",
+)
+
+
+class LifecycleContractError(RuntimeError):
+    pass
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+
+def digest(value: Any) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def file_sha(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> dict[str, str]:
+    payload = canonical_bytes(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if exclusive:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise LifecycleContractError(f"immutable lifecycle artifact collision: {path}")
+            return {"path": str(path.resolve()), "sha256": hashlib.sha256(payload).hexdigest()}
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+    else:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+@contextmanager
+def lifecycle_claim(path: Path) -> Any:
+    """Serialize one logical lifecycle identity for the complete invocation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def lifecycle_journal_write(path: Path, journal: dict[str, Any]) -> None:
+    journal["journal_revision"] = int(journal.get("journal_revision", 0)) + 1
+    journal["updated_at_unix_ns"] = time.time_ns()
+    atomic_json(path, journal)
+
+
+def lifecycle_checkpoint(path: Path, journal: dict[str, Any], *, phase: str,
+                         boundary: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if boundary not in {"PRE", "POST", "PAUSED", "ERROR", "RECOVERED"}:
+        raise LifecycleContractError("invalid lifecycle checkpoint boundary")
+    events = journal.setdefault("events", [])
+    if not isinstance(events, list) or len(events) >= 512:
+        raise LifecycleContractError("lifecycle journal event bound exhausted")
+    event = {"schema_version": "juno_lifecycle_phase_checkpoint.v1",
+             "sequence": len(events) + 1, "phase": phase, "boundary": boundary,
+             "recorded_at_unix_ns": time.time_ns(), "detail": detail or {}}
+    events.append(event)
+    lifecycle_journal_write(path, journal)
+    return event
+
+
+def lifecycle_remaining_seconds(journal: dict[str, Any]) -> int:
+    deadline = journal.get("deadline_unix_ns")
+    if not isinstance(deadline, int):
+        raise LifecycleContractError("lifecycle journal deadline is malformed")
+    remaining_ns = deadline - time.time_ns()
+    if remaining_ns <= 0:
+        raise LifecycleContractError("lifecycle cumulative wall budget exhausted")
+    return max(1, remaining_ns // 1_000_000_000)
+
+
+def lifecycle_elapsed_started(journal: dict[str, Any]) -> float:
+    started_ns = journal.get("started_at_unix_ns")
+    elapsed = max(0.0, (time.time_ns() - int(started_ns)) / 1_000_000_000)
+    return time.monotonic() - elapsed
+
+
+def _git(root: Path, *args: str, binary: bool = False) -> Any:
+    result = subprocess.run(["git", "-C", str(root), *args], cwd=root,
+                            stdin=subprocess.DEVNULL, capture_output=True,
+                            text=not binary)
+    if result.returncode:
+        detail = result.stderr if not binary else result.stderr.decode(errors="replace")
+        raise LifecycleContractError(detail.strip() or f"git command failed: {args!r}")
+    return result.stdout
+
+
+def repository_identity(repository: Path) -> str:
+    return str(Path(_git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve())
+
+
+def _blob(repository: Path, head: str, relative: str) -> Optional[str]:
+    result = subprocess.run(["git", "-C", str(repository), "rev-parse", f"{head}:{relative}"],
+                            cwd=repository, stdin=subprocess.DEVNULL,
+                            text=True, capture_output=True)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40,64}", value) else None
+
+
+COMMAND_ENVIRONMENT_ALLOWLIST = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TZ", "CI", "NODE_ENV", "NODE_OPTIONS",
+    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "NPM_CONFIG_CACHE",
+    "npm_config_cache", "NPM_CONFIG_REGISTRY", "npm_config_registry",
+    "NPM_CONFIG_USERCONFIG", "npm_config_userconfig",
+)
+
+
+def admitted_command_environment(source: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Return the small, explicit environment that validation may observe.
+
+    Absence is represented by omission. Values are bounded so a hostile parent
+    cannot turn a receipt into an environment dump.
+    """
+    source = os.environ if source is None else source
+    admitted: dict[str, str] = {}
+    for name in COMMAND_ENVIRONMENT_ALLOWLIST:
+        value = source.get(name)
+        if isinstance(value, str) and len(value.encode("utf-8", errors="replace")) <= 4096:
+            admitted[name] = value
+    return dict(sorted(admitted.items()))
+
+
+def _stream_sha256(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def _executable_identity(name: str, environment: dict[str, str]) -> dict[str, Any]:
+    resolved = shutil.which(name, path=environment.get("PATH"))
+    if not resolved:
+        return {"name": name, "resolved": None, "available": False}
+    path = Path(resolved).resolve()
+    try:
+        stat_result = path.stat()
+        return {"name": name, "resolved": str(path), "available": path.is_file(),
+                "mode": stat_result.st_mode & 0o7777, "bytes": stat_result.st_size,
+                "sha256": _stream_sha256(path) if path.is_file() else None}
+    except OSError:
+        return {"name": name, "resolved": str(path), "available": False}
+
+
+def _bounded_version(executable: dict[str, Any], environment: dict[str, str]) -> Optional[str]:
+    path = executable.get("resolved")
+    if not executable.get("available") or not isinstance(path, str):
+        return None
+    try:
+        result = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=5, env=environment)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout or result.stderr)[:4096]
+    return output.decode("utf-8", errors="replace").strip() if result.returncode == 0 else None
+
+
+def command_execution_environment() -> dict[str, str]:
+    """The exact allowlisted ambient environment used by validation children."""
+    return admitted_command_environment()
+
+
+def command_closure(repository: Path, head: str, row: dict[str, Any], *,
+                    config_sha256: str, policy_sha256: Optional[str],
+                    runtime_sha256: str, environment: Optional[dict[str, str]] = None,
+                    producer: str = "task_workspace.run_validation.v3") -> dict[str, Any]:
+    """Build one stage-neutral behavioral closure for a validation command."""
+    cwd = str(row.get("cwd", "")).strip("/")
+    revision = f"{head}:{cwd}" if cwd else f"{head}^{{tree}}"
+    result = subprocess.run(["git", "-C", str(repository), "rev-parse", revision],
+                            cwd=repository, stdin=subprocess.DEVNULL,
+                            text=True, capture_output=True)
+    tree = result.stdout.strip()
+    observation_scope = "cwd_tree"
+    if result.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        tree = _git(repository, "rev-parse", f"{head}^{{tree}}").strip()
+        observation_scope = "whole_tree_fallback"
+    locks: dict[str, str] = {}
+    for name in ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock",
+                 "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt", ".npmrc"):
+        relative = f"{cwd}/{name}" if cwd else name
+        identity = _blob(repository, head, relative)
+        if identity:
+            locks[relative] = identity
+    gitlinks = []
+    for line in _git(repository, "ls-tree", "-r", head).splitlines():
+        metadata, separator, relative = line.partition("\t")
+        fields = metadata.split()
+        if separator and len(fields) == 3 and fields[0] == "160000":
+            gitlinks.append({"path": relative, "commit": fields[2]})
+    command = {key: row.get(key) for key in
+               ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes", "resource")
+               if key in row}
+    admitted_environment = admitted_command_environment(environment)
+    argv = row.get("argv") if isinstance(row.get("argv"), list) else []
+    executable_names = [str(argv[0])] if argv else []
+    if argv and Path(str(argv[0])).name.lower() in {"npm", "npm.cmd", "npx", "npx.cmd"}:
+        executable_names.append("node")
+    executables = [_executable_identity(name, admitted_environment)
+                   for name in dict.fromkeys(executable_names)]
+    command_runtime = {item["name"]: {"version": _bounded_version(item, admitted_environment),
+                                              "executable_sha256": item.get("sha256")}
+                       for item in executables}
+    body = {
+        "schema_version": COMMAND_CLOSURE_SCHEMA,
+        "repository_identity": repository_identity(repository),
+        "command": command,
+        "command_sha256": digest(command),
+        "observation_scope": observation_scope,
+        "observable_tree": tree,
+        "dependency_locks": locks,
+        "gitlinks": gitlinks,
+        "routing_config_sha256": config_sha256,
+        "risk_policy_sha256": policy_sha256,
+        "runtime_sha256": runtime_sha256,
+        "runner": {"class": producer, "python": list(__import__("sys").version_info[:3]),
+                   "platform": __import__("sys").platform},
+        "environment_allowlist": list(COMMAND_ENVIRONMENT_ALLOWLIST),
+        "environment": admitted_environment,
+        "executables": executables,
+        "command_runtime": command_runtime,
+    }
+    return {**body, "input_closure_sha256": digest(body)}
+
+
+def closure_invalidation(previous: Any, current: Any) -> list[dict[str, Any]]:
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return [{"field": "closure", "old": None, "new": None, "reason": "missing_or_malformed"}]
+    ignored = {"input_closure_sha256"}
+    rows = []
+    for key in sorted((set(previous) | set(current)) - ignored):
+        if previous.get(key) != current.get(key):
+            rows.append({"field": key, "old_sha256": digest(previous.get(key)),
+                         "new_sha256": digest(current.get(key))})
+    if not rows and previous.get("input_closure_sha256") != current.get("input_closure_sha256"):
+        rows.append({"field": "input_closure_sha256", "old": previous.get("input_closure_sha256"),
+                     "new": current.get("input_closure_sha256")})
+    return rows
+
+
+def evidence_decision(command_id: str, decision: str, *, closure: dict[str, Any],
+                      source: Optional[dict[str, Any]] = None,
+                      invalidation: Optional[list[dict[str, Any]]] = None,
+                      reason: Optional[str] = None) -> dict[str, Any]:
+    if decision not in {"executed", "reused", "invalidated", "skipped", "not_applicable"}:
+        raise LifecycleContractError(f"invalid command evidence decision: {decision}")
+    return {"schema_version": COMMAND_DECISION_SCHEMA, "command_id": command_id,
+            "decision": decision, "input_closure_sha256": closure.get("input_closure_sha256"),
+            "source": source, "invalidation": invalidation or [], "reason": reason}
+
+
+def evidence_counters(decisions: list[dict[str, Any]]) -> dict[str, int]:
+    result = {name: 0 for name in ("executed", "reused", "invalidated", "skipped", "not_applicable")}
+    for row in decisions:
+        if row.get("decision") in result:
+            result[row["decision"]] += 1
+    return result
+
+
+def changed_path_status(repository: Path, base: str, head: str) -> list[dict[str, str]]:
+    raw = _git(repository, "diff", "--name-status", "--no-renames", "-z", f"{base}..{head}", binary=True)
+    parts = raw.split(b"\0")
+    rows = []
+    index = 0
+    while index + 1 < len(parts) and parts[index]:
+        status = parts[index].decode("ascii", errors="replace")
+        path = parts[index + 1].decode("utf-8", errors="strict")
+        index += 2
+        rows.append({"status": status, "path": path})
+    return rows
+
+
+def default_documentation_policy() -> dict[str, Any]:
+    return {
+        "schema_version": "juno_documentation_validation_policy.v1",
+        "inert_exact_files": ["AGENTS.md", "CLAUDE.md"],
+        "inert_roots": [".juno_task/wiki"],
+        "active_exact_files": ["README.md", "juno-code/README.md", "juno-benchmark/README.md"],
+        "active_roots": ["docs", "juno-code/docs", "juno-benchmark/docs"],
+        "active_name_patterns": [r"(^|/)(CHANGELOG|RELEASE_NOTES)(\.[^/]*)?$", r"(^|/)MIGRATION[^/]*\.md$"],
+        "public_identities": [
+            "https://github.com/askbudi/juno-mono", "https://github.com/yylo-dev/yylo",
+            "https://github.com/yylo-dev/yylo-benchmark", "https://github.com/yylo-dev/yylo-ledger",
+            "https://www.npmjs.com/package/%40yylo%2Fcli",
+            "https://www.npmjs.com/package/%40yylo%2Fbenchmark",
+            "https://pypi.org/project/yylo-ledger",
+        ],
+        "cli_top_level": [
+            "auth", "benchmark", "branches", "cc", "clone", "completion", "continue",
+            "continue-scope", "continuity", "doctor", "evidence", "feedback", "help", "info",
+            "init", "integration", "kanban", "ledger", "logs", "merge", "migrate", "pi",
+            "release", "scripts", "services", "session", "setup-git", "skills", "start",
+            "switch", "task", "test", "view-log", "watch", "where", "wiki",
+        ],
+    }
+
+
+def documentation_route(path_rows: list[dict[str, str]], policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    policy = policy or default_documentation_policy()
+    inert: list[str] = []
+    active: list[str] = []
+    unsafe: list[dict[str, str]] = []
+    exact_inert = set(policy.get("inert_exact_files", []))
+    exact_active = set(policy.get("active_exact_files", []))
+    inert_roots = tuple(str(root).rstrip("/") + "/" for root in policy.get("inert_roots", []))
+    active_roots = tuple(str(root).rstrip("/") + "/" for root in policy.get("active_roots", []))
+    patterns = [re.compile(value) for value in policy.get("active_name_patterns", [])]
+    for row in path_rows:
+        path, status = row.get("path", ""), row.get("status", "")
+        posix = PurePosixPath(path)
+        if (not path or posix.is_absolute() or ".." in posix.parts or status not in {"A", "M"}
+                or path.endswith((".json", ".yaml", ".yml", ".toml", ".lock", ".sh", ".py", ".js", ".ts"))):
+            unsafe.append({"path": path, "reason": "unsafe_status_or_surface"})
+            continue
+        is_inert = path in exact_inert or path.startswith(inert_roots)
+        is_active = (path in exact_active or path.startswith(active_roots)
+                     or any(pattern.search(path) for pattern in patterns))
+        if is_inert and is_active:
+            unsafe.append({"path": path, "reason": "overlapping_documentation_classes"})
+        elif is_inert:
+            inert.append(path)
+        elif is_active:
+            active.append(path)
+        else:
+            unsafe.append({"path": path, "reason": "unreviewed_path"})
+    if not path_rows or unsafe or (inert and active):
+        mode = "fallback"
+    elif active:
+        mode = "active_audit"
+    else:
+        mode = "inert_zero_command"
+    body = {"schema_version": DOCUMENTATION_ROUTE_SCHEMA, "mode": mode,
+            "inert_paths": sorted(inert), "active_paths": sorted(active),
+            "fallback_reasons": unsafe, "policy_sha256": digest(policy),
+            "authored_path_count": len(path_rows)}
+    return {**body, "route_sha256": digest(body)}
+
+
+def active_documentation_row() -> dict[str, Any]:
+    return {"id": ACTIVE_DOC_COMMAND_ID, "cwd": "juno-code", "argv": ACTIVE_DOC_ARGV,
+            "timeout_seconds": 30, "max_output_bytes": 32768}
+
+
+def _git_file(repository: Path, head: str, path: str) -> Optional[bytes]:
+    result = subprocess.run(["git", "-C", str(repository), "show", f"{head}:{path}"],
+                            cwd=repository, stdin=subprocess.DEVNULL, capture_output=True)
+    return result.stdout if result.returncode == 0 else None
+
+
+def _documentation_cli_identity(repository: Path, head: str) -> dict[str, Any]:
+    tree = _git(repository, "ls-tree", "-r", "--name-only", head).splitlines()
+    sources = sorted(path for path in tree if (path == "juno-code/src/bin/cli.ts"
+                                               or (path.startswith("juno-code/src/cli/commands/")
+                                                   and path.endswith(".ts"))))
+    source_bytes = {path: _git_file(repository, head, path) or b"" for path in sources}
+    all_text = b"\n".join(source_bytes.values()).decode("utf-8", errors="replace")
+    options = sorted(set(re.findall(r"(?:requiredOption|option)\(\s*['\"](--[a-z0-9-]+)",
+                                    all_text, re.I)))
+    namespaces: dict[str, list[str]] = {}
+    for namespace in ("task", "merge", "evidence", "integration", "migrate", "watch"):
+        raw = source_bytes.get(f"juno-code/src/cli/commands/{namespace}.ts", b"")
+        names = re.findall(rb"\.command\(\s*['\"]([a-z][a-z0-9-]*)", raw)
+        # Include operation literals used by compact typed loops/unions; values
+        # containing prose, spaces, paths, or option syntax are excluded.
+        names.extend(re.findall(rb"['\"]([a-z][a-z0-9-]*)['\"]", raw))
+        namespaces[namespace] = sorted({item.decode() for item in names if item.decode() != namespace})
+    body = {"sources": sources,
+            "source_sha256": hashlib.sha256(b"\0".join(
+                path.encode() + b"\0" + source_bytes[path] for path in sources)).hexdigest(),
+            "options": options, "namespaces": namespaces}
+    return body
+
+
+def _documented_commands(text: str) -> list[list[str]]:
+    snippets = re.findall(r"(?ms)^```(?:bash|sh|shell)[ \t]*\n(.*?)^```[ \t]*$", text)
+    snippets.extend(re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text))
+    commands: list[list[str]] = []
+    for snippet in snippets:
+        for line in snippet.splitlines():
+            line = line.strip().removeprefix("$ ").strip()
+            if not re.match(r"^(?:yy|yylo|ypl)(?:\s|$)", line):
+                continue
+            try:
+                argv = shlex.split(line, comments=True)
+            except ValueError:
+                # Shell examples may deliberately continue quoted argv onto the
+                # next line; only fully tokenized command identities are audited.
+                continue
+            if argv:
+                commands.append(argv[:64])
+    return commands
+
+
+def _known_schema_identities(repository: Path, head: str) -> set[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "grep", "-h", "-o", "-E",
+         r"juno_[a-zA-Z0-9_.-]+\.v[0-9]+", head, "--", "*.py", "*.ts", "*.json", "*.yaml", "*.yml"],
+        cwd=repository, stdin=subprocess.DEVNULL, capture_output=True)
+    if result.returncode not in {0, 1} or len(result.stdout) > 4 * 1024 * 1024:
+        return set()
+    return set(result.stdout.decode("utf-8", errors="replace").splitlines())
+
+
+def active_documentation_audit(repository: Path, head: str, paths: list[str],
+                               policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Cheap offline audit of executable product guidance and public identities."""
+    policy = policy or default_documentation_policy()
+    findings: list[dict[str, Any]] = []
+    link_re = re.compile(r"(?<!!)\[[^\]]+\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)")
+    package_names: set[str] = set()
+    package_versions: dict[str, str] = {}
+    tree_paths = set(_git(repository, "ls-tree", "-r", "--name-only", head).splitlines())
+    for manifest_path in ("juno-code/package.json", "juno-benchmark/package.json", "package.json"):
+        raw = _git_file(repository, head, manifest_path)
+        if raw:
+            try:
+                package = json.loads(raw)
+                if isinstance(package, dict) and isinstance(package.get("name"), str):
+                    package_names.add(package["name"])
+                    if isinstance(package.get("version"), str):
+                        package_versions[package["name"]] = package["version"]
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                findings.append({"code": "active_doc.package_manifest_malformed", "path": manifest_path})
+    cli_identity = _documentation_cli_identity(repository, head)
+    configured_top = set(policy.get("cli_top_level", []))
+    public_identities = tuple(str(value).rstrip("/") for value in policy.get("public_identities", []))
+    known_schemas = _known_schema_identities(repository, head)
+    for path in sorted(paths):
+        raw = _git_file(repository, head, path)
+        if raw is None:
+            findings.append({"code": "active_doc.missing", "path": path}); continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            findings.append({"code": "active_doc.non_utf8", "path": path}); continue
+        for link in link_re.findall(text):
+            target = link.split("#", 1)[0]
+            if not target or target.startswith("mailto:"):
+                continue
+            if re.match(r"https?://", target):
+                parsed = urllib.parse.urlsplit(target)
+                if (parsed.scheme not in {"http", "https"} or not parsed.netloc
+                        or parsed.username is not None or parsed.password is not None
+                        or any(ord(char) < 32 for char in target)):
+                    findings.append({"code": "active_doc.invalid_public_link", "path": path,
+                                     "target": link})
+                elif (public_identities and parsed.netloc.lower() in
+                      {"github.com", "www.npmjs.com", "pypi.org"}
+                      and not any(target.rstrip("/").startswith(value) for value in public_identities)):
+                    findings.append({"code": "active_doc.unknown_public_identity", "path": path,
+                                     "target": link})
+                continue
+            target_path = (PurePosixPath(path).parent / target).as_posix()
+            normalized = os.path.normpath(target_path).replace(os.sep, "/")
+            exists = (normalized in tree_paths
+                      or any(item.startswith(normalized.rstrip("/") + "/")
+                             for item in tree_paths))
+            if normalized.startswith("../") or not exists:
+                findings.append({"code": "active_doc.broken_relative_link", "path": path,
+                                 "target": link})
+        for coordinate in sorted(set(re.findall(r"@[a-z0-9_.-]+/[a-z0-9_.-]+", text, re.I))):
+            if coordinate.startswith("@yylo/") and coordinate not in package_names:
+                findings.append({"code": "active_doc.unknown_package_coordinate", "path": path,
+                                 "coordinate": coordinate})
+        for coordinate, version in re.findall(
+                r"npm\s+(?:install|i)(?:\s+-g)?\s+(@[a-z0-9_.-]+/[a-z0-9_.-]+)(?:@([^\s`]+))?",
+                text, re.I):
+            expected = package_versions.get(coordinate)
+            if ((coordinate in package_names and version and expected and version != expected)
+                    or (coordinate.startswith("@yylo/") and coordinate not in package_names)):
+                findings.append({"code": "active_doc.install_identity_mismatch", "path": path,
+                                 "coordinate": coordinate, "documented_version": version or None,
+                                 "expected_version": expected})
+        for argv in _documented_commands(text):
+            top = argv[1] if len(argv) > 1 and not argv[1].startswith("-") else None
+            if argv[0] == "yy" and configured_top and top and top not in configured_top:
+                findings.append({"code": "active_doc.unknown_cli_command", "path": path,
+                                 "command": " ".join(argv[:3])})
+            namespace = top if top in cli_identity["namespaces"] else None
+            if namespace and len(argv) > 2 and not argv[2].startswith("-"):
+                subcommand = argv[2]
+                if (re.fullmatch(r"[a-z][a-z0-9-]*", subcommand)
+                        and subcommand not in cli_identity["namespaces"][namespace]):
+                    findings.append({"code": "active_doc.unknown_cli_subcommand", "path": path,
+                                     "command": " ".join(argv[:3])})
+            for option in (arg.split("=", 1)[0] for arg in argv if arg.startswith("--")):
+                if namespace and option not in cli_identity["options"]:
+                    findings.append({"code": "active_doc.unknown_cli_option", "path": path,
+                                     "option": option, "command": " ".join(argv[:4])})
+        for schema in sorted(set(re.findall(r"juno_[a-zA-Z0-9_.-]+\.v[0-9]+", text))):
+            if known_schemas and schema not in known_schemas:
+                findings.append({"code": "active_doc.unknown_schema_identity", "path": path,
+                                 "schema": schema})
+        if re.search(r"(^|/)MIGRATION[^/]*\.md$", path, re.I):
+            lowered = text.lower()
+            missing = [term for term in ("from", "to", "rollback") if term not in lowered]
+            if missing:
+                findings.append({"code": "active_doc.incoherent_migration_guidance", "path": path,
+                                 "missing": missing})
+        if re.search(r"(^|/)(CHANGELOG|RELEASE_NOTES)(\.[^/]*)?$", path, re.I):
+            current_versions = set(package_versions.values())
+            documented = set(re.findall(r"(?m)^#{1,3}\s+\[?v?([0-9]+\.[0-9]+\.[0-9][0-9A-Za-z.-]*)", text))
+            if current_versions and not current_versions.intersection(documented):
+                findings.append({"code": "active_doc.release_identity_mismatch", "path": path,
+                                 "expected_versions": sorted(current_versions)})
+        if "```" in text and text.count("```") % 2:
+            findings.append({"code": "active_doc.unclosed_fence", "path": path})
+    findings = sorted(findings, key=lambda row: (row["code"], digest(row)))
+    body = {"schema_version": "juno_active_documentation_audit.v2", "head": head,
+            "paths": sorted(paths), "findings": findings,
+            "checks": ["utf8", "relative_links", "public_identities", "install_package_identity",
+                       "cli_help_schema_identity", "release_identity", "schema_references",
+                       "migration_coherence", "markdown_fences"],
+            "policy_sha256": digest(policy), "cli_schema_sha256": cli_identity["source_sha256"]}
+    return {**body, "outcome": "PASSED" if not findings else "FAILED",
+            "audit_sha256": digest(body)}
+
+
+_FAILURE_PATTERNS = [
+    ("vitest_test_files", re.compile(r"Test Files\s+(\d+)\s+failed", re.I)),
+    ("vitest_tests", re.compile(r"Tests\s+(\d+)\s+failed", re.I)),
+    ("pytest", re.compile(r"(?:^|\s)(\d+)\s+failed(?:,|\s|$)", re.I)),
+    ("jest", re.compile(r"Test Suites:\s+(\d+)\s+failed", re.I)),
+]
+
+
+def parsed_test_result_integrity(argv: list[str], output: Any,
+                                 process_exit_code: int) -> dict[str, Any]:
+    """Parse recognized summaries across the complete bounded stream.
+
+    Validation logs are disk-backed. Reading only a tail can turn an early test
+    failure into PASS after a large diagnostic epilogue, while reading the whole
+    log into memory is itself unsafe. This scanner keeps a small overlap, a
+    bounded finding list, and a streaming digest.
+    """
+    stream = output.open("rb") if isinstance(output, Path) else None
+    chunks = iter(lambda: stream.read(64 * 1024), b"") if stream is not None else iter((bytes(output),))
+    failures: list[dict[str, Any]] = []
+    failure_keys: set[tuple[str, int, int]] = set()
+    carry = ""
+    consumed_chars = 0
+    output_bytes = 0
+    output_hash = hashlib.sha256()
+    try:
+        for chunk in chunks:
+            output_bytes += len(chunk); output_hash.update(chunk)
+            text = carry + chunk.decode("utf-8", errors="replace")
+            base = max(0, consumed_chars - len(carry))
+            for parser, pattern in _FAILURE_PATTERNS:
+                for match in pattern.finditer(text):
+                    count = int(match.group(1))
+                    key = (parser, count, base + match.start())
+                    if count and key not in failure_keys:
+                        failure_keys.add(key)
+                        if len(failures) < 256:
+                            failures.append({"parser": parser, "failed": count,
+                                             "stream_offset": key[2]})
+            consumed_chars += max(0, len(text) - len(carry))
+            carry = text[-4096:]
+    finally:
+        if stream is not None:
+            stream.close()
+    contradiction = process_exit_code == 0 and bool(failure_keys)
+    body = {"schema_version": INTEGRITY_SCHEMA, "argv_sha256": digest(argv),
+            "process_exit_code": process_exit_code, "parsed_failures": failures,
+            "parsed_failure_count": len(failure_keys),
+            "findings_truncated": len(failure_keys) > len(failures),
+            "contradiction": contradiction, "output_bytes": output_bytes,
+            "output_sha256": output_hash.hexdigest()}
+    return {**body, "eligible_pass": process_exit_code == 0 and not contradiction,
+            "integrity_sha256": digest(body)}
+
+
+def grouped_coherence(controller: Path, repository: Path, head: str,
+                      changed_paths: list[str], *, active_doc_paths: Optional[list[str]] = None,
+                      documentation_policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Collect every cheap deterministic finding in one stable report."""
+    findings: list[dict[str, Any]] = []
+    checked: list[str] = []
+    tree_paths = set(_git(repository, "ls-tree", "-r", "--name-only", head).splitlines())
+    runtime_prefix = ".juno_task/scripts/"
+    template_prefix = "juno-code/src/templates/scripts/"
+    for path in sorted(changed_paths):
+        twin = None
+        if path.startswith(runtime_prefix):
+            twin = template_prefix + path[len(runtime_prefix):]
+        elif path.startswith(template_prefix):
+            twin = runtime_prefix + path[len(template_prefix):]
+        if twin:
+            checked.append("runtime_template")
+            left, right = _git_file(repository, head, path), _git_file(repository, head, twin)
+            if left is None or right is None or left != right:
+                findings.append({"code": "coherence.runtime_template_mismatch", "path": path,
+                                 "twin": twin})
+    for root in ("juno-code", "juno-benchmark"):
+        manifest_path, lock_path = f"{root}/package.json", f"{root}/package-lock.json"
+        if manifest_path not in changed_paths and lock_path not in changed_paths:
+            continue
+        manifest_raw, lock_raw = _git_file(repository, head, manifest_path), _git_file(repository, head, lock_path)
+        if manifest_raw is None and lock_raw is None:
+            continue
+        checked.append("package_lock")
+        try:
+            manifest, lock = json.loads(manifest_raw or b"null"), json.loads(lock_raw or b"null")
+            package_root = lock.get("packages", {}).get("") if isinstance(lock, dict) else None
+            if (not isinstance(manifest, dict) or not isinstance(package_root, dict)
+                    or any(manifest.get(key) != package_root.get(key) for key in ("name", "version"))):
+                findings.append({"code": "coherence.package_lock_identity", "path": root})
+            bins = manifest.get("bin") if isinstance(manifest, dict) else None
+            executable_paths = ([bins] if isinstance(bins, str) else
+                                list(bins.values()) if isinstance(bins, dict) else [])
+            for executable in executable_paths:
+                relative = f"{root}/{executable}" if isinstance(executable, str) else ""
+                if not relative or relative not in tree_paths:
+                    findings.append({"code": "coherence.executable_delegate_missing",
+                                     "path": relative or manifest_path})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            findings.append({"code": "coherence.package_json_malformed", "path": root})
+    for config_relative in sorted(path for path in changed_paths
+                                  if path.endswith(".json") and ("/config/" in path
+                                                                 or path.startswith(".juno_task/config/"))):
+        checked.append("config")
+        raw = _git_file(repository, head, config_relative)
+        try:
+            value = json.loads(raw) if raw is not None else None
+            if not isinstance(value, (dict, list)):
+                raise ValueError("shape")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            findings.append({"code": "coherence.config_malformed", "path": config_relative})
+
+    generated_raw = _git_file(repository, head, "juno-code/scripts/implementation-contract.json")
+    if generated_raw is not None:
+        checked.append("generated")
+        try:
+            generated = json.loads(generated_raw)
+            source = generated.get("source") if isinstance(generated, dict) else None
+            destinations = generated.get("destinations") if isinstance(generated, dict) else None
+            if not isinstance(source, str) or not isinstance(destinations, list):
+                raise ValueError("shape")
+            if source in changed_paths or any(path in changed_paths for path in destinations):
+                source_bytes = _git_file(repository, head, source)
+                for destination in destinations:
+                    if (not isinstance(destination, str)
+                            or source_bytes is None
+                            or _git_file(repository, head, destination) != source_bytes):
+                        findings.append({"code": "coherence.generated_output_mismatch",
+                                         "source": source, "path": destination})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            findings.append({"code": "coherence.generated_contract_malformed",
+                             "path": "juno-code/scripts/implementation-contract.json"})
+
+    managed_definition_raw = _git_file(
+        repository, head, "juno-code/src/templates/managed-assets.json")
+    if managed_definition_raw is not None:
+        checked.append("managed_declaration")
+        try:
+            managed_definition = json.loads(managed_definition_raw)
+            outputs = managed_definition.get("admissionOutputs") \
+                if isinstance(managed_definition, dict) else None
+            if not isinstance(outputs, list):
+                raise ValueError("shape")
+            for pair in outputs:
+                source = ("juno-code/src/templates/" + str(pair.get("source"))
+                          if isinstance(pair, dict) else "")
+                destination = str(pair.get("destination")) if isinstance(pair, dict) else ""
+                if source in changed_paths or destination in changed_paths:
+                    if (not source or not destination
+                            or _git_file(repository, head, source) !=
+                               _git_file(repository, head, destination)):
+                        findings.append({"code": "coherence.managed_output_mismatch",
+                                         "source": source, "path": destination})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            findings.append({"code": "coherence.managed_declaration_malformed",
+                             "path": "juno-code/src/templates/managed-assets.json"})
+
+    inventory_raw = _git_file(repository, head, ".juno_task/managed-assets.json")
+    if inventory_raw is not None:
+        checked.append("managed_inventory")
+        try:
+            inventory = json.loads(inventory_raw)
+            assets = inventory.get("assets") if isinstance(inventory, dict) else None
+            if not isinstance(assets, dict):
+                raise ValueError("assets")
+            for path, binding in assets.items():
+                raw = _git_file(repository, head, path)
+                actual = hashlib.sha256(raw).hexdigest() if raw is not None else None
+                if not isinstance(binding, dict) or actual != binding.get("installedSha256"):
+                    findings.append({"code": "coherence.managed_inventory_hash", "path": path})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            findings.append({"code": "coherence.managed_inventory_malformed",
+                             "path": ".juno_task/managed-assets.json"})
+    config_path = controller / ".juno_task/config/task-workspace.json"
+    checked.append("controller_readiness")
+    if not config_path.is_file():
+        findings.append({"code": "coherence.controller_policy_missing", "path": str(config_path)})
+    controller_status = subprocess.run(["git", "-C", str(controller), "status", "--porcelain=v1"],
+                                       cwd=controller, stdin=subprocess.DEVNULL,
+                                       text=True, capture_output=True)
+    controller_dirt = [line[3:] for line in controller_status.stdout.splitlines()
+                       if line[3:] and line[3:].startswith((
+                           ".juno_task/prompts/lifecycle/", ".juno_task/workflows/"))]
+    if controller_status.returncode or controller_dirt:
+        findings.append({"code": "coherence.controller_not_clean",
+                         "paths": controller_dirt[:32]})
+    if active_doc_paths:
+        checked.append("active_documentation")
+        audit = active_documentation_audit(
+            repository, head, active_doc_paths, documentation_policy)
+        findings.extend(audit["findings"])
+    findings = sorted(findings, key=lambda row: (str(row.get("code")), digest(row)))
+    # Stable exact deduplication while retaining a complete grouped result.
+    unique = []
+    seen = set()
+    for finding in findings:
+        identity = digest(finding)
+        if identity not in seen:
+            seen.add(identity); unique.append({**finding, "finding_sha256": identity})
+    body = {"schema_version": COHERENCE_SCHEMA, "head": head,
+            "tree": _git(repository, "rev-parse", f"{head}^{{tree}}").strip(),
+            "changed_paths": sorted(changed_paths), "checks": sorted(set(checked)),
+            "findings": unique}
+    return {**body, "outcome": "PASSED" if not unique else "FAILED",
+            "report_sha256": digest(body)}
+
+
+def _tracked_committed_blob(controller: Path, path: Path) -> tuple[str, str]:
+    root = Path(_git(controller, "rev-parse", "--show-toplevel").strip()).resolve()
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise LifecycleContractError("lifecycle template/prompt escaped controller Git") from exc
+    head = _git(controller, "rev-parse", "HEAD^{commit}").strip()
+    blob = subprocess.run(["git", "-C", str(controller), "show", f"{head}:{relative}"],
+                          cwd=controller, stdin=subprocess.DEVNULL, capture_output=True)
+    if blob.returncode or blob.stdout != resolved.read_bytes():
+        raise LifecycleContractError(f"lifecycle asset is absent, uncommitted, or drifted: {relative}")
+    status = subprocess.run(["git", "-C", str(controller), "status", "--porcelain=v1", "--", relative],
+                            cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+    if status.returncode or status.stdout:
+        raise LifecycleContractError(f"lifecycle asset has uncommitted mutation: {relative}")
+    return head, relative
+
+
+def compile_lifecycle_template(controller: Path, kind: str, task_id: Optional[str], *,
+                               model_identity: Optional[str] = None) -> dict[str, Any]:
+    if kind not in {"task-run", "merge-drive"}:
+        raise LifecycleContractError("unknown lifecycle template kind")
+    name = "yy-task-run.yaml" if kind == "task-run" else "yy-merge-drive.yaml"
+    template = controller / ".juno_task/workflows" / name
+    try:
+        raw = template.read_bytes(); value = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LifecycleContractError(f"invalid controller lifecycle template: {exc}") from exc
+    controller_head, relative = _tracked_committed_blob(controller, template)
+    required = {"schema_version", "template_id", "revision", "kind", "budgets", "steps", "prompts"}
+    expected_operations = TASK_OPERATIONS if kind == "task-run" else MERGE_OPERATIONS
+    if (not isinstance(value, dict) or set(value) != required or value.get("kind") != kind
+            or value.get("schema_version") != "juno_lifecycle_template.v1"
+            or not isinstance(value.get("revision"), int) or value["revision"] < 1
+            or not isinstance(value.get("budgets"), dict)
+            or not isinstance(value.get("steps"), list)
+            or [row.get("operation") for row in value["steps"] if isinstance(row, dict)] != list(expected_operations)
+            or any(set(row) != {"id", "owner", "operation"} for row in value["steps"])
+            or not isinstance(value.get("prompts"), list)):
+        raise LifecycleContractError("controller lifecycle template violates typed operation invariants")
+    prompt_evidence = []
+    for relative_prompt in value["prompts"]:
+        if not isinstance(relative_prompt, str) or not relative_prompt.startswith(".juno_task/prompts/lifecycle/"):
+            raise LifecycleContractError("lifecycle prompt path is not controller-owned")
+        prompt = controller / relative_prompt
+        prompt_head, prompt_relative = _tracked_committed_blob(controller, prompt)
+        if prompt_head != controller_head:
+            raise LifecycleContractError("lifecycle prompt/template controller revisions differ")
+        prompt_evidence.append({"path": prompt_relative, "sha256": file_sha(prompt)})
+    normalized = {**value, "steps": value["steps"], "prompts": value["prompts"]}
+    body = {"schema_version": COMPILED_PLAN_SCHEMA, "kind": kind,
+            "task_id": task_id, "controller_commit": controller_head,
+            "template": {"path": relative, "raw_sha256": hashlib.sha256(raw).hexdigest(),
+                         "semantic_sha256": digest(normalized), "id": value["template_id"],
+                         "revision": value["revision"]},
+            "prompts": prompt_evidence, "compiler_version": "minimum-rc.1",
+            "runtime_sha256": file_sha(Path(__file__).resolve()),
+            "model_identity": model_identity, "budgets": value["budgets"],
+            "steps": value["steps"]}
+    return {**body, "compiled_plan_sha256": digest(body)}
+
+
+def readiness_questions(task_bytes: bytes) -> list[str]:
+    text = task_bytes.decode("utf-8", errors="replace")
+    body = re.search(r"<!-- juno:body:start -->\n(.*?)<!-- juno:body:end -->", text, re.S)
+    content = body.group(1) if body else re.sub(r"\A---\n.*?\n---\n", "", text,
+                                                count=1, flags=re.S)
+    questions = []
+    if not re.search(r"(?im)^##\s+Goal\s*$", content):
+        questions.append("What exact product goal must this task deliver?")
+    if not re.search(r"(?im)^##\s+Acceptance(?: criteria)?\s*$", content):
+        questions.append("What durable acceptance criteria prove completion?")
+    unresolved = re.findall(r"(?im)^.*\b(?:TBD|TODO|NEEDS_DECISION|owner decision required)\b.*$", content)
+    if unresolved:
+        questions.append("Resolve the material open decisions: " + "; ".join(row.strip()[:160] for row in unresolved[:4]))
+    return questions
+
+
+def run_overlap(suite: Callable[[threading.Event], Any],
+                reviewers: list[Callable[[], dict[str, Any]]]) -> dict[str, Any]:
+    """Run suite with Reviewer A; preserve A-before-B and cancel suite on A block."""
+    cancellation = threading.Event()
+    events: list[dict[str, Any]] = []
+    lock = threading.Lock()
+    started = time.monotonic()
+    def event(name: str, **extra: Any) -> None:
+        with lock:
+            events.append({"event": name, "elapsed_ms": int((time.monotonic() - started) * 1000), **extra})
+    suite_started_event = threading.Event()
+    def suite_run() -> Any:
+        event("suite_started")
+        suite_started_event.set()
+        try:
+            result = suite(cancellation)
+            event("suite_completed")
+            return result
+        except BaseException as exc:
+            event("suite_stopped", error=type(exc).__name__)
+            raise
+    suite_result = suite_error = None
+    reviews = []
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="juno-review-suite") as pool:
+        future = pool.submit(suite_run)
+        if not suite_started_event.wait(5):
+            raise LifecycleContractError("suite producer did not start before Reviewer A")
+        for index, reviewer in enumerate(reviewers, 1):
+            event("reviewer_started", sequence=index)
+            result = reviewer()
+            reviews.append(result)
+            event("reviewer_completed", sequence=index,
+                  blocking=bool(result.get("blocking_count")))
+            if result.get("blocking_count"):
+                cancellation.set(); event("suite_cancellation_requested", sequence=index)
+                break
+        try:
+            suite_result = future.result()
+        except BaseException as exc:
+            suite_error = exc
+    return {"events": events, "reviews": reviews, "suite_result": suite_result,
+            "suite_error": suite_error, "cancelled": cancellation.is_set(),
+            "elapsed_ms": int((time.monotonic() - started) * 1000)}
+
+
+def compact_projection(*, kind: str, run_id: str, task_id: Optional[str], state: str,
+                       plan: dict[str, Any], started: float, counters: dict[str, int],
+                       attempts: dict[str, int], blocker: Optional[dict[str, Any]],
+                       next_action: str, artifacts: list[dict[str, Any]],
+                       identities: dict[str, Any], critical_path_ms: int = 0) -> dict[str, Any]:
+    body = {"schema_version": RUN_PROJECTION_SCHEMA, "kind": kind,
+            "run_id": run_id, "task_id": task_id, "state": state,
+            "template_id": plan.get("template", {}).get("id"),
+            "template_revision": plan.get("template", {}).get("revision"),
+            "compiled_plan_sha256": plan.get("compiled_plan_sha256"),
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "critical_path_ms": critical_path_ms, "commands": counters,
+            "attempts": attempts, "blocker": blocker, "next_legal_action": next_action,
+            "identities": identities, "artifacts": artifacts[:32]}
+    return {**body, "projection_sha256": digest(body)}
+
+
+def deterministic_summary(projection: dict[str, Any]) -> dict[str, Any]:
+    body = {"schema_version": RUN_SUMMARY_SCHEMA,
+            "kind": projection.get("kind"), "run_id": projection.get("run_id"),
+            "task_id": projection.get("task_id"), "state": projection.get("state"),
+            "elapsed_ms": projection.get("elapsed_ms"),
+            "critical_path_ms": projection.get("critical_path_ms"),
+            "commands": projection.get("commands"), "attempts": projection.get("attempts"),
+            "blocker": projection.get("blocker"),
+            "compiled_plan_sha256": projection.get("compiled_plan_sha256"),
+            "artifact_digests": [row.get("sha256") for row in projection.get("artifacts", [])]}
+    return {**body, "summary_sha256": digest(body)}

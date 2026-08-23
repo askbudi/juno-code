@@ -76,6 +76,14 @@ describe('merge queue CLI', () => {
     expect(invoke).toHaveBeenCalledWith(...expected);
   });
 
+  it('forwards merge drive with an optional frozen FIFO stop boundary', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureMergeQueueCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'merge', 'drive', '--through', 'T123']);
+    expect(invoke).toHaveBeenCalledWith('drive', undefined, ['--through', 'T123']);
+  });
+
   it('forwards stable plan projection and stale-plan execution options', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride();
@@ -112,14 +120,15 @@ describe('merge queue CLI', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
     const merge = program.commands.find((command) => command.name() === 'merge');
-    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'plan', 'next', 'resolve', 'review', 'reopen', 'withdraw', 'reconcile', 'refresh']);
+    expect(merge?.commands.map((command) => command.name())).toEqual(['status', 'drive', 'plan', 'next', 'resolve', 'review', 'reopen', 'withdraw', 'reconcile', 'refresh']);
     expect(merge?.commands[0]?.registeredArguments).toHaveLength(0);
-    expect(merge?.commands[1]?.registeredArguments[0]?.required).toBe(true);
-    expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(false);
-    expect(merge?.commands[3]?.registeredArguments[0]?.required).toBe(true);
+    expect(merge?.commands[1]?.registeredArguments).toHaveLength(0);
+    expect(merge?.commands[2]?.registeredArguments[0]?.required).toBe(true);
+    expect(merge?.commands[3]?.registeredArguments[0]?.required).toBe(false);
     expect(merge?.commands[4]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[5]?.registeredArguments[0]?.required).toBe(true);
     expect(merge?.commands[6]?.registeredArguments[0]?.required).toBe(true);
+    expect(merge?.commands[7]?.registeredArguments[0]?.required).toBe(true);
   });
 
   it('forwards the bounded withdraw operator reason', async () => {
@@ -140,7 +149,7 @@ describe('merge queue CLI', () => {
   it('documents queue advance and evidence-continuation semantics', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
-    const next = program.commands.find((command) => command.name() === 'merge')?.commands[2];
+    const next = program.commands.find((command) => command.name() === 'merge')?.commands[3];
     expect(next?.description()).toContain('continue paused evidence');
     expect(next?.registeredArguments[0]?.description).toContain('evidence/review');
   });
