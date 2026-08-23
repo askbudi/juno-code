@@ -23,6 +23,9 @@ async function fixture(): Promise<{ controller: string; canonical: string; packa
   ].join('\n'));
   await fs.writeFile(packaged, [
     'TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"',
+    // Stable capability marker matched by selectTaskWorkspaceRuntime: the
+    // audited operation list may evolve without invalidating selection.
+    'TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True',
     'def hydrate(controller: object, task_id: str): pass',
     'AUDITED = ("start", "status", "hydrate", "preflight", "finish")',
     'ROUTED = ("start", "status", "hydrate", "preflight", "finish",)',
