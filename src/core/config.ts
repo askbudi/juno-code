@@ -395,6 +395,12 @@ const GLOBAL_CONFIG_FILE_NAMES = [
   'yylo.config.js',
   '.yylorc.json',
   '.yylorc.js',
+  // Read-only discovery compatibility. Canonical filenames always win; legacy
+  // JavaScript entries retain the existing explicit unsupported-format error.
+  'juno-code.config.json',
+  'juno-code.config.js',
+  '.juno-coderc.json',
+  '.juno-coderc.js',
   'package.json', // Looks for canonical 'yylo', then legacy 'junoCode'
 ] as const;
 

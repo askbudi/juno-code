@@ -626,6 +626,22 @@ describe('Configuration Module', () => {
       expect(config.logLevel).toBe('error');
     });
 
+    it.each(['juno-code.config.json', '.juno-coderc.json'])(
+      'should discover the legacy %s filename as a read-only fallback',
+      async (filename) => {
+        await fs.writeJson(path.join(tempDir, filename), {
+          defaultSubagent: 'gemini',
+          logLevel: 'warn',
+        });
+
+        const loader = new ConfigLoader(tempDir);
+        await loader.autoDiscoverFile();
+        const config = loader.merge();
+        expect(config.defaultSubagent).toBe('gemini');
+        expect(config.logLevel).toBe('warn');
+      },
+    );
+
     it('should prefer files in order of precedence', async () => {
       // Create multiple config files
       await fs.writeJson(path.join(tempDir, 'yylo.config.json'), {
@@ -634,6 +650,10 @@ describe('Configuration Module', () => {
 
       await fs.writeJson(path.join(tempDir, '.yylorc.json'), {
         defaultSubagent: 'cursor',
+      });
+
+      await fs.writeJson(path.join(tempDir, 'juno-code.config.json'), {
+        defaultSubagent: 'gemini',
       });
 
       const loader = new ConfigLoader(tempDir);
