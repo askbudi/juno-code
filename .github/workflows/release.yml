@@ -1,0 +1,53 @@
+name: Publish YYLO CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package.json version expected at this commit
+        required: true
+        type: string
+      dist_tag:
+        description: npm dist-tag (next for prerelease, latest for stable)
+        required: true
+        type: choice
+        options: [next, latest]
+      publish:
+        description: Publish after artifact verification
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - name: Verify exact version and channel
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          EXPECTED_TAG: ${{ inputs.dist_tag }}
+        run: |
+          node - <<'NODE'
+          const version = require('./package.json').version;
+          if (version !== process.env.EXPECTED_VERSION) throw new Error(`version mismatch: ${version}`);
+          const expected = version.includes('-') ? 'next' : 'latest';
+          if (process.env.EXPECTED_TAG !== expected) throw new Error(`dist-tag must be ${expected}`);
+          NODE
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm pack --dry-run
+      - name: Publish exact artifact
+        if: inputs.publish
+        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
