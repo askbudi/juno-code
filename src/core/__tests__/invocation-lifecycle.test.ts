@@ -139,13 +139,16 @@ beforeAll(async () => {
   canonicalYpl = path.join(bin, 'ypl');
   await Promise.all([
     fs.copy(wrapperSource, canonicalWrapper),
-    fs.copy(wrapperSource, canonicalYy),
     fs.copy(wrapperSource, path.join(bin, 'yylo.sh')),
     fs.copy(yplSource, canonicalYpl),
   ]);
+  // `yy` must resolve to the same installation as its canonical `yylo` peer,
+  // exactly like a real package-manager bin layout. A bare copy would be a
+  // separate inode: with @yylo/cli installed globally, `command -v yylo` then
+  // resolves to the global peer and the mixed-installation guard must refuse.
+  await fs.symlink('yylo', canonicalYy);
   await Promise.all([
     fs.chmod(canonicalWrapper, 0o755),
-    fs.chmod(canonicalYy, 0o755),
     fs.chmod(path.join(bin, 'yylo.sh'), 0o755),
     fs.chmod(canonicalYpl, 0o755),
   ]);
@@ -269,9 +272,17 @@ describe('direct CLI invocation lifecycle', () => {
     ['ypl', () => canonicalYpl],
   ] as const)('records exactly one lifecycle for the canonical %s wrapper', async (surface, executable) => {
     const root = await temp(`wrapper-${surface}`);
+    // Resolve the wrapper's canonical peer inside the fixture installation so
+    // an ambient global @yylo/cli installation cannot turn the fixture into a
+    // mixed installation the wrapper must refuse.
+    const fixtureBin = path.dirname(canonicalWrapper);
     const result = childProcess.spawnSync(executable(), ['--version'], {
       cwd: root,
-      env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
+      env: {
+        ...process.env,
+        PATH: `${fixtureBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        XDG_STATE_HOME: path.join(root, 'state'),
+      },
       encoding: 'utf8',
       timeout: 10_000,
     });
@@ -436,12 +447,17 @@ setInterval(() => {}, 1000);
     await fs.writeFile(runtime, `if (process.argv.includes('--version')) console.log('yylo ${packageJson.version}'); else process.exitCode = 0;\n`);
     expect(git(['config', '--worktree', 'juno.controller.runtimeExecutable', runtime], controller).status).toBe(0);
 
+    // The fixture yy already resolves to the same installation as its yylo
+    // peer (symlink); keep that invariant and resolve the peer inside the
+    // fixture so an ambient global installation cannot cause a refusal.
     const yy = path.join(wrapperFixtureRoot, 'bin', 'yy');
-    await fs.copy(canonicalWrapper, yy);
-    await fs.chmod(yy, 0o755);
     const result = childProcess.spawnSync(yy, ['merge', 'status'], {
       cwd: product,
-      env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state') },
+      env: {
+        ...process.env,
+        PATH: `${path.dirname(yy)}${path.delimiter}${process.env.PATH ?? ''}`,
+        XDG_STATE_HOME: path.join(root, 'state'),
+      },
       encoding: 'utf8', timeout: 15_000,
     });
     expect(result.status, result.stderr).toBe(0);
