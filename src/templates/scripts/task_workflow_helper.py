@@ -1421,7 +1421,10 @@ def active_documentation_audit(repository: Path, head: str, paths: list[str]) ->
                 continue
             target_path = (PurePosixPath(path).parent / target).as_posix()
             normalized = os.path.normpath(target_path).replace(os.sep, "/")
-            if normalized.startswith("../") or normalized not in tree_paths:
+            exists = (normalized in tree_paths
+                      or any(item.startswith(normalized.rstrip("/") + "/")
+                             for item in tree_paths))
+            if normalized.startswith("../") or not exists:
                 findings.append({"code": "active_doc.broken_relative_link", "path": path,
                                  "target": link})
         for coordinate in sorted(set(re.findall(r"@[a-z0-9_.-]+/[a-z0-9_.-]+", text, re.I))):

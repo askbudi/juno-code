@@ -3925,6 +3925,26 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
         self.assertEqual(lifecycle.evidence_counters(decisions)["reused"], 1)
         self.assertEqual(lifecycle.evidence_counters(decisions)["executed"], 1)
 
+    def test_active_documentation_accepts_tracked_directory_links_and_rejects_missing_links(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "docs").mkdir(); (root / "docs/guide.md").write_text("guide\n")
+            (root / "README.md").write_text("[docs](./docs/) [missing](./missing/)\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "docs"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            audit = lifecycle.active_documentation_audit(root, head, ["README.md"])
+            self.assertEqual(audit["findings"], [{
+                "code": "active_doc.broken_relative_link", "path": "README.md",
+                "target": "./missing/",
+            }])
+
     def test_grouped_coherence_collects_all_seeded_cheap_defects_in_one_report(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime
         with tempfile.TemporaryDirectory() as temporary:
