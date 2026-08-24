@@ -76,7 +76,10 @@ jobs:
           if [ "$status" -eq 0 ]; then
             [ "$expected" = "$actual" ] && echo "registry already carries the exact bound artifact" \
               || { echo "registry artifact differs from this build: $actual"; exit 1; }
-            npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json
+            tags=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json)
+            echo "$tags"
+            printf '%s' "$tags" | EXPECTED_TAG="${{ inputs.dist_tag }}" EXPECTED_VERSION="${{ inputs.version }}" \
+              node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const t=JSON.parse(d)[process.env.EXPECTED_TAG]; if(t!==process.env.EXPECTED_VERSION){console.error('dist-tag drift: '+process.env.EXPECTED_TAG+' -> '+t); process.exit(1);}});"
           elif grep -q "E404" "$RUNNER_TEMP/view.err"; then
             echo "registry does not carry ${PACKAGE_NAME}@${{ inputs.version }} yet; publication remains the guarded apply flow"
           else
