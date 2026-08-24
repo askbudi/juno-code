@@ -1,6 +1,6 @@
 ---
 wiki_contract:
-  line_limit: 225
+  line_limit: 240
   purpose: 'Plan, prepare, verify, and roll back the metadata-only controller boundary without product-ref mutation.'
   failure_mode_prevented: 'Controller/product history reconciliation, tracked runtime copies, in-place conversion, and ambiguous rollback.'
   runtime_contract_enforced: 'metadata_controller.py'
@@ -10,6 +10,18 @@ wiki_contract:
 ---
 
 # Metadata-only controller boundary
+
+## Agent profile
+
+Metadata controllers may persist safe agent preferences in `.juno_task/config.json`.
+`agentProfile: { "version": 1, "promptAssetRoot": ".juno_task/prompts" }` gives
+file-backed macros an explicit controller-relative root; path and symlink escape
+are refused. Controller, task, and integration-owner invocations share the
+registered profile while working/session directories remain invocation-local.
+Model, iteration, interaction, logging, timeout, macro, registry, and checkpoint
+settings are controller-safe. Working/session paths, Git-flow, bootstrap, and
+hooks are product-only; environment-file settings are secret-bearing; lifecycle
+is retired. Persisted product-only or retired fields fail before dispatch or writes.
 
 ## Ownership
 

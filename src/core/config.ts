@@ -18,6 +18,7 @@ import type { JunoTaskConfig, PromptMacroConfig } from '../types/index';
 import { getDefaultHooks } from '../templates/default-hooks.js';
 import { SUBAGENT_DEFAULT_MODELS } from './subagent-models.js';
 import { migrateLegacyEnvironment } from './identity-migration.js';
+import { resolveController } from '../utils/controller-resolver.js';
 
 /**
  * Environment variable mapping for configuration options
@@ -169,6 +170,51 @@ const ControllerWorkspaceSchema = z
   .strict()
   .optional();
 
+const SafeRelativeAssetRootSchema = z.string().min(1).refine((value) => {
+  if (path.isAbsolute(value)) return false;
+  const normalized = path.normalize(value);
+  return normalized !== '..' && !normalized.startsWith(`..${path.sep}`);
+}, 'must be a relative path contained by the controller');
+
+const AgentProfileSchema = z
+  .object({
+    version: z.literal(1),
+    promptAssetRoot: SafeRelativeAssetRootSchema,
+  })
+  .strict()
+  .optional();
+
+/** Field ownership used by metadata-controller validation and v2 migration. */
+export const METADATA_CONTROLLER_CONFIG_FIELD_OWNERSHIP = {
+  controllerSafe: [
+    'configVersion', 'agentProfile', 'controllerWorkspace', 'gitCheckpoint',
+    'defaultSubagent', 'defaultBackend', 'defaultMaxIterations', 'defaultModel',
+    'defaultModels', 'workflowModels', 'mainTask', 'logLevel', 'logFile', 'verbose',
+    'quiet', 'mcpTimeout', 'mcpRetries', 'mcpServerPath', 'mcpServerName',
+    'hookCommandTimeout', 'onHourlyLimit', 'interactive', 'headlessMode',
+    'kanbanRegistry', 'promptMacros',
+  ],
+  productOnly: ['workingDirectory', 'sessionDirectory', 'gitFlow', 'autoDependencyUpdate', 'hooks', 'skipHooks'],
+  secret: ['envFilePath', 'envFileCopied'],
+  retired: ['lifecycle'],
+} as const;
+
+function validateMetadataControllerSource(config: Partial<JunoTaskConfig>): void {
+  const raw = config as Record<string, unknown>;
+  const workspace = raw.controllerWorkspace as Record<string, unknown> | undefined;
+  if (workspace?.mode !== 'metadata-only') return;
+  for (const field of METADATA_CONTROLLER_CONFIG_FIELD_OWNERSHIP.productOnly) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      throw new Error(`Metadata-controller configuration field ${field} is product-only and cannot be activated in the controller`);
+    }
+  }
+  for (const field of METADATA_CONTROLLER_CONFIG_FIELD_OWNERSHIP.retired) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      throw new Error(`Metadata-controller configuration field ${field} is retired`);
+    }
+  }
+}
+
 const KanbanProjectAliasSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'must be a lowercase project alias');
@@ -307,6 +353,10 @@ export const JunoTaskConfigSchema = z
 
     controllerWorkspace: ControllerWorkspaceSchema.describe(
       'Canonical metadata-only controller ownership and boundary policy pointer',
+    ),
+
+    agentProfile: AgentProfileSchema.describe(
+      'Versioned metadata-controller agent profile and explicit prompt asset root',
     ),
 
     kanbanRegistry: KanbanRegistrySchema.describe(
@@ -560,6 +610,7 @@ async function resolvePromptMacroValue(
   keyPath: string,
   value: unknown,
   baseDir: string,
+  confineToBaseDir = false,
 ): Promise<string> {
   if (typeof value === 'string') {
     return value;
@@ -585,6 +636,15 @@ async function resolvePromptMacroValue(
   const macroPath = pathValue as string;
   const resolvedPath = path.isAbsolute(macroPath) ? macroPath : path.resolve(baseDir, macroPath);
   try {
+    if (confineToBaseDir) {
+      const [realBase, realAsset] = await Promise.all([
+        fsPromises.realpath(baseDir),
+        fsPromises.realpath(resolvedPath),
+      ]);
+      if (realAsset !== realBase && !realAsset.startsWith(`${realBase}${path.sep}`)) {
+        throw new Error('asset path escapes the configured promptAssetRoot');
+      }
+    }
     return await fsPromises.readFile(resolvedPath, 'utf-8');
   } catch (error) {
     throw new Error(`${keyPath} failed to read path ${resolvedPath}: ${error}`);
@@ -595,6 +655,7 @@ async function resolvePromptMacroDictionary(
   dictionary: unknown,
   baseDir: string,
   keyPath: string,
+  confineToBaseDir = false,
 ): Promise<Record<string, string> | undefined> {
   if (dictionary === undefined) {
     return undefined;
@@ -605,7 +666,7 @@ async function resolvePromptMacroDictionary(
 
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(dictionary as RawPromptMacroDictionary)) {
-    resolved[key] = await resolvePromptMacroValue(`${keyPath}.${key}`, value, baseDir);
+    resolved[key] = await resolvePromptMacroValue(`${keyPath}.${key}`, value, baseDir, confineToBaseDir);
   }
   return resolved;
 }
@@ -614,6 +675,11 @@ async function resolvePromptMacroFileEntries(
   config: Partial<JunoTaskConfig>,
   baseDir: string,
 ): Promise<Partial<JunoTaskConfig>> {
+  validateMetadataControllerSource(config);
+  const profile = config.agentProfile;
+  const promptAssetBaseDir = profile
+    ? path.resolve(baseDir, profile.promptAssetRoot)
+    : baseDir;
   const rawPromptMacros = config.promptMacros as unknown as
     | (Omit<PromptMacroConfig, 'global' | 'local'> & {
       global?: unknown;
@@ -629,8 +695,8 @@ async function resolvePromptMacroFileEntries(
     ...config,
     promptMacros: {
       ...rawPromptMacros,
-      global: await resolvePromptMacroDictionary(rawPromptMacros.global, baseDir, 'promptMacros.global'),
-      local: await resolvePromptMacroDictionary(rawPromptMacros.local, baseDir, 'promptMacros.local'),
+      global: await resolvePromptMacroDictionary(rawPromptMacros.global, promptAssetBaseDir, 'promptMacros.global', Boolean(profile)),
+      local: await resolvePromptMacroDictionary(rawPromptMacros.local, promptAssetBaseDir, 'promptMacros.local', Boolean(profile)),
     } as PromptMacroConfig,
   };
 }
@@ -789,13 +855,15 @@ async function findGlobalConfigFile(searchDir: string = process.cwd()): Promise<
  */
 export class ConfigLoader {
   private configSources: Map<ConfigSource, Partial<JunoTaskConfig>> = new Map();
+  private projectConfigDir: string;
 
   /**
    * Create a new ConfigLoader instance
    *
    * @param baseDir - Base directory for relative path resolution
    */
-  constructor(private baseDir: string = process.cwd()) {
+  constructor(private baseDir: string = process.cwd(), projectConfigDir?: string) {
+    this.projectConfigDir = projectConfigDir ?? baseDir;
     // Initialize with defaults
     this.configSources.set('defaults', DEFAULT_CONFIG);
   }
@@ -835,9 +903,9 @@ export class ConfigLoader {
    */
   async fromProjectConfig(): Promise<this> {
     try {
-      const projectConfigFile = await findProjectConfigFile(this.baseDir);
+      const projectConfigFile = await findProjectConfigFile(this.projectConfigDir);
       if (projectConfigFile) {
-        const fileConfig = await loadConfigFromFile(projectConfigFile, this.baseDir);
+        const fileConfig = await loadConfigFromFile(projectConfigFile, this.projectConfigDir);
         this.configSources.set('projectFile', fileConfig);
       }
     } catch (error) {
@@ -855,9 +923,9 @@ export class ConfigLoader {
    */
   async autoDiscoverFile(): Promise<this> {
     // First, try to load project-specific config
-    const projectConfigFile = await findProjectConfigFile(this.baseDir);
+    const projectConfigFile = await findProjectConfigFile(this.projectConfigDir);
     if (projectConfigFile) {
-      const fileConfig = await loadConfigFromFile(projectConfigFile, this.baseDir);
+      const fileConfig = await loadConfigFromFile(projectConfigFile, this.projectConfigDir);
       this.configSources.set('projectFile', fileConfig);
     }
 
@@ -1425,11 +1493,20 @@ export async function loadConfig(
   } = {},
 ): Promise<JunoTaskConfig> {
   const { baseDir = process.cwd(), configFile, cliConfig } = options;
+  const invocationDir = path.resolve(baseDir);
+  let profileDir = invocationDir;
+  if (!configFile) {
+    try {
+      profileDir = path.resolve(resolveController(invocationDir, 'diagnostic').path);
+    } catch {
+      // Unmanaged and legacy projects continue to use their local project config.
+    }
+  }
 
-  const allowProjectWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0';
+  const allowProjectWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0' && profileDir === invocationDir;
 
   const resolveConfig = async (): Promise<JunoTaskConfig> => {
-    const loader = new ConfigLoader(baseDir);
+    const loader = new ConfigLoader(invocationDir, profileDir);
     loader.fromEnvironment();
     if (configFile) {
       await loader.fromFile(configFile);
@@ -1437,16 +1514,23 @@ export async function loadConfig(
       await loader.autoDiscoverFile();
     }
     if (cliConfig) loader.fromCli(cliConfig);
-    return validateConfig(loader.merge());
+    const merged = loader.merge();
+    // A canonical controller profile supplies preferences, never the invoking
+    // task/integration workspace identity.
+    if (profileDir !== invocationDir) {
+      merged.workingDirectory = invocationDir;
+      merged.sessionDirectory = path.join(invocationDir, '.juno_task');
+    }
+    return validateConfig(merged);
   };
 
   // Validate every effective source before any project mutation.
-  await ensureAndLoadProjectEnv(baseDir, false);
+  await ensureAndLoadProjectEnv(profileDir, false);
   let resolved = await resolveConfig();
 
   if (allowProjectWrites) {
-    await ensureHooksConfig(baseDir);
-    await ensureAndLoadProjectEnv(baseDir, true);
+    await ensureHooksConfig(profileDir);
+    await ensureAndLoadProjectEnv(profileDir, true);
     resolved = await resolveConfig();
   }
 

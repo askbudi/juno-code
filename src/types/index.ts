@@ -122,6 +122,13 @@ export interface JunoTaskConfig {
     policy: '.juno_task/config/metadata-controller.json';
   };
 
+  // Versioned controller-safe agent profile metadata.
+  agentProfile?: {
+    version: 1;
+    /** Relative to the canonical controller root; path escape is rejected. */
+    promptAssetRoot: string;
+  };
+
   // Explicit, source-project authorization for cross-project Kanban aliases
   kanbanRegistry?: KanbanRegistryConfig;
 

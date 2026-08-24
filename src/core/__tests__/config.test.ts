@@ -270,6 +270,35 @@ describe('Configuration Module', () => {
       })).toThrow(/Migration required.*persisted lifecycle/);
     });
 
+    it('accepts only a versioned controller agent profile with a contained asset root', () => {
+      expect(validateConfig({
+        ...DEFAULT_CONFIG,
+        agentProfile: { version: 1, promptAssetRoot: '.juno_task/prompts' },
+      }).agentProfile).toEqual({ version: 1, promptAssetRoot: '.juno_task/prompts' });
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        agentProfile: { version: 2, promptAssetRoot: '.juno_task/prompts' },
+      })).toThrow(/agentProfile/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        agentProfile: { version: 1, promptAssetRoot: '../product' },
+      })).toThrow(/contained by the controller/);
+    });
+
+    it('rejects product-only settings in a metadata-controller source before merge', async () => {
+      await fs.ensureDir(path.join(tempDir, '.juno_task'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+        workingDirectory: '/old/product',
+      });
+      await expect(new ConfigLoader(tempDir).loadAll()).rejects.toThrow(
+        /workingDirectory is product-only/,
+      );
+    });
+
     it('should accept an enabled cross-project Kanban alias allowlist', () => {
       const config = validateConfig({
         ...DEFAULT_CONFIG,
@@ -432,6 +461,43 @@ describe('Configuration Module', () => {
         docs: 'ship docs with @@git',
         inline: "run !'echo tests'",
       });
+    });
+
+    it('loads a canonical controller profile from another workspace with an explicit asset root', async () => {
+      const invocation = path.join(tempDir, 'task');
+      const controller = path.join(tempDir, 'controller');
+      await fs.ensureDir(invocation);
+      await fs.ensureDir(path.join(controller, '.juno_task', 'prompts'));
+      await fs.writeFile(path.join(controller, '.juno_task', 'prompts', 'ship.md'), 'controller asset');
+      await fs.writeJson(path.join(controller, '.juno_task', 'config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+        agentProfile: { version: 1, promptAssetRoot: '.juno_task/prompts' },
+        defaultMaxIterations: 17,
+        promptMacros: { global: { ship: { path: 'ship.md' } } },
+      });
+
+      const config = await new ConfigLoader(invocation, controller).loadAll();
+      expect(config.defaultMaxIterations).toBe(17);
+      expect(getPromptMacroDictionary(config).ship).toBe('controller asset');
+    });
+
+    it('rejects controller profile prompt assets that escape through a symlink', async () => {
+      const outside = path.join(tempDir, 'outside.md');
+      await fs.writeFile(outside, 'unsafe');
+      await fs.ensureDir(path.join(tempDir, '.juno_task', 'prompts'));
+      await fs.symlink(outside, path.join(tempDir, '.juno_task', 'prompts', 'escape.md'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+        agentProfile: { version: 1, promptAssetRoot: '.juno_task/prompts' },
+        promptMacros: { global: { unsafe: { path: 'escape.md' } } },
+      });
+      await expect(new ConfigLoader(tempDir).loadAll()).rejects.toThrow(/escapes the configured promptAssetRoot/);
     });
 
     it('should load prompt macro dictionary entries from absolute file paths', async () => {
