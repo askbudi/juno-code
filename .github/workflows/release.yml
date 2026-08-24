@@ -1,5 +1,9 @@
 name: Publish YYLO CLI
 
+# Package-level exact routing: an explicit exact version and channel are
+# required; there is no generic `v*` fanout. The artifact is packed, hashed,
+# and published as the exact reviewed tarball, then verified by readback.
+
 on:
   workflow_dispatch:
     inputs:
@@ -13,7 +17,7 @@ on:
         type: choice
         options: [next, latest]
       publish:
-        description: Publish after artifact verification
+        description: Publish the verified exact artifact
         required: true
         type: boolean
         default: false
@@ -23,7 +27,10 @@ permissions:
 
 jobs:
   publish:
+    name: Verify and publish @yylo/cli
     runs-on: ubuntu-latest
+    env:
+      PACKAGE_NAME: "@yylo/cli"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +38,8 @@ jobs:
           node-version: "22.22.3"
           registry-url: https://registry.npmjs.org
           cache: npm
+      - name: Enforce Node >=20.10
+        run: node -e "const [major,minor]=process.versions.node.split('.').map(Number); if (major<20 || (major===20 && minor<10)) { console.error('Node >=20.10 required'); process.exit(1); }"
       - run: npm ci
       - name: Verify exact version and channel
         env:
@@ -45,9 +54,32 @@ jobs:
           NODE
       - run: npm test
       - run: npm run typecheck
-      - run: npm pack --dry-run
-      - name: Publish exact artifact
+      - name: Pack the exact artifact
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          npm pack --json --pack-destination "$RUNNER_TEMP/artifacts" | tee "$RUNNER_TEMP/pack.json"
+          node - <<'NODE'
+          const summary = require(process.env.RUNNER_TEMP + '/pack.json');
+          const row = summary[0];
+          if (row.name !== process.env.PACKAGE_NAME || row.version !== process.env.EXPECTED_VERSION) {
+            throw new Error(`packed identity mismatch: ${row.name}@${row.version}`);
+          }
+          console.log(`packed ${row.filename} sha1=${row.shasum}`);
+          NODE
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+      - name: Publish the exact artifact
         if: inputs.publish
-        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
+        run: |
+          tgz=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].filename)")
+          npm publish "$RUNNER_TEMP/artifacts/$tgz" --access public --tag "${{ inputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify registry readback
+        if: inputs.publish
+        run: |
+          tgz=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].filename)")
+          expected=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].shasum)")
+          actual=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-shasum)
+          [ "$expected" = "$actual" ] || { echo "registry dist-shasum drift: $actual"; exit 1; }
+          npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json
