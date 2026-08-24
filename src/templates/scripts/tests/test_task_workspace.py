@@ -4651,6 +4651,39 @@ steps:
                 task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
                 "REVIEW_FINDINGS")
 
+    def test_start_hydration_retry_restores_persisted_return_state(self) -> None:
+        fake_runtime = self._install_managed_hydration_fixture()
+        with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):
+            task_runtime.start(self.controller.resolve(), "X")
+            # Simulate a crash after hydrate's pending write during a
+            # queue-owned REVIEW_FINDINGS repair, then recover through the
+            # task-start retry path: the persisted return state must govern.
+            for expected in ("REVIEW_FINDINGS",):
+                with task_runtime.state_lock(self.controller):
+                    state = task_runtime.read_state(self.controller)
+                    state["tasks"]["X"] = {**state["tasks"]["X"], "state": "HYDRATING",
+                                           "hydration_return_state": expected}
+                    task_runtime.write_state(self.controller, state)
+                recovered = task_runtime.start(self.controller.resolve(), "X")
+                self.assertEqual(recovered["outcome"], "hydration_recovered")
+                self.assertEqual(recovered["state"], expected)
+            # The failed retry also restores the persisted state.
+            runner = fake_runtime.with_name("workflow_runner.sh")
+            runner.write_text("#!/usr/bin/env python3\nimport sys\n"
+                              "print('hydration unrecoverable', file=sys.stderr)\n"
+                              "raise SystemExit(9)\n")
+            os.chmod(runner, 0o755)
+            with task_runtime.state_lock(self.controller):
+                state = task_runtime.read_state(self.controller)
+                state["tasks"]["X"] = {**state["tasks"]["X"], "state": "HYDRATING",
+                                       "hydration_return_state": "REVIEW_FINDINGS"}
+                task_runtime.write_state(self.controller, state)
+            with self.assertRaises(task_runtime.TaskWorkspaceError):
+                task_runtime.start(self.controller.resolve(), "X")
+            self.assertEqual(
+                task_runtime.read_state(self.controller)["tasks"]["X"]["state"],
+                "REVIEW_FINDINGS")
+
     def test_task_run_hydration_gate_detects_installed_byte_tamper(self) -> None:
         fake_runtime = self._install_managed_hydration_fixture()
         with mock.patch.object(task_runtime, "__file__", str(fake_runtime)):

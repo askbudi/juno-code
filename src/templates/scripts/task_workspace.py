@@ -2237,6 +2237,16 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
             if (existing.get("state") in {"HYDRATION_FAILED", "HYDRATING"}
                     and clean_identity(existing, repository, target_sha, config,
                                        {"HYDRATION_FAILED", "HYDRATING"})):
+                # Validate and restore any persisted hydration return state so
+                # an interrupted queue-owned repair hydration resumes to its
+                # origin state on both the success and failure paths here as
+                # well, never collapsing to WORKING or HYDRATION_FAILED.
+                if existing.get("state") == "HYDRATING":
+                    return_state = existing.get("hydration_return_state")
+                    if return_state not in (None, "REVIEW_FINDINGS"):
+                        raise TaskWorkspaceError("task hydration return state is invalid")
+                else:
+                    return_state = None
                 frozen_existing = json.loads(json.dumps(existing))
                 control_state_lock(False)
                 try:
@@ -2247,7 +2257,9 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                     state = read_state(controller)
                     if state["tasks"].get(task_id) != frozen_existing:
                         raise TaskWorkspaceError("task state changed during hydration retry") from exc
-                    existing = {**existing, "hydration": exc.evidence}
+                    existing = {**existing,
+                                "state": return_state or "HYDRATION_FAILED",
+                                "hydration": exc.evidence}
                     state["tasks"][task_id] = existing
                     write_state(controller, state)
                     raise
@@ -2256,7 +2268,8 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                 state = read_state(controller)
                 if state["tasks"].get(task_id) != frozen_existing:
                     raise TaskWorkspaceError("task state changed during hydration retry")
-                existing = {**existing, "state": "WORKING", "hydration": hydration}
+                existing = {**existing, "state": return_state or "WORKING",
+                            "hydration": hydration}
                 state["tasks"][task_id] = existing
                 write_state(controller, state)
                 return {**existing, "outcome": "hydration_recovered"}
