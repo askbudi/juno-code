@@ -933,6 +933,37 @@ describe('ScriptInstaller', {
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
     });
 
+    it('installs controller seeds despite customized retired pre-Bolt history', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task/config'));
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+      });
+      await fs.writeJson(path.join(testDir, '.juno_task/config/metadata-controller.json'), {
+        preserved: 'reviewed-project-policy',
+      });
+      // A tracked retired asset whose bytes match no source nor manifest
+      // record suspends the full generation update, but must not block the
+      // scoped lifecycle seed delivery.
+      const retiredPath = path.join(testDir, '.juno_task/scripts/task_lifecycle.py');
+      await fs.ensureDir(path.dirname(retiredPath));
+      const retiredBytes = '# pre-Bolt retired controller seam\n';
+      await fs.writeFile(retiredPath, retiredBytes);
+
+      const updated = await ScriptInstaller.autoUpdate(testDir, true);
+
+      expect(updated).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-task-run.yaml'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-merge-drive.yaml'))).toBe(true);
+      expect(await fs.pathExists(
+        path.join(testDir, '.juno_task/prompts/lifecycle/task-implementation.md'))).toBe(true);
+      // The retired customized asset is untouched: retirement belongs to the
+      // full generation update, not to scoped seed installation.
+      expect(await fs.readFile(retiredPath, 'utf8')).toBe(retiredBytes);
+    });
+
     it('self-heals missing controller lifecycle seeds without touching current scripts', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task/config'));
       await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {

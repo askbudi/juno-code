@@ -549,14 +549,34 @@ export class ManagedProjectAssets {
     projectDir: string,
     options: { silent?: boolean } = {},
   ): Promise<string[]> {
-    await this.preflight(projectDir, {});
-    const projectConfigPath = path.join(projectDir, '.juno_task', 'config.json');
+    // Scoped safety only: safe write paths, real package sources, and the
+    // metadata-only config shape. Retired-generation and manifest concerns
+    // belong to the full generation update; a controller with pre-Bolt
+    // history (for example a tracked retired controller-workspace.json)
+    // must still receive its missing lifecycle seeds.
+    const junoTaskDir = path.join(projectDir, '.juno_task');
+    const junoTaskEntry = await lstatIfPresent(junoTaskDir);
+    if (!junoTaskEntry) return [];
+    await assertSafeManagedWritePath(projectDir, junoTaskDir);
+    if (!junoTaskEntry.isDirectory()) {
+      throw new Error(`Managed project root is not a directory: ${junoTaskDir}`);
+    }
+    const projectConfigPath = path.join(junoTaskDir, 'config.json');
     if (!(await fs.pathExists(projectConfigPath))) return [];
     const projectConfig = await fs.readJson(projectConfigPath);
     const controllerWorkspace = projectConfig?.controllerWorkspace;
     const metadataOnlyController =
       controllerWorkspace?.mode === 'metadata-only' &&
       controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
+    if (projectConfig?.lifecycle !== undefined ||
+        (controllerWorkspace !== undefined && !metadataOnlyController)) {
+      throw new Error(
+        'Legacy Juno 2.0 lifecycle/controllerWorkspace config requires the reviewed 2.1 ' +
+          'migration flow. Run `yy migrate inventory`, generate the owner-reviewed policy, ' +
+          'then apply and verify `yy migrate evacuation-*` in a disposable worktree before ' +
+          'updating managed assets.',
+      );
+    }
     if (!metadataOnlyController) {
       throw new Error('Controller lifecycle seeds install only on a metadata-only controller');
     }
