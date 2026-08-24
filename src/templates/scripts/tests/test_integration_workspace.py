@@ -814,6 +814,58 @@ class IntegrationWorkspaceTests(unittest.TestCase):
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/product"), root_target)
 
 
+    def test_managed_provenance_accepts_controller_asset_class(self) -> None:
+        declaration = self.repo / runtime.MANAGED_MANIFEST_PATH
+        value = json.loads(declaration.read_text())
+        (self.repo / "juno-code/src/templates/workflows").mkdir(parents=True, exist_ok=True)
+        (self.repo / "juno-code/src/templates/workflows/yy-task-run.yaml").write_text(
+            "schema_version: yy_task_run.v1\n")
+        (self.repo / ".juno_task/workflows").mkdir(parents=True, exist_ok=True)
+        value["assets"].append({"source": "workflows/yy-task-run.yaml",
+                                "destination": ".juno_task/workflows/yy-task-run.yaml",
+                                "installClass": "controller", "type": "workflow"})
+        declaration.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "juno-code/src/templates")
+        git(self.repo, "commit", "-m", "declare controller workflow asset")
+        target = git(self.repo, "rev-parse", "HEAD")
+        provenance = runtime.managed_target_provenance(self.repo, target)
+        self.assertNotIn(".juno_task/workflows/yy-task-run.yaml", provenance["assets"],
+                         "controller-class assets are not runtime scripts")
+        # An admitted class with an unadmitted type still fails closed.
+        value["assets"][-1]["type"] = "unexpected"
+        declaration.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", runtime.MANAGED_MANIFEST_PATH)
+        git(self.repo, "commit", "-m", "malformed controller asset type")
+        malformed = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ManagedRuntimeError,
+                                    "target managed asset entry is invalid"):
+            runtime.managed_target_provenance(self.repo, malformed)
+
+    def test_shipped_template_declaration_matches_the_strict_contract(self) -> None:
+        # This suite runs from the shipped template tree (six levels below the
+        # repository root) and from installed runtime trees (three levels
+        # below), so locate the declaration by walking up instead of assuming
+        # a fixed depth.
+        declaration = next(
+            (base / runtime.MANAGED_MANIFEST_PATH
+             for base in Path(__file__).resolve().parents
+             if (base / runtime.MANAGED_MANIFEST_PATH).is_file()),
+            None)
+        self.assertIsNotNone(declaration, "shipped template declaration is missing")
+        value = json.loads(declaration.read_text())
+        self.assertEqual(value.get("schemaVersion"), 1)
+        allowed_keys = [{"source", "destination", "installClass", "type"},
+                        {"source", "destination", "installClass", "type", "macro"}]
+        for asset in value["assets"]:
+            self.assertIn(set(asset), allowed_keys,
+                          f"declaration entry carries unexpected keys: {asset}")
+            self.assertIn(asset.get("installClass"), {"project", "script", "controller"},
+                          f"declaration entry carries an unadmitted class: {asset}")
+            if asset.get("installClass") == "controller":
+                self.assertIn(asset.get("type"), {"workflow", "prompt"},
+                              f"controller entry carries an unadmitted type: {asset}")
+
+
 class InstalledConsumerManagedRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

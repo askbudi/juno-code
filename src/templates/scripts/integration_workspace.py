@@ -124,7 +124,9 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
             if (not isinstance(asset, dict)
                     or set(asset) not in {frozenset(required_asset_keys),
                                          frozenset(required_asset_keys | {"macro"})}
-                    or asset.get("installClass") not in {"project", "script"}
+                    or asset.get("installClass") not in {"project", "script", "controller"}
+                    or (asset.get("installClass") == "controller"
+                        and asset.get("type") not in {"workflow", "prompt"})
                     or not isinstance(asset.get("source"), str)
                     or not isinstance(asset.get("destination"), str)
                     or not isinstance(asset.get("type"), str)
