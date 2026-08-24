@@ -13,6 +13,10 @@ export type MergeQueueInvoker = (
 ) => Promise<void>;
 export type MergeQueueCheckpointer = typeof checkpointControllerAfterFinalization;
 
+export function mergeQueueControlOperation(operation: MergeQueueOperation): 'kanban' | 'orchestration' {
+  return ['status', 'plan'].includes(operation) ? 'kanban' : 'orchestration';
+}
+
 export const MAX_MERGE_RESULT_LINE_CHARS = 1024 * 1024;
 
 /** Retain only one bounded terminal stdout line while all output is streamed. */
@@ -123,7 +127,7 @@ export async function invokeMergeQueue(
 ): Promise<void> {
   const route = routeControlPlane(
     process.cwd(),
-    ['status', 'plan'].includes(operation) ? 'kanban' : 'orchestration',
+    mergeQueueControlOperation(operation),
   );
   await invokeMergeQueueAtController(
     operation, route.controllerRoot, route.env, taskId,

@@ -122,7 +122,7 @@ classify_prebootstrap_command() {
         esac
     done
     case "$PREBOOTSTRAP_COMMAND" in
-        -V|--version|info|where|benchmark|ledger|kanban|task|merge|integration) return 0 ;;
+        -V|--version|info|where|benchmark|ledger|kanban|task|merge|integration|evidence) return 0 ;;
         doctor) [ "${2:-}" = "workspace" ] && return 0 ;;
     esac
     return 1
@@ -246,14 +246,16 @@ read_runtime_version() {
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
-    case "$operation" in kanban|task|merge|integration) ;; *) return 1 ;; esac
+    case "$operation" in kanban|task|merge|integration|evidence) ;; *) return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
         kanban:*) effective_operation=kanban ;;
-        task:status|task:preflight|task:recovery-plan|task:|task:-h|task:--help) effective_operation=kanban ;;
-        task:start|task:hydrate|task:finish|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap) effective_operation=orchestration ;;
+        task:status|task:preflight|task:recovery-plan|task:doctor|task:|task:-h|task:--help) effective_operation=kanban ;;
+        task:start|task:run|task:hydrate|task:finish|task:checkpoint|task:sync|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap) effective_operation=orchestration ;;
         merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
-        merge:next|merge:resolve|merge:review|merge:reopen|merge:reconcile|merge:refresh) effective_operation=orchestration ;;
+        merge:next|merge:resolve|merge:review|merge:reopen|merge:reconcile|merge:refresh|merge:drive|merge:withdraw) effective_operation=orchestration ;;
+        evidence:status|evidence:|evidence:-h|evidence:--help) effective_operation=kanban ;;
+        evidence:run|evidence:await) effective_operation=orchestration ;;
         integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
         integration:sync|integration:runtime-doctor|integration:runtime-refresh|integration:register|integration:repair|integration:push) effective_operation=orchestration ;;
         *)
