@@ -28,15 +28,21 @@ cleanup.
 
 4. Review Git/controller/runtime/Kanban identity, detached/ahead/diverged refs,
    dirty state, worktrees, gitlinks/nested repositories, controller-private
-   tracked roots, ignored/heavy paths, and customized managed assets. Never
+   tracked roots, ignored/heavy paths, customized managed assets, the exact
+   committed config/plan identities, prompt assets, and redacted environment
+   sources. Never
    resolve an ambiguous product ref by guessing. The inspected checkout must be
    at the exact selected product-ref commit before policy generation; never mix
    one ref's identity with another checkout's filesystem. Review grouped legacy
    assets and automatic generated-cache classifications instead of answering
    once per cache file. Runtime candidates are fingerprinted, not executed.
 5. Create a byte-bound owner template, then complete every identity, policy,
-   authority, and per-path disposition. Use only `keep`, `replace`, `retire`,
-   `externalize`, or `block`; preserve child-first ordering for gitlinks.
+   authority, and per-path disposition. Use `keep`, `replace`, `retire`,
+   `externalize`, or `block` for paths. Every legacy config field separately
+   requires exactly one of `migrate`, `transform`, `product-only`, `secret`, or
+   `retire`; omission is an error. Never authorize external environment binding
+   without separately reviewing the secret source and destination. Preserve
+   child-first ordering for gitlinks.
 
    ```bash
    yy migrate owner-template \
@@ -68,7 +74,13 @@ cleanup.
      --output /durable/evacuation-verify.json
    ```
 
-8. Present the immutable inventory, answers, policy, evacuation plan and verified
+8. The reviewed metadata-controller migration plan hash-binds the config, plan,
+   prompt assets, source Git identity, derived safe controller config, compact
+   landing page, and immutable historical-plan evidence. Prepare is atomic and an
+   exact completed retry is idempotent. If a manual config edit is rejected, do
+   not loosen validation or copy the old file: restore the last reviewed bytes,
+   rerun inventory and owner dispositions, then create a fresh plan.
+9. Present the immutable inventory, answers, policy, evacuation plan and verified
    candidate diff for review before requesting separately authorized integration,
    controller preparation, or cutover. Evacuation never stages, commits, moves the
    product ref, or deletes the preserved controller.

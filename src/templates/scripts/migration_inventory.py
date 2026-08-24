@@ -19,6 +19,22 @@ SCHEMA = "juno_migration_inventory.v1"
 POLICY_SCHEMA = "juno_migration_policy_bundle.v1"
 ANSWERS_SCHEMA = "juno_migration_owner_answers.v1"
 DISPOSITIONS = ("keep", "replace", "retire", "externalize", "block")
+CONFIG_DISPOSITIONS = ("migrate", "transform", "product-only", "secret", "retire")
+CONFIG_FIELD_CLASSIFICATION = {
+    "configVersion": "transform", "controllerWorkspace": "transform",
+    "defaultSubagent": "migrate", "defaultBackend": "migrate",
+    "defaultMaxIterations": "migrate", "defaultModel": "migrate",
+    "defaultModels": "migrate", "workflowModels": "migrate", "mainTask": "migrate",
+    "logLevel": "migrate", "logFile": "migrate", "verbose": "migrate", "quiet": "migrate",
+    "mcpTimeout": "migrate", "mcpRetries": "migrate", "mcpServerPath": "migrate",
+    "mcpServerName": "migrate", "hookCommandTimeout": "migrate", "onHourlyLimit": "migrate",
+    "interactive": "migrate", "headlessMode": "migrate", "kanbanRegistry": "migrate",
+    "promptMacros": "transform", "gitCheckpoint": "migrate",
+    "workingDirectory": "product-only", "sessionDirectory": "product-only",
+    "gitFlow": "product-only", "autoDependencyUpdate": "product-only",
+    "hooks": "product-only", "skipHooks": "product-only",
+    "envFilePath": "secret", "envFileCopied": "secret", "lifecycle": "retire",
+}
 CONTROLLER_PRIVATE_DEFAULTS = [
     ".juno_task/artifacts", ".juno_task/cutover.json", ".juno_task/ledger",
     ".juno_task/logs", ".juno_task/receipts", ".juno_task/specs",
@@ -375,6 +391,62 @@ def read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def committed_blob(root: Path, relative: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", f"HEAD:{relative}"], cwd=root,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=30, check=False, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def agent_configuration_inventory(root: Path) -> dict[str, Any]:
+    config_bytes = committed_blob(root, ".juno_task/config.json")
+    config: dict[str, Any] = {}
+    if config_bytes is not None:
+        try:
+            parsed = json.loads(config_bytes)
+            if not isinstance(parsed, dict):
+                raise InventoryError("committed legacy config must be a JSON object")
+            config = parsed
+        except json.JSONDecodeError as exc:
+            raise InventoryError(f"committed legacy config is malformed: {exc}") from exc
+    fields = []
+    for name in sorted(config):
+        recommendation = CONFIG_FIELD_CLASSIFICATION.get(name)
+        if recommendation is None:
+            recommendation = "retire"
+        fields.append({"name": name, "recommended_disposition": recommendation,
+                       "value_type": type(config[name]).__name__})
+    plan_bytes = committed_blob(root, ".juno_task/plan.md")
+    prompt_assets = []
+    for name in git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", ".juno_task/prompts").splitlines():
+        data = committed_blob(root, name)
+        if data is not None:
+            prompt_assets.append({"path": name, "size": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()})
+    environment = []
+    for relative in (".env.yylo", ".env.juno"):
+        candidate = root / relative
+        if candidate.is_file() and not candidate.is_symlink():
+            environment.append({"source": relative, "size": candidate.stat().st_size,
+                                "mode": candidate.stat().st_mode & 0o777,
+                                "values_collected": False, "authorization_required": True})
+    return {
+        "config": {"present": config_bytes is not None,
+                   "size": len(config_bytes) if config_bytes is not None else 0,
+                   "sha256": hashlib.sha256(config_bytes).hexdigest() if config_bytes is not None else None,
+                   "fields": fields, "values_collected": False},
+        "plan": {"present": plan_bytes is not None,
+                 "size": len(plan_bytes) if plan_bytes is not None else 0,
+                 "sha256": hashlib.sha256(plan_bytes).hexdigest() if plan_bytes is not None else None,
+                 "bytes_collected": False},
+        "prompt_assets": prompt_assets,
+        "environment_sources": environment,
+        "source_head": git(root, "rev-parse", "HEAD"),
+    }
+
+
 def managed_assets(root: Path) -> list[dict[str, Any]]:
     manifest = read_json(root / ".juno_task/managed-assets.json")
     records = manifest.get("assets") if isinstance(manifest.get("assets"), dict) else {}
@@ -432,6 +504,9 @@ def required_decisions(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             add("custom_project_asset", name, "keep", "project_specific_asset")
     for row in payload["hook_config_shapes"]: add("hook_config", row["path"])
+    for row in payload["agent_configuration"]["config"]["fields"]:
+        add("legacy_config_field", row["name"], row["recommended_disposition"],
+            "every_legacy_config_field_requires_explicit_disposition")
     for row in payload["gitlinks"]: add("gitlink", row["path"], "keep", "child_first_repository_policy")
     for row in payload["nested_repositories"]: add("nested_repository", row["path"])
     for row in payload["heavy_paths"]:
@@ -452,11 +527,12 @@ def required_decisions(payload: dict[str, Any]) -> dict[str, Any]:
                             "integration_path", "task_workspace_root", "branch_prefix", "rollback_owner", "cleanup_owner"],
         "policy_fields": ["allowed_paths", "controller_private_paths", "copied_metadata", "focused_validation",
                           "full_suite_validation", "risk_policy"],
-        "disposition_choices": list(DISPOSITIONS), "dispositions": owner_rows,
+        "disposition_choices": list(DISPOSITIONS),
+        "config_disposition_choices": list(CONFIG_DISPOSITIONS), "dispositions": owner_rows,
         "automatic_classifications": sorted(automatic, key=lambda row: (row["kind"], row["path"])),
         "classification_counts": {"owner_review": len(owner_rows), "automatic": len(automatic)},
         "separate_authorities": ["prepare_controller", "evacuate_product_metadata", "register_controller", "move_product_ref",
-                                 "cleanup_old_controller", "tag_publish_push_deploy"],
+                                 "cleanup_old_controller", "tag_publish_push_deploy", "bind_external_environment"],
     }
 
 
@@ -495,6 +571,7 @@ def inventory(args: argparse.Namespace) -> dict[str, Any]:
         "controller_private_roots": tracked_controller_roots(root), "managed_assets": managed_assets(root),
         "custom_project_assets": custom_project_assets(root),
         "hook_config_shapes": hook_config_shapes(root),
+        "agent_configuration": agent_configuration_inventory(root),
         "gitlinks": gitlinks, "nested_repositories": nested, "ignored_paths": ignored, "heavy_paths": heavy,
         "heavy_threshold_bytes": args.heavy_threshold_bytes,
     }
@@ -560,7 +637,8 @@ def validated_answers(receipt: dict[str, Any], answers: dict[str, Any], inventor
         decisions = {}
     for row in required["dispositions"]:
         value = decisions.get(row["id"])
-        if value not in DISPOSITIONS:
+        allowed = CONFIG_DISPOSITIONS if row.get("kind") == "legacy_config_field" else DISPOSITIONS
+        if value not in allowed:
             missing.append(f"dispositions.{row['id']}")
         elif row.get("kind") == "controller_agent_surface" and value not in {"retire", "externalize"}:
             raise InventoryError(
@@ -631,14 +709,34 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
     receipt = read_json(args.inventory.resolve()); answers = read_json(args.answers.resolve())
     refuse_protected_output(args.output, receipt)
     validated_answers(receipt, answers, digest(args.inventory.resolve()))
-    private = answers["controller_private_paths"]
-    copied = answers["copied_metadata"]
+    private = list(answers["controller_private_paths"])
+    copied = list(answers["copied_metadata"])
+    agent_source = receipt.get("agent_configuration", {})
+    required_agent_paths: list[str] = []
+    if agent_source.get("plan", {}).get("present"):
+        required_agent_paths.extend([".juno_task/plan.md", ".juno_task/specs"])
+    if agent_source.get("prompt_assets"):
+        required_agent_paths.append(".juno_task/prompts")
+    for required_path in required_agent_paths:
+        if required_path not in private:
+            private.append(required_path)
+        if required_path not in copied:
+            copied.append(required_path)
     if not all(isinstance(path, str) and path.startswith(".juno_task/") for path in private + copied):
         raise InventoryError("controller_private_paths and copied_metadata must be .juno_task paths")
     if not set(copied).issubset(set(private)):
         raise InventoryError("copied_metadata must be a subset of controller_private_paths")
     decision_rows = {row["path"]: answers["dispositions"][row["id"]]
-                     for row in receipt["required_owner_answers"]["dispositions"]}
+                     for row in receipt["required_owner_answers"]["dispositions"]
+                     if row.get("kind") != "legacy_config_field"}
+    config_field_dispositions = {
+        row["path"]: answers["dispositions"][row["id"]]
+        for row in receipt["required_owner_answers"]["dispositions"]
+        if row.get("kind") == "legacy_config_field"
+    }
+    inventoried_fields = {row["name"] for row in receipt["agent_configuration"]["config"]["fields"]}
+    if set(config_field_dispositions) != inventoried_fields:
+        raise InventoryError("every inventoried config field must have exactly one disposition")
     for path in private:
         disposition = decision_rows.get(path)
         if disposition and ((path in copied) != (disposition == "keep")):
@@ -673,6 +771,11 @@ def policy_bundle(args: argparse.Namespace) -> dict[str, Any]:
     validate_generated_policies(metadata, task, integration, answers["risk_policy"])
     return {"schema_version": POLICY_SCHEMA, "operation": "generate-policy", "outcome": "generated_from_reviewed_answers",
             "migration_authorized": False,
+            "agent_migration": {
+                "source": receipt["agent_configuration"],
+                "field_dispositions": config_field_dispositions,
+                "environment_binding_authorized": bool(answers["authorities"].get("bind_external_environment", False)),
+            },
             "inventory_sha256": digest(args.inventory.resolve()), "owner_answers_sha256": digest(args.answers.resolve()),
             "selected_paths": {"controller": answers["controller_path"], "integration": answers["integration_path"]},
             "owners": {"rollback": answers["rollback_owner"], "cleanup": answers["cleanup_owner"]},

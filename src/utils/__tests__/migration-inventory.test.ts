@@ -24,6 +24,7 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     await fs.outputFile(path.join(project, '.juno_task/tasks/aa/AA1.md'), 'task\n');
     await fs.outputFile(path.join(project, '.juno_task/ledger/aa/AA1/000001.ndjson'), '{}\n');
     await fs.outputFile(path.join(project, '.juno_task/scripts/kanban.sh'), '#!/bin/sh\n');
+    await fs.outputFile(path.join(project, '.juno_task/plan.md'), '# Historical plan\n' + 'phase\n'.repeat(100));
     const prompt = '.juno_task/prompts/custom.md';
     await fs.outputFile(path.join(project, prompt), 'managed\n');
     const installedSha = spawnSync('shasum', ['-a', '256', path.join(project, prompt)], { encoding: 'utf8' }).stdout.split(' ')[0];
@@ -78,6 +79,15 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     expect(receipt.custom_project_assets).toEqual(expect.arrayContaining([expect.objectContaining({ path: '.juno_task/scripts/kanban.sh' }), expect.objectContaining({ path: '.git/hooks/custom-hook', kind: 'git-hook' })]));
     expect(receipt.hook_config_shapes).toContainEqual(expect.objectContaining({ path: '.claude/settings.json', events: [{ event: 'PreToolUse', definition_count: 1 }], values_collected: false }));
     expect(receipt.hook_config_shapes).toContainEqual(expect.objectContaining({ path: '.juno_task/config.json', lifecycle_present: true, controller_workspace_present: true, values_collected: false }));
+    expect(receipt.agent_configuration.config).toMatchObject({ present: true, values_collected: false, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(receipt.agent_configuration.config.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'hooks', recommended_disposition: 'product-only' }),
+      expect.objectContaining({ name: 'lifecycle', recommended_disposition: 'retire' }),
+      expect.objectContaining({ name: 'promptMacros', recommended_disposition: 'transform' }),
+    ]));
+    expect(receipt.agent_configuration.plan).toMatchObject({ present: true, bytes_collected: false, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(receipt.agent_configuration.prompt_assets).toContainEqual(expect.objectContaining({ path: '.juno_task/prompts/custom.md' }));
+    expect(receipt.agent_configuration.environment_sources).toEqual([]);
     expect(text).not.toContain('JUNO_CONFIG_SECRET_COMMAND'); expect(text).not.toContain('/owner/private');
     expect(receipt.policy_generation_blocked).toBe(true);
     expect(receipt.policy_generation_block_reasons).toContain('explicit_product_ref_required');
@@ -101,7 +111,9 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
     expect(Object.values(template.dispositions)).toContain(null);
     const refused = run(project, 'generate-policy', '--inventory', receiptPath, '--answers', incomplete, '--output', path.join(temporary, 'refused.json'));
     expect(refused.status).toBe(2); expect(refused.stderr).toContain('owner answers unresolved');
-    const dispositions = Object.fromEntries(receipt.required_owner_answers.dispositions.map((row: any) => [row.id, 'keep']));
+    const dispositions = Object.fromEntries(receipt.required_owner_answers.dispositions.map((row: any) => [
+      row.id, row.kind === 'legacy_config_field' ? row.recommended_disposition : 'keep',
+    ]));
     const authorities = Object.fromEntries(receipt.required_owner_answers.separate_authorities.map((name: string) => [name, false]));
     const answers = {
       schema_version: template.schema_version, inventory_sha256: template.inventory_sha256,

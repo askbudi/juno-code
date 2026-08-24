@@ -125,6 +125,86 @@ class MetadataControllerTest(unittest.TestCase):
             argparse.Namespace(plan=self.plan_path, output=self.temp / "prepare.json"), self.policy
         )
 
+    def test_rich_agent_migration_preserves_plan_and_safe_config_without_activating_product_fields(self) -> None:
+        legacy_config = {
+            "defaultMaxIterations": 23,
+            "promptMacros": {"global": {"ship": {"path": ".juno_task/prompts/ship.md"}}},
+            "hooks": {"START_RUN": {"commands": ["touch product-only"]}},
+            "workingDirectory": "/stale/product", "envFilePath": ".env.juno",
+            "lifecycle": {"enabled": True}, "controllerWorkspace": {"enabled": True},
+        }
+        config_bytes = mc.canonical(legacy_config)
+        plan_bytes = ("# Historical plan\n" + "large phase\n" * 500).encode()
+        prompt_bytes = b"Run the reviewed release workflow.\n"
+        (self.repo / ".juno_task/config.json").write_bytes(config_bytes)
+        (self.repo / ".juno_task/plan.md").write_bytes(plan_bytes)
+        (self.repo / ".juno_task/prompts").mkdir(parents=True, exist_ok=True)
+        (self.repo / ".juno_task/prompts/ship.md").write_bytes(prompt_bytes)
+        command("git", "add", ".juno_task/config.json", ".juno_task/plan.md", ".juno_task/prompts/ship.md", cwd=self.repo)
+        command("git", "commit", "-m", "rich legacy agent state", cwd=self.repo)
+        self.old_head = command("git", "rev-parse", "HEAD", cwd=self.repo)
+
+        rich_policy = json.loads(json.dumps(self.policy))
+        for name in (".juno_task/plan.md", ".juno_task/prompts"):
+            if name not in rich_policy["copied_metadata"]:
+                rich_policy["copied_metadata"].append(name)
+            if name not in rich_policy["product_forbidden"]:
+                rich_policy["product_forbidden"].append(name)
+        rich_policy["tracked_exact"].append(".juno_task/plan.md")
+        rich_policy["tracked_recursive"].append(".juno_task/prompts")
+        rich_policy_path = self.temp / "reviewed/rich-metadata-policy.json"
+        write(rich_policy_path, json.dumps(rich_policy))
+        rich_policy = mc.load_policy(rich_policy_path)
+        bundle = self.temp / "reviewed/rich-policy-bundle.json"
+        source = {
+            "config": {"present": True, "size": len(config_bytes), "sha256": mc.bytes_digest(config_bytes),
+                       "fields": [{"name": name} for name in sorted(legacy_config)], "values_collected": False},
+            "plan": {"present": True, "size": len(plan_bytes), "sha256": mc.bytes_digest(plan_bytes),
+                     "bytes_collected": False},
+            "prompt_assets": [{"path": ".juno_task/prompts/ship.md", "size": len(prompt_bytes),
+                               "sha256": mc.bytes_digest(prompt_bytes)}],
+            "environment_sources": [{"source": ".env.juno", "values_collected": False,
+                                     "authorization_required": True}],
+            "source_head": self.old_head,
+        }
+        dispositions = {
+            "defaultMaxIterations": "migrate", "promptMacros": "transform",
+            "hooks": "product-only", "workingDirectory": "product-only",
+            "envFilePath": "secret", "lifecycle": "retire", "controllerWorkspace": "transform",
+        }
+        write(bundle, json.dumps({
+            "schema_version": "juno_migration_policy_bundle.v1", "operation": "generate-policy",
+            "outcome": "generated_from_reviewed_answers",
+            "agent_migration": {"source": source, "field_dispositions": dispositions,
+                                "environment_binding_authorized": False},
+            "policies": {"metadata_controller": rich_policy,
+                         "task_workspace": json.loads(self.task_policy.read_text()),
+                         "integration_workspace": json.loads(self.integration_policy.read_text()),
+                         "risk": json.loads(self.risk_policy.read_text())},
+        }))
+        mc.migration_plan(self.migration_args(
+            policy_bundle=bundle, task_workspace_policy=None,
+            integration_workspace_policy=None, risk_policy=None), rich_policy)
+        prepare_args = argparse.Namespace(plan=self.plan_path, output=self.temp / "rich-prepare.json")
+        first_prepare = mc.prepare(prepare_args, rich_policy)
+        self.assertEqual(mc.prepare(prepare_args, rich_policy), first_prepare)
+
+        migrated = json.loads((self.new_controller / ".juno_task/config.json").read_text())
+        self.assertEqual(migrated["defaultMaxIterations"], 23)
+        self.assertEqual(migrated["agentProfile"], {"version": 1, "promptAssetRoot": ".juno_task/prompts"})
+        self.assertEqual(migrated["promptMacros"]["global"]["ship"], {"path": "ship.md"})
+        for rejected in ("hooks", "workingDirectory", "envFilePath", "lifecycle"):
+            self.assertNotIn(rejected, migrated)
+        compact = (self.new_controller / ".juno_task/plan.md").read_text()
+        self.assertLess(len(compact), 1024)
+        evidence_path = next((self.new_controller / ".juno_task/specs").glob("legacy-plan-*.md"))
+        self.assertEqual(evidence_path.read_bytes(), plan_bytes)
+        self.assertEqual((self.new_controller / ".juno_task/prompts/ship.md").read_bytes(), prompt_bytes)
+        diagnostic = mc.inspect(self.new_controller, rich_policy,
+                                expected_branch="refs/heads/juno/controller-metadata-v1",
+                                require_active=False)["agent_profile_diagnostic"]
+        self.assertEqual(diagnostic["status"], "valid")
+
     def test_prepare_creates_unrelated_metadata_only_controller_and_preserves_product(self) -> None:
         payload = self.prepare()
         self.assertTrue(payload["root_commit"])
@@ -573,6 +653,14 @@ class MetadataControllerTest(unittest.TestCase):
             "schema_version": "juno_migration_policy_bundle.v1",
             "operation": "generate-policy",
             "outcome": "generated_from_reviewed_answers",
+            "agent_migration": {
+                "source": {
+                    "config": {"present": False, "size": 0, "sha256": None, "fields": [], "values_collected": False},
+                    "plan": {"present": False, "size": 0, "sha256": None, "bytes_collected": False},
+                    "prompt_assets": [], "environment_sources": [], "source_head": self.old_head,
+                },
+                "field_dispositions": {}, "environment_binding_authorized": False,
+            },
             "policies": {
                 "metadata_controller": json.loads(json.dumps(self.policy)),
                 "task_workspace": json.loads(self.task_policy.read_text()),
@@ -763,7 +851,7 @@ class MetadataControllerTest(unittest.TestCase):
         mc.migration_plan(self.migration_args(), self.policy)
         prepare_output = self.temp / "prepare.json"
         prepare_output.write_text("{}\n")
-        with self.assertRaisesRegex(mc.BoundaryError, "receipt path must be fresh"):
+        with self.assertRaisesRegex(mc.BoundaryError, "existing prepare receipt is not an exact completed retry"):
             mc.prepare(argparse.Namespace(plan=self.plan_path, output=prepare_output), self.policy)
         self.assertFalse(self.new_controller.exists())
         self.assertFalse(mc.ref_exists(self.repo, "refs/heads/juno/controller-metadata-v1"))

@@ -88,6 +88,14 @@ CANONICAL_CONTROLLER_WORKSPACE = {
 RETIRED_CONTROLLER_WORKSPACE = {
     "enabled": True, "policy": ".juno_task/config/controller-workspace.json"}
 CANONICAL_CONTROLLER_CONFIG = {"controllerWorkspace": CANONICAL_CONTROLLER_WORKSPACE}
+CONTROLLER_SAFE_CONFIG_FIELDS = {
+    "configVersion", "defaultSubagent", "defaultBackend", "defaultMaxIterations",
+    "defaultModel", "defaultModels", "workflowModels", "mainTask", "logLevel",
+    "logFile", "verbose", "quiet", "mcpTimeout", "mcpRetries", "mcpServerPath",
+    "mcpServerName", "hookCommandTimeout", "onHourlyLimit", "interactive",
+    "headlessMode", "kanbanRegistry", "gitCheckpoint",
+}
+AGENT_MIGRATION_DISPOSITIONS = {"migrate", "transform", "product-only", "secret", "retire"}
 CONFIG_PATH = ".juno_task/config.json"
 SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 MAX_LOCAL_RUNTIME_ARTIFACT_BYTES = 256 * 1024 * 1024
@@ -252,7 +260,11 @@ def reviewed_policies_from_sources(
         integration_value = validate_integration_policy(
             load_policy_value(policies["integration_workspace"]), task_value)
         risk_value = validate_risk_policy(load_policy_value(policies["risk"]))
-        source = {"kind": "policy_bundle", "path": str(bundle_path), "sha256": file_digest(bundle_path)}
+        agent_migration = bundle.get("agent_migration")
+        if not isinstance(agent_migration, dict):
+            raise BoundaryError("policy bundle is missing reviewed agent migration dispositions")
+        source = {"kind": "policy_bundle", "path": str(bundle_path), "sha256": file_digest(bundle_path),
+                  "agent_migration_sha256": digest(agent_migration)}
     else:
         if task_policy is None or integration_policy is None or risk_policy is None:
             raise BoundaryError("migration-plan requires --policy-bundle or all three workspace/risk policy paths")
@@ -572,6 +584,110 @@ def inventory(old: Path, old_head: str, product_head: str, policy: dict[str, Any
             "excluded_from_metadata_branch_count": len(set(names) - set(selected))}
 
 
+def normalize_migrated_prompt_macros(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BoundaryError("reviewed promptMacros migration requires an object")
+    known = {"enabled", "order", "maxDepth", "global", "local"}
+    profile = json.loads(json.dumps(value)) if set(value).issubset(known) else {"global": json.loads(json.dumps(value))}
+    for dictionary_name in ("global", "local"):
+        dictionary = profile.get(dictionary_name)
+        if dictionary is None:
+            continue
+        if not isinstance(dictionary, dict):
+            raise BoundaryError(f"promptMacros.{dictionary_name} must be an object")
+        for name, raw in list(dictionary.items()):
+            if isinstance(raw, dict) and isinstance(raw.get("path"), str):
+                prompt_path = PurePosixPath(raw["path"])
+                prefix = PurePosixPath(".juno_task/prompts")
+                try:
+                    relative = prompt_path.relative_to(prefix)
+                except ValueError:
+                    relative = prompt_path
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise BoundaryError(f"prompt macro {name} escapes the reviewed prompt asset root")
+                dictionary[name] = {"path": relative.as_posix()}
+            elif isinstance(raw, str) and raw.startswith(".juno_task/prompts/"):
+                dictionary[name] = {"path": raw.removeprefix(".juno_task/prompts/")}
+    return profile
+
+
+def reviewed_agent_migration(old: Path, old_head: str, policy_bundle: Path | None) -> dict[str, Any]:
+    if policy_bundle is None:
+        return {"configured": False, "controller_config": CANONICAL_CONTROLLER_CONFIG,
+                "historical_plan": None, "compact_plan": None, "prompt_assets": []}
+    bundle_path = reviewed_path(policy_bundle, "policy bundle")
+    bundle = read_json(bundle_path, "policy bundle")
+    migration = bundle.get("agent_migration")
+    if not isinstance(migration, dict) or not isinstance(migration.get("source"), dict):
+        raise BoundaryError("reviewed policy bundle lacks agent migration source identity")
+    source = migration["source"]
+    if source.get("source_head") != old_head:
+        raise BoundaryError("agent migration inventory does not bind the frozen old controller head")
+    config_record = source.get("config")
+    dispositions = migration.get("field_dispositions")
+    if not isinstance(config_record, dict) or not isinstance(dispositions, dict):
+        raise BoundaryError("agent migration config identity or dispositions are missing")
+    if config_record.get("present") is not True:
+        if dispositions:
+            raise BoundaryError("absent legacy config cannot have field dispositions")
+        config_bytes = canonical({})
+        legacy: dict[str, Any] = {}
+    else:
+        config_bytes = committed_bytes(old, old_head, CONFIG_PATH)
+        if (config_record.get("sha256") != bytes_digest(config_bytes)
+                or config_record.get("size") != len(config_bytes)):
+            raise BoundaryError("legacy config bytes differ from the reviewed inventory")
+        try:
+            parsed_legacy = json.loads(config_bytes)
+        except json.JSONDecodeError as exc:
+            raise BoundaryError(f"legacy config is invalid: {exc}") from exc
+        if not isinstance(parsed_legacy, dict):
+            raise BoundaryError("legacy config must be an object")
+        legacy = parsed_legacy
+    if set(dispositions) != set(legacy):
+        raise BoundaryError("every legacy config field requires exactly one reviewed disposition")
+    if any(value not in AGENT_MIGRATION_DISPOSITIONS for value in dispositions.values()):
+        raise BoundaryError("agent migration contains an unsupported field disposition")
+    migrated: dict[str, Any] = {"controllerWorkspace": CANONICAL_CONTROLLER_WORKSPACE}
+    for name, disposition in sorted(dispositions.items()):
+        if disposition == "migrate":
+            if name not in CONTROLLER_SAFE_CONFIG_FIELDS:
+                raise BoundaryError(f"unsafe config field cannot be migrated into controller: {name}")
+            migrated[name] = legacy[name]
+        elif name == "promptMacros" and disposition == "transform":
+            migrated[name] = normalize_migrated_prompt_macros(legacy[name])
+        elif name == "controllerWorkspace" and disposition != "transform":
+            raise BoundaryError("controllerWorkspace must be transformed to metadata-only")
+    prompt_assets = source.get("prompt_assets", [])
+    if prompt_assets:
+        migrated["agentProfile"] = {"version": 1, "promptAssetRoot": ".juno_task/prompts"}
+    plan_record = source.get("plan", {})
+    historical_plan = compact_plan = None
+    if plan_record.get("present"):
+        plan_bytes = committed_bytes(old, old_head, ".juno_task/plan.md")
+        if (plan_record.get("sha256") != bytes_digest(plan_bytes)
+                or plan_record.get("size") != len(plan_bytes)):
+            raise BoundaryError("legacy plan.md bytes differ from the reviewed inventory")
+        evidence_name = f".juno_task/specs/legacy-plan-{bytes_digest(plan_bytes)[:16]}.md"
+        historical_plan = {"path": evidence_name,
+                           "bytes_base64": base64.b64encode(plan_bytes).decode(),
+                           "sha256": bytes_digest(plan_bytes)}
+        compact_bytes = ("# Current work\n\nThe immutable Juno v2 plan is preserved at "
+                         f"`{evidence_name}` (SHA-256 `{bytes_digest(plan_bytes)}`).\n"
+                         "Use Kanban and current task specs for active execution.\n").encode()
+        compact_plan = {"bytes_base64": base64.b64encode(compact_bytes).decode(),
+                        "sha256": bytes_digest(compact_bytes)}
+    if source.get("environment_sources") and migration.get("environment_binding_authorized") is not True:
+        # Presence is preserved diagnostically, but secret bytes are never copied or activated.
+        pass
+    return {"configured": True, "controller_config": migrated,
+            "controller_config_sha256": bytes_digest(canonical(migrated)),
+            "field_dispositions": dispositions, "source": source,
+            "historical_plan": historical_plan, "compact_plan": compact_plan,
+            "prompt_assets": prompt_assets,
+            "environment_binding_authorized": migration.get("environment_binding_authorized") is True}
+
+
 def migration_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     old = exact_worktree(args.old_controller)
     if git(old, "status", "--porcelain=v2", "--untracked-files=all"):
@@ -591,6 +707,7 @@ def migration_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str
         metadata_policy=policy, policy_bundle=args.policy_bundle,
         task_policy=args.task_workspace_policy, integration_policy=args.integration_workspace_policy,
         risk_policy=args.risk_policy)
+    agent_migration = reviewed_agent_migration(old, old_head, args.policy_bundle)
     selected_entries(old, old_head, policy)
     payload = {"schema_version": PLAN_SCHEMA, "operation": "migration-plan", "outcome": "planned_no_mutation",
                "old_controller": str(old), "old_branch": args.old_branch, "old_head": old_head,
@@ -598,6 +715,7 @@ def migration_plan(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str
                "product_ref": args.product_ref, "product_head": product_head, "git_common_dir": common_dir(old),
                "runtime": runtime, "policy_sha256": digest(policy), "reviewed_policies": reviewed_policies,
                "inventory": inventory(old, old_head, product_head, policy, runtime),
+               "agent_migration": agent_migration,
                "cutover_authorized": False, "rollback": {"controller": str(old), "branch": args.old_branch, "head": old_head},
                "steps": ["freeze old controller identity", "prepare unrelated metadata-only root and worktree",
                          "install generated local runtime", "run canaries", "request owner-authorized registration cutover"],
@@ -626,15 +744,35 @@ def add_blob(root: Path, index_env: dict[str, str], path: str, data: bytes, mode
 
 
 def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
-    plan = read_plan(args.plan.resolve())
-    if args.output.expanduser().resolve().exists():
-        raise BoundaryError("prepare receipt path must be fresh before mutation")
+    plan_path = args.plan.resolve()
+    plan = read_plan(plan_path)
+    output_path = args.output.expanduser().resolve()
+    if output_path.exists():
+        prior = read_json(output_path, "prepare receipt")
+        destination = Path(plan["new_controller"])
+        if (prior.get("schema_version") != RECEIPT_SCHEMA or prior.get("operation") != "prepare"
+                or prior.get("outcome") != "prepared_not_registered"
+                or prior.get("plan_sha256") != file_digest(plan_path)
+                or prior.get("new_controller") != str(destination)
+                or not destination.is_dir()
+                or git(destination, "rev-parse", "HEAD", check=False) != prior.get("new_head")):
+            raise BoundaryError("existing prepare receipt is not an exact completed retry")
+        evidence = inspect(destination, policy, expected_branch=plan["new_branch"], require_active=False)
+        if not evidence["passed"]:
+            raise BoundaryError("existing prepare receipt destination no longer verifies")
+        return prior
     old = exact_worktree(Path(plan["old_controller"]))
     resolve_commit(old, plan["old_branch"], plan["old_head"], "old controller ref")
     resolve_commit(old, plan["product_ref"], plan["product_head"], "product target")
     if plan["policy_sha256"] != digest(policy):
         raise BoundaryError("metadata policy changed after planning")
     reviewed_policies = revalidate_planned_policies(plan, policy)
+    policy_source = reviewed_policies.get("source", {})
+    planned_agent = reviewed_agent_migration(
+        old, plan["old_head"],
+        Path(policy_source["path"]) if policy_source.get("kind") == "policy_bundle" else None)
+    if digest(planned_agent) != digest(plan.get("agent_migration")):
+        raise BoundaryError("derived agent migration changed after planning")
     runtime_identity(Path(plan["runtime"]["executable"]), plan["runtime"]["version"], old)
     destination = Path(plan["new_controller"])
     if plan["new_branch"] != policy["controller_branch"] or plan["product_ref"] != policy["product_ref"]:
@@ -642,7 +780,11 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     if destination.exists() or ref_exists(old, plan["new_branch"]):
         raise BoundaryError("metadata destination or branch is no longer fresh")
     entries = selected_entries(old, plan["old_head"], policy)
-    preserved_entries = [{"mode": mode, "oid": oid, "path": name} for mode, oid, name in entries]
+    transformed_paths = {CONFIG_PATH}
+    if plan["agent_migration"].get("compact_plan"):
+        transformed_paths.add(".juno_task/plan.md")
+    preserved_entries = [{"mode": mode, "oid": oid, "path": name}
+                         for mode, oid, name in entries if name not in transformed_paths]
     boundary = {"schema_version": RECEIPT_SCHEMA, "operation": "controller-boundary", "source_head": plan["old_head"],
                 "product_ref": plan["product_ref"], "product_head_at_plan": plan["product_head"],
                 "runtime": {"package": "@yylo/cli", "version": plan["runtime"]["version"]},
@@ -658,7 +800,7 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
     risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
     generated = {
         ".gitignore": b".env.yylo\n.venv_juno/\n.juno_task/runtime/\n.juno_task/scripts/\n.juno_task/tmp/\n.juno_task/cache/\n.juno_task/locks/\n.juno_task/transactions/\n/AGENTS.md\n/CLAUDE.md\n/.agents/\n/.claude/\n/.pi/\n*.log\n__pycache__/\n",
-        CONFIG_PATH: canonical_controller_config_bytes(),
+        CONFIG_PATH: canonical(plan["agent_migration"]["controller_config"]),
         ".juno_task/config/metadata-controller.json": canonical(policy),
         ".juno_task/config/task-workspace.json": task_policy_bytes,
         ".juno_task/config/integration-workspace.json": integration_policy_bytes,
@@ -666,6 +808,18 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
         ".juno_task/receipts/controller-boundary.json": canonical(boundary),
         ".juno_task/state/tasks.json": canonical({"schema_version": "juno_task_workspace_state.v1", "tasks": {}, "queues": {}}),
     }
+    historical_plan = plan["agent_migration"].get("historical_plan")
+    compact_plan = plan["agent_migration"].get("compact_plan")
+    if historical_plan:
+        historical_bytes = base64.b64decode(historical_plan["bytes_base64"], validate=True)
+        if bytes_digest(historical_bytes) != historical_plan["sha256"]:
+            raise BoundaryError("historical plan evidence bytes do not match the migration plan")
+        generated[historical_plan["path"]] = historical_bytes
+    if compact_plan:
+        compact_bytes = base64.b64decode(compact_plan["bytes_base64"], validate=True)
+        if bytes_digest(compact_bytes) != compact_plan["sha256"]:
+            raise BoundaryError("compact plan bytes do not match the migration plan")
+        generated[".juno_task/plan.md"] = compact_bytes
     controller_wiki, controller_wiki_evidence = packaged_controller_wiki(
         Path(plan["runtime"]["executable"]))
     generated.update(controller_wiki)
@@ -915,6 +1069,8 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
     missing_canonical = [prefix for prefix in canonical_prefixes if not any(name.startswith(prefix + "/") for name in names)]
     missing_generated = [name for name in policy["generated_metadata"] if name not in names]
     generated_contract_ok = False
+    agent_profile_diagnostic = {"status": "missing", "findings": ["agentProfile is absent; package defaults remain active"],
+                                "next_command": "yy migrate inventory --help"}
     if not missing_generated:
         try:
             config_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/config.json"], root).stdout)
@@ -927,8 +1083,28 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
                 json.loads(integration_policy_text), task_policy_value)
             risk_policy_value = validate_risk_policy(json.loads(risk_policy_text))
             tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
+            profile = config_value.get("agentProfile") if isinstance(config_value, dict) else None
+            profile_valid = profile is None or profile == {
+                "version": 1, "promptAssetRoot": ".juno_task/prompts"}
+            unresolved_assets: list[str] = []
+            if isinstance(config_value, dict) and profile is not None:
+                macros = config_value.get("promptMacros", {})
+                for dictionary_name in ("global", "local"):
+                    dictionary = macros.get(dictionary_name, {}) if isinstance(macros, dict) else {}
+                    if isinstance(dictionary, dict):
+                        for macro_name, raw in dictionary.items():
+                            if isinstance(raw, dict) and isinstance(raw.get("path"), str):
+                                asset = PurePosixPath(".juno_task/prompts") / raw["path"]
+                                if ".." in asset.parts or asset.as_posix() not in names:
+                                    unresolved_assets.append(f"{dictionary_name}.{macro_name}")
+                agent_profile_diagnostic = {
+                    "status": "valid" if profile_valid and not unresolved_assets else "invalid",
+                    "findings": (["unresolved prompt assets: " + ", ".join(unresolved_assets)]
+                                 if unresolved_assets else []),
+                    "next_command": None if profile_valid and not unresolved_assets else "yy migrate inventory --help"}
             generated_contract_ok = (
                 isinstance(config_value, dict)
+                and profile_valid and not unresolved_assets
                 and "lifecycle" not in config_value
                 and config_value.get("controllerWorkspace") == CANONICAL_CONTROLLER_WORKSPACE
                 and policy_text == canonical(policy).decode()
@@ -994,6 +1170,7 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             "missing_required_generated": missing_generated,
             "gitignore_entries": gitignore_lines, "missing_root_agent_ignores": missing_root_ignores,
             "tracked_agent_surface": tracked_agent_surface,
+            "agent_profile_diagnostic": agent_profile_diagnostic,
             "checks": checks, "passed": all(checks.values())}
 
 
