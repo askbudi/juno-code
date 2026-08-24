@@ -24,6 +24,14 @@ from typing import Optional
 
 SCRIPT = Path(__file__).resolve().parents[1] / "task_workspace.py"
 
+# Real-Git fixtures construct independent temporary controllers, so caller
+# routing authority (for example a yy watch/ledger invocation forwarding
+# JUNO_CONTROL_* identity) must never leak into them. Tests that verify
+# forwarded routing set their own explicit values below.
+for _routing_var in ("JUNO_CONTROL_INVOCATION_ROOT", "JUNO_CONTROL_INVOCATION_ROLE",
+                     "JUNO_CONTROL_EFFECTIVE_ROOT", "JUNO_CONTROL_OPERATION"):
+    os.environ.pop(_routing_var, None)
+
 # Minimal workflow runner used by hydration-gate fixtures: lint passes and the
 # run stage writes a passing manifest to the requested --out-dir.
 FIXTURE_HYDRATION_RUNNER = """#!/usr/bin/env python3
@@ -410,6 +418,187 @@ def git(root: Path, *args: str) -> str:
     return run(["git", "-C", str(root), *args], root).stdout.strip()
 
 
+FAKE_KANBAN_SOURCE = '''#!/usr/bin/env python3
+import fcntl, hashlib, json, pathlib, sys, uuid
+board = pathlib.Path(@BOARD@)
+lock_handle = board.with_name(board.name + ".lock").open("a+")
+fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+value = json.loads(board.read_text())
+argv = sys.argv[1:]
+NL = chr(10)
+
+
+def canon(task):
+    core = {key: task.get(key) for key in ("id", "status", "commit_hash", "agent_response", "fields")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def revision(task):
+    chain = task.setdefault("_events", [])
+    if not chain:
+        chain.append({"event_id": "seed", "task_id": task["id"], "operation": "create",
+                      "source": "cli", "before_sha256": None,
+                      "after_sha256": canon(task), "previous_event_sha256": None,
+                      "changed_paths": []})
+    return chain[-1]["after_sha256"]
+
+
+def append_event(task, operation, changed):
+    before = revision(task)
+    previous = task["_events"][-1].get("event_sha256")
+    after = canon(task)
+    event = {"event_id": str(uuid.uuid4()), "task_id": task["id"], "operation": operation,
+             "source": "cli", "before_sha256": before, "after_sha256": after,
+             "previous_event_sha256": previous,
+             "event_sha256": hashlib.sha256(
+                 json.dumps([before, after, operation], separators=(",", ":")).encode()).hexdigest(),
+             "changed_paths": changed}
+    task["_events"].append(event)
+    return event
+
+
+def option(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def require(task_id):
+    if task_id not in value:
+        print(f"Error: Task {task_id} not found", file=sys.stderr)
+        raise SystemExit(1)
+    return value[task_id]
+
+
+command = next((token for token in ("get", "history", "update", "mark", "search", "create")
+                if token in argv), None)
+if command == "get":
+    task = require(argv[argv.index("get") + 1])
+    revision(task)
+    print(json.dumps([{key: item for key, item in task.items() if not key.startswith("_")}]))
+elif command == "history":
+    task = require(argv[argv.index("history") + 1])
+    revision(task)
+    print(json.dumps(task["_events"]))
+elif command == "update":
+    task = require(argv[argv.index("update") + 1])
+    # Deterministic one-shot concurrent-owner-edit hook: when armed, apply a
+    # manual board mutation after the caller's revision read but before the
+    # revision-CAS compare, then disarm. This models the exact read -> edit ->
+    # update race window without timing or internal patching.
+    marker = board.with_name(board.name + ".mutate-once")
+    if marker.exists():
+        marker.unlink()
+        task.setdefault("fields", {})["owner_note"] = "manual"
+        append_event(task, "update", ["/fields/owner_note"])
+        board.write_text(json.dumps(value) + NL)
+    expected = option("--expected-revision")
+    if expected is not None and expected != revision(task):
+        print(f"Error updating task: stale task revision for {task['id']}: "
+              f"expected {expected}, current {revision(task)}", file=sys.stderr)
+        raise SystemExit(1)
+    changed = []
+    status = option("--status")
+    if status is not None and status != task.get("status"):
+        task["status"] = status
+        changed.append("/status")
+    fields = task.setdefault("fields", {})
+    for index, token in enumerate(argv):
+        if token == "--field":
+            key, encoded = argv[index + 1].split("=", 1)
+            decoded = json.loads(encoded)
+            if fields.get(key) != decoded:
+                fields[key] = decoded
+                changed.append("/fields/" + key)
+    response = option("--response-file")
+    if response is not None:
+        task["agent_response"] = pathlib.Path(response).read_text()
+        changed.append("/agent_response")
+    task["last_modified"] = "2026-01-01T00:00:00Z"
+    event = append_event(task, "update", changed)
+    board.write_text(json.dumps(value) + NL)
+    receipt = option("--receipt-file")
+    if receipt is not None:
+        path = pathlib.Path(receipt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"operation": "update", "task_id": task["id"],
+                                    "before_sha256": event["before_sha256"],
+                                    "after_sha256": event["after_sha256"],
+                                    "changed_paths": changed,
+                                    "ledger_event_id": event["event_id"]}) + NL)
+elif command == "mark":
+    task = require(option("--id"))
+    task["status"] = argv[argv.index("mark") + 1]
+    commit = option("--commit")
+    if commit is not None:
+        task["commit_hash"] = commit
+    response = option("--response-file")
+    if response is not None:
+        task["agent_response"] = pathlib.Path(response).read_text()
+    task["mutation_count"] = task.get("mutation_count", 0) + 1
+    event = append_event(task, "mark", ["/status"])
+    board.write_text(json.dumps(value) + NL)
+    receipt = option("--receipt-file")
+    if receipt is not None:
+        path = pathlib.Path(receipt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"outcome": "completed", "task_id": task["id"],
+                                    "after_sha256": event["after_sha256"],
+                                    "before_sha256": event["before_sha256"],
+                                    "ledger_event_id": event["event_id"],
+                                    "operation": "mark",
+                                    "changed_paths": ["/status"]}) + NL)
+elif command == "search":
+    field = option("--field")
+    key, expected = field.split("=", 1)
+    matches = [{name: item for name, item in task.items() if not name.startswith("_")}
+               for task in value.values()
+               if (task.get("fields") or {}).get(key) == expected]
+    print(json.dumps({"tasks": matches, "summary": {"count": len(matches)}}))
+elif command == "create":
+    task_id = "ADV" + str(1 + sum(key.startswith("ADV") for key in value))
+    fields = {}
+    for index, token in enumerate(argv):
+        if token == "--field":
+            key, encoded = argv[index + 1].split("=", 1)
+            fields[key] = json.loads(encoded)
+    task = {"id": task_id, "status": option("--status", "backlog"),
+            "body": pathlib.Path(option("--body-file")).read_text(),
+            "commit_hash": None, "agent_response": "",
+            "fields": fields, "feature_tags": ["REVIEW_ADVISORY"]}
+    value[task_id] = task
+    revision(task)
+    board.write_text(json.dumps(value) + NL)
+    receipt = option("--receipt-file")
+    if receipt is not None:
+        path = pathlib.Path(receipt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"outcome": "completed", "task_id": task_id}) + NL)
+    print(json.dumps({"id": task_id}))
+if command is None:
+    raise SystemExit(2)
+'''
+
+
+def seed_fake_kanban(controller: Path, tasks: dict, board_name: str = "fake-kanban.json") -> Path:
+    """Seed a fake canonical board plus wrapper used by lifecycle sync tests."""
+    board = controller / ".juno_task/runtime" / board_name
+    board.parent.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    for task_id, status in tasks.items():
+        payload[task_id] = {"id": task_id, "status": status, "commit_hash": None,
+                            "agent_response": "evidence for " + task_id, "fields": {}}
+    board.write_text(json.dumps(payload) + "\n")
+    install_fake_kanban_wrapper(controller, board)
+    return board
+
+
+def install_fake_kanban_wrapper(controller: Path, board: Path) -> Path:
+    wrapper = controller / ".juno_task/scripts/kanban.sh"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(FAKE_KANBAN_SOURCE.replace("@BOARD@", repr(str(board))))
+    wrapper.chmod(0o755)
+    return wrapper
+
+
 class SemVerValidationTests(unittest.TestCase):
     def test_accepts_stable_prerelease_build_and_combined_versions(self) -> None:
         accepted = {
@@ -575,6 +764,10 @@ class TaskWorkspaceTests(unittest.TestCase):
             task = self.controller / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
             task.parent.mkdir(parents=True, exist_ok=True)
             task.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
+        # The canonical board wrapper is mandatory: every durable lifecycle
+        # transition must project onto it or fail closed with one recovery
+        # command, so the default fixture ships a working fake board.
+        self.board = seed_fake_kanban(self.controller, {task_id: "todo" for task_id in ("X", "Y", "Z")})
         # Convert the linked branch into the registered migrated sparse
         # metadata-controller class required by target-runtime recovery.
         git(self.controller, "rm", "-r", "--ignore-unmatch", "juno-code", ".agents",
@@ -901,6 +1094,11 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def test_real_git_7kamsq_ytk4y1_scope_is_canonically_admitted(self) -> None:
         umbrella, first, second = "Et3fkc", "7KaMsQ", "ytk4Y1"
+        board = json.loads(self.board.read_text())
+        for task_id in (umbrella, first, second):
+            board[task_id] = {"id": task_id, "status": "todo", "commit_hash": None,
+                              "agent_response": "evidence for " + task_id, "fields": {}}
+        self.board.write_text(json.dumps(board) + "\n")
         exact = ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py"
         target = self.repository / exact; target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("resume contract\n")
@@ -4865,6 +5063,217 @@ steps:
                       first_plan["plan_sha256"] /
                       f"superseded-by-{repaired['plan_sha256']}.json")
         self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
+
+    # --- Receipt-bound projection of durable lifecycle truth onto the board ---
+
+    def board_task(self, task_id: str) -> dict:
+        return json.loads(self.board.read_text())[task_id]
+
+    def set_board_task(self, task_id: str, **changes: object) -> None:
+        board = json.loads(self.board.read_text())
+        board[task_id].update(changes)
+        self.board.write_text(json.dumps(board) + "\n")
+
+    def force_sync_required(self, task_id: str, restore_state: str = "WORKING",
+                            pending_phase: str = "none") -> None:
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        state["tasks"][task_id]["state"] = task_runtime.KANBAN_SYNC_STATE
+        state["tasks"][task_id]["kanban_sync"] = {"status": "required",
+                                                  "restore_state": restore_state,
+                                                  "pending_phase": pending_phase}
+        (self.controller / ".juno_task/state/tasks.json").write_text(
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def test_start_projects_backlog_and_todo_to_in_progress_with_structured_detail(self) -> None:
+        self.set_board_task("X", status="backlog")
+        started = task_runtime.start(self.controller, "X")
+        self.assertEqual(started["outcome"], "started")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "in_progress")
+        self.assertEqual(board["fields"]["lifecycle_projection"],
+                         task_runtime.KANBAN_LIFECYCLE_PROJECTION)
+        self.assertEqual(board["fields"]["lifecycle_state"], "WORKING")
+        evidence = started["kanban_sync"]
+        self.assertIn(evidence["outcome"], {"projected", "updated"})
+        self.assertTrue(evidence["receipt"]["path"].startswith(
+            str(self.controller / task_runtime.KANBAN_SYNC_ROOT)))
+        self.assertTrue(Path(evidence["receipt"]["path"]).is_file())
+        self.assertEqual(self.board_task("Y")["status"], "todo")
+        again = task_runtime.start(self.controller, "Y")
+        self.assertEqual(again["outcome"], "started")
+        self.assertEqual(self.board_task("Y")["status"], "in_progress")
+
+    def test_already_started_start_is_idempotent_on_the_board(self) -> None:
+        first = task_runtime.start(self.controller, "X")
+        self.assertTrue(first["kanban_sync"]["board_revision"])
+        events_after_start = len(self.board_task("X")["_events"])
+        second = task_runtime.start(self.controller, "X")
+        self.assertEqual(second["outcome"], "already_started")
+        self.assertEqual(second["kanban_sync"]["outcome"], "verified")
+        self.assertEqual(len(self.board_task("X")["_events"]), events_after_start)
+        self.assertEqual(self.board_task("X")["status"], "in_progress")
+
+    def test_hydration_failure_keeps_truthful_active_state_then_hydrate_recovers(self) -> None:
+        failure = task_runtime.HydrationFailure("injected hydration failure",
+                                                {"status": "failed"})
+        with mock.patch.object(task_runtime, "run_task_hydration", side_effect=failure):
+            with self.assertRaises(task_runtime.HydrationFailure):
+                task_runtime.start(self.controller, "X")
+        record = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())["tasks"]["X"]
+        self.assertEqual(record["state"], "HYDRATION_FAILED")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "in_progress")
+        self.assertEqual(board["fields"]["lifecycle_state"], "HYDRATION_FAILED")
+        hydrated = task_runtime.hydrate(self.controller, "X")
+        self.assertEqual(hydrated["outcome"], "hydrated")
+        self.assertEqual(self.board_task("X")["fields"]["lifecycle_state"], "WORKING")
+
+    def test_crash_before_board_mutation_exposes_sync_required_with_one_recovery(self) -> None:
+        wrapper = self.controller / ".juno_task/scripts/kanban.sh"
+        saved = wrapper.read_bytes()
+        wrapper.write_bytes(b"#!/usr/bin/env bash\nexit 9\n")
+        try:
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "yy task sync X"):
+                task_runtime.start(self.controller, "X")
+        finally:
+            wrapper.write_bytes(saved)
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        record = state["tasks"]["X"]
+        self.assertEqual(record["state"], task_runtime.KANBAN_SYNC_STATE)
+        self.assertEqual(record["kanban_sync"]["pending_phase"], "hydration")
+        self.assertEqual(record["kanban_sync"]["restore_state"], "HYDRATING")
+        self.assertTrue(Path(record["worktree"]).is_dir())
+        self.assertEqual(self.board_task("X")["status"], "todo")
+        status = task_runtime.status(self.controller, "X")
+        self.assertTrue(status["kanban_sync_required"])
+        self.assertEqual(status["recovery_command"], "yy task sync X")
+        recovered = task_runtime.recover_kanban_sync(self.controller, "X")
+        self.assertEqual(recovered["outcome"], "recovered")
+        self.assertEqual(recovered["state"], "WORKING")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "in_progress")
+        self.assertEqual(board["fields"]["lifecycle_state"], "WORKING")
+
+    def test_crash_after_board_mutation_duplicate_recovery_is_idempotent(self) -> None:
+        task_runtime.start(self.controller, "X")
+        events = len(self.board_task("X")["_events"])
+        self.force_sync_required("X")
+        recovered = task_runtime.recover_kanban_sync(self.controller, "X")
+        self.assertEqual(recovered["outcome"], "recovered")
+        self.assertEqual(recovered["state"], "WORKING")
+        self.assertEqual(recovered["kanban_sync"]["outcome"], "verified")
+        self.assertEqual(len(self.board_task("X")["_events"]), events)
+        self.assertEqual(self.board_task("X")["status"], "in_progress")
+
+    def test_concurrent_manual_owner_edit_is_refused_not_overwritten(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.set_board_task("X", status="done", commit_hash="deadbeef")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "terminal"):
+            task_runtime.recover_kanban_sync(self.controller, "X")
+        self.assertEqual(self.board_task("X")["status"], "done")
+        self.assertEqual(self.board_task("X")["commit_hash"], "deadbeef")
+
+    def test_revision_cas_refuses_stale_expected_revision(self) -> None:
+        task_runtime.start(self.controller, "X")
+        # Crash-before-board-mutation shape: the record is pending WORKING
+        # while the board never left todo. A concurrent owner edit then lands
+        # between the projection's history read and its revision-bound update,
+        # so the stale expected revision must be refused without overwriting
+        # any owner truth.
+        self.set_board_task("X", status="todo", fields={})
+        self.force_sync_required("X")
+        marker = Path(str(self.board) + ".mutate-once")
+        marker.write_text("")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "revision CAS"):
+            task_runtime.recover_kanban_sync(self.controller, "X")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "todo")
+        self.assertEqual(board["fields"].get("owner_note"), "manual")
+        self.assertNotIn("lifecycle_state", board["fields"])
+        marker.unlink(missing_ok=True)
+        # A clean retry after the race resolves projects exactly once.
+        recovered = task_runtime.recover_kanban_sync(self.controller, "X")
+        self.assertEqual(recovered["outcome"], "recovered")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "in_progress")
+        self.assertEqual(board["fields"]["lifecycle_state"], "WORKING")
+        self.assertEqual(board["fields"].get("owner_note"), "manual")
+
+    def test_finish_projects_queued_and_status_agrees_with_board(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.commit_task("X")
+        finished = task_runtime.finish(self.controller, "X")
+        self.assertEqual(finished["outcome"], "queued")
+        board = self.board_task("X")
+        self.assertEqual(board["status"], "in_progress")
+        self.assertEqual(board["fields"]["lifecycle_state"], "QUEUED")
+        status = task_runtime.status(self.controller, "X")
+        self.assertEqual(status["state"], "QUEUED")
+        self.assertIn(status["kanban_sync"]["outcome"], {"projected", "updated"})
+        again = task_runtime.finish(self.controller, "X")
+        self.assertEqual(again["outcome"], "already_queued")
+        self.assertEqual(again["kanban_sync"]["outcome"], "verified")
+
+    def test_doctor_reports_discrepancy_then_agreement_after_repair(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.set_board_task("X", status="todo")
+        report = task_runtime.kanban_sync_doctor(self.controller, "X")
+        self.assertEqual(report["outcome"], "drift")
+        self.assertEqual(report["rows"][0]["reasons"],
+                         ["active_lifecycle_record_in_backlog_or_todo"])
+        self.assertEqual(report["rows"][0]["recovery_command"], "yy task sync X")
+        repaired = task_runtime.recover_kanban_sync(self.controller, "X")
+        self.assertIn(repaired["kanban_sync"]["outcome"], {"projected", "updated"})
+        after = task_runtime.kanban_sync_doctor(self.controller, "X")
+        self.assertEqual(after["outcome"], "agree")
+        self.assertEqual(after["rows"][0]["agreement"], "agree")
+
+    def test_doctor_detects_board_done_without_merge_truth(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.set_board_task("X", status="done")
+        report = task_runtime.kanban_sync_doctor(self.controller, "X")
+        self.assertIn("board_done_without_merge_truth", report["rows"][0]["reasons"])
+
+    def test_dispositions_and_continuation_linkage_without_claiming_done(self) -> None:
+        task_runtime.start(self.controller, "X")
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        withdrawn = {**state["tasks"]["X"], "state": "WITHDRAWN",
+                     "continuation_task_id": "NEXT42"}
+        evidence = task_runtime.ensure_kanban_sync(self.controller, "X", withdrawn,
+                                                   phase="withdrawn")
+        self.assertEqual(evidence["board_status"], "todo")
+        board = self.board_task("X")
+        self.assertEqual(board["fields"]["lifecycle_disposition"], "withdrawn")
+        self.assertEqual(board["fields"]["continuation_task_id"], "NEXT42")
+        self.assertNotEqual(board["status"], "done")
+        exhausted = {**withdrawn, "state": "REVIEW_FINDINGS_EXHAUSTED"}
+        task_runtime.ensure_kanban_sync(self.controller, "X", exhausted, phase="queue")
+        self.assertEqual(self.board_task("X")["status"], "in_progress")
+        self.assertEqual(self.board_task("X")["fields"]["lifecycle_disposition"],
+                         "review_findings_exhausted")
+
+    def test_merged_projection_verifies_only_and_never_marks_done(self) -> None:
+        task_runtime.start(self.controller, "X")
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        merged = {**state["tasks"]["X"], "state": "MERGED"}
+        with self.assertRaisesRegex(task_runtime.KanbanSyncError, "merge finalization owns the done mutation"):
+            task_runtime.ensure_kanban_sync(self.controller, "X", merged)
+        self.assertEqual(self.board_task("X")["status"], "in_progress")
+        self.set_board_task("X", status="done", commit_hash=state["tasks"]["X"]["tip_sha"])
+        verified = task_runtime.ensure_kanban_sync(self.controller, "X", merged)
+        self.assertEqual((verified["outcome"], verified["board_status"]),
+                         ("verified", "done"))
+
+    def test_sync_and_doctor_cli_surfaces(self) -> None:
+        task_runtime.start(self.controller, "X")
+        doctor = self.payload("doctor", "X")
+        self.assertEqual(doctor["outcome"], "agree")
+        self.set_board_task("X", status="todo")
+        doctor = self.payload("doctor", "X")
+        self.assertEqual(doctor["outcome"], "drift")
+        recovered = self.payload("sync", "X")
+        self.assertEqual(recovered["outcome"], "projected")
+        self.assertEqual(self.board_task("X")["status"], "in_progress")
 
 
 class MinimumRcLifecycleContractTests(unittest.TestCase):

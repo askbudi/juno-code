@@ -18,6 +18,8 @@ export type TaskWorkspaceOperation =
   | 'evidence-run'
   | 'evidence-status'
   | 'evidence-await'
+  | 'sync'
+  | 'doctor'
   | 'recovery-plan'
   | 'recovery-authorize'
   | 'recovery-apply';
@@ -32,7 +34,7 @@ export type TaskRuntimeBootstrapOptions = { dryRun?: boolean; apply?: string };
 export type TaskRuntimeBootstrapInvoker = (options: TaskRuntimeBootstrapOptions) => Promise<void>;
 
 export function taskWorkspaceControlOperation(operation: TaskWorkspaceOperation): 'kanban' | 'orchestration' {
-  return ['status', 'preflight', 'recovery-plan', 'evidence-status'].includes(operation) ? 'kanban' : 'orchestration';
+  return ['status', 'preflight', 'recovery-plan', 'evidence-status', 'doctor'].includes(operation) ? 'kanban' : 'orchestration';
 }
 
 export function packagedTaskRuntimeCandidates(): string[] {
@@ -127,7 +129,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
   taskId?: string,
 ): Promise<void> {
-  if (['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await'].includes(operation)) return;
+  if (['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor'].includes(operation)) return;
   if (taskId) await checkpoint(controllerRoot, exitCode, taskId);
   else await checkpoint(controllerRoot, exitCode);
 }
@@ -200,6 +202,14 @@ export function configureTaskWorkspaceCommand(
       .argument('<task-id>', 'Canonical YYLO Ledger task ID')
       .action((taskId: string) => invoke(operation, taskId, []));
   }
+  task.command('doctor')
+    .description('Read-only reconciliation of Kanban board truth versus task lifecycle records')
+    .argument('[task-id]', 'Optional YYLO Ledger task ID filter')
+    .action((taskId?: string) => invoke('doctor', taskId ?? '', []));
+  task.command('sync')
+    .description('Recover one pending lifecycle Kanban projection (exact recovery command)')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .action((taskId: string) => invoke('sync', taskId, []));
   task.command('recovery-plan')
     .argument('<task-id>', 'Canonical umbrella YYLO Ledger task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')
