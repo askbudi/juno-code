@@ -207,7 +207,8 @@ describe('ManagedProjectAssets', {
     expect(reviewPrompt).toContain('Review only');
     expect(reviewPrompt).toContain('do not edit, commit, update Kanban, launch another reviewer');
     expect(reviewPrompt).toContain('Return PASS only after reviewing the complete frozen candidate');
-    expect(reviewPrompt).toContain('Return every independently actionable issue');
+    expect(reviewPrompt).toContain('Return every independently actionable admitted defect');
+    expect(reviewPrompt).toContain('Do not downgrade an out-of-scope idea');
     expect(reviewPrompt).toContain('structured `truncated=true` signal');
     expect(reviewPrompt).not.toContain('then resolve it');
     expect(
