@@ -1631,6 +1631,30 @@ raise SystemExit(2)
         self.assertNotEqual(first["run_id"], second["run_id"])
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), second_tip)
 
+    def test_unscoped_merge_drive_skips_terminal_exhausted_history(self) -> None:
+        self.install_merge_drive_assets()
+        first_tip = self.commit_feature("X", "src/exhausted-history.txt", "feature\n")
+        first = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(first["state"], "MERGED_THROUGH")
+        # REVIEW_FINDINGS_EXHAUSTED is terminal owner-action history: freezing
+        # it into a later scope replays its blocker on every empty-queue drive
+        # instead of a clean terminal reuse (observed on a withdrawn exhausted
+        # task pausing an otherwise idle queue).
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["E"] = {
+            "task_id": "E", "state": "REVIEW_FINDINGS_EXHAUSTED",
+            "enqueue_sequence": 1 + max(
+                int(row.get("enqueue_sequence", 0)) for row in state["tasks"].values()),
+            "tip_sha": "e" * 40, "target_ref": "refs/heads/product",
+        }
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        resumed = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(resumed["state"], "MERGED_THROUGH")
+        self.assertIsNone(resumed.get("blocker"))
+        self.assertEqual(resumed["run_id"], first["run_id"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+
     def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
         self.install_merge_drive_assets()
         tip = self.commit_feature("X", "docs/drive.md", "drive\n")

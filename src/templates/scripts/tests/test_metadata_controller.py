@@ -355,6 +355,62 @@ class MetadataControllerTest(unittest.TestCase):
         self.assertEqual(command("git", "rev-parse", "refs/heads/juno-mono-002", cwd=self.repo),
                          self.product_head)
 
+    def test_agent_surface_repair_tolerates_living_controller_drift(self) -> None:
+        self.prepare()
+        # A living controller: activated role, and a reviewed task policy that
+        # legitimately evolved after cutover so the frozen root boundary
+        # receipt digest no longer matches (generated_contract false forever;
+        # legacy roots add root_preservation). The hermetic evacuation must
+        # still plan, apply, and verify against its own frozen identities.
+        command("git", "config", "--worktree", "juno.workspace.role", "controller",
+                cwd=self.new_controller)
+        task_policy_path = self.new_controller / ".juno_task/config/task-workspace.json"
+        value = json.loads(task_policy_path.read_text())
+        value["allowed_paths"] = [*value.get("allowed_paths", []), "pkg"]
+        task_policy_path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+        command("git", "add", ".juno_task/config/task-workspace.json", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "evolve reviewed task policy", cwd=self.new_controller)
+        evidence = {"AGENTS.md": "owner agents evidence\n",
+                    ".pi/skills/owner/SKILL.md": "owner skill evidence\n"}
+        for relative, content in evidence.items():
+            write(self.new_controller / relative, content)
+        command("git", "add", "-f", *evidence, cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "retain tracked owner agent evidence", cwd=self.new_controller)
+        evidence_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
+        inspected = mc.inspect(self.new_controller, self.policy,
+                               expected_branch="refs/heads/juno/controller-metadata-v1",
+                               require_active=False)
+        self.assertFalse(inspected["checks"]["generated_contract"])
+        self.assertFalse(inspected["checks"]["role"])
+        args = argparse.Namespace(
+            root=self.new_controller, branch="refs/heads/juno/controller-metadata-v1",
+            expected_head=evidence_head, product_ref="refs/heads/juno-mono-002",
+            expected_product_head=self.product_head, disposition="retire",
+            output=self.temp / "living-agent-plan.json")
+        plan = mc.agent_surface_repair_plan(args, self.policy)
+        self.assertEqual(plan["changes"]["remove"], sorted(evidence))
+        receipt = mc.agent_surface_repair_apply(argparse.Namespace(
+            plan=args.output, output=self.temp / "living-agent-apply.json",
+            authorize=True), self.policy)
+        self.assertEqual(receipt["removed_paths"], sorted(evidence))
+        verified = mc.agent_surface_repair_verify(argparse.Namespace(
+            plan=args.output, output=self.temp / "living-agent-verify.json"), self.policy)
+        self.assertTrue(verified["passed"])
+        # Unrelated defects still refuse the repair: a product marker is not
+        # living-controller drift.
+        write(self.new_controller / "README.md", "product leak\n")
+        write(self.new_controller / "AGENTS.md", "fresh agent evidence\n")
+        command("git", "add", "-f", "README.md", "AGENTS.md", cwd=self.new_controller)
+        command("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-m", "track product marker", cwd=self.new_controller)
+        leak_head = command("git", "rev-parse", "HEAD", cwd=self.new_controller)
+        args.expected_head = leak_head
+        args.output = self.temp / "leak-agent-plan.json"
+        with self.assertRaisesRegex(mc.BoundaryError, "refuses unrelated controller defects"):
+            mc.agent_surface_repair_plan(args, self.policy)
+
     def test_policy_updated_controller_repairs_only_hash_bound_retired_config(self) -> None:
         self.prepare()
         config_path = self.new_controller / ".juno_task/config.json"

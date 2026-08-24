@@ -5479,9 +5479,14 @@ MERGE_DRIVE_ROOT = ".juno_task/runtime/lifecycle-runs/merge"
 def _drive_scope(controller: Path, config: dict[str, Any], through: Optional[str]) -> list[dict[str, Any]]:
     with task_runtime.state_lock(controller):
         tasks = task_runtime.read_state(controller)["tasks"]
+    # REVIEW_FINDINGS_EXHAUSTED is terminal queue history with no drive-legal
+    # transition: the loop can only pause on it, so freezing it re-reports a
+    # historical blocker on every later drive instead of a clean empty-scope
+    # completion. Mid-drive exhaustion still pauses through the loop's own
+    # state check below.
     eligible = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE",
                 "CONFLICT", "CONFLICT_RESOLVED", "REVIEW_FINDINGS",
-                "REVIEW_FINDINGS_EXHAUSTED", "REOPENING", "MERGING", "MERGED"}
+                "REOPENING", "MERGING", "MERGED"}
     rows = [row for row in tasks.values() if isinstance(row, dict)
             and row.get("target_ref") == config["target_ref"]
             and row.get("state") in eligible]

@@ -34,6 +34,25 @@ PLAN_SCHEMA = "juno_metadata_controller_plan.v1"
 RECEIPT_SCHEMA = "juno_metadata_controller_receipt.v1"
 CONFIG_REPAIR_SCHEMA = "juno_metadata_controller_config_repair.v1"
 AGENT_SURFACE_REPAIR_SCHEMA = "juno_metadata_controller_agent_surface_repair.v1"
+
+def agent_surface_repair_tolerances(root: Path) -> set[str]:
+    """Boundary checks a living controller may carry into an agent-surface repair.
+
+    An activated controller (juno.workspace.role=controller), a controller
+    whose frozen root boundary receipt predates the integration-workspace
+    policy key, and a controller whose reviewed policies legitimately evolved
+    after cutover can never satisfy the role, root_preservation, or
+    generated_contract checks at repair time. None of them participates in
+    evacuation safety: the plan binds its own exact head, tree, entries, and
+    policy digest, and the apply path re-verifies that frozen state before and
+    after one hermetic evacuation commit.
+    """
+    tolerated = {"agent_surface_untracked", "tracked_boundary",
+                 "root_preservation", "generated_contract"}
+    role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+    if role == "controller":
+        tolerated.add("role")
+    return tolerated
 POLICY_MIGRATION_SCHEMA = "juno_metadata_policy_migration.v1"
 POLICY_PATH = ".juno_task/config/metadata-controller.json"
 INTEGRATION_POLICY_PATH = ".juno_task/config/integration-workspace.json"
@@ -2144,9 +2163,8 @@ def agent_surface_repair_plan(args: argparse.Namespace, policy: dict[str, Any]) 
         raise BoundaryError("agent-surface repair requires committed root ignore coverage: " + ", ".join(missing_ignores))
     require_canonical_controller_config(root, head)
     inspection = inspect(root, policy, expected_branch=branch, require_active=False)
-    allowed_failures = {"agent_surface_untracked", "tracked_boundary"}
     invalid = [name for name, passed in inspection["checks"].items()
-               if not passed and name not in allowed_failures]
+               if not passed and name not in agent_surface_repair_tolerances(root)]
     if invalid:
         raise BoundaryError("agent-surface repair refuses unrelated controller defects: " + ", ".join(invalid))
     non_agent_forbidden = [name for name in inspection["forbidden_tracked"] if not agent_surface_path(name)]
@@ -2253,8 +2271,10 @@ def agent_surface_repair_verify(args: argparse.Namespace, policy: dict[str, Any]
     root = exact_worktree(Path(plan["controller"])); output = external_config_repair_receipt(args.output, root, Path(plan["git_common_dir"]))
     state, head = agent_surface_repair_state(root, plan, plan_hash, policy)
     evidence = inspect(root, policy, expected_branch=plan["branch"], require_active=False)
-    if state != "after" or not evidence["passed"]:
-        raise BoundaryError("agent-surface repair verification refused")
+    intolerable = [name for name, passed in evidence["checks"].items()
+                   if not passed and name not in agent_surface_repair_tolerances(root)]
+    if state != "after" or intolerable:
+        raise BoundaryError("agent-surface repair verification refused: " + ", ".join(intolerable))
     payload = {"schema_version": AGENT_SURFACE_REPAIR_SCHEMA, "operation": "agent-surface-repair-verify",
                "outcome": "verified", "plan_sha256": plan_hash, "controller": str(root), "head": head,
                "evidence_preserved_in_parent_commit": True, "checks": evidence["checks"], "passed": True}
