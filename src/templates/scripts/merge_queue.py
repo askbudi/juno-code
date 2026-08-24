@@ -5474,19 +5474,22 @@ def status(controller: Path) -> dict[str, Any]:
 
 
 MERGE_DRIVE_ROOT = ".juno_task/runtime/lifecycle-runs/merge"
+# Queue states a merge-drive scope may legally contain. REVIEW_FINDINGS_EXHAUSTED
+# is terminal queue history with no drive-legal transition: the loop can only
+# pause on it, so freezing it re-reports a historical blocker on every later
+# drive instead of a clean empty-scope completion. Mid-drive exhaustion still
+# pauses through the loop's own state check.
+MERGE_DRIVE_ELIGIBLE_STATES = frozenset({
+    "QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE",
+    "CONFLICT", "CONFLICT_RESOLVED", "REVIEW_FINDINGS",
+    "REOPENING", "MERGING", "MERGED",
+})
 
 
 def _drive_scope(controller: Path, config: dict[str, Any], through: Optional[str]) -> list[dict[str, Any]]:
     with task_runtime.state_lock(controller):
         tasks = task_runtime.read_state(controller)["tasks"]
-    # REVIEW_FINDINGS_EXHAUSTED is terminal queue history with no drive-legal
-    # transition: the loop can only pause on it, so freezing it re-reports a
-    # historical blocker on every later drive instead of a clean empty-scope
-    # completion. Mid-drive exhaustion still pauses through the loop's own
-    # state check below.
-    eligible = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REQUEUING_STALE",
-                "CONFLICT", "CONFLICT_RESOLVED", "REVIEW_FINDINGS",
-                "REOPENING", "MERGING", "MERGED"}
+    eligible = MERGE_DRIVE_ELIGIBLE_STATES
     rows = [row for row in tasks.values() if isinstance(row, dict)
             and row.get("target_ref") == config["target_ref"]
             and row.get("state") in eligible]
@@ -5629,6 +5632,19 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     or journal.get("scope_sha256") != scope_value.get("scope_sha256")):
                 raise MergeQueueError(
                     "frozen merge-drive identity is incompatible; explicit reviewed replacement required")
+            with task_runtime.state_lock(controller):
+                live_states = task_runtime.read_state(controller)["tasks"]
+            left_scope = [row for row in scope if isinstance(row, dict)
+                          and (live_states.get(row.get("task_id"), {}) or {}).get("state")
+                          not in MERGE_DRIVE_ELIGIBLE_STATES]
+            if left_scope and not journal.get("terminal"):
+                # A paused lineage whose frozen authorization set still contains
+                # tasks that left the FIFO-eligible set (for example terminal
+                # exhausted or withdrawn history, or a task pulled back to
+                # WORKING) replays a dead blocker on every resume. Retire the
+                # stale lineage and open a fresh immutable scope instead; the
+                # old run's artifacts remain on disk as immutable history.
+                selector_latest.unlink(missing_ok=True)
             projection_path = Path(str(pointer.get("projection_path", "")))
             if journal.get("terminal"):
                 # Terminal reuse is bound to the current requested FIFO scope:

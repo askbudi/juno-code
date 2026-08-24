@@ -1655,6 +1655,36 @@ raise SystemExit(2)
         self.assertEqual(resumed["run_id"], first["run_id"])
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
 
+        # A paused lineage frozen before the exclusion (with the exhausted
+        # task inside its authorization set) must retire instead of replaying
+        # the dead blocker on every resume.
+        pointer_path = (self.controller / ".juno_task/runtime/lifecycle-runs/merge"
+                        / "latest.json")
+        pointer = json.loads(pointer_path.read_text())
+        old_run = pointer_path.parent / pointer["run_id"]
+        journal_path = old_run / "journal.json"
+        journal = json.loads(journal_path.read_text())
+        scope_path = old_run / "fifo-scope.json"
+        scope_value = json.loads(scope_path.read_text())
+        state_row = json.loads(state_path.read_text())["tasks"]["E"]
+        scope_value["tasks"].append({
+            "task_id": "E", "enqueue_sequence": state_row["enqueue_sequence"],
+            "initial_state": "REVIEW_FINDINGS_EXHAUSTED",
+            "initial_tip_sha": state_row["tip_sha"], "record_sha256": "0" * 64})
+        scope_value["scope_sha256"] = merge_runtime.digest(scope_value["tasks"])
+        scope_path.write_text(json.dumps(scope_value, indent=1) + "\n")
+        journal["scope_sha256"] = scope_value["scope_sha256"]
+        journal["terminal"] = False
+        journal["state"] = "PAUSED"
+        journal["blocker"] = {"category": "review_findings_exhausted", "task_id": "E"}
+        journal_path.write_text(json.dumps(journal, indent=1) + "\n")
+        retired = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(retired["state"], "MERGED_THROUGH")
+        self.assertIsNone(retired.get("blocker"))
+        self.assertNotEqual(retired["run_id"], first["run_id"])
+        self.assertEqual(retired["identities"]["completed_task_ids"], ["X"])
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), first_tip)
+
     def test_typed_merge_drive_advances_one_frozen_low_risk_fifo_scope(self) -> None:
         self.install_merge_drive_assets()
         tip = self.commit_feature("X", "docs/drive.md", "drive\n")
