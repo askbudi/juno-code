@@ -69,6 +69,47 @@ TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
 AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
 TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
 PRESTART_TRACKING_STATUSES = {"backlog", "todo"}
+# --- Canonical Kanban lifecycle projection -------------------------------
+# The hot Kanban task plus its append-only ledger are the authoritative
+# user-visible task truth. Lifecycle runtime records stay receipt-backed
+# execution evidence; every durable lifecycle transition projects its coarse
+# board status and structured detail through the canonical wrapper so the
+# board can never silently disagree with an active task record.
+KANBAN_SYNC_SCHEMA = "juno_task_kanban_sync.v1"
+KANBAN_LIFECYCLE_PROJECTION = "juno_lifecycle_kanban_projection.v1"
+KANBAN_SYNC_STATE = "KANBAN_SYNC_REQUIRED"
+KANBAN_SYNC_RECOVERY = "yy task sync {task}"
+KANBAN_SYNC_ROOT = ".juno_task/runtime/kanban-sync"
+# Coarse board status per durable lifecycle state. "done" is documentation
+# only here: verified merge finalization exclusively owns the done mutation.
+LIFECYCLE_BOARD_STATUS = {
+    "HYDRATING": "in_progress",
+    "HYDRATION_FAILED": "in_progress",
+    "WORKING": "in_progress",
+    KANBAN_SYNC_STATE: "in_progress",
+    "QUEUED": "in_progress",
+    "AWAITING_RISK": "in_progress",
+    "AWAITING_RELEASE": "in_progress",
+    "REVIEWING": "in_progress",
+    "RISK_EVIDENCE_READY": "in_progress",
+    "CONFLICT": "in_progress",
+    "CONFLICT_RESOLVED": "in_progress",
+    "REOPENING": "in_progress",
+    "REQUEUING_STALE": "in_progress",
+    "REVIEW_FINDINGS": "in_progress",
+    "REVIEW_FINDINGS_EXHAUSTED": "in_progress",
+    "MERGING": "in_progress",
+    # Withdrawn candidates are not done and not in flight: the disposition
+    # fields carry the exact truth while the board returns to an owned,
+    # non-terminal tracking status.
+    "WITHDRAWN": "todo",
+    "MERGED": "done",
+}
+# Structured non-success dispositions recorded without claiming integration.
+LIFECYCLE_DISPOSITIONS = {
+    "WITHDRAWN": "withdrawn",
+    "REVIEW_FINDINGS_EXHAUSTED": "review_findings_exhausted",
+}
 VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
 VALIDATION_PHASES = ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN")
 VALIDATION_TERMINALS = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
@@ -79,6 +120,15 @@ STANDING_ROOT = ".juno_task/runtime/standing-evidence"
 
 class TaskWorkspaceError(RuntimeError):
     pass
+
+
+class KanbanSyncError(TaskWorkspaceError):
+    """Canonical Kanban projection could not be proven for one task record."""
+
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        super().__init__(message)
+        self.evidence = {"schema_version": KANBAN_SYNC_SCHEMA,
+                         "status": "required", "error": message[:1024], **evidence}
 
 
 class HydrationFailure(TaskWorkspaceError):
@@ -1853,12 +1903,12 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status"}
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status", "doctor"}
                        else "orchestration")
     if surface == "task" and operation not in {
             "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
             "checkpoint", "evidence-run", "evidence-status", "evidence-await",
-            "recovery-plan", "recovery-authorize", "recovery-apply"}:
+            "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "drive", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
@@ -2180,6 +2230,410 @@ def verify_hydration_evidence(record: dict[str, Any], worktree: Path) -> None:
                 f"safe recovery: run the frozen workflow at {frozen['path']} through Workflow Runner")
 
 
+def _kanban_wrapper(controller: Path) -> Path:
+    wrapper = controller / ".juno_task/scripts/kanban.sh"
+    if not wrapper.is_file():
+        raise KanbanSyncError(
+            "canonical Kanban wrapper is missing",
+            {"recovery_command": KANBAN_SYNC_RECOVERY.format(task="TASK_ID")})
+    return wrapper
+
+
+def _run_kanban(controller: Path, argv: list[str]) -> str:
+    wrapper = _kanban_wrapper(controller)
+    result = subprocess.run([str(wrapper), *argv], cwd=controller,
+                            stdin=subprocess.DEVNULL, text=True, capture_output=True)
+    if result.returncode:
+        raise KanbanSyncError(
+            result.stderr.strip()[:512] or "canonical Kanban wrapper failed",
+            {"argv": argv[:6], "returncode": result.returncode})
+    return result.stdout
+
+
+def read_kanban_task(controller: Path, task_id: str) -> dict[str, Any]:
+    payload = _run_kanban(controller, ["-f", "json", "get", task_id])
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise KanbanSyncError("Kanban task readback is not valid JSON",
+                              {"task_id": task_id}) from exc
+    if isinstance(decoded, list) and len(decoded) == 1:
+        decoded = decoded[0]
+    if not isinstance(decoded, dict) or decoded.get("id") != task_id:
+        raise KanbanSyncError("Kanban task readback identity mismatched",
+                              {"task_id": task_id})
+    return decoded
+
+
+def kanban_board_revision(controller: Path, task_id: str) -> str:
+    """Current normalized task revision from the append-only ledger chain."""
+    payload = _run_kanban(controller, ["-f", "json", "--raw", "history", task_id])
+    try:
+        events = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise KanbanSyncError("Kanban ledger history is not valid JSON",
+                              {"task_id": task_id}) from exc
+    if not isinstance(events, list) or not events:
+        raise KanbanSyncError("Kanban ledger history is empty", {"task_id": task_id})
+    revision = events[-1].get("after_sha256")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{16,128}", revision):
+        raise KanbanSyncError("Kanban ledger revision is malformed", {"task_id": task_id})
+    return revision
+
+
+def _kanban_sync_receipt_path(controller: Path, task_id: str, identity: dict[str, Any]) -> Path:
+    name = stable_sha256(identity)
+    return (controller / KANBAN_SYNC_ROOT / task_id[:2].lower() / task_id
+            / f"{name}.json")
+
+
+def _kanban_lifecycle_fields(lifecycle_state: str, disposition: Optional[str],
+                             continuation: Optional[str]) -> dict[str, Any]:
+    """Board identity fields: state, disposition, and continuation only.
+
+    Transient labels such as the triggering phase stay in mutation receipts so
+    re-projecting the same lifecycle state is exactly idempotent.
+    """
+    fields = {"lifecycle_projection": KANBAN_LIFECYCLE_PROJECTION,
+              "lifecycle_state": lifecycle_state}
+    if disposition:
+        fields["lifecycle_disposition"] = disposition
+    if continuation:
+        fields["continuation_task_id"] = continuation
+    return fields
+
+
+def project_kanban_lifecycle(controller: Path, task_id: str, lifecycle_state: str, *,
+                             phase: Optional[str] = None,
+                             record: Optional[dict[str, Any]] = None,
+                             allow_done: bool = False) -> dict[str, Any]:
+    """Project one lifecycle state onto the canonical board, fail-closed.
+
+    Idempotent: an already-projected board returns ``verified`` without a
+    mutation. Every mutation is revision-CAS bound through the append-only
+    ledger, writes one immutable receipt, and is readback-verified.
+    """
+    if lifecycle_state not in LIFECYCLE_BOARD_STATUS:
+        raise KanbanSyncError(f"lifecycle state has no board projection: {lifecycle_state}",
+                              {"task_id": task_id, "lifecycle_state": lifecycle_state})
+    board_status = LIFECYCLE_BOARD_STATUS[lifecycle_state]
+    if board_status == "done" and not allow_done:
+        # Verified merge finalization exclusively owns the done mutation; the
+        # projection only verifies it after the fact.
+        current = read_kanban_task(controller, task_id)
+        if current.get("status") == "done":
+            return {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+                    "lifecycle_state": lifecycle_state,
+                    "outcome": "verified",
+                    "board_status": "done",
+                    "recovery_command": None}
+        raise KanbanSyncError(
+            "merge finalization owns the done mutation; run the merge queue recovery",
+            {"task_id": task_id, "lifecycle_state": lifecycle_state,
+             "board_status": current.get("status"),
+             "recovery_command": "yy merge next"})
+    disposition = LIFECYCLE_DISPOSITIONS.get(lifecycle_state)
+    continuation = None
+    if isinstance(record, dict):
+        for key in ("continuation_task_id", "superseded_by_task_id"):
+            value = record.get(key)
+            if isinstance(value, str) and TASK_RE.fullmatch(value):
+                continuation = value
+                break
+    desired_fields = _kanban_lifecycle_fields(lifecycle_state, disposition,
+                                               continuation)
+    current = read_kanban_task(controller, task_id)
+    current_status = current.get("status")
+    current_fields = current.get("fields") if isinstance(current.get("fields"), dict) else {}
+    if (current_status == board_status
+            and all(current_fields.get(key) == value
+                    for key, value in desired_fields.items())):
+        return {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+                "lifecycle_state": lifecycle_state, "outcome": "verified",
+                "board_status": board_status,
+                "board_revision": kanban_board_revision(controller, task_id)}
+    if current_status in TERMINAL_TASK_STATUSES and board_status not in TERMINAL_TASK_STATUSES:
+        # A manual owner change is preserved, never overwritten.
+        raise KanbanSyncError(
+            f"canonical Kanban status {current_status} is terminal and conflicts with "
+            f"lifecycle projection {lifecycle_state} -> {board_status}; "
+            "resolve the owner decision, then rerun the recovery command",
+            {"task_id": task_id, "lifecycle_state": lifecycle_state,
+             "board_status": current_status,
+             "recovery_command": KANBAN_SYNC_RECOVERY.format(task=task_id)})
+    revision = kanban_board_revision(controller, task_id)
+    identity = {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+                "lifecycle_state": lifecycle_state, "phase": phase,
+                "board_status": board_status, "expected_revision": revision,
+                "fields": desired_fields}
+    receipt_path = _kanban_sync_receipt_path(controller, task_id, identity)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    argv = ["-f", "json", "update", task_id,
+            "--field", f"lifecycle_projection={json.dumps(KANBAN_LIFECYCLE_PROJECTION)}",
+            "--field", f"lifecycle_state={json.dumps(lifecycle_state)}"]
+    if disposition:
+        argv.append("--field")
+        argv.append(f"lifecycle_disposition={json.dumps(disposition)}")
+    if continuation:
+        argv.append("--field")
+        argv.append(f"continuation_task_id={json.dumps(continuation)}")
+    if current_status != board_status:
+        argv += ["--status", board_status]
+    argv += ["--expected-revision", revision,
+             "--receipt-file", str(receipt_path)]
+    result = subprocess.run([str(_kanban_wrapper(controller)), *argv], cwd=controller,
+                            stdin=subprocess.DEVNULL, text=True, capture_output=True)
+    stderr = result.stderr.strip()
+    if result.returncode or "stale task revision" in stderr:
+        raise KanbanSyncError(
+            "canonical Kanban projection was refused by revision CAS or failed; "
+            "the board was not overwritten",
+            {"task_id": task_id, "lifecycle_state": lifecycle_state,
+             "board_status": current_status, "detail": stderr[:512],
+             "recovery_command": KANBAN_SYNC_RECOVERY.format(task=task_id)})
+    readback = read_kanban_task(controller, task_id)
+    readback_fields = readback.get("fields") if isinstance(readback.get("fields"), dict) else {}
+    if (readback.get("status") != board_status
+            or any(readback_fields.get(key) != value
+                   for key, value in desired_fields.items())):
+        raise KanbanSyncError("canonical Kanban projection readback mismatched",
+                              {"task_id": task_id, "lifecycle_state": lifecycle_state,
+                               "board_status": readback.get("status"),
+                               "recovery_command": KANBAN_SYNC_RECOVERY.format(task=task_id)})
+    return {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+            "lifecycle_state": lifecycle_state, "phase": phase,
+            "outcome": "projected" if current_status != board_status else "updated",
+            "board_status": board_status,
+            "board_revision": kanban_board_revision(controller, task_id),
+            "receipt": {"path": str(receipt_path),
+                        "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+                        } if receipt_path.is_file() else None}
+
+
+def ensure_kanban_sync(controller: Path, task_id: str, record: dict[str, Any], *,
+                       phase: Optional[str] = None) -> dict[str, Any]:
+    """Idempotent board sync for one task record's current lifecycle state."""
+    lifecycle_state = record.get("state")
+    if not isinstance(lifecycle_state, str):
+        raise KanbanSyncError("task record has no lifecycle state",
+                              {"task_id": task_id})
+    return project_kanban_lifecycle(controller, task_id, lifecycle_state,
+                                    phase=phase, record=record)
+
+
+def _stamp_kanban_sync(controller: Path, task_id: str, frozen: dict[str, Any],
+                       kanban_sync: dict[str, Any], *, restore_state: Optional[str] = None) -> dict[str, Any]:
+    """Durably stamp sync evidence (or the explicit required state) on a record."""
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != frozen:
+            raise TaskWorkspaceError("task state changed during Kanban synchronization; "
+                                     "inspect status and rerun the recovery command")
+        updated = {**current, "kanban_sync": kanban_sync}
+        if restore_state is not None:
+            updated["state"] = restore_state
+        state["tasks"][task_id] = updated
+        write_state(controller, state)
+        return updated
+
+
+def _demote_to_kanban_sync_required(record: dict[str, Any], exc: KanbanSyncError) -> dict[str, Any]:
+    """Fail-closed demotion preserving the exact restorable lifecycle state."""
+    restore = record.get("state")
+    if not isinstance(restore, str) or restore == KANBAN_SYNC_STATE:
+        restore = "WORKING"
+    return {**record, "state": KANBAN_SYNC_STATE,
+            "kanban_sync": {**exc.evidence, "pending_phase": "none",
+                            "restore_state": restore}}
+
+
+def recover_kanban_sync(controller: Path, task_id: str) -> dict[str, Any]:
+    """One exact recovery command for a pending lifecycle board projection.
+
+    Resumes a ``KANBAN_SYNC_REQUIRED`` record (restoring its saved lifecycle
+    state, rerunning pre-hydration hydration when needed) or idempotently
+    verifies/repairs the projection of any active record.
+    """
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    config = load_config(controller)
+    require_task(controller, task_id)
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+    if not isinstance(record, dict):
+        raise TaskWorkspaceError("task has not been started")
+    pending = record.get("state") == KANBAN_SYNC_STATE
+    pending_evidence = record.get("kanban_sync") if isinstance(record.get("kanban_sync"), dict) else {}
+    restore_state = pending_evidence.get("restore_state") if pending else record.get("state")
+    if not isinstance(restore_state, str) or restore_state not in LIFECYCLE_BOARD_STATUS:
+        raise TaskWorkspaceError(f"task sync cannot restore lifecycle state {restore_state!r}")
+    pending_phase = pending_evidence.get("pending_phase") if pending else "none"
+    # Project first: the board mutation is the unproven step.
+    try:
+        evidence = project_kanban_lifecycle(
+            controller, task_id, restore_state,
+            phase="sync-recovery" if pending else "sync-verify", record=record)
+    except KanbanSyncError as exc:
+        raise TaskWorkspaceError(
+            f"task Kanban projection still failing: {exc}; "
+            f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+    outcome = evidence.get("outcome")
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != record:
+            raise TaskWorkspaceError("task state changed during Kanban sync recovery; "
+                                     "inspect status and rerun the recovery command")
+        record = {**current, "kanban_sync": evidence}
+        if pending:
+            record["state"] = restore_state
+        state["tasks"][task_id] = record
+        write_state(controller, state)
+    result = {**record, "outcome": "recovered" if pending else outcome}
+    if pending and pending_phase == "hydration" and not isinstance(record.get("hydration"), dict):
+        # The boundary failed before hydration ever ran: finish the exact
+        # start path so one command returns the task to agent-ready truth.
+        frozen_hydration = record.get("creation_receipt", {}).get("hydration_workflow")
+        if not isinstance(frozen_hydration, dict):
+            raise TaskWorkspaceError("task sync cannot resume hydration without its frozen identity")
+        with state_lock(controller) as control_state_lock:
+            state = read_state(controller)
+            current = state["tasks"].get(task_id)
+            if current != record or current.get("state") != "HYDRATING":
+                raise TaskWorkspaceError("task state changed before hydration resume")
+            frozen_record = json.loads(json.dumps(current))
+            control_state_lock(False)
+            try:
+                hydration = run_task_hydration(
+                    controller, Path(frozen_record["worktree"]), task_id,
+                    frozen_hydration, config)
+            except HydrationFailure as exc:
+                control_state_lock(True)
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != frozen_record:
+                    raise TaskWorkspaceError("task state changed during hydration resume") from exc
+                record = {**frozen_record, "state": "HYDRATION_FAILED", "hydration": exc.evidence}
+                state["tasks"][task_id] = record
+                write_state(controller, state)
+                control_state_lock(False)
+                try:
+                    failure_sync = project_kanban_lifecycle(
+                        controller, task_id, "HYDRATION_FAILED",
+                        phase="hydration-failed", record=record)
+                except KanbanSyncError as sync_exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != record:
+                        raise TaskWorkspaceError(
+                            "task state changed during hydration-failure Kanban projection") from sync_exc
+                    record = _demote_to_kanban_sync_required(record, sync_exc)
+                    state["tasks"][task_id] = record
+                    write_state(controller, state)
+                else:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    record = {**record, "kanban_sync": failure_sync}
+                    state["tasks"][task_id] = record
+                    write_state(controller, state)
+                raise TaskWorkspaceError(
+                    f"task hydration failed during sync recovery: {exc}; "
+                    f"safe recovery: yy task hydrate {task_id}") from exc
+            finally:
+                control_state_lock(True)
+            state = read_state(controller)
+            if state["tasks"].get(task_id) != frozen_record:
+                raise TaskWorkspaceError("task state changed during hydration resume")
+            record = {**frozen_record, "state": "WORKING", "hydration": hydration}
+            state["tasks"][task_id] = record
+            write_state(controller, state)
+            control_state_lock(False)
+            try:
+                working_sync = project_kanban_lifecycle(
+                    controller, task_id, "WORKING", phase="working", record=record)
+            except KanbanSyncError as sync_exc:
+                control_state_lock(True)
+                state = read_state(controller)
+                record = _demote_to_kanban_sync_required(record, sync_exc)
+                state["tasks"][task_id] = record
+                write_state(controller, state)
+                raise TaskWorkspaceError(
+                    f"task hydration resumed but its Kanban projection failed: {sync_exc}; "
+                    f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from sync_exc
+            else:
+                control_state_lock(True)
+                state = read_state(controller)
+                record = {**record, "kanban_sync": working_sync}
+                state["tasks"][task_id] = record
+                write_state(controller, state)
+            result = {**record, "outcome": "recovered"}
+    return result
+
+
+def kanban_sync_doctor(controller: Path, task_id: Optional[str] = None) -> dict[str, Any]:
+    """Bounded read-only reconciliation of board truth versus task records."""
+    state = read_state(controller)
+    records = state.get("tasks", {})
+    selected = sorted(records.items())
+    if task_id is not None:
+        if not TASK_RE.fullmatch(task_id):
+            raise TaskWorkspaceError("unsafe task id")
+        if task_id not in records:
+            return {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+                    "rows": [], "summary": {"examined": 0, "drift": 0},
+                    "outcome": "no_task_record"}
+        selected = [(task_id, records[task_id])]
+    rows: list[dict[str, Any]] = []
+    drift = 0
+    for current_id, record in selected[:200]:
+        if not isinstance(record, dict):
+            continue
+        lifecycle_state = record.get("state")
+        expected = LIFECYCLE_BOARD_STATUS.get(lifecycle_state) if isinstance(lifecycle_state, str) else None
+        reasons: list[str] = []
+        board_status = None
+        board_fields: dict[str, Any] = {}
+        board_error = None
+        try:
+            board = read_kanban_task(controller, current_id)
+            board_status = board.get("status")
+            board_fields = board.get("fields") if isinstance(board.get("fields"), dict) else {}
+        except (KanbanSyncError, OSError) as exc:
+            board_error = str(exc)[:256]
+            reasons.append("kanban_read_failed")
+        if board_error is None:
+            if (expected is not None and expected != "done"
+                    and board_status in PRESTART_TRACKING_STATUSES):
+                reasons.append("active_lifecycle_record_in_backlog_or_todo")
+            if (isinstance(lifecycle_state, str) and lifecycle_state != "MERGED"
+                    and board_status == "done"):
+                reasons.append("board_done_without_merge_truth")
+            if (isinstance(lifecycle_state, str) and lifecycle_state not in {"MERGED", "WITHDRAWN"}
+                    and board_status == "archive"):
+                reasons.append("board_archived_while_lifecycle_active")
+            if (isinstance(lifecycle_state, str)
+                    and board_fields.get("lifecycle_projection") == KANBAN_LIFECYCLE_PROJECTION
+                    and board_fields.get("lifecycle_state") != lifecycle_state):
+                reasons.append("lifecycle_field_stale")
+        if isinstance(record.get("kanban_sync"), dict) and record["kanban_sync"].get("status") == "required":
+            reasons.append("kanban_sync_required")
+        if reasons:
+            drift += 1
+        rows.append({"task_id": current_id, "lifecycle_state": lifecycle_state,
+                     "board_status": board_status,
+                     "expected_board_status": expected,
+                     "agreement": "drift" if reasons else "agree",
+                     "reasons": reasons,
+                     "recovery_command": (KANBAN_SYNC_RECOVERY.format(task=current_id)
+                                           if reasons else None)})
+    return {"schema_version": KANBAN_SYNC_SCHEMA, "task_id": task_id,
+            "rows": rows,
+            "summary": {"examined": len(rows), "drift": drift,
+                        "agree": len(rows) - drift},
+            "outcome": "drift" if drift else "agree"}
+
+
 def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None,
           umbrella_input: Optional[Path] = None) -> dict[str, Any]:
     config = load_config(controller)
@@ -2272,8 +2726,61 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                             "hydration": hydration}
                 state["tasks"][task_id] = existing
                 write_state(controller, state)
+                control_state_lock(False)
+                try:
+                    recovered_sync = ensure_kanban_sync(
+                        controller, task_id, existing, phase="hydration-recovered")
+                except KanbanSyncError as sync_exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != existing:
+                        raise TaskWorkspaceError(
+                            "task state changed during hydration-recovery Kanban projection") from sync_exc
+                    existing = _demote_to_kanban_sync_required(existing, sync_exc)
+                    state["tasks"][task_id] = existing
+                    write_state(controller, state)
+                    raise TaskWorkspaceError(
+                        f"hydration recovered but its Kanban projection failed: {sync_exc}; "
+                        f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from sync_exc
+                else:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != existing:
+                        raise TaskWorkspaceError(
+                            "task state changed during hydration-recovery Kanban projection")
+                    existing = {**existing, "kanban_sync": recovered_sync}
+                    state["tasks"][task_id] = existing
+                    write_state(controller, state)
                 return {**existing, "outcome": "hydration_recovered"}
             if clean_identity(existing, repository, target_sha, config):
+                control_state_lock(False)
+                try:
+                    # Heal board drift for an already-started task: an active
+                    # record must never leave the canonical board in backlog
+                    # or todo (the recorded live discrepancy class).
+                    started_sync = ensure_kanban_sync(
+                        controller, task_id, existing, phase="already-started")
+                except KanbanSyncError as sync_exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != existing:
+                        raise TaskWorkspaceError(
+                            "task state changed during already-started Kanban projection") from sync_exc
+                    existing = _demote_to_kanban_sync_required(existing, sync_exc)
+                    state["tasks"][task_id] = existing
+                    write_state(controller, state)
+                    raise TaskWorkspaceError(
+                        f"task is started but its Kanban projection failed: {sync_exc}; "
+                        f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from sync_exc
+                else:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != existing:
+                        raise TaskWorkspaceError(
+                            "task state changed during already-started Kanban projection")
+                    existing = {**existing, "kanban_sync": started_sync}
+                    state["tasks"][task_id] = existing
+                    write_state(controller, state)
                 return {**existing, "outcome": "already_started"}
             raise TaskWorkspaceError("task start identity drifted; preserve the worktree and inspect task status")
         # show-ref is intentionally quiet; its exit status is the branch-collision contract.
@@ -2336,6 +2843,29 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
             frozen_record = json.loads(json.dumps(record))
             control_state_lock(False)
             try:
+                # Durable start boundary: the worktree and its task record now
+                # exist, so the canonical board must project in_progress with
+                # structured lifecycle detail before hydration or any
+                # agent-visible work begins. A failed projection preserves the
+                # worktree and exposes one exact recovery command.
+                try:
+                    boundary_sync = project_kanban_lifecycle(
+                        controller, task_id, "HYDRATING",
+                        phase="start-boundary", record=record)
+                except KanbanSyncError as exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != frozen_record:
+                        raise TaskWorkspaceError(
+                            "task state changed during Kanban projection; preserve evidence and inspect task status") from exc
+                    record = {**record, "state": KANBAN_SYNC_STATE,
+                              "kanban_sync": {**exc.evidence, "pending_phase": "hydration",
+                                              "restore_state": "HYDRATING"}}
+                    state["tasks"][task_id] = record
+                    write_state(controller, state)
+                    raise TaskWorkspaceError(
+                        f"task start canonical Kanban projection failed: {exc}; "
+                        f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
                 hydration = run_task_hydration(
                     controller, worktree, task_id, frozen_hydration, config)
             except HydrationFailure as exc:
@@ -2346,6 +2876,33 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                 record = {**record, "state": "HYDRATION_FAILED", "hydration": exc.evidence}
                 state["tasks"][task_id] = record
                 write_state(controller, state)
+                control_state_lock(False)
+                try:
+                    # Hydration failure is truthful active state, not success:
+                    # the board keeps in_progress with the exact detail.
+                    failure_sync = project_kanban_lifecycle(
+                        controller, task_id, "HYDRATION_FAILED",
+                        phase="hydration-failed", record=record)
+                except KanbanSyncError as sync_exc:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != record:
+                        raise TaskWorkspaceError(
+                            "task state changed during hydration-failure Kanban projection") from sync_exc
+                    record = {**record, "state": KANBAN_SYNC_STATE,
+                              "kanban_sync": {**sync_exc.evidence, "pending_phase": "none",
+                                              "restore_state": "HYDRATION_FAILED"}}
+                    state["tasks"][task_id] = record
+                    write_state(controller, state)
+                else:
+                    control_state_lock(True)
+                    state = read_state(controller)
+                    if state["tasks"].get(task_id) != record:
+                        raise TaskWorkspaceError(
+                            "task state changed during hydration-failure Kanban projection")
+                    record = {**record, "kanban_sync": failure_sync}
+                    state["tasks"][task_id] = record
+                    write_state(controller, state)
                 raise
             finally:
                 control_state_lock(True)
@@ -2355,6 +2912,33 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
             record = {**record, "state": "WORKING", "hydration": hydration}
             state["tasks"][task_id] = record
             write_state(controller, state)
+            control_state_lock(False)
+            try:
+                working_sync = project_kanban_lifecycle(
+                    controller, task_id, "WORKING", phase="working", record=record)
+            except KanbanSyncError as sync_exc:
+                control_state_lock(True)
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != record:
+                    raise TaskWorkspaceError(
+                        "task state changed during working Kanban projection") from sync_exc
+                record = {**record, "state": KANBAN_SYNC_STATE,
+                          "kanban_sync": {**sync_exc.evidence, "pending_phase": "none",
+                                          "restore_state": "WORKING"}}
+                state["tasks"][task_id] = record
+                write_state(controller, state)
+                raise TaskWorkspaceError(
+                    f"task start completed but its Kanban projection failed: {sync_exc}; "
+                    f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from sync_exc
+            else:
+                control_state_lock(True)
+                state = read_state(controller)
+                if state["tasks"].get(task_id) != record:
+                    raise TaskWorkspaceError(
+                        "task state changed during working Kanban projection")
+                record = {**record, "kanban_sync": working_sync}
+                state["tasks"][task_id] = record
+                write_state(controller, state)
         except Exception as creation_error:
             # Creation is not admitted without durable controller truth. Keep no
             # unrecorded branch/worktree if the atomic state write itself fails.
@@ -2427,6 +3011,7 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
                           "hydration": exc.evidence}
                 state["tasks"][task_id] = failed
                 write_state(controller, state)
+            _sync_after_hydrate(controller, task_id, failed, strict=False)
             raise
         with state_lock(controller):
             state = read_state(controller)
@@ -2435,7 +3020,34 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
             completed = {**pending, "state": repair_state or "WORKING", "hydration": evidence}
             state["tasks"][task_id] = completed
             write_state(controller, state)
+        completed = _sync_after_hydrate(controller, task_id, completed)
         return {**completed, "outcome": "hydrated"}
+
+
+def _sync_after_hydrate(controller: Path, task_id: str, record: dict[str, Any], *,
+                        strict: bool = True) -> dict[str, Any]:
+    """Project the post-hydration lifecycle state, fail-closed when strict."""
+    try:
+        evidence = ensure_kanban_sync(controller, task_id, record, phase="hydrated")
+    except KanbanSyncError as exc:
+        demoted = _demote_to_kanban_sync_required(record, exc)
+        try:
+            updated = _stamp_kanban_sync(controller, task_id, record,
+                                         demoted["kanban_sync"],
+                                         restore_state=KANBAN_SYNC_STATE)
+        except TaskWorkspaceError:
+            return record
+        if strict:
+            raise TaskWorkspaceError(
+                f"hydration finished but its Kanban projection failed: {exc}; "
+                f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+        return updated
+    if strict:
+        return _stamp_kanban_sync(controller, task_id, record, evidence)
+    try:
+        return _stamp_kanban_sync(controller, task_id, record, evidence)
+    except TaskWorkspaceError:
+        return record
 
 
 def _recovery_plan_locked(controller: Path, task_id: str, input_path: Path,
@@ -3346,16 +3958,32 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     runtime = require_current_runtime(configured_repository,
                                       ref_sha(configured_repository, config["target_ref"]),
                                       controller)
+    queued_record: Optional[dict[str, Any]] = None
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
         if not record:
             raise TaskWorkspaceError("task has not been started")
         if record.get("state") == "QUEUED":
-            return {**record, "outcome": "already_queued"}
-        if record.get("state") != "WORKING":
+            queued_record = record
+        elif record.get("state") != "WORKING":
             raise TaskWorkspaceError(f"task cannot finish from {record.get('state')}")
-        frozen_record = json.loads(json.dumps(record))
+        else:
+            frozen_record = json.loads(json.dumps(record))
+    if queued_record is not None:
+        # Idempotent retry: verify or repair the queue projection so a crash
+        # between queue mutation and board projection cannot leave drift.
+        try:
+            queue_sync = ensure_kanban_sync(controller, task_id, queued_record, phase="queued")
+        except KanbanSyncError as exc:
+            _stamp_kanban_sync(controller, task_id, queued_record,
+                               _demote_to_kanban_sync_required(queued_record, exc)["kanban_sync"],
+                               restore_state=KANBAN_SYNC_STATE)
+            raise TaskWorkspaceError(
+                f"task is queued but its Kanban projection failed: {exc}; "
+                f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+        return {**_stamp_kanban_sync(controller, task_id, queued_record, queue_sync),
+                "outcome": "already_queued"}
     verify_hydration_evidence(frozen_record, Path(frozen_record["worktree"]))
 
     # Validations run outside the controller state lock. Independent feature
@@ -3445,6 +4073,16 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         queued["enqueue_sequence"] = assign_enqueue_sequence(state)
         state["tasks"][task_id] = queued
         write_state(controller, state)
+    try:
+        queue_sync = ensure_kanban_sync(controller, task_id, queued, phase="queued")
+    except KanbanSyncError as exc:
+        _stamp_kanban_sync(controller, task_id, queued,
+                           _demote_to_kanban_sync_required(queued, exc)["kanban_sync"],
+                           restore_state=KANBAN_SYNC_STATE)
+        raise TaskWorkspaceError(
+            f"task queued but its Kanban projection failed: {exc}; "
+            f"recover with: {KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+    queued = _stamp_kanban_sync(controller, task_id, queued, queue_sync)
     return {**queued, "outcome": "queued"}
 
 
@@ -3463,6 +4101,7 @@ HANDOFF_MAX_BYTES = 8192
 HANDOFF_NEXT_COMMANDS = {
     "NOT_STARTED": "yy task start {task}",
     "WORKING": "yy task preflight {task}",
+    KANBAN_SYNC_STATE: KANBAN_SYNC_RECOVERY,
     "QUEUED": "yy merge next",
     "AWAITING_RISK": "yy merge review {task}",
     "AWAITING_RELEASE": "yy release train status <declaration>",
@@ -3476,6 +4115,7 @@ HANDOFF_NEXT_COMMANDS = {
     "RISK_EVIDENCE_READY": "yy merge next {task}",
     "MERGING": "yy merge next",
     "MERGED": "none: task integrated; archive the Kanban task",
+    "WITHDRAWN": "none: candidate withdrawn; create or bind a continuation task",
 }
 
 
@@ -3488,6 +4128,7 @@ def _handoff_phase(state: str) -> str:
         "CONFLICT_RESOLVED": "resolved", "REOPENING": "reopening",
         "REQUEUING_STALE": "restale", "RISK_EVIDENCE_READY": "approved",
         "MERGING": "merging", "MERGED": "merged",
+        KANBAN_SYNC_STATE: "kanban-sync-required", "WITHDRAWN": "withdrawn",
     }.get(state, state)
 
 
@@ -3643,6 +4284,12 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
         return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED",
                 "outcome": "status", "runtime_generation": generation}
     result = {**record, "outcome": "status", "runtime_generation": generation}
+    if isinstance(record.get("kanban_sync"), dict):
+        kanban_sync = record["kanban_sync"]
+        result["kanban_sync"] = kanban_sync
+        if kanban_sync.get("status") == "required":
+            result["kanban_sync_required"] = True
+            result["recovery_command"] = KANBAN_SYNC_RECOVERY.format(task=task_id)
     if record.get("state") == "WORKING":
         _, _, live_tip, committed_paths, uncommitted_paths = observe_task_diff(
             record, configured_repository, config, task_id
@@ -5374,7 +6021,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("operation", choices=(
         "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
         "checkpoint", "evidence-run", "evidence-status", "evidence-await",
-        "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap"))
+        "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap",
+        "sync", "doctor"))
     value.add_argument("--task")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--umbrella-admission", type=Path,
@@ -5405,7 +6053,7 @@ def main(argv: list[str] | None = None) -> int:
             result = runtime_bootstrap(controller, args.package_version,
                                        args.package_runtime_sha256, args.apply)
         else:
-            if not args.task:
+            if not args.task and args.operation not in {"doctor"}:
                 raise TaskWorkspaceError(f"task {args.operation} requires --task")
             if args.operation != "start" and args.path:
                 raise TaskWorkspaceError("--path is supported only for task start")
@@ -5465,6 +6113,10 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.operation == "evidence-await":
                     current = standing_evidence_status(controller, args.task)
                     result = current if current["state"] == "COMPLETE" else standing_evidence_run(controller, args.task)
+                elif args.operation == "sync":
+                    result = recover_kanban_sync(controller, args.task)
+                elif args.operation == "doctor":
+                    result = kanban_sync_doctor(controller, args.task or None)
                 else:
                     result = {"status": status, "hydrate": hydrate, "preflight": preflight,
                               "finish": finish}[args.operation](controller, args.task)

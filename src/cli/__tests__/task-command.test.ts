@@ -35,16 +35,18 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it('exposes preflight, bounded umbrella recovery, and guarded runtime bootstrap below task', () => {
+  it('exposes preflight, kanban sync, bounded umbrella recovery, and guarded runtime bootstrap below task', () => {
     const program = new Command();
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
       'run', 'start', 'preflight', 'checkpoint', 'hydrate', 'status', 'finish',
-      'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
+      'doctor', 'sync', 'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 10).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[10]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 7).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[7]?.registeredArguments[0]?.required).toBe(false);
+    expect(task?.commands.slice(8, 12).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[12]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -100,6 +102,8 @@ describe('task workspace CLI', () => {
   it('routes recovery planning through read-only kanban policy and apply through orchestration', () => {
     expect(taskWorkspaceControlOperation('recovery-plan')).toBe('kanban');
     expect(taskWorkspaceControlOperation('status')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('doctor')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('sync')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });
@@ -114,7 +118,7 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it.each(['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await'] as const)(
+  it.each(['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor'] as const)(
     'does not checkpoint after read-only task %s',
     async (operation) => {
     const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));

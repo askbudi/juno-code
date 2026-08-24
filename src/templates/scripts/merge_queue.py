@@ -294,6 +294,38 @@ def review_lock(repository: Path, task_id: str) -> Iterator[None]:
         yield
 
 
+def _project_queue_board_state(controller: Path, task_id: str, state_name: str) -> None:
+    """Project one durable queue transition onto the canonical board.
+
+    Queue-owned states stay non-terminal on the board. A failed projection is
+    recorded as an explicit pending sync on the record without destroying the
+    queue state machine, then fails closed with one exact recovery command.
+    """
+    if state_name == "MERGED":
+        # Verified merge finalization exclusively owns the done mutation and
+        # its terminal lifecycle fields.
+        return
+    with task_runtime.state_lock(controller):
+        record = task_runtime.read_state(controller)["tasks"].get(task_id)
+    if not isinstance(record, dict):
+        raise MergeQueueError(f"queue board projection lost task {task_id}")
+    try:
+        evidence = task_runtime.ensure_kanban_sync(controller, task_id, record, phase="queue")
+    except task_runtime.KanbanSyncError as exc:
+        try:
+            task_runtime._stamp_kanban_sync(controller, task_id, record, exc.evidence)
+        except task_runtime.TaskWorkspaceError:
+            pass
+        raise MergeQueueError(
+            f"merge queue Kanban projection failed for {task_id}: {exc}; "
+            f"recover with: {task_runtime.KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+    if evidence.get("outcome") != "verified":
+        try:
+            task_runtime._stamp_kanban_sync(controller, task_id, record, evidence)
+        except task_runtime.TaskWorkspaceError:
+            pass
+
+
 def persist_attempt(controller: Path, attempt: dict[str, Any], *, state_name: Optional[str] = None,
                     conflict: Optional[dict[str, Any]] = None, remove_conflict: bool = False) -> None:
     with task_runtime.state_lock(controller):
@@ -316,6 +348,8 @@ def persist_attempt(controller: Path, attempt: dict[str, Any], *, state_name: Op
             entry["conflicts"][attempt["task_id"]] = conflict
         # Tasks and queue/conflict truth cross one atomic replace boundary.
         task_runtime.write_state(controller, state)
+    if state_name:
+        _project_queue_board_state(controller, attempt["task_id"], state_name)
 
 
 def changed_paths(root: Path) -> list[str]:
@@ -2288,7 +2322,15 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
     if task.get("status") == "done":
         if task.get("commit_hash") != candidate:
             raise MergeQueueError("Kanban task is already done with a different commit")
-        return {"outcome": "already_complete", "commit_hash": candidate}
+        fields = task.get("fields") if isinstance(task.get("fields"), dict) else {}
+        if (fields.get("lifecycle_state") == "MERGED"
+                and fields.get("lifecycle_projection") == task_runtime.KANBAN_LIFECYCLE_PROJECTION):
+            return {"outcome": "already_complete", "commit_hash": candidate}
+        lifecycle = task_runtime.project_kanban_lifecycle(
+            controller, task_id, "MERGED", allow_done=True,
+            phase="merge-finalized", record={"tip_sha": candidate})
+        return {"outcome": "already_complete", "commit_hash": candidate,
+                "lifecycle_projection": lifecycle.get("outcome")}
     response = task.get("agent_response")
     if not isinstance(response, str) or not response.strip():
         response = f"Integrated through the guarded merge queue at {candidate}."
@@ -2314,8 +2356,12 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
     readback = read_kanban_task(controller, task_id)
     if readback.get("status") != "done" or readback.get("commit_hash") != candidate:
         raise MergeQueueError("Kanban finalization readback mismatched")
+    lifecycle = task_runtime.project_kanban_lifecycle(
+        controller, task_id, "MERGED", allow_done=True,
+        phase="merge-finalized", record={"tip_sha": candidate})
     return {"outcome": "completed", "commit_hash": candidate,
-            "receipt": evidence_reference(receipt_path)}
+            "receipt": evidence_reference(receipt_path),
+            "lifecycle_projection": lifecycle.get("outcome")}
 
 
 def complete_post_integration(controller: Path, repository: Path,
@@ -5422,6 +5468,24 @@ def merge_withdraw(controller: Path, task_id: str,
                     entry = target_entry(current_state, repository, config["target_ref"])
                     entry["conflicts"].pop(task_id, None)
                     task_runtime.write_state(controller, current_state)
+            # Withdrawal is an explicit non-success disposition: never done,
+            # with structured truth and any continuation binding on the board.
+            try:
+                withdraw_sync = task_runtime.ensure_kanban_sync(
+                    controller, task_id, updated, phase="withdrawn")
+            except task_runtime.KanbanSyncError as exc:
+                try:
+                    task_runtime._stamp_kanban_sync(controller, task_id, updated, exc.evidence)
+                except task_runtime.TaskWorkspaceError:
+                    pass
+                raise MergeQueueError(
+                    f"task withdrawn but its Kanban disposition failed: {exc}; "
+                    f"recover with: {task_runtime.KANBAN_SYNC_RECOVERY.format(task=task_id)}") from exc
+            if withdraw_sync.get("outcome") != "verified":
+                try:
+                    updated = task_runtime._stamp_kanban_sync(controller, task_id, updated, withdraw_sync)
+                except task_runtime.TaskWorkspaceError:
+                    pass
             return {**updated, "outcome": "WITHDRAWN"}
 
 
@@ -5452,6 +5516,11 @@ def status(controller: Path) -> dict[str, Any]:
                                             if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})
                                                            .get("review_progress")), dict) else None),
                  "review_round": row.get("review_round", 1),
+                 "kanban_sync_required": (isinstance(row.get("kanban_sync"), dict)
+                                          and row["kanban_sync"].get("status") == "required"),
+                 "kanban_sync_recovery": (task_runtime.KANBAN_SYNC_RECOVERY.format(task=task_id)
+                                           if isinstance(row.get("kanban_sync"), dict)
+                                           and row["kanban_sync"].get("status") == "required" else None),
                  "completed_reviewer_count": len(((((row.get("queue_attempt") or {}).get("risk") or {})
                                                      .get("review_progress") or {}).get("steps", []))
                                                    if isinstance((((row.get("queue_attempt") or {}).get("risk") or {})

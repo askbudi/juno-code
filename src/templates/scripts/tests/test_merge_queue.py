@@ -116,53 +116,8 @@ class MergeQueueTests(unittest.TestCase):
             task = self.controller / ".juno_task/tasks" / task_id.lower() / f"{task_id}.md"
             task.parent.mkdir(parents=True, exist_ok=True)
             task.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
-        fake_board = self.controller / ".juno_task/runtime/fake-kanban.json"
-        fake_board.parent.mkdir(parents=True, exist_ok=True)
-        fake_board.write_text(json.dumps({task_id: {
-            "id": task_id, "status": "in_progress", "commit_hash": None,
-            "agent_response": f"evidence for {task_id}",
-        } for task_id in ("A", "B", "X", "Y", "Z")}) + "\n")
-        wrapper = self.controller / ".juno_task/scripts/kanban.sh"
-        wrapper.write_text(f"""#!/usr/bin/env python3
-import json, pathlib, sys
-board = pathlib.Path({str(fake_board)!r})
-value = json.loads(board.read_text())
-if 'get' in sys.argv:
-    task_id = sys.argv[sys.argv.index('get') + 1]
-    print(json.dumps([value[task_id]])); raise SystemExit(0)
-if 'mark' in sys.argv:
-    task_id = sys.argv[sys.argv.index('--id') + 1]
-    value[task_id]['status'] = 'done'
-    value[task_id]['commit_hash'] = sys.argv[sys.argv.index('--commit') + 1]
-    value[task_id]['agent_response'] = pathlib.Path(sys.argv[sys.argv.index('--response-file') + 1]).read_text()
-    value[task_id]['mutation_count'] = value[task_id].get('mutation_count', 0) + 1
-    board.write_text(json.dumps(value) + '\\n')
-    receipt = pathlib.Path(sys.argv[sys.argv.index('--receipt-file') + 1])
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text(json.dumps({{'outcome': 'completed'}}) + '\\n')
-    raise SystemExit(0)
-if 'search' in sys.argv:
-    field = sys.argv[sys.argv.index('--field') + 1]
-    key, expected = field.split('=', 1)
-    matches = [task for task in value.values() if task.get('fields', {{}}).get(key) == expected]
-    print(json.dumps({{'tasks': matches, 'summary': {{'count': len(matches)}}}})); raise SystemExit(0)
-if 'create' in sys.argv:
-    task_id = 'ADV' + str(1 + sum(key.startswith('ADV') for key in value))
-    fields = {{}}
-    for index, token in enumerate(sys.argv):
-        if token == '--field':
-            key, encoded = sys.argv[index + 1].split('=', 1); fields[key] = json.loads(encoded)
-    value[task_id] = {{'id': task_id, 'status': sys.argv[sys.argv.index('--status') + 1],
-                      'body': pathlib.Path(sys.argv[sys.argv.index('--body-file') + 1]).read_text(),
-                      'fields': fields, 'feature_tags': ['REVIEW_ADVISORY']}}
-    board.write_text(json.dumps(value) + '\\n')
-    receipt = pathlib.Path(sys.argv[sys.argv.index('--receipt-file') + 1])
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text(json.dumps({{'outcome': 'completed', 'task_id': task_id}}) + '\\n')
-    print(json.dumps({{'id': task_id}})); raise SystemExit(0)
-raise SystemExit(2)
-""")
-        wrapper.chmod(0o755)
+        self.board = test_task_workspace.seed_fake_kanban(
+            self.controller, {task_id: "in_progress" for task_id in ("A", "B", "X", "Y", "Z")})
         self.write_policy()
         risk_path = self.controller / ".juno_task/config/risk-policy.json"
         risk_path.write_bytes((SCRIPTS.parent / "config/risk-policy.json").read_bytes())
@@ -2264,30 +2219,11 @@ steps:
     def test_kanban_finalization_is_readback_idempotent_and_preserves_response(self) -> None:
         board = self.controller / ".juno_task/runtime/fake-board.json"
         board.parent.mkdir(parents=True, exist_ok=True)
-        board.write_text(json.dumps({
+        board.write_text(json.dumps({"X": {
             "id": "X", "status": "in_progress", "commit_hash": None,
-            "agent_response": "reviewed implementation evidence",
-        }))
-        wrapper = self.controller / ".juno_task/scripts/kanban.sh"
-        wrapper.write_text(f"""#!/usr/bin/env python3
-import json, pathlib, sys
-board = pathlib.Path({str(board)!r})
-value = json.loads(board.read_text())
-if 'get' in sys.argv:
-    print(json.dumps([value])); raise SystemExit(0)
-if 'mark' in sys.argv:
-    value['status'] = 'done'
-    value['commit_hash'] = sys.argv[sys.argv.index('--commit') + 1]
-    value['agent_response'] = pathlib.Path(sys.argv[sys.argv.index('--response-file') + 1]).read_text()
-    value['mutation_count'] = value.get('mutation_count', 0) + 1
-    board.write_text(json.dumps(value))
-    receipt = pathlib.Path(sys.argv[sys.argv.index('--receipt-file') + 1])
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text(json.dumps({{'outcome': 'completed'}}) + '\\n')
-    raise SystemExit(0)
-raise SystemExit(2)
-""")
-        wrapper.chmod(0o755)
+            "agent_response": "reviewed implementation evidence", "fields": {},
+        }}) + "\n")
+        test_task_workspace.install_fake_kanban_wrapper(self.controller, board)
         attempt = {"task_id": "X", "candidate_sha": self.base}
 
         first = merge_runtime.finalize_kanban_task(self.controller, attempt)
@@ -2295,10 +2231,81 @@ raise SystemExit(2)
 
         self.assertEqual(first["outcome"], "completed")
         self.assertEqual(second["outcome"], "already_complete")
-        persisted = json.loads(board.read_text())
+        persisted = json.loads(board.read_text())["X"]
         self.assertEqual(persisted["mutation_count"], 1)
         self.assertEqual(persisted["agent_response"], "reviewed implementation evidence")
         self.assertEqual(persisted["commit_hash"], self.base)
+        self.assertEqual(persisted["status"], "done")
+        # Verified merge finalization owns the terminal lifecycle identity.
+        self.assertEqual(persisted["fields"]["lifecycle_state"], "MERGED")
+        self.assertEqual(persisted["fields"]["lifecycle_projection"],
+                         merge_runtime.task_runtime.KANBAN_LIFECYCLE_PROJECTION)
+
+    def test_persist_attempt_projects_queue_states_onto_the_board(self) -> None:
+        tip = self.commit_feature("X", "src/feature.txt", "feature\n")
+        attempt = {"schema_version": merge_runtime.ATTEMPT_SCHEMA, "task_id": "X",
+                   "target_ref": "refs/heads/product", "expected_target_sha": self.base,
+                   "feature_sha": tip, "candidate_sha": tip, "outcome": "CONFLICT"}
+        merge_runtime.persist_attempt(self.controller, attempt, state_name="CONFLICT")
+        board = json.loads(self.board.read_text())
+        self.assertEqual((board["X"]["status"], board["X"]["fields"]["lifecycle_state"]),
+                         ("in_progress", "CONFLICT"))
+        events = len(board["X"]["_events"])
+        merge_runtime.persist_attempt(self.controller, attempt, state_name="CONFLICT")
+        board = json.loads(self.board.read_text())
+        self.assertEqual(len(board["X"]["_events"]), events)
+        self.assertEqual(board["X"]["fields"]["lifecycle_state"], "CONFLICT")
+        # Non-terminal exhaustion keeps truthful in_progress with a disposition.
+        exhausted = {**attempt, "outcome": "REVIEW_FINDINGS_EXHAUSTED"}
+        merge_runtime.persist_attempt(self.controller, exhausted,
+                                      state_name="REVIEW_FINDINGS_EXHAUSTED")
+        board = json.loads(self.board.read_text())
+        self.assertEqual((board["X"]["status"],
+                          board["X"]["fields"]["lifecycle_disposition"]),
+                         ("in_progress", "review_findings_exhausted"))
+
+    def test_persist_attempt_board_failure_fails_closed_with_one_recovery(self) -> None:
+        tip = self.commit_feature("X", "src/feature.txt", "feature\n")
+        wrapper = self.controller / ".juno_task/scripts/kanban.sh"
+        saved = wrapper.read_bytes()
+        wrapper.write_bytes(b"#!/usr/bin/env bash\nexit 9\n")
+        attempt = {"schema_version": merge_runtime.ATTEMPT_SCHEMA, "task_id": "X",
+                   "target_ref": "refs/heads/product", "expected_target_sha": self.base,
+                   "feature_sha": tip, "candidate_sha": tip, "outcome": "CONFLICT"}
+        try:
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "yy task sync X"):
+                merge_runtime.persist_attempt(self.controller, attempt, state_name="CONFLICT")
+        finally:
+            wrapper.write_bytes(saved)
+        record = self.task("status", "X")
+        self.assertTrue(record["kanban_sync_required"])
+        self.assertEqual(record["recovery_command"], "yy task sync X")
+        # The queue state machine itself stays intact for the exact recovery.
+        self.assertEqual(record["state"], "CONFLICT")
+        recovered = json.loads(self.command(
+            TASK, ["sync", "--task", "X"]).stdout)
+        self.assertIn(recovered["outcome"], {"projected", "updated", "verified", "recovered"})
+        self.assertEqual(recovered["state"], "CONFLICT")
+        board = json.loads(self.board.read_text())
+        self.assertEqual((board["X"]["status"], board["X"]["fields"]["lifecycle_state"]),
+                         ("in_progress", "CONFLICT"))
+
+    def test_withdraw_projects_non_done_disposition_with_continuation(self) -> None:
+        self.commit_feature("X", "src/security/auth.py", "withdraw\n")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"]["continuation_task_id"] = "NEXT77"
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        withdrawn = merge_runtime.merge_withdraw(self.controller.resolve(), "X",
+                                                 reason="superseded by NEXT77")
+        self.assertEqual((withdrawn["state"], withdrawn["outcome"]),
+                         ("WITHDRAWN", "WITHDRAWN"))
+        board = json.loads(self.board.read_text())
+        self.assertEqual(board["X"]["status"], "todo")
+        self.assertEqual(board["X"]["fields"]["lifecycle_state"], "WITHDRAWN")
+        self.assertEqual(board["X"]["fields"]["lifecycle_disposition"], "withdrawn")
+        self.assertEqual(board["X"]["fields"]["continuation_task_id"], "NEXT77")
+        self.assertNotEqual(board["X"]["status"], "done")
 
     def test_multi_commit_direct_candidate_is_planned_from_full_target_diff(self) -> None:
         self.task("start", "X")
