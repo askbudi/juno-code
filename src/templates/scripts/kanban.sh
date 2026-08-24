@@ -356,9 +356,14 @@ main() {
 
     # Execute the controller checkout's isolated runtime explicitly. Do not rely
     # on a hashed or unrelated global executable remaining earlier on PATH.
-    local kanban_executable="$PROJECT_ROOT/.venv_juno/bin/juno-kanban"
+    # yylo-ledger is the canonical successor Kanban runtime; the legacy
+    # juno-kanban v2 executable remains the fallback for older installs.
+    local kanban_executable="$PROJECT_ROOT/.venv_juno/bin/yylo-ledger"
     if [[ ! -x "$kanban_executable" ]]; then
-        log_error "juno-kanban executable missing from controller environment: $kanban_executable"
+        kanban_executable="$PROJECT_ROOT/.venv_juno/bin/juno-kanban"
+    fi
+    if [[ ! -x "$kanban_executable" ]]; then
+        log_error "Kanban executable missing from controller environment: $PROJECT_ROOT/.venv_juno/bin/yylo-ledger (or legacy juno-kanban)"
         exit 1
     fi
     local policy_file="$SCRIPT_DIR/juno-toolchain-policy.sh"

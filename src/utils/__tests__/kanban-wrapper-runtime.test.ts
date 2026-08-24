@@ -209,6 +209,58 @@ python3 -c 'import os, kanban; print(kanban.RUNTIME + "|" + os.environ["JUNO_TAS
     );
   });
 
+  it('prefers the canonical yylo-ledger runtime and rejects malformed identity', async () => {
+    const venvBin = path.join(projectRoot, '.venv_juno', 'bin');
+    await fs.writeFile(
+      path.join(venvBin, 'yylo-ledger'),
+      `#!/usr/bin/env bash
+if [[ "${'$'}{1:-}" == "--version" ]]; then
+  printf 'yylo-ledger 0.1.0rc1\\n'
+  exit 0
+fi
+printf 'yylo-ledger-runtime\\n'
+`,
+    );
+    await fs.chmod(path.join(venvBin, 'yylo-ledger'), 0o755);
+
+    const env = {
+      ...process.env,
+      JUNO_CONTROLLER_BRANCH: '',
+      JUNO_WORKSPACE_ENFORCEMENT: 'off',
+      JUNO_WORKSPACE_ROLE: '',
+      JUNO_TASK_ROOT: '',
+      VIRTUAL_ENV: '',
+    };
+    const selected = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['list'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env,
+    });
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(selected.stdout.trim()).toBe('yylo-ledger-runtime');
+    expect(selected.stderr).toContain('policy=>=0.1.0,<0.2.0');
+
+    await fs.writeFile(
+      path.join(venvBin, 'yylo-ledger'),
+      `#!/usr/bin/env bash
+if [[ "${'$'}{1:-}" == "--version" ]]; then
+  printf 'juno-kanban is deprecated; install yylo-ledger and use yylo-ledger instead.\\nyylo-ledger 0.9.0\\n'
+  exit 0
+fi
+printf 'must-not-run\\n'
+`,
+    );
+    await fs.chmod(path.join(venvBin, 'yylo-ledger'), 0o755);
+    const rejected = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['list'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env,
+    });
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toContain('identity rejected');
+  });
+
   it('uses the compatible controller executable even when a neighboring source tree is present', () => {
     const result = spawnSync(path.join(projectRoot, '.juno_task', 'scripts', 'kanban.sh'), ['list'], {
       cwd: projectRoot,
