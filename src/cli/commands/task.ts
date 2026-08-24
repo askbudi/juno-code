@@ -179,7 +179,7 @@ export function configureTaskWorkspaceCommand(
   task
     .command('start')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
-    .option('--path <path>', 'Required product root admitted by task-workspace policy', (value, values: string[]) => [...values, value], [])
+    .option('--path <path>', 'Additional selectable product root; omit for baseline/default paths', (value, values: string[]) => [...values, value], [])
     .option('--umbrella-admission <file>', 'Versioned ordered-child exact-scope input')
     .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string }) => (
       options.umbrellaAdmission

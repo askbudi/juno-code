@@ -63,14 +63,34 @@ describe('task workspace CLI', () => {
     expect(bootstrap).toHaveBeenCalledWith(expected);
   });
 
-  it('forwards repeatable required product roots only for task start', async () => {
+  it('documents baseline scope separately from repeatable selectable product roots', () => {
+    const program = new Command();
+    configureTaskWorkspaceCommand(program, async () => undefined);
+    const task = program.commands.find((command) => command.name() === 'task');
+    const start = task?.commands.find((command) => command.name() === 'start');
+    const pathOption = start?.options.find((option) => option.long === '--path');
+
+    expect(pathOption?.description).toBe(
+      'Additional selectable product root; omit for baseline/default paths',
+    );
+    const help = start?.helpInformation();
+    expect(help).toContain('--path <path>');
+    expect(help).toContain('Additional selectable product root; omit for');
+    expect(help).toContain('baseline/default paths (default: [])');
+  });
+
+  it('uses baseline paths by default and forwards repeatable additional roots only for task start', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
     configureTaskWorkspaceCommand(program, invoke);
+
+    await program.parseAsync(['node', 'yy', 'task', 'start', 'BASE']);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'BASE', []);
+
     await program.parseAsync([
-      'node', 'yy', 'task', 'start', 'T123', '--path', 'juno_kanban', '--path', 'frontend',
+      'node', 'yy', 'task', 'start', 'EXTRA', '--path', 'juno_kanban', '--path', 'frontend',
     ]);
-    expect(invoke).toHaveBeenCalledWith('start', 'T123', ['juno_kanban', 'frontend']);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'EXTRA', ['juno_kanban', 'frontend']);
   });
 
   it('forwards umbrella admission and exact recovery plan/apply arguments', async () => {

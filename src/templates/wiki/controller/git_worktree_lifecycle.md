@@ -25,8 +25,8 @@ metadata controller
 ## Public commands
 
 ```text
-yy task start TASK_ID
-yy task start TASK_ID --path juno_kanban  # repeat --path for policy-admitted roots
+yy task start TASK_ID                    # baseline/default paths (including juno-code)
+yy task start TASK_ID --path juno_kanban  # add a selectable root; repeat for more
 yy task status TASK_ID
 yy task preflight TASK_ID
 yy task checkpoint TASK_ID
@@ -45,9 +45,12 @@ yy merge next
 yy merge resolve TASK_ID
 ```
 
-Task start freezes the exact configured product target SHA and any explicitly
-selected policy-admitted product roots, then creates one branch/worktree. Before
-editing or testing there, the worker follows [task dependency hydration](task_dependency_hydration.md)
+Task start always admits the policy's baseline/default paths and freezes the
+exact configured product target SHA. Omit `--path` for ordinary Juno Code work;
+`juno-code` is already in baseline scope and is not a selectable value. Use
+repeatable `--path` only to add roots listed by the policy's `selectable_paths`,
+such as `juno_kanban` or `frontend`. Task start then creates one branch/worktree.
+Before editing or testing there, the worker follows [task dependency hydration](task_dependency_hydration.md)
 for each configured validation cwd and stops on provisioning or clean-tree
 failure. Runtime identity is validated before any Juno-specific generated-output
 admission. Task preflight is read-only and checks the clean committed tip,
