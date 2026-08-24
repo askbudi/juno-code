@@ -893,7 +893,7 @@ describe('ScriptInstaller', {
       expect(installedEvidenceHelper).toBe(packageEvidenceHelper);
     });
 
-    it('installs only ignored runtime scripts in a metadata-only controller', async () => {
+    it('installs ignored runtime scripts and controller lifecycle seeds in a metadata-only controller', async () => {
       await fs.ensureDir(path.join(testDir, '.juno_task/config'));
       const config = {
         controllerWorkspace: {
@@ -911,15 +911,55 @@ describe('ScriptInstaller', {
       expect(updated).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/task_workspace.py'))).toBe(true);
       expect(await fs.pathExists(path.join(testDir, '.juno_task/scripts/merge_queue.py'))).toBe(true);
-      expect(await fs.pathExists(path.join(testDir, '.juno_task/managed-assets.json'))).toBe(false);
+      // Controller-class lifecycle seeds install on the metadata controller:
+      // compile_lifecycle_template fails closed without these tracked assets.
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-task-run.yaml'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-merge-drive.yaml'))).toBe(true);
+      expect(await fs.pathExists(
+        path.join(testDir, '.juno_task/prompts/lifecycle/task-implementation.md'))).toBe(true);
+      expect(await fs.pathExists(
+        path.join(testDir, '.juno_task/prompts/lifecycle/task-test-repair.md'))).toBe(true);
+      expect(await fs.pathExists(
+        path.join(testDir, '.juno_task/prompts/lifecycle/merge-semantic-repair.md'))).toBe(true);
+      // Seed installation is scoped: the tracked generation (wiki, prompts,
+      // manifest) stays untouched while customized policy blocks it.
       expect(await fs.pathExists(path.join(testDir, '.juno_task/wiki'))).toBe(false);
-      expect(await fs.pathExists(path.join(testDir, '.juno_task/prompts'))).toBe(false);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/managed-assets.json'))).toBe(false);
       expect(await fs.pathExists(path.join(testDir, 'scripts/git-flow.sh'))).toBe(false);
       expect(await fs.readJson(path.join(testDir, '.juno_task/config.json'))).toEqual(config);
       expect(await fs.readJson(
         path.join(testDir, '.juno_task/config/metadata-controller.json'),
       )).toEqual({ preserved: 'reviewed-project-policy' });
       expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(false);
+    });
+
+    it('self-heals missing controller lifecycle seeds without touching current scripts', async () => {
+      await fs.ensureDir(path.join(testDir, '.juno_task/config'));
+      await fs.writeJson(path.join(testDir, '.juno_task/config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only',
+          policy: '.juno_task/config/metadata-controller.json',
+        },
+      });
+      await fs.writeJson(path.join(testDir, '.juno_task/config/metadata-controller.json'), {
+        preserved: 'reviewed-project-policy',
+      });
+
+      // Reach a fully current controller generation, then remove only the seeds.
+      expect(await ScriptInstaller.autoUpdate(testDir, true)).toBe(true);
+      await fs.remove(path.join(testDir, '.juno_task/workflows'));
+      const promptsBefore = await fs.readFile(
+        path.join(testDir, '.juno_task/prompts/lifecycle/task-implementation.md'), 'utf8');
+
+      // Non-force update reinstalls exactly the missing seeds.
+      expect(await ScriptInstaller.autoUpdate(testDir, false)).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-task-run.yaml'))).toBe(true);
+      expect(await fs.pathExists(path.join(testDir, '.juno_task/workflows/yy-merge-drive.yaml'))).toBe(true);
+      expect(await fs.readFile(
+        path.join(testDir, '.juno_task/prompts/lifecycle/task-implementation.md'), 'utf8'),
+      ).toBe(promptsBefore);
+      // A subsequent no-op run stays a no-op.
+      expect(await ScriptInstaller.autoUpdate(testDir, false)).toBe(false);
     });
 
     it('routes one sparse pre-2.1.2 controller to the receipt-bound migration without tracked mutation', async () => {

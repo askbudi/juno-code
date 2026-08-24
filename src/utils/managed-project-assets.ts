@@ -533,6 +533,53 @@ export class ManagedProjectAssets {
     }
   }
 
+  /**
+   * Install missing controller-class assets on a metadata-only controller.
+   *
+   * The full generation update is all-or-nothing: one customized tracked
+   * asset suspends every install until the owner reviews its candidate.
+   * Lifecycle workflow templates and prompts have no other delivery path —
+   * a metadata controller cannot run its managed lifecycle until they exist
+   * — so absent seeds install directly from the exact package source.
+   * Existing bytes are never touched (customization stays authoritative)
+   * and the manifest is not rewritten: installed bytes equal the package
+   * source and therefore read as `current` to inspectGeneration.
+   */
+  static async installControllerSeeds(
+    projectDir: string,
+    options: { silent?: boolean } = {},
+  ): Promise<string[]> {
+    await this.preflight(projectDir, {});
+    const projectConfigPath = path.join(projectDir, '.juno_task', 'config.json');
+    if (!(await fs.pathExists(projectConfigPath))) return [];
+    const projectConfig = await fs.readJson(projectConfigPath);
+    const controllerWorkspace = projectConfig?.controllerWorkspace;
+    const metadataOnlyController =
+      controllerWorkspace?.mode === 'metadata-only' &&
+      controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
+    if (!metadataOnlyController) {
+      throw new Error('Controller lifecycle seeds install only on a metadata-only controller');
+    }
+    const templatesDir = this.getTemplatesDirectory();
+    if (!templatesDir) {
+      throw new Error('YYLO managed prompt/wiki templates are missing from this package');
+    }
+    const installed: string[] = [];
+    for (const asset of MANAGED_CONTROLLER_ASSETS) {
+      const destinationPath = path.join(projectDir, asset.destination);
+      if (await lstatIfPresent(destinationPath)) continue;
+      const sourcePath = path.join(templatesDir, asset.source);
+      await assertPackageSource(sourcePath, templatesDir, 'file');
+      await assertSafeManagedWritePath(projectDir, destinationPath);
+      if (!options.silent) {
+        console.log(`Installing managed controller lifecycle seed: ${asset.destination}`);
+      }
+      await writeAtomic(destinationPath, await fs.readFile(sourcePath), projectDir);
+      installed.push(asset.destination);
+    }
+    return installed;
+  }
+
   private static async migrateRetiredGeneration(
     projectDir: string,
     manifest: ManagedAssetManifest,

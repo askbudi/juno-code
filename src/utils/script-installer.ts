@@ -299,6 +299,37 @@ export class ScriptInstaller {
   }
 
   /**
+   * Controller-class managed assets (lifecycle workflow templates and
+   * lifecycle prompts) exist only on metadata-only controllers. They have no
+   * install surface of their own: this installer is the delivery path, so an
+   * absent seed is a missing install, not a customization to preserve.
+   */
+  private static async missingManagedControllerSeeds(projectDir: string): Promise<string[]> {
+    const missing: string[] = [];
+    for (const asset of managedAssetManifest.assets) {
+      if (asset.installClass !== 'controller') continue;
+      if (!(await lstatIfPresent(path.join(projectDir, asset.destination)))) {
+        missing.push(asset.destination);
+      }
+    }
+    return missing;
+  }
+
+  /**
+   * Install controller-class managed seeds on a metadata-only controller.
+   * Scoped seed installation never forwards force and never rewrites the
+   * tracked generation: owner-reviewed assets that diverge from package
+   * bytes stay authoritative until the full generation update is admissible.
+   */
+  private static async installManagedControllerSeeds(
+    projectDir: string,
+    silent: boolean,
+  ): Promise<string[]> {
+    const { ManagedProjectAssets } = await import('./managed-project-assets.js');
+    return ManagedProjectAssets.installControllerSeeds(projectDir, { silent });
+  }
+
+  /**
    * Update lifecycle guidance before installing a new lifecycle script generation.
    * A specialized clean_worktree policy is intentionally exempt; any other
    * customized lifecycle prompt/wiki must be reviewed or force-backed-up first.
@@ -795,6 +826,13 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       const debug = process.env.YYLO_DEBUG === '1';
       const metadataOnlyController = await this.isMetadataOnlyController(projectDir);
 
+      // Metadata-only controllers receive their controller-class managed seeds
+      // (lifecycle workflows and prompts) through this installer; an absent
+      // seed keeps the update loop alive even when every script is current.
+      const controllerSeedsMissing = metadataOnlyController
+        ? await this.missingManagedControllerSeeds(projectDir)
+        : [];
+
       // First check if .juno_task exists (project is initialized)
       const junoTaskDir = path.join(projectDir, '.juno_task');
       if (!(await fs.pathExists(junoTaskDir))) {
@@ -825,14 +863,18 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
         }
 
         const delegateNeeded = await this.rootDelegateNeedsUpdate(projectDir);
-        if (missing.length === 0 && outdated.length === 0 && !delegateNeeded) {
+        if (missing.length === 0 && outdated.length === 0
+            && !delegateNeeded && controllerSeedsMissing.length === 0) {
           return false;
         }
 
         scriptsToUpdate = [...new Set([...missing, ...outdated])];
       }
 
-      if (!metadataOnlyController && scriptsToUpdate.some((script) => MANAGED_SCRIPT_NAMES.includes(script))) {
+      let seedsInstalled = false;
+      const lifecycleScriptsPending = scriptsToUpdate.some((script) =>
+        MANAGED_SCRIPT_NAMES.includes(script));
+      if (lifecycleScriptsPending && !metadataOnlyController) {
         const lifecycleReady = await this.prepareManagedLifecycleBundle(
           projectDir,
           silent,
@@ -843,11 +885,18 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
             (script) => !MANAGED_SCRIPT_NAMES.includes(script),
           );
         }
+      } else if (controllerSeedsMissing.length > 0) {
+        const installed = await this.installManagedControllerSeeds(projectDir, silent);
+        seedsInstalled = installed.length > 0;
+        if (seedsInstalled && (debug || !silent)) {
+          console.log('Installed managed controller lifecycle seeds:');
+          for (const destination of installed) console.log(`  ${destination}`);
+        }
       }
 
-      let updatedAny = metadataOnlyController
+      let updatedAny = seedsInstalled || (metadataOnlyController
         ? false
-        : await this.installRootGitFlowDelegate(projectDir, silent);
+        : await this.installRootGitFlowDelegate(projectDir, silent));
       if (scriptsToUpdate.length === 0) return updatedAny;
 
       for (const script of scriptsToUpdate) {
