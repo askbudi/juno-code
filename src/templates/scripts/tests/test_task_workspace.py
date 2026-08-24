@@ -3755,6 +3755,72 @@ raise SystemExit(2)
         self.assertEqual(git(self.workspaces / "X", "rev-parse", "HEAD"), tip)
         self.assertTrue((self.workspaces / "X").is_dir())
 
+    def admit_managed_script_paths(self) -> None:
+        config = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(config.read_text())
+        policy["allowed_paths"] = ["src", ".juno_task/scripts", "juno-code"]
+        config.write_text(json.dumps(policy, indent=2) + "\n")
+
+    def declare_script_pair(self, worktree: Path) -> None:
+        declaration = worktree / "juno-code/src/templates/managed-assets.json"
+        declaration.parent.mkdir(parents=True, exist_ok=True)
+        declaration.write_text(json.dumps({
+            "schemaVersion": 1, "admissionOutputs": [],
+            "assets": [{"installClass": "script", "type": "script",
+                        "source": "scripts/task_workspace.py",
+                        "destination": ".juno_task/scripts/task_workspace.py"}],
+        }) + "\n")
+
+    def test_finish_rejects_template_only_managed_script_change_before_queue_mutation(self) -> None:
+        self.admit_managed_script_paths()
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        self.declare_script_pair(worktree)
+        template = worktree / "juno-code/src/templates/scripts/task_workspace.py"
+        template.write_text(template.read_text() + "\n# template-only drift\n")
+        git(worktree, "add", "-A")
+        git(worktree, "commit", "-m", "template-only managed script change")
+        failed = self.command("finish", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("managed lifecycle script pairs diverged", failed.stderr)
+        self.assertIn("juno-code/src/templates/scripts/task_workspace.py", failed.stderr)
+        self.assertIn(".juno_task/scripts/task_workspace.py", failed.stderr)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "WORKING")
+        self.assertEqual(record.get("validation"), [])
+
+    def test_preflight_rejects_runtime_only_managed_script_change(self) -> None:
+        self.admit_managed_script_paths()
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        self.declare_script_pair(worktree)
+        runtime = worktree / ".juno_task/scripts/task_workspace.py"
+        runtime.write_text(runtime.read_text() + "\n# runtime-only drift\n")
+        git(worktree, "add", "-A")
+        git(worktree, "commit", "-m", "runtime-only managed script change")
+        failed = self.command("preflight", "X", False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("managed lifecycle script pairs diverged", failed.stderr)
+        self.assertIn(".juno_task/scripts/task_workspace.py", failed.stderr)
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "WORKING")
+        self.assertEqual(record.get("validation"), [])
+
+    def test_finish_accepts_synced_managed_script_pair(self) -> None:
+        self.admit_managed_script_paths()
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        self.declare_script_pair(worktree)
+        template = worktree / "juno-code/src/templates/scripts/task_workspace.py"
+        runtime = worktree / ".juno_task/scripts/task_workspace.py"
+        drift = "\n# synced managed script change\n"
+        template.write_text(template.read_text() + drift)
+        runtime.write_text(runtime.read_text() + drift)
+        git(worktree, "add", "-A")
+        git(worktree, "commit", "-m", "synced managed script change")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+
     def test_preflight_reports_disallowed_path_before_validation_or_queue_mutation(self) -> None:
         self.payload("start", "X")
         tip = self.commit_task("X", "outside.txt")

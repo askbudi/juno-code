@@ -1317,6 +1317,59 @@ def derived_output_admission(repository: Path, target_sha: str,
     return expanded, receipt
 
 
+MANAGED_ASSETS_TEMPLATE_ROOT = "juno-code/src/templates/"
+
+
+def _tip_tree_blobs(repository: Path, tip_sha: str) -> dict[str, str]:
+    """Map every tracked blob path to its object ID at one exact commit."""
+    output = git(repository, "ls-tree", "-r", tip_sha, check=False)
+    blobs: dict[str, str] = {}
+    for line in output.splitlines():
+        metadata, separator, path = line.partition("\t")
+        if not separator:
+            continue
+        mode, kind, object_id = metadata.split()
+        if kind == "blob":
+            blobs[path] = object_id
+    return blobs
+
+
+def managed_script_pair_drift(repository: Path, tip_sha: str) -> list[dict[str, str]]:
+    """Report lifecycle script pairs whose template and runtime copies diverge.
+
+    The declaration is read from the candidate tip itself, so a task cannot
+    dodge the guardrail by narrowing the declaration. A pair whose template or
+    runtime side is absent at the tip is drift: adding or removing one side of
+    a declared lifecycle script must move both sides in the same candidate.
+    """
+    declaration_bytes = target_blob(repository, tip_sha, MANAGED_OUTPUT_DECLARATION)
+    if declaration_bytes is None:
+        return []
+    try:
+        declaration = json.loads(declaration_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(
+            f"invalid managed-assets declaration {MANAGED_OUTPUT_DECLARATION}") from exc
+    assets = declaration.get("assets") if isinstance(declaration, dict) else None
+    if not isinstance(assets, list):
+        raise TaskWorkspaceError(
+            f"invalid managed-assets declaration {MANAGED_OUTPUT_DECLARATION}")
+    blobs = _tip_tree_blobs(repository, tip_sha)
+    drift: list[dict[str, str]] = []
+    for asset in assets:
+        if not isinstance(asset, dict) or asset.get("installClass") != "script":
+            continue
+        source = asset.get("source"); destination = asset.get("destination")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            raise TaskWorkspaceError(
+                f"invalid managed-assets declaration {MANAGED_OUTPUT_DECLARATION}")
+        template_path = MANAGED_ASSETS_TEMPLATE_ROOT + source
+        if blobs.get(template_path) is None or blobs.get(destination) is None \
+                or blobs[template_path] != blobs[destination]:
+            drift.append({"template": template_path, "runtime": destination})
+    return drift
+
+
 def verify_derived_output_parity(repository: Path, tip_sha: str,
                                  admission: Any, changed: list[str]) -> None:
     expected_declarations = {GENERATED_OUTPUT_DECLARATION, MANAGED_OUTPUT_DECLARATION}
@@ -3579,6 +3632,13 @@ def review_ready_closure(controller: Path, config: dict[str, Any], record: dict[
             f"task changed disallowed paths: {', '.join(sorted(set(forbidden + outside)))}"
         )
     verify_derived_output_parity(repository, head, frozen_generated_admission, changed)
+    script_pair_drift = managed_script_pair_drift(repository, head)
+    if script_pair_drift:
+        divergent = ", ".join(
+            f"{row['runtime']} != {row['template']}" for row in script_pair_drift)
+        raise TaskWorkspaceError(
+            "managed lifecycle script pairs diverged between template and runtime copies: "
+            f"{divergent}; sync every divergent pair in the same candidate before queue mutation")
     policy_path = controller / ".juno_task/config/risk-policy.json"
     try:
         policy_sha256 = hashlib.sha256(policy_path.read_bytes()).hexdigest()
