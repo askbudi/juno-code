@@ -5376,6 +5376,53 @@ steps:
         self.assertEqual(again["outcome"], "already_queued")
         self.assertEqual(again["kanban_sync"]["outcome"], "verified")
 
+    def test_finish_returns_already_queued_only_for_the_exact_queued_tip(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.commit_task("X")
+        finished = task_runtime.finish(self.controller, "X")
+        self.assertEqual(finished["outcome"], "queued")
+        again = task_runtime.finish(self.controller, "X")
+        self.assertEqual(again["outcome"], "already_queued")
+        self.assertEqual(again["kanban_sync"]["outcome"], "verified")
+
+    def test_finish_fails_when_queued_branch_tip_advanced_to_a_descendant(self) -> None:
+        task_runtime.start(self.controller, "X")
+        self.commit_task("X")
+        queued = task_runtime.finish(self.controller, "X")
+        self.assertEqual(queued["outcome"], "queued")
+        worktree = self.workspaces / "X"
+        (worktree / "src/feature.txt").write_text("corrected descendant tip\n")
+        git(worktree, "add", "src/feature.txt")
+        git(worktree, "commit", "-m", "corrected descendant tip")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "yy merge reopen X") as failure:
+            task_runtime.finish(self.controller, "X")
+        self.assertIn("queued at", failure.exception.args[0])
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        self.assertEqual(state["tasks"]["X"]["state"], "QUEUED")
+        self.assertEqual(state["tasks"]["X"]["tip_sha"], queued["tip_sha"])
+
+    def test_finish_fails_when_queued_branch_tip_is_rewritten_non_descendant(self) -> None:
+        task_runtime.start(self.controller, "X")
+        queued_tip = self.commit_task("X")
+        queued = task_runtime.finish(self.controller, "X")
+        self.assertEqual(queued["outcome"], "queued")
+        worktree = self.workspaces / "X"
+        git(worktree, "checkout", "--quiet", "--detach", queued_tip)
+        git(worktree, "branch", "-f", "task-X", queued_tip)
+        (worktree / "src/rewritten.txt").write_text("rewritten history\n")
+        git(worktree, "add", "src/rewritten.txt")
+        git(worktree, "commit", "-m", "rewritten tip")
+        git(worktree, "branch", "-f", "task-X", "HEAD")
+        git(worktree, "checkout", "--quiet", "task-X")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "branch/worktree tip is") as failure:
+            task_runtime.finish(self.controller, "X")
+        self.assertNotIn("already_queued", failure.exception.args[0])
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        self.assertEqual(state["tasks"]["X"]["state"], "QUEUED")
+        self.assertEqual(state["tasks"]["X"]["tip_sha"], queued["tip_sha"])
+
     def test_doctor_reports_discrepancy_then_agreement_after_repair(self) -> None:
         task_runtime.start(self.controller, "X")
         self.set_board_task("X", status="todo")

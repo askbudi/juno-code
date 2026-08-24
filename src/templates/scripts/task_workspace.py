@@ -4230,6 +4230,20 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     if queued_record is not None:
         # Idempotent retry: verify or repair the queue projection so a crash
         # between queue mutation and board projection cannot leave drift.
+        # The queued branch/worktree must still sit at the recorded tip; a
+        # moved tip means the queue closure no longer describes the current
+        # candidate and must not be reported as successful validation.
+        queued_worktree = exact_root(Path(queued_record["worktree"]), "recorded task worktree")
+        queued_head = git(queued_worktree, "rev-parse", "HEAD")
+        queued_branch = git(queued_worktree, "symbolic-ref", "-q", "HEAD", check=False)
+        queued_ref_sha = optional_ref_sha(configured_repository, queued_record["branch_ref"])
+        if (queued_head != queued_record.get("tip_sha")
+                or queued_branch != queued_record.get("branch_ref")
+                or queued_ref_sha != queued_record.get("tip_sha")):
+            raise TaskWorkspaceError(
+                f"task is queued at {queued_record.get('tip_sha')} but its branch/worktree tip is "
+                f"{queued_head}; use `yy merge reopen {task_id}` for a descendant correction or "
+                "restore the exact queued tip before retrying finish")
         try:
             queue_sync = ensure_kanban_sync(controller, task_id, queued_record, phase="queued")
         except KanbanSyncError as exc:
