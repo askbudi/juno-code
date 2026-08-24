@@ -69,10 +69,18 @@ jobs:
       - name: Compare the bound artifact against the registry readback
         run: |
           expected=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].shasum)")
-          if actual=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-shasum 2>/dev/null); then
+          set +e
+          actual=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-shasum 2>"$RUNNER_TEMP/view.err")
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
             [ "$expected" = "$actual" ] && echo "registry already carries the exact bound artifact" \
               || { echo "registry artifact differs from this build: $actual"; exit 1; }
             npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json
-          else
+          elif grep -q "E404" "$RUNNER_TEMP/view.err"; then
             echo "registry does not carry ${PACKAGE_NAME}@${{ inputs.version }} yet; publication remains the guarded apply flow"
+          else
+            cat "$RUNNER_TEMP/view.err"
+            echo "npm registry probe failed without an explicit not-found response" >&2
+            exit 1
           fi
