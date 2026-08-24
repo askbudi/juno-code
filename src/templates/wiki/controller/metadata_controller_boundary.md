@@ -18,11 +18,12 @@ Metadata controllers may persist safe agent preferences in `.juno_task/config.js
 file-backed macros an explicit controller-relative root; path and symlink escape
 are refused. Controller, task, and integration-owner invocations share the
 registered profile while working/session directories remain invocation-local.
-Migration hash-binds exact config, plan, prompt, environment-source, and Git
-identities; every config field receives a reviewed disposition. Safe settings
-migrate, product hooks/paths stay product-only, secrets require separate binding
-authority, and lifecycle retires. The large plan survives as immutable evidence
-behind a compact current-work landing page; exact prepare retry is idempotent.
+Migration hash-binds config, plan, prompt, environment-source, and Git identity;
+every field receives a disposition. `agentProfile.roleHooks` selects controller
+hooks only for controllers and product hooks only for task/integration roles.
+`environmentBinding` requires explicit authority plus an absolute regular 0600
+file. Product paths stay product-only and lifecycle retires; the large plan
+survives behind a compact landing page, and exact prepare retry is idempotent.
 
 ## Ownership
 

@@ -656,11 +656,17 @@ def reviewed_agent_migration(old: Path, old_head: str, policy_bundle: Path | Non
             migrated[name] = legacy[name]
         elif name == "promptMacros" and disposition == "transform":
             migrated[name] = normalize_migrated_prompt_macros(legacy[name])
+        elif name == "hooks" and disposition == "product-only":
+            if not isinstance(legacy[name], dict):
+                raise BoundaryError("legacy product hooks must be an object")
+            migrated.setdefault("agentProfile", {
+                "version": 1, "promptAssetRoot": ".juno_task/prompts"})
+            migrated["agentProfile"]["roleHooks"] = {"product": legacy[name]}
         elif name == "controllerWorkspace" and disposition != "transform":
             raise BoundaryError("controllerWorkspace must be transformed to metadata-only")
     prompt_assets = source.get("prompt_assets", [])
     if prompt_assets:
-        migrated["agentProfile"] = {"version": 1, "promptAssetRoot": ".juno_task/prompts"}
+        migrated.setdefault("agentProfile", {"version": 1, "promptAssetRoot": ".juno_task/prompts"})
     plan_record = source.get("plan", {})
     historical_plan = compact_plan = None
     if plan_record.get("present"):
@@ -794,7 +800,13 @@ def prepare(args: argparse.Namespace, policy: dict[str, Any]) -> dict[str, Any]:
                     "integration_workspace": reviewed_policies["integration_workspace"]["sha256"],
                     "risk": reviewed_policies["risk"]["sha256"],
                 }, "controller_commits_integrate_to_product": False,
-                "preserved_metadata": {"entries": preserved_entries, "sha256": digest(preserved_entries)}}
+                "preserved_metadata": {"entries": preserved_entries, "sha256": digest(preserved_entries)},
+                "agent_migration": {
+                    "source_head": plan["agent_migration"].get("source", {}).get("source_head"),
+                    "config_sha256": plan["agent_migration"].get("source", {}).get("config", {}).get("sha256"),
+                    "plan_sha256": plan["agent_migration"].get("source", {}).get("plan", {}).get("sha256"),
+                    "field_dispositions_sha256": digest(plan["agent_migration"].get("field_dispositions", {})),
+                }}
     task_policy_bytes = canonical(reviewed_policies["task_workspace"]["content"])
     integration_policy_bytes = canonical(reviewed_policies["integration_workspace"]["content"])
     risk_policy_bytes = canonical(reviewed_policies["risk"]["content"])
@@ -1084,9 +1096,13 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
             risk_policy_value = validate_risk_policy(json.loads(risk_policy_text))
             tasks_value = json.loads(run(["git", "-C", str(root), "show", f"{head}:.juno_task/state/tasks.json"], root).stdout)
             profile = config_value.get("agentProfile") if isinstance(config_value, dict) else None
-            profile_valid = profile is None or profile == {
-                "version": 1, "promptAssetRoot": ".juno_task/prompts"}
+            profile_valid = profile is None or (
+                isinstance(profile, dict)
+                and set(profile).issubset({"version", "promptAssetRoot", "roleHooks", "environmentBinding"})
+                and profile.get("version") == 1
+                and profile.get("promptAssetRoot") == ".juno_task/prompts")
             unresolved_assets: list[str] = []
+            profile_findings: list[str] = []
             if isinstance(config_value, dict) and profile is not None:
                 macros = config_value.get("promptMacros", {})
                 for dictionary_name in ("global", "local"):
@@ -1097,10 +1113,31 @@ def inspect(root: Path, policy: dict[str, Any], *, expected_branch: str | None =
                                 asset = PurePosixPath(".juno_task/prompts") / raw["path"]
                                 if ".." in asset.parts or asset.as_posix() not in names:
                                     unresolved_assets.append(f"{dictionary_name}.{macro_name}")
+                if unresolved_assets:
+                    profile_findings.append("unresolved prompt assets: " + ", ".join(unresolved_assets))
+                role_hooks = profile.get("roleHooks") if isinstance(profile, dict) else None
+                if role_hooks is not None and (not isinstance(role_hooks, dict)
+                        or not set(role_hooks).issubset({"controller", "product"})):
+                    profile_valid = False
+                    profile_findings.append("unsafe or unowned roleHooks configuration")
+                environment = profile.get("environmentBinding") if isinstance(profile, dict) else None
+                if environment is not None:
+                    source = Path(environment.get("source", "")) if isinstance(environment, dict) else Path("")
+                    try:
+                        mode = source.lstat().st_mode
+                        environment_valid = (isinstance(environment, dict)
+                                             and environment.get("authorized") is True
+                                             and source.is_absolute() and source.is_file()
+                                             and not source.is_symlink() and mode & 0o077 == 0)
+                    except OSError:
+                        environment_valid = False
+                    if not environment_valid:
+                        profile_valid = False
+                        profile_findings.append("authorized environment source is missing, unsafe, or not mode 0600")
                 agent_profile_diagnostic = {
                     "status": "valid" if profile_valid and not unresolved_assets else "invalid",
-                    "findings": (["unresolved prompt assets: " + ", ".join(unresolved_assets)]
-                                 if unresolved_assets else []),
+                    "findings": profile_findings,
+                    "source_identity": boundary.get("agent_migration") if isinstance(boundary, dict) else None,
                     "next_command": None if profile_valid and not unresolved_assets else "yy migrate inventory --help"}
             generated_contract_ok = (
                 isinstance(config_value, dict)

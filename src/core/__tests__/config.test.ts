@@ -19,6 +19,7 @@ import {
   mergePersistedProjectDefaults,
   writeProjectConfigAtomic,
   getPromptMacroDictionary,
+  selectAgentProfileHooks,
 } from '../config.js';
 import type { JunoTaskConfig } from '../../types/index.js';
 
@@ -268,6 +269,22 @@ describe('Configuration Module', () => {
         ...DEFAULT_CONFIG,
         lifecycle: { enabled: true, policy: '.juno_task/config/lifecycle.json' },
       })).toThrow(/Migration required.*persisted lifecycle/);
+    });
+
+    it('selects role-owned hooks without exposing product hooks to the controller', () => {
+      const profile = {
+        version: 1 as const,
+        promptAssetRoot: '.juno_task/prompts',
+        roleHooks: {
+          controller: { START_RUN: { commands: ['controller-only'] } },
+          product: { START_RUN: { commands: ['product-only'] } },
+        },
+      };
+      expect(selectAgentProfileHooks(profile, 'controller')?.START_RUN?.commands).toEqual(['controller-only']);
+      expect(selectAgentProfileHooks(profile, 'task')?.START_RUN?.commands).toEqual(['product-only']);
+      expect(selectAgentProfileHooks(profile, 'integration-owner')?.START_RUN?.commands).toEqual(['product-only']);
+      expect(selectAgentProfileHooks(profile, 'controller-retired')).toBeUndefined();
+      expect(selectAgentProfileHooks(profile, 'unregistered')).toBeUndefined();
     });
 
     it('accepts only a versioned controller agent profile with a contained asset root', () => {
@@ -998,6 +1015,31 @@ logLevel: info
       expect(config.logLevel).toBe('info');
       expect(config.verbose).toBe(1);
       expect(config.defaultMaxIterations).toBe(100);
+    });
+
+    it('loads only an explicitly authorized 0600 controller environment binding', async () => {
+      const environment = path.join(tempDir, 'controller.env');
+      await fs.writeFile(environment, 'YYLO_DEFAULT_MAX_ITERATIONS=9\n', { mode: 0o644 });
+      await fs.ensureDir(path.join(tempDir, '.juno_task', 'prompts'));
+      await fs.writeJson(path.join(tempDir, '.juno_task', 'config.json'), {
+        controllerWorkspace: {
+          mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json',
+        },
+        agentProfile: {
+          version: 1, promptAssetRoot: '.juno_task/prompts',
+          environmentBinding: { source: environment, authorized: true },
+        },
+      });
+      process.env.YYLO_PROJECT_BOOTSTRAP_WRITES = '0';
+      await expect(loadConfig({ baseDir: tempDir })).rejects.toThrow(/mode 0600/);
+      await fs.chmod(environment, 0o600);
+      expect((await loadConfig({ baseDir: tempDir })).defaultMaxIterations).toBe(9);
+      expect(await fs.pathExists(path.join(tempDir, '.env.yylo'))).toBe(false);
+      const target = path.join(tempDir, 'environment-target');
+      await fs.writeFile(target, 'YYLO_DEFAULT_MAX_ITERATIONS=10\n', { mode: 0o600 });
+      await fs.remove(environment);
+      await fs.symlink(target, environment);
+      await expect(loadConfig({ baseDir: tempDir })).rejects.toThrow(/missing, unsafe, or unreadable/);
     });
 
     it('should load from specific config file', async () => {

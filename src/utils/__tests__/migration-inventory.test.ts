@@ -86,6 +86,9 @@ describe('Juno 2.1 migration inventory', { timeout: 30_000 }, () => {
       expect.objectContaining({ name: 'promptMacros', recommended_disposition: 'transform' }),
     ]));
     expect(receipt.agent_configuration.plan).toMatchObject({ present: true, bytes_collected: false, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(receipt.agent_configuration.prompt_macros).toEqual([
+      { scope: 'global', name: 'safe_macro', kind: 'file', value_collected: false },
+    ]);
     expect(receipt.agent_configuration.prompt_assets).toContainEqual(expect.objectContaining({ path: '.juno_task/prompts/custom.md' }));
     expect(receipt.agent_configuration.environment_sources).toEqual([]);
     expect(text).not.toContain('JUNO_CONFIG_SECRET_COMMAND'); expect(text).not.toContain('/owner/private');

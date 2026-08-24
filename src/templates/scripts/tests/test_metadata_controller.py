@@ -191,7 +191,9 @@ class MetadataControllerTest(unittest.TestCase):
 
         migrated = json.loads((self.new_controller / ".juno_task/config.json").read_text())
         self.assertEqual(migrated["defaultMaxIterations"], 23)
-        self.assertEqual(migrated["agentProfile"], {"version": 1, "promptAssetRoot": ".juno_task/prompts"})
+        self.assertEqual(migrated["agentProfile"]["version"], 1)
+        self.assertEqual(migrated["agentProfile"]["promptAssetRoot"], ".juno_task/prompts")
+        self.assertEqual(migrated["agentProfile"]["roleHooks"]["product"], legacy_config["hooks"])
         self.assertEqual(migrated["promptMacros"]["global"]["ship"], {"path": "ship.md"})
         for rejected in ("hooks", "workingDirectory", "envFilePath", "lifecycle"):
             self.assertNotIn(rejected, migrated)

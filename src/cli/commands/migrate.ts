@@ -59,7 +59,7 @@ export function configureMigrationCommand(
     .description('Inventory and plan a reviewed Juno architecture migration');
   migrate
     .command('inventory')
-    .description('Freeze a deterministic read-only project inventory')
+    .description('Freeze Git plus exact config/plan/prompt identities and redacted environment sources')
     .option('--project <path>', 'Project worktree to inspect', process.cwd())
     .option('--controller <path>', 'Explicit controller candidate')
     .option('--product-ref <ref>', 'Explicit full product target ref')
@@ -191,7 +191,7 @@ export function configureMigrationCommand(
     .action((options) => invoke(['owner-template', '--inventory', options.inventory, '--output', options.output]));
   migrate
     .command('generate-policy')
-    .description('Generate candidate policies only from complete owner-reviewed answers')
+    .description('Generate policies only after every path and legacy config field has a reviewed disposition')
     .requiredOption('--inventory <path>', 'Immutable inventory receipt')
     .requiredOption('--answers <path>', 'Completed owner answers JSON')
     .requiredOption('--output <path>', 'New policy bundle receipt')

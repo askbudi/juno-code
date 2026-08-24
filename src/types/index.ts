@@ -26,7 +26,7 @@ export interface Hook {
 }
 
 // Hooks configuration mapping
-export type Hooks = Record<HookType, Hook>;
+export type Hooks = Partial<Record<HookType, Hook>>;
 
 export type PromptMacroOrder =
   | 'before_command_substitution'
@@ -127,6 +127,16 @@ export interface JunoTaskConfig {
     version: 1;
     /** Relative to the canonical controller root; path escape is rejected. */
     promptAssetRoot: string;
+    /** Hook ownership is explicit; the loader selects one role before dispatch. */
+    roleHooks?: {
+      controller?: Partial<Hooks>;
+      product?: Partial<Hooks>;
+    };
+    /** Explicit secret binding; startup also requires a regular 0600 file. */
+    environmentBinding?: {
+      source: string;
+      authorized: true;
+    };
   };
 
   // Explicit, source-project authorization for cross-project Kanban aliases

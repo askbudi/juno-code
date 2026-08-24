@@ -418,6 +418,19 @@ def agent_configuration_inventory(root: Path) -> dict[str, Any]:
             recommendation = "retire"
         fields.append({"name": name, "recommended_disposition": recommendation,
                        "value_type": type(config[name]).__name__})
+    macro_entries = []
+    raw_macros = config.get("promptMacros")
+    if isinstance(raw_macros, dict):
+        dictionaries = [(scope, value) for scope, value in raw_macros.items()
+                        if scope in {"global", "local"} and isinstance(value, dict)]
+        if not dictionaries and all(key not in {"enabled", "order", "maxDepth"} for key in raw_macros):
+            dictionaries = [("global", raw_macros)]
+        for scope, dictionary in dictionaries:
+            for name, value in sorted(dictionary.items()):
+                kind = "file" if (isinstance(value, dict) and isinstance(value.get("path"), str)) \
+                    or (isinstance(value, str) and value.startswith(".juno_task/prompts/")) else "inline"
+                macro_entries.append({"scope": scope, "name": name, "kind": kind,
+                                      "value_collected": False})
     plan_bytes = committed_blob(root, ".juno_task/plan.md")
     prompt_assets = []
     for name in git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", ".juno_task/prompts").splitlines():
@@ -441,6 +454,7 @@ def agent_configuration_inventory(root: Path) -> dict[str, Any]:
                  "size": len(plan_bytes) if plan_bytes is not None else 0,
                  "sha256": hashlib.sha256(plan_bytes).hexdigest() if plan_bytes is not None else None,
                  "bytes_collected": False},
+        "prompt_macros": macro_entries,
         "prompt_assets": prompt_assets,
         "environment_sources": environment,
         "source_head": git(root, "rev-parse", "HEAD"),

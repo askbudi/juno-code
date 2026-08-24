@@ -176,10 +176,22 @@ const SafeRelativeAssetRootSchema = z.string().min(1).refine((value) => {
   return normalized !== '..' && !normalized.startsWith(`..${path.sep}`);
 }, 'must be a relative path contained by the controller');
 
+const RoleHooksSchema = z.object({
+  controller: HooksSchema,
+  product: HooksSchema,
+}).strict().optional();
+
+const EnvironmentBindingSchema = z.object({
+  source: z.string().min(1).refine(path.isAbsolute, 'must be an explicit absolute path'),
+  authorized: z.literal(true),
+}).strict().optional();
+
 const AgentProfileSchema = z
   .object({
     version: z.literal(1),
     promptAssetRoot: SafeRelativeAssetRootSchema,
+    roleHooks: RoleHooksSchema,
+    environmentBinding: EnvironmentBindingSchema,
   })
   .strict()
   .optional();
@@ -198,6 +210,16 @@ export const METADATA_CONTROLLER_CONFIG_FIELD_OWNERSHIP = {
   secret: ['envFilePath', 'envFileCopied'],
   retired: ['lifecycle'],
 } as const;
+
+export function selectAgentProfileHooks(
+  profile: JunoTaskConfig['agentProfile'] | undefined,
+  role: 'controller' | 'controller-retired' | 'task' | 'integration-owner' | 'unregistered',
+): JunoTaskConfig['hooks'] | undefined {
+  if (!profile?.roleHooks) return undefined;
+  if (role === 'controller') return profile.roleHooks.controller;
+  if (role === 'task' || role === 'integration-owner') return profile.roleHooks.product;
+  return undefined;
+}
 
 function validateMetadataControllerSource(config: Partial<JunoTaskConfig>): void {
   const raw = config as Record<string, unknown>;
@@ -1147,6 +1169,40 @@ async function loadEnvFileIntoProcess(envFilePath: string): Promise<void> {
   }
 }
 
+async function loadAuthorizedProfileEnvironment(binding: { source: string; authorized: true }): Promise<void> {
+  const source = path.resolve(binding.source);
+  let handle: fsPromises.FileHandle | undefined;
+  try {
+    handle = await fsPromises.open(source, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) {
+      throw new Error('source is not a regular file');
+    }
+    if ((metadata.mode & 0o077) !== 0) {
+      throw new Error('source must have mode 0600');
+    }
+    const parsed = parseEnvFileContent(await handle.readFile('utf8'));
+    for (const [key, value] of Object.entries(parsed)) process.env[key] = value;
+  } catch (error) {
+    throw new Error(`Authorized controller environment source is missing, unsafe, or unreadable: ${source}: ${error}`);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readMetadataAgentProfile(baseDir: string): Promise<
+  { metadata: true; profile: JunoTaskConfig['agentProfile'] } | undefined
+> {
+  const configPath = path.join(baseDir, PROJECT_CONFIG_FILE);
+  if (!(await fs.pathExists(configPath))) return undefined;
+  const raw = await fs.readJson(configPath) as Record<string, unknown>;
+  const workspace = raw.controllerWorkspace as Record<string, unknown> | undefined;
+  if (workspace?.mode !== 'metadata-only') return undefined;
+  validateMetadataControllerSource(raw as Partial<JunoTaskConfig>);
+  const parsed = AgentProfileSchema.parse(raw.agentProfile);
+  return { metadata: true, profile: parsed as JunoTaskConfig['agentProfile'] };
+}
+
 /**
  * Ensure project env files exist and load them before config/env precedence is evaluated.
  *
@@ -1495,15 +1551,21 @@ export async function loadConfig(
   const { baseDir = process.cwd(), configFile, cliConfig } = options;
   const invocationDir = path.resolve(baseDir);
   let profileDir = invocationDir;
+  let invocationRole: 'controller' | 'controller-retired' | 'task' | 'integration-owner' | 'unregistered' = 'unregistered';
   if (!configFile) {
     try {
-      profileDir = path.resolve(resolveController(invocationDir, 'diagnostic').path);
+      const resolution = resolveController(invocationDir, 'diagnostic');
+      profileDir = path.resolve(resolution.path);
+      invocationRole = resolution.role;
     } catch {
       // Unmanaged and legacy projects continue to use their local project config.
     }
   }
+  const metadataSource = configFile ? undefined : await readMetadataAgentProfile(profileDir);
+  const metadataAgentProfile = metadataSource?.profile;
 
-  const allowProjectWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0' && profileDir === invocationDir;
+  const allowProjectWrites = process.env.YYLO_PROJECT_BOOTSTRAP_WRITES !== '0'
+    && profileDir === invocationDir && metadataSource === undefined;
 
   const resolveConfig = async (): Promise<JunoTaskConfig> => {
     const loader = new ConfigLoader(invocationDir, profileDir);
@@ -1521,11 +1583,21 @@ export async function loadConfig(
       merged.workingDirectory = invocationDir;
       merged.sessionDirectory = path.join(invocationDir, '.juno_task');
     }
+    if (metadataSource) {
+      const selectedHooks = selectAgentProfileHooks(metadataAgentProfile, invocationRole);
+      if (selectedHooks) merged.hooks = selectedHooks;
+      else delete merged.hooks;
+    }
     return validateConfig(merged);
   };
 
-  // Validate every effective source before any project mutation.
-  await ensureAndLoadProjectEnv(profileDir, false);
+  // Metadata controllers never load an ambient/default env file. Only a
+  // reviewed explicit 0600 regular-file binding participates in precedence.
+  if (metadataAgentProfile?.environmentBinding) {
+    await loadAuthorizedProfileEnvironment(metadataAgentProfile.environmentBinding);
+  } else if (!metadataSource) {
+    await ensureAndLoadProjectEnv(profileDir, false);
+  }
   let resolved = await resolveConfig();
 
   if (allowProjectWrites) {
