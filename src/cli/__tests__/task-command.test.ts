@@ -40,13 +40,14 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'run', 'start', 'preflight', 'checkpoint', 'hydrate', 'status', 'finish',
+      'run', 'start', 'preflight', 'checkpoint', 'child-checkpoint', 'hydrate', 'status', 'finish',
       'doctor', 'sync', 'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 7).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[7]?.registeredArguments[0]?.required).toBe(false);
-    expect(task?.commands.slice(8, 12).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[12]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(0, 8).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[4]?.registeredArguments).toHaveLength(2);
+    expect(task?.commands[8]?.registeredArguments[0]?.required).toBe(false);
+    expect(task?.commands.slice(9, 13).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[13]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -97,6 +98,8 @@ describe('task workspace CLI', () => {
       '--umbrella-admission', '/tmp/umbrella.json', '--plan', '/tmp/plan.json',
       '--authorization-receipt', '/tmp/authorization.json',
     ]);
+    await program.parseAsync(['node', 'yy', 'task', 'child-checkpoint', 'U1', 'C1']);
+    expect(invoke).toHaveBeenLastCalledWith('child-checkpoint', 'U1', [], ['--child', 'C1']);
   });
 
   it('routes recovery planning through read-only kanban policy and apply through orchestration', () => {
@@ -104,6 +107,7 @@ describe('task workspace CLI', () => {
     expect(taskWorkspaceControlOperation('status')).toBe('kanban');
     expect(taskWorkspaceControlOperation('doctor')).toBe('kanban');
     expect(taskWorkspaceControlOperation('sync')).toBe('orchestration');
+    expect(taskWorkspaceControlOperation('child-checkpoint')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });

@@ -1201,6 +1201,102 @@ class TaskWorkspaceTests(unittest.TestCase):
             self.assertEqual(owners.get("Z"), "X")
         self.assertLessEqual(len([path for path in self.workspaces.iterdir()]), 1)
 
+    def test_umbrella_child_checkpoint_records_sequential_progress_and_status_projection(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        projection = task_runtime.status(self.controller, "X")["umbrella_admission_status"]
+        self.assertEqual(projection["current_child_id"], "Y")
+        self.assertEqual(projection["completed_child_ids"], [])
+        self.assertEqual(projection["remaining_child_ids"], ["Y", "Z"])
+
+        first_tip = self.commit_task("X", "child/one.txt")
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+        self.assertEqual(recorded["outcome"], "umbrella_child_checkpointed")
+        self.assertEqual(recorded["checkpoint"]["changed_paths"], ["child/one.txt"])
+        self.assertEqual(recorded["checkpoint"]["tip_sha"], first_tip)
+        self.assertEqual(recorded["current_child_id"], "Z")
+        self.assertEqual(recorded["remaining_child_ids"], ["Z"])
+
+        projection = task_runtime.status(self.controller, "X")["umbrella_admission_status"]
+        self.assertEqual(projection["completed_child_ids"], ["Y"])
+        self.assertEqual(projection["current_child_id"], "Z")
+        self.assertEqual(len(projection["child_progress"]), 1)
+        self.assertEqual(projection["child_progress"][0]["child_id"], "Y")
+
+        second_tip = self.commit_task("X", "child/two.txt")
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        self.assertEqual(recorded["checkpoint"]["base_sha"], first_tip)
+        self.assertEqual(recorded["checkpoint"]["tip_sha"], second_tip)
+        self.assertIsNone(recorded["current_child_id"])
+        self.assertEqual(recorded["remaining_child_ids"], [])
+        projection = task_runtime.status(self.controller, "X")["umbrella_admission_status"]
+        self.assertEqual(projection["completed_child_ids"], ["Y", "Z"])
+        self.assertIsNone(projection["current_child_id"])
+
+        # Rework of the still-current child chains from its own previous tip.
+        rework_worktree = self.workspaces / "X"
+        (rework_worktree / "child/two.txt").write_text("X rework\n")
+        git(rework_worktree, "add", "child/two.txt")
+        git(rework_worktree, "commit", "-m", "rework child two")
+        rework_tip = git(rework_worktree, "rev-parse", "HEAD")
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        self.assertEqual(recorded["checkpoint"]["base_sha"], second_tip)
+        self.assertEqual(recorded["checkpoint"]["tip_sha"], rework_tip)
+        self.assertEqual(task_runtime.status(self.controller, "X")["umbrella_admission_status"]["current_child_id"], None)
+
+    def test_umbrella_child_checkpoint_enforces_order_scope_and_rework_limits(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "does not exist: W"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "W")
+        unadmitted = task_runtime.task_file(self.controller, "W")
+        unadmitted.parent.mkdir(parents=True, exist_ok=True)
+        unadmitted.write_text("---\nid: W\nstatus: todo\n---\nExists but never admitted\\n")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "never admitted child W"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "W")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "distinct child task id"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "X")
+        self.commit_task("X", "child/one.txt")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "out of order"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+
+        # A commit touching another child's exact scope escapes this child's boundary.
+        worktree = self.workspaces / "X"
+        (worktree / "child/one.txt").write_text("cross-child bleed\n")
+        git(worktree, "add", "child/one.txt")
+        git(worktree, "commit", "-m", "cross-child change")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "escapes its admitted scope"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        # Repair the boundary before continuing.
+        git(worktree, "reset", "--hard", "HEAD~1")
+
+        self.commit_task("X", "child/two.txt")
+        task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "out of order"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "no committed diff since checkpoint base"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+
+    def test_umbrella_child_status_and_finish_refuse_tracking_only_children(self) -> None:
+        declaration = self.umbrella_fixture()
+        task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        child_status = task_runtime.status(self.controller, "Y")
+        self.assertEqual(child_status["state"], "TRACKING_ONLY")
+        self.assertEqual(child_status["umbrella_owner_task_id"], "X")
+        self.assertIn("child-checkpoint X Y", child_status["next_action"])
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "tracking-only under umbrella X"):
+            task_runtime.preflight(self.controller, "Y")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "tracking-only under umbrella X"):
+            task_runtime.finish(self.controller, "Y")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "tracking-only under umbrella X"):
+            task_runtime.standing_checkpoint(self.controller, "Y")
+        # The umbrella itself stays fully usable.
+        self.commit_task("X", "child/one.txt")
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+        self.assertEqual(recorded["current_child_id"], "Z")
+
     def test_flat_umbrella_rejects_direct_child_with_nested_children_before_mutation(self) -> None:
         declaration = self.umbrella_fixture()
         nested = "W"

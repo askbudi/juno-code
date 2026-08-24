@@ -15,6 +15,7 @@ export type TaskWorkspaceOperation =
   | 'preflight'
   | 'finish'
   | 'checkpoint'
+  | 'child-checkpoint'
   | 'evidence-run'
   | 'evidence-status'
   | 'evidence-await'
@@ -193,6 +194,13 @@ export function configureTaskWorkspaceCommand(
     .description('Plan affected validation for one clean coherent committed tip')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .action((taskId: string) => invoke('checkpoint', taskId, []));
+  task.command('child-checkpoint')
+    .description('Record one admitted umbrella child sequential committed increment')
+    .argument('<task-id>', 'Canonical umbrella YYLO Ledger task ID')
+    .argument('<child-id>', 'Admitted ordered tracking-only child task ID')
+    .action((taskId: string, childId: string) => invoke(
+      'child-checkpoint', taskId, [], ['--child', childId],
+    ));
   task.command('hydrate')
     .description('Rerun the frozen task hydration workflow on a clean task worktree')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')

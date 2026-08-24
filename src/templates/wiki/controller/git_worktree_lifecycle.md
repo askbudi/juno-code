@@ -29,7 +29,12 @@ yy task start TASK_ID
 yy task start TASK_ID --path juno_kanban  # repeat --path for policy-admitted roots
 yy task status TASK_ID
 yy task preflight TASK_ID
+yy task checkpoint TASK_ID
 yy task finish TASK_ID
+
+yy task start UMBRELLA_ID --umbrella-admission umbrella.json
+yy task child-checkpoint UMBRELLA_ID CHILD_ID
+yy task status CHILD_ID   # -> TRACKING_ONLY with owner and current-child truth
 
 yy task runtime-bootstrap --dry-run
 # review the printed immutable receipt
@@ -112,6 +117,30 @@ restart, and post-deploy E2E are never implied by merge completion.
 
 Historical local-integration receipts remain readable by Workflow Runner doctor.
 Their executors are retired and must not be adapted into the Bolt path.
+
+## Umbrella-owned sequential children
+
+Approved consolidated delivery may admit one umbrella worktree that executes
+ordered tracking-only children sequentially. `yy task start UMBRELLA_ID
+--umbrella-admission umbrella.json` freezes the immutable ordered child set,
+each child's exact scope, the union admission, and the exact base before any
+Git mutation. Children never receive their own worktree, branch, start,
+preflight, finish, or checkpoint: reservations refuse those calls with the
+owning umbrella and the exact recovery command, and child status reports
+`TRACKING_ONLY` with owner, completed, current, and remaining children.
+
+After each child's coherent committed increment on the umbrella worktree,
+record it with `yy task child-checkpoint UMBRELLA_ID CHILD_ID`. The checkpoint
+requires a clean worktree, a new commit chained from the previous child's tip,
+and changed paths inside that child's frozen scope; it appends an immutable
+`juno_task_umbrella_child_checkpoint.v1` entry naming base, tip, changed paths,
+and the frozen child binding. Only the current child may be checkpointed, so
+interruption or crash resumes at exactly the first incomplete child while
+completed child evidence stays durable. Preflight, finish, and merge continue
+to validate the whole union; scope or order drift fails closed. Legacy
+umbrellas admitted before start-time child-union admission recover only
+through the reviewed `recovery-plan`/`recovery-authorize`/`recovery-apply`
+supersession path.
 
 ## Checkout-aware entry points
 

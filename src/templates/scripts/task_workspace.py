@@ -65,6 +65,7 @@ UMBRELLA_SUPERSESSION_SCHEMA = "juno_task_umbrella_admission_supersession.v1"
 UMBRELLA_AUTHORIZATION_SCHEMA = "juno_task_umbrella_recovery_authorization.v1"
 UMBRELLA_EXECUTION_MODE = "umbrella_owned_sequential"
 UMBRELLA_RESERVATIONS_SCHEMA = "juno_task_umbrella_child_reservations.v1"
+UMBRELLA_CHILD_CHECKPOINT_SCHEMA = "juno_task_umbrella_child_checkpoint.v1"
 TASK_SCOPE_SCHEMA = "juno_task_canonical_scope.v1"
 AUTHORIZATION_LEDGER_SCHEMA = "juno_task_umbrella_authorization_ledger.v1"
 TERMINAL_TASK_STATUSES = {"done", "archived", "cancelled", "canceled", "closed"}
@@ -1750,6 +1751,184 @@ def effective_admission(record: dict[str, Any]) -> tuple[list[str], Any, str]:
     return (receipt.get("allowed_paths", []), receipt.get("generated_output_admission"), "historical_creation")
 
 
+def frozen_umbrella_admission(record: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Return the effective frozen umbrella admission, never a mutable copy."""
+    supersessions = record.get("admission_supersessions", [])
+    if supersessions:
+        return supersessions[-1].get("umbrella_admission")
+    return record.get("creation_receipt", {}).get("umbrella_admission")
+
+
+def umbrella_progress_projection(record: dict[str, Any],
+                                 ordered_child_ids: list[str]) -> dict[str, Any]:
+    """Project recorded child checkpoints onto the immutable admission order.
+
+    Progress entries must follow the admission order strictly: each new child
+    is exactly the next unrecorded child, and only the most recently recorded
+    child may gain additional (rework) entries before the next child starts.
+    """
+    entries = record.get("umbrella_child_progress")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise TaskWorkspaceError("umbrella child progress is malformed")
+    previous_tip: Optional[str] = record.get("base_sha")
+    sequence: list[str] = []
+    for entry in entries:
+        if (not isinstance(entry, dict)
+                or entry.get("schema_version") != UMBRELLA_CHILD_CHECKPOINT_SCHEMA
+                or not TASK_RE.fullmatch(str(entry.get("child_id", "")))
+                or not SHA_RE.fullmatch(str(entry.get("tip_sha", "")))
+                or not SHA_RE.fullmatch(str(entry.get("base_sha", "")))
+                or not isinstance(entry.get("changed_paths"), list)):
+            raise TaskWorkspaceError("umbrella child progress is malformed")
+        child_id = entry["child_id"]
+        if child_id not in ordered_child_ids:
+            raise TaskWorkspaceError(
+                f"umbrella child progress names unadmitted child {child_id}")
+        if child_id not in sequence:
+            if ordered_child_ids.index(child_id) != len(sequence):
+                raise TaskWorkspaceError(
+                    f"umbrella child progress is out of admission order at {child_id}")
+            sequence.append(child_id)
+        elif sequence[-1] != child_id:
+            raise TaskWorkspaceError(
+                f"umbrella child progress reopens closed child {child_id}")
+        if entry["base_sha"] != previous_tip:
+            raise TaskWorkspaceError(
+                f"umbrella child progress for {child_id} does not chain from the previous tip")
+        previous_tip = entry["tip_sha"]
+    current = (ordered_child_ids[len(sequence)]
+               if len(sequence) < len(ordered_child_ids) else None)
+    return {"entries": entries, "completed_child_ids": sequence,
+            "current_child_id": current,
+            "remaining_child_ids": ordered_child_ids[len(sequence):],
+            "latest_tip_sha": previous_tip}
+
+
+def umbrella_child_allowed_paths(admission: dict[str, Any], child_id: str) -> list[str]:
+    """Resolve one child's per-checkpoint boundary from the frozen admission."""
+    binding = next((row for row in admission.get("child_bindings", [])
+                    if isinstance(row, dict) and row.get("task_id") == child_id), None)
+    if binding is None:
+        raise TaskWorkspaceError(f"umbrella admission has no binding for child {child_id}")
+    allowed = [path for path in binding.get("required_paths", [])
+               if isinstance(path, str)]
+    generated = admission.get("generated_output_bindings") or {}
+    for row in generated.get(child_id, []):
+        allowed.extend((row["source"], row["destination"]))
+    canonical_scope = binding.get("canonical_scope") or {}
+    declaration = canonical_scope.get("declaration") or {}
+    scope = declaration.get("scope") or {}
+    if scope.get("baseline"):
+        reserved_elsewhere: list[str] = []
+        for other in admission.get("child_bindings", []):
+            if not isinstance(other, dict) or other.get("task_id") == child_id:
+                continue
+            reserved_elsewhere.extend(
+                path for path in other.get("required_paths", []) if isinstance(path, str))
+            for row in generated.get(other.get("task_id"), []):
+                reserved_elsewhere.extend((row["source"], row["destination"]))
+        allowed = [path for path in admission.get("union_paths", [])
+                   if not path_within(path, reserved_elsewhere)]
+    return sorted(set(allowed))
+
+
+def umbrella_child_checkpoint(controller: Path, task_id: str, child_id: str) -> dict[str, Any]:
+    """Record one sequential child's committed increment on the umbrella worktree."""
+    if not TASK_RE.fullmatch(task_id) or not TASK_RE.fullmatch(child_id):
+        raise TaskWorkspaceError("unsafe task id")
+    if task_id == child_id:
+        raise TaskWorkspaceError("umbrella child checkpoint requires a distinct child task id")
+    config = load_config(controller)
+    require_task(controller, task_id)
+    require_task(controller, child_id)
+    repository = product_repository(controller, config)
+    require_current_runtime(repository, ref_sha(repository, config["target_ref"]), controller)
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("umbrella child checkpoint requires a WORKING umbrella")
+        admission = frozen_umbrella_admission(record)
+        if not isinstance(admission, dict):
+            raise TaskWorkspaceError("task has no frozen umbrella admission")
+        _paths, frozen_generated, _source = effective_admission(record)
+        drift = umbrella_drift(controller, repository, admission,
+                               frozen_generated, state, task_id)
+        if drift:
+            raise TaskWorkspaceError(
+                "frozen umbrella admission drifted: " + json.dumps(drift, sort_keys=True))
+        frozen = json.loads(json.dumps(record))
+    ordered = [child for child in admission["ordered_child_ids"]]
+    if child_id not in ordered:
+        raise TaskWorkspaceError(f"umbrella never admitted child {child_id}")
+    projection = umbrella_progress_projection(frozen, ordered)
+    current = projection["current_child_id"]
+    completed = projection["completed_child_ids"]
+    # The next unrecorded child is checkpointable; once every child is
+    # recorded, only the most recently recorded child may still gain bounded
+    # rework entries before the umbrella leaves WORKING.
+    reworkable = current if current is not None else (completed[-1] if completed else None)
+    if child_id != reworkable:
+        detail = (f"child {child_id} already has recorded progress"
+                  if child_id in completed
+                  else f"current child is {current}")
+        raise TaskWorkspaceError(
+            f"umbrella child checkpoint is out of order: {detail}")
+    _repository, _worktree, head, _changed = observe_working_task(
+        frozen, repository, config, task_id)
+    previous_tip = projection["latest_tip_sha"] or frozen["base_sha"]
+    if head == previous_tip:
+        raise TaskWorkspaceError(
+            f"child {child_id} has no committed diff since checkpoint base {previous_tip}")
+    child_changed = git_pathnames(
+        _worktree, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
+        "-z", f"{previous_tip}..{head}")
+    if not child_changed:
+        raise TaskWorkspaceError(f"child {child_id} checkpoint has no product diff")
+    allowed = umbrella_child_allowed_paths(admission, child_id)
+    escaped = sorted(path for path in child_changed if not path_within(path, allowed))
+    if escaped:
+        raise TaskWorkspaceError(
+            f"child {child_id} commit escapes its admitted scope: {', '.join(escaped)}")
+    binding = next(row for row in admission["child_bindings"] if row["task_id"] == child_id)
+    entry = {"schema_version": UMBRELLA_CHILD_CHECKPOINT_SCHEMA,
+             "umbrella_task_id": task_id, "child_id": child_id,
+             "base_sha": previous_tip, "tip_sha": head,
+             "changed_paths": sorted(child_changed),
+             "child_binding_sha256": stable_sha256(binding),
+             "recorded_at_unix_ns": time.time_ns()}
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("umbrella state changed during child checkpoint")
+        live_admission = frozen_umbrella_admission(record)
+        if (not isinstance(live_admission, dict)
+                or stable_sha256(live_admission) != stable_sha256(admission)):
+            raise TaskWorkspaceError("umbrella admission changed during child checkpoint")
+        live_projection = umbrella_progress_projection(record, ordered)
+        live_completed = live_projection["completed_child_ids"]
+        live_reworkable = (live_projection["current_child_id"]
+                           if live_projection["current_child_id"] is not None
+                           else (live_completed[-1] if live_completed else None))
+        if (live_reworkable != child_id
+                or live_projection["entries"] != projection["entries"]):
+            raise TaskWorkspaceError("umbrella child progress changed during checkpoint")
+        record.setdefault("umbrella_child_progress", []).append(entry)
+        state["tasks"][task_id] = record
+        write_state(controller, state)
+    final = umbrella_progress_projection(
+        read_state(controller)["tasks"][task_id], ordered)
+    return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "WORKING",
+            "outcome": "umbrella_child_checkpointed", "child_id": child_id,
+            "checkpoint": entry,
+            "completed_child_ids": final["completed_child_ids"],
+            "current_child_id": final["current_child_id"],
+            "remaining_child_ids": final["remaining_child_ids"]}
+
+
 def _declared_submodule_urls(repository: Path, commit: str) -> dict[str, str]:
     raw = run(["git", "-C", str(repository), "show", f"{commit}:.gitmodules"],
               repository, check=False)
@@ -1907,7 +2086,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                        else "orchestration")
     if surface == "task" and operation not in {
             "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
-            "checkpoint", "evidence-run", "evidence-status", "evidence-await",
+            "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "drive", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
@@ -3667,8 +3846,15 @@ def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
     repository = product_repository(controller, config)
     runtime = require_current_runtime(repository, ref_sha(repository, config["target_ref"]), controller)
     with state_lock(controller):
-        record = read_state(controller)["tasks"].get(task_id)
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
         if not isinstance(record, dict) or record.get("state") != "WORKING":
+            reserved_owner = child_reservations(state).get(task_id)
+            if reserved_owner is not None:
+                raise TaskWorkspaceError(
+                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
+                    f"checkpoint the umbrella child instead: "
+                    f"yy task child-checkpoint {reserved_owner} {task_id}")
             raise TaskWorkspaceError("standing checkpoint requires a WORKING task")
         frozen = json.loads(json.dumps(record))
     verify_hydration_evidence(frozen, Path(frozen["worktree"]))
@@ -3934,8 +4120,14 @@ def preflight(controller: Path, task_id: str) -> dict[str, Any]:
                                       ref_sha(configured_repository, config["target_ref"]),
                                       controller)
     with state_lock(controller):
-        record = read_state(controller)["tasks"].get(task_id)
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
         if not isinstance(record, dict):
+            reserved_owner = child_reservations(state).get(task_id)
+            if reserved_owner is not None:
+                raise TaskWorkspaceError(
+                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
+                    f"preflight the umbrella instead: yy task preflight {reserved_owner}")
             raise TaskWorkspaceError("task has not been started")
         if record.get("state") != "WORKING":
             raise TaskWorkspaceError(f"task cannot preflight from {record.get('state')}")
@@ -3963,6 +4155,11 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         state = read_state(controller)
         record = state["tasks"].get(task_id)
         if not record:
+            reserved_owner = child_reservations(state).get(task_id)
+            if reserved_owner is not None:
+                raise TaskWorkspaceError(
+                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
+                    f"finish the umbrella instead: yy task finish {reserved_owner}")
             raise TaskWorkspaceError("task has not been started")
         if record.get("state") == "QUEUED":
             queued_record = record
@@ -4281,6 +4478,14 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
     state = read_state(controller)
     record = state["tasks"].get(task_id)
     if not record:
+        reserved_owner = child_reservations(state).get(task_id)
+        if reserved_owner is not None:
+            return {"schema_version": RECORD_SCHEMA, "task_id": task_id,
+                    "state": "TRACKING_ONLY", "outcome": "status",
+                    "umbrella_owner_task_id": reserved_owner,
+                    "runtime_generation": generation,
+                    "next_action": ("implement inside the umbrella worktree; "
+                                    f"record progress with: yy task child-checkpoint {reserved_owner} {task_id}")}
         return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED",
                 "outcome": "status", "runtime_generation": generation}
     result = {**record, "outcome": "status", "runtime_generation": generation}
@@ -4302,7 +4507,11 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
                        else record.get("creation_receipt", {}).get("umbrella_admission"))
     if frozen_umbrella is not None:
         _paths, frozen_generated, source = effective_admission(record)
-        result["umbrella_admission_status"] = {
+        ordered_children = [child for child in frozen_umbrella.get("ordered_child_ids", [])
+                            if isinstance(child, str) and TASK_RE.fullmatch(child)]
+        projection = (umbrella_progress_projection(record, ordered_children)
+                      if ordered_children else None)
+        admission_status = {
             "authority": ("authorized_superseding" if source == "superseding"
                           else "historical_creation"),
             "ordered_child_ids": frozen_umbrella.get("ordered_child_ids"),
@@ -4312,6 +4521,19 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
                 controller, configured_repository, frozen_umbrella,
                 frozen_generated, state, task_id),
         }
+        if projection is not None:
+            admission_status.update({
+                "completed_child_ids": projection["completed_child_ids"],
+                "current_child_id": projection["current_child_id"],
+                "remaining_child_ids": projection["remaining_child_ids"],
+                "child_progress": [{"child_id": entry["child_id"],
+                                    "base_sha": entry["base_sha"],
+                                    "tip_sha": entry["tip_sha"],
+                                    "changed_paths": entry["changed_paths"],
+                                    "recorded_at_unix_ns": entry["recorded_at_unix_ns"]}
+                                   for entry in projection["entries"]],
+            })
+        result["umbrella_admission_status"] = admission_status
     repository = Path(record.get("repository", ""))
     if repository.is_dir():
         current = optional_ref_sha(repository, record.get("target_ref", ""))
@@ -6020,10 +6242,12 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
         "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
-        "checkpoint", "evidence-run", "evidence-status", "evidence-await",
+        "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap",
         "sync", "doctor"))
     value.add_argument("--task")
+    value.add_argument("--child",
+                       help="admitted ordered umbrella child task id for child-checkpoint")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
     value.add_argument("--umbrella-admission", type=Path,
                        help="versioned ordered-child exact-scope input")
@@ -6045,7 +6269,7 @@ def main(argv: list[str] | None = None) -> int:
         controller = exact_root(args.controller, "controller", physical_identity=False)
         if args.operation == "runtime-bootstrap":
             if (args.task or args.path or args.umbrella_admission or args.plan or args.output
-                    or args.authorization_receipt or not args.package_version
+                    or args.authorization_receipt or args.child or not args.package_version
                     or not args.package_runtime_sha256):
                 raise TaskWorkspaceError("runtime-bootstrap package identity is incomplete")
             if args.dry_run == bool(args.apply):
@@ -6057,6 +6281,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise TaskWorkspaceError(f"task {args.operation} requires --task")
             if args.operation != "start" and args.path:
                 raise TaskWorkspaceError("--path is supported only for task start")
+            if args.operation != "child-checkpoint" and args.child:
+                raise TaskWorkspaceError("--child is supported only for task child-checkpoint")
             if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
                 raise TaskWorkspaceError("runtime-bootstrap options are not supported for task lifecycle operations")
             audit = record_control_audit(controller, "task", args.operation, args.task)
@@ -6106,6 +6332,10 @@ def main(argv: list[str] | None = None) -> int:
                     result = run_handoff(controller, args.task)
                 elif args.operation == "checkpoint":
                     result = standing_checkpoint(controller, args.task)
+                elif args.operation == "child-checkpoint":
+                    if not args.child:
+                        raise TaskWorkspaceError("child-checkpoint requires --child")
+                    result = umbrella_child_checkpoint(controller, args.task, args.child)
                 elif args.operation == "evidence-run":
                     result = standing_evidence_run(controller, args.task)
                 elif args.operation == "evidence-status":
