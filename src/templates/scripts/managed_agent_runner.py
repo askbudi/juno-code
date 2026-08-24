@@ -25,7 +25,20 @@ from typing import Any
 
 SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
-REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v2"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v3"
+ADMITTED_SCOPE_CLASSIFICATIONS = {
+    "requirement_gap", "candidate_bug", "candidate_regression",
+    "safety_invariant_violation"}
+REJECTED_OBSERVATION_CLASSES = {
+    "enhancement", "scope_addition", "design_preference",
+    "speculative_hardening", "unrelated_preexisting"}
+MAX_REJECTED_OBSERVATIONS = 64
+# Provider footers/logs may trail one valid structured result. The raw capture
+# gets a bounded tolerance; the extracted canonical result stays strictly
+# bounded by REVIEW_RESULT_LIMIT so footers can neither discard a valid
+# exhaustive review nor smuggle an unbounded one.
+REVIEW_RESULT_LIMIT = 65536
+REVIEW_RAW_CAPTURE_LIMIT = 1024 * 1024
 REVIEW_FINDING_IMPACT_CATEGORIES = {
     "bounded_product_defect", "maintainability", "clarity",
     "supported_install", "supported_runtime", "supported_config",
@@ -153,7 +166,8 @@ def _exact_json_island(data: bytes) -> Optional[dict[str, Any]]:
     """
     text = data.decode("utf-8", errors="replace")
     required = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-                "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
+                "sequence", "verdict", "truncated", "omitted_finding_count",
+                "rejection_counters", "findings"}
     decoder = json.JSONDecoder()
     candidates: list[dict[str, Any]] = []
     for index in (i for i, ch in enumerate(text) if ch == "{"):
@@ -169,17 +183,21 @@ def _exact_json_island(data: bytes) -> Optional[dict[str, Any]]:
 
 
 def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, Any]:
-    if not data or len(data) > 65536:
+    if not data or len(data) > REVIEW_RAW_CAPTURE_LIMIT:
         raise RunnerError("structured review result is empty or unbounded")
     try: value = json.loads(data)
     except (UnicodeError, json.JSONDecodeError):
-        # Format-only tolerance: one unambiguous JSON island wrapped in prose
-        # binds; zero or multiple islands stay an exact-JSON failure.
+        # Format-only tolerance: one unambiguous JSON island wrapped in prose or
+        # trailed by provider footer/log bytes binds; zero or multiple islands
+        # stay an exact-JSON failure.
         value = _exact_json_island(data)
         if value is None:
             raise RunnerError("structured review result is not exact JSON") from None
+    if len(canonical(value)) > REVIEW_RESULT_LIMIT:
+        raise RunnerError("structured review result exceeds the bounded capture contract")
     keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-            "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
+            "sequence", "verdict", "truncated", "omitted_finding_count",
+            "rejection_counters", "findings"}
     if (not isinstance(value, dict) or set(value) != keys
             or value.get("schema_version") != REVIEW_RESULT_SCHEMA
             or value.get("candidate_sha") != binding.get("candidate_sha")
@@ -197,7 +215,8 @@ def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, 
             or not isinstance(value.get("findings"), list) or len(value["findings"]) > 32):
         raise RunnerError("structured review result schema/binding is invalid")
     finding_keys = {"code", "severity", "summary", "paths", "symbols", "evidence",
-                    "impact", "failure_condition", "acceptance_condition", "impact_categories"}
+                    "impact", "failure_condition", "acceptance_condition",
+                    "impact_categories", "scope_classification", "cited_contract"}
     for finding in value["findings"]:
         if not isinstance(finding, dict):
             raise RunnerError("structured review finding is malformed or unbounded")
@@ -216,12 +235,23 @@ def structured_review_result(data: bytes, binding: dict[str, Any]) -> dict[str, 
         if (set(finding) != finding_keys
                 or not isinstance(finding.get("code"), str) or not finding["code"]
                 or finding.get("severity") not in {"low", "medium", "high", "critical"}
+                or finding.get("scope_classification") not in ADMITTED_SCOPE_CLASSIFICATIONS
+                or not isinstance(finding.get("cited_contract"), str)
+                or not finding["cited_contract"]
+                or len(finding["cited_contract"].encode()) > 1024
                 or not bounded_lists or any(not isinstance(finding.get(field), str)
                     or not finding[field] or len(finding[field].encode()) > 1024
                     for field in ("summary", "evidence", "impact", "failure_condition",
                                   "acceptance_condition"))
                 or len(finding["code"].encode()) > 64):
             raise RunnerError("structured review finding is malformed or unbounded")
+    counters = value.get("rejection_counters")
+    if (not isinstance(counters, dict)
+            or set(counters) - REJECTED_OBSERVATION_CLASSES
+            or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
+                   for count in counters.values())
+            or sum(counters.values()) > MAX_REJECTED_OBSERVATIONS):
+        raise RunnerError("structured review rejection counters are malformed or unbounded")
     if (value["verdict"] == "pass") != (not value["findings"]):
         raise RunnerError("structured review verdict/findings are contradictory")
     return value
@@ -249,23 +279,44 @@ def review_prompt_contract(binding: dict[str, Any]) -> bytes:
                 "policy_identity": binding["policy_identity"],
                 "reviewer_role": binding["reviewer_role"], "sequence": binding["sequence"],
                 "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
-                "findings": []}
+                "rejection_counters": {}, "findings": []}
     return ("\n\n# Managed structured review output\n"
             "Review the complete frozen candidate before answering. Return every independently "
-            "actionable supported finding; do not stop after the first or after a blocker. "
+            "actionable ADMITTED finding; do not stop after the first or after a blocker. "
             "Return exactly one JSON object with these top-level fields and no unknown fields: "
             "schema_version, candidate_sha, policy_identity, reviewer_role, sequence, verdict, "
-            "truncated, omitted_finding_count, findings.\n"
+            "truncated, omitted_finding_count, rejection_counters, findings.\n"
+            "Scope admission precedes severity. Admit a finding only after proving all four: "
+            "Contract (cite the exact approved requirement, acceptance condition, invariant, or "
+            "established supported behavior violated), Causality (concrete frozen-candidate "
+            "evidence or a candidate-caused regression), Failure (a realistic supported failure "
+            "condition), and Impact (the observable product/user consequence). Request only the "
+            "smallest repair that restores the cited contract.\n"
             "Each finding must contain exactly {code, severity, summary, paths, symbols, evidence, "
-            "impact, failure_condition, acceptance_condition, impact_categories}. code is its stable "
-            "finding ID. severity is low|medium|high|critical. impact_categories contains 1-4 of: "
+            "impact, failure_condition, acceptance_condition, impact_categories, "
+            "scope_classification, cited_contract}. code is its stable "
+            "finding ID. severity is low|medium|high|critical. scope_classification is exactly one "
+            "of requirement_gap|candidate_bug|candidate_regression|safety_invariant_violation. "
+            "cited_contract states the exact requirement, acceptance condition, invariant, or "
+            "established supported behavior the finding violates. impact_categories contains 1-4 "
+            "of: "
             + ", ".join(sorted(REVIEW_FINDING_IMPACT_CATEGORIES)) + ". paths contains 1-16 entries; "
             "symbols contains 0-16 entries; findings contains at most 32 items. Combine duplicate "
             "symptoms sharing one root cause and keep independently repairable defects separate.\n"
+            "An observation that is only a new feature, broader acceptance criterion, architecture "
+            "or naming/style preference, refactor, speculative future hardening, an unrelated "
+            "pre-existing defect, or an improvement not required by an approved metric is OUT OF "
+            "SCOPE: never report it as a finding, never downgrade it to low or medium severity, "
+            "and record it only as one increment in rejection_counters, whose keys are exactly "
+            "enhancement|scope_addition|design_preference|speculative_hardening|"
+            "unrelated_preexisting with integer counts and a total of at most 64. Include no prose "
+            "for rejected observations.\n"
             "Set truncated=true and omitted_finding_count>0 whenever the bound prevents a complete "
             "response; never represent a partial review as PASS. Set both to false/0 otherwise. "
-            "PASS is allowed only after complete inspection with findings=[]. A finding verdict has "
-            "1-32 items. Emit no markdown, fences, commentary, or text outside the JSON object. "
+            "PASS is allowed only after complete inspection with findings=[] (rejection_counters "
+            "may still carry counts). A findings verdict has "
+            "1-32 items. Emit no markdown, fences, commentary, provider usage footers, or text "
+            "outside the JSON object. "
             "Example PASS object:\n" + canonical(contract).decode()).encode()
 
 

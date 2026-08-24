@@ -71,7 +71,9 @@ class RiskPolicyTest(unittest.TestCase):
 
     def review(self, plan: dict, role: str, sequence: int, session: str, *, findings: int = 0,
                predecessor: dict | None = None, tool_id: str | None = None,
-               severity: str = "high", impact_category: str = "supported_runtime") -> dict:
+               severity: str = "high", impact_category: str = "supported_runtime",
+               scope: str = "candidate_bug",
+               rejection_counters: dict | None = None) -> dict:
         predecessor_mark = None
         if predecessor:
             prior = json.loads(Path(predecessor["runner_receipt_path"]).read_text())
@@ -89,11 +91,14 @@ class RiskPolicyTest(unittest.TestCase):
                   "policy_identity": binding["policy_identity"], "reviewer_role": role,
                   "sequence": sequence, "verdict": "findings" if findings else "pass",
                   "truncated": False, "omitted_finding_count": 0,
+                  "rejection_counters": rejection_counters or {},
                   "findings": [{"code": f"F{i}", "severity": severity, "summary": "finding",
                                 "paths": ["src/runtime.ts"], "symbols": ["run"],
                                 "evidence": "frozen candidate evidence", "impact": "runtime broken",
                                 "failure_condition": "supported invocation", "acceptance_condition": "works",
-                                "impact_categories": [impact_category]}
+                                "impact_categories": [impact_category],
+                                "scope_classification": scope,
+                                "cited_contract": "PDR 2.2 reviewer-scope and anti-scope-creep gate"}
                                for i in range(findings)]}
         response_path, response_sha = self.object_file(f"response-{session}.json", result)
         receipt = {"schema_version": rp.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
@@ -357,6 +362,68 @@ class RiskPolicyTest(unittest.TestCase):
         self.assertEqual(("failed", 32),
                          (bounded["status"], bounded["reviews"][0]["finding_count"]))
 
+    def test_scope_admission_precedes_severity_dedup_and_advisories(self) -> None:
+        normal = self.plan({"src/runtime.ts": "runtime\n"})
+        for scope in ("requirement_gap", "candidate_bug",
+                      "candidate_regression", "safety_invariant_violation"):
+            advisory = self.review(normal, "reviewer", 1, f"scope-{scope}", findings=1,
+                                   severity="medium", impact_category="bounded_product_defect",
+                                   scope=scope,
+                                   rejection_counters={"enhancement": 2, "design_preference": 1})
+            accepted = self.finish(normal, [advisory])
+            compact = accepted["reviews"][0]
+            finding = compact["findings"][0]
+            self.assertEqual(scope, finding["scope_classification"])
+            self.assertEqual("PDR 2.2 reviewer-scope and anti-scope-creep gate",
+                             finding["cited_contract"])
+            self.assertEqual(("passed", 1, 0, 3),
+                             (accepted["status"], compact["advisory_count"],
+                             compact["blocking_count"],
+                             compact["rejected_observation_count"]))
+            self.assertEqual({"design_preference": 1, "enhancement": 2},
+                             compact["rejection_counters"])
+
+    def test_unscoped_or_malformed_findings_fail_closed(self) -> None:
+        normal = self.plan({"src/runtime.ts": "runtime\n"})
+        reference = self.review(normal, "reviewer", 1, "unscoped", findings=1)
+        receipt_path = Path(reference["runner_receipt_path"])
+        receipt = json.loads(receipt_path.read_text())
+        response_path = Path(receipt["artifacts"]["response"]["path"])
+        base = json.loads(response_path.read_text())
+        variants = []
+        missing_scope = json.loads(json.dumps(base))
+        del missing_scope["findings"][0]["scope_classification"]
+        variants.append(missing_scope)
+        rejected_scope = json.loads(json.dumps(base))
+        rejected_scope["findings"][0]["scope_classification"] = "enhancement"
+        variants.append(rejected_scope)
+        empty_contract = json.loads(json.dumps(base))
+        empty_contract["findings"][0]["cited_contract"] = ""
+        variants.append(empty_contract)
+        legacy_v1 = json.loads(json.dumps(base))
+        del legacy_v1["rejection_counters"]
+        variants.append(legacy_v1)
+        unknown_counter = json.loads(json.dumps(base))
+        unknown_counter["rejection_counters"] = {"nice_to_have": 1}
+        variants.append(unknown_counter)
+        bool_counter = json.loads(json.dumps(base))
+        bool_counter["rejection_counters"] = {"enhancement": True}
+        variants.append(bool_counter)
+        overflow_counter = json.loads(json.dumps(base))
+        overflow_counter["rejection_counters"] = {"enhancement": 65}
+        variants.append(overflow_counter)
+        for variant in variants:
+            response_path.write_bytes(rp.canonical(variant))
+            receipt["artifacts"]["response"].update({
+                "bytes": response_path.stat().st_size,
+                "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest()})
+            receipt_path.write_bytes(rp.canonical(receipt))
+            drifted = dict(reference,
+                           runner_receipt_sha256=hashlib.sha256(receipt_path.read_bytes()).hexdigest())
+            with self.assertRaisesRegex(rp.RiskPolicyError,
+                                        "malformed or unbounded|admitted scope|schema/binding"):
+                self.finish(normal, [drifted])
+
     def test_truncated_review_fails_closed_as_policy_evidence(self) -> None:
         plan = self.plan({"src/runtime.ts": "runtime\n"})
         reference = self.review(plan, "reviewer", 1, "truncated")
@@ -370,7 +437,9 @@ class RiskPolicyTest(unittest.TestCase):
                                        "paths": ["src/runtime.ts"], "symbols": [],
                                        "evidence": "partial review", "impact": "bounded defect",
                                        "failure_condition": "edge", "acceptance_condition": "fix edge",
-                                       "impact_categories": ["bounded_product_defect"]}]})
+                                       "impact_categories": ["bounded_product_defect"],
+                                       "scope_classification": "candidate_bug",
+                                       "cited_contract": "PDR 2.1 bootstrap gate"}]})
         response_path.write_bytes(rp.canonical(response))
         receipt["artifacts"]["response"].update({
             "bytes": response_path.stat().st_size,

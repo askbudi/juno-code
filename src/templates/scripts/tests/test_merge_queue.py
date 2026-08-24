@@ -1297,6 +1297,8 @@ raise SystemExit(2)
                   "policy_identity": binding["policy_identity"], "reviewer_role": reviewer,
                   "sequence": sequence, "verdict": "findings" if findings or advisory else "pass",
                   "truncated": False, "omitted_finding_count": 0,
+                  "rejection_counters": ({"enhancement": 2, "design_preference": 1}
+                                          if findings or advisory else {}),
                   "findings": ([{"code": "SEC" if findings else "DOC_CLARITY",
                                  "severity": "high" if findings else "low", "summary": "finding",
                                  "paths": ["src/security/auth.py" if findings else "src/runtime.py"],
@@ -1305,7 +1307,11 @@ raise SystemExit(2)
                                  "impact": "supported runtime broken" if findings else "minor clarity debt",
                                  "failure_condition": "invoke protected path" if findings else "read output",
                                  "acceptance_condition": "restore guard" if findings else "clarify output",
-                                 "impact_categories": ["supported_runtime" if findings else "clarity"]}]
+                                 "impact_categories": ["supported_runtime" if findings else "clarity"],
+                                 "scope_classification":
+                                     "safety_invariant_violation" if findings else "candidate_bug",
+                                 "cited_contract": ("PDR 21 safety invariants" if findings
+                                                    else "PDR 2.2 reviewer-scope gate")}]
                                if findings or advisory else [])}
         result_path, result_sha = self.object_file(f"result-{reviewer}-{sequence}.json", result)
         receipt = {"schema_version": risk_runtime.MANAGED_RUNNER_SCHEMA, "mode": "reviewer",
@@ -2293,6 +2299,65 @@ raise SystemExit(2)
         self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), self.base)
         self.assertEqual(self.task("status", "X")["state"], "REVIEW_FINDINGS")
+
+    def test_rendered_reviewer_prompt_carries_the_scope_gate_contract(self) -> None:
+        template = SCRIPTS.parent / "prompts/review_commit_parallel_runner.md"
+        candidate_sha = "b" * 40
+        plan = {
+            "tier": "high", "full_suite_required": False,
+            "evidence_limits": {"max_receipt_bytes": 65536},
+            "candidate": {"base_sha": "a" * 40, "candidate_sha": candidate_sha},
+        }
+        record = {
+            "task_id": "A", "state": "AWAITING_RISK",
+            "queue_attempt": {
+                "candidate_sha": candidate_sha,
+                "validation": [],
+                "risk": {"plan": plan, "review_progress": {"full_suite_admission": None}},
+            },
+        }
+        output = self.root / "rendered-scope-gate.md"
+        with (mock.patch.object(merge_runtime, "managed_review_prompt", return_value=template),
+              mock.patch.object(merge_runtime.task_runtime, "read_state",
+                                return_value={"tasks": {"A": record}})):
+            rendered = merge_runtime.render_managed_review_prompt(
+                self.controller, self.repository, plan, "A", "reviewer_a", 1, output)
+        text = rendered.read_text()
+        for phrase in ("Your purpose is limited to",
+                       "Do not propose or report new features",
+                       "Do not downgrade", "Scope admission contract",
+                       "Contract: cite the exact requirement",
+                       "smallest repair required to restore the cited contract",
+                       "requirement_gap", "candidate_regression",
+                       "safety_invariant_violation",
+                       "PASS means no admitted in-scope defect remains"):
+            self.assertIn(phrase, text)
+
+    def test_rejected_observations_create_zero_repair_or_advisory_work(self) -> None:
+        tip = self.commit_feature("X", "src/security/auth.py", "runtime\n")
+        self.queue_payload("next")
+        advisory = lambda *args, **kwargs: self.fake_review(*args, **kwargs, advisory=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=advisory):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual("RISK_EVIDENCE_READY", reviewed["outcome"])
+        compact = reviewed["reviews"][0] if "reviews" in reviewed else risk_runtime._compact_review(
+            self.fake_review(self.controller, self.repository, reviewed["risk"]["plan"],
+                             "X", "reviewer_a", 1, None, 2, advisory=True),
+            "reviewer_a", 1, tip, reviewed["risk"]["plan"]["policy_identity"],
+            reviewed["risk"]["plan"])
+        # Rejection counters are observable but are not findings: they must not
+        # add advisory tasks, blocking findings, or repair rounds.
+        self.assertEqual({"design_preference": 1, "enhancement": 2},
+                         compact["rejection_counters"])
+        self.assertEqual(3, compact["rejected_observation_count"])
+        self.assertEqual(1, compact["advisory_count"])
+        self.assertEqual(0, compact["blocking_count"])
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        advisories = [task for key, task in board.items() if key.startswith("ADV")]
+        self.assertEqual(1, len(advisories))
+        self.assertEqual(1, len(reviewed["advisory_followups"]))
+        self.assertEqual(tip, self.queue_payload("next", "X")["candidate_sha"])
 
     def test_advisory_is_persisted_idempotently_and_same_candidate_continues(self) -> None:
         tip = self.commit_feature("X", "src/security/auth.py", "runtime\n")

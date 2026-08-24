@@ -87,12 +87,15 @@ binding=json.loads(os.environ['JUNO_REVIEW_BINDING_JSON']) if os.environ.get('JU
 findings=([{'code':'FAKE_FINDING','severity':'high','summary':'fixture finding',
  'paths':['src/runtime.py'],'symbols':['run'],'evidence':'frozen candidate evidence',
  'impact':'supported runtime broken','failure_condition':'supported invocation',
- 'acceptance_condition':'restore runtime','impact_categories':['supported_runtime']}]
+ 'acceptance_condition':'restore runtime','impact_categories':['supported_runtime'],
+ 'scope_classification':'candidate_bug',
+ 'cited_contract':'PDR 2.2 reviewer-scope and anti-scope-creep gate'}]
           if binding and 'review-findings' in prompt else [])
-review_result=({'schema_version':'juno_managed_review_result.v2','candidate_sha':binding['candidate_sha'],
+review_result=({'schema_version':'juno_managed_review_result.v3','candidate_sha':binding['candidate_sha'],
  'policy_identity':binding['policy_identity'],'reviewer_role':binding['reviewer_role'],
  'sequence':binding['sequence'],'verdict':'findings' if findings else 'pass',
- 'truncated':False,'omitted_finding_count':0,'findings':findings} if binding else 'answer')
+ 'truncated':False,'omitted_finding_count':0,
+ 'rejection_counters':{'enhancement':1} if findings else {},'findings':findings} if binding else 'answer')
 if binding:
  raw=json.dumps(review_result,sort_keys=True,separators=(',',':'))
  review_result=(raw+'\\r\\n \\t' if 'fixture-crlf' in prompt else raw+'\\n')
@@ -469,7 +472,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_a", "sequence": 1,
                    "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
-                   "findings": []}
+                   "rejection_counters": {}, "findings": []}
         raw = json.dumps(passing, separators=(",", ":")).encode()
         for data in (raw, raw + b"\n", raw + b"\r\n \t"):
             self.assertEqual(passing, runner.structured_review_result(data, binding))
@@ -477,7 +480,9 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
             {"code": "AUTH_BYPASS", "severity": "critical", "summary": "Missing guard",
              "paths": ["src/auth.py"], "symbols": ["authorize"], "evidence": "guard absent",
              "impact": "authorization bypass", "failure_condition": "protected call",
-             "acceptance_condition": "restore guard", "impact_categories": ["security_privacy"]}]}
+             "acceptance_condition": "restore guard", "impact_categories": ["security_privacy"],
+             "scope_classification": "safety_invariant_violation",
+             "cited_contract": "PDR 21 safety invariants"}]}
         self.assertEqual(finding, runner.structured_review_result(json.dumps(finding).encode(), binding))
 
         unknown = {**passing, "unknown": True}
@@ -501,7 +506,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_b", "sequence": 2,
                    "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
-                   "findings": []}
+                   "rejection_counters": {}, "findings": []}
         body = json.dumps(verdict)
         prose = (f"I verified all prior findings against the tip.\n\n"
                  f"Summary of the pass:\n\n```text\nJUNO_REVIEW_VERDICT: PASS\n```\n\n"
@@ -512,7 +517,9 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
              "summary": "braces { inside } summaries stay one island", "paths": ["src/a.py"],
              "symbols": [], "evidence": "bounded defect", "impact": "bounded impact",
              "failure_condition": "edge case", "acceptance_condition": "handle edge case",
-             "impact_categories": ["bounded_product_defect"]}]}
+             "impact_categories": ["bounded_product_defect"],
+             "scope_classification": "candidate_bug",
+             "cited_contract": "PDR 2.1 bootstrap gate"}]}
         nested = ("review prose\n" + json.dumps(finding_verdict) + "\nfooter\n").encode()
         self.assertEqual(finding_verdict,
                          runner.structured_review_result(nested, binding))
@@ -525,7 +532,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_b", "sequence": 2,
                    "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
-                   "findings": []}
+                   "rejection_counters": {}, "findings": []}
         other = {**verdict, "sequence": 3}
         two_islands = (json.dumps(verdict) + "\n" + json.dumps(other) + "\n").encode()
         unrelated_objects = b'{"summary": "prose quote with json"} and {"note": 1}\n'
@@ -539,6 +546,68 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
             with self.assertRaisesRegex(runner.RunnerError, pattern):
                 runner.structured_review_result(data, binding)
 
+    def test_structured_review_parser_tolerates_bounded_provider_footer_bytes(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_a", "sequence": 1}
+        verdict = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                   "candidate_sha": binding["candidate_sha"],
+                   "policy_identity": binding["policy_identity"],
+                   "reviewer_role": "reviewer_a", "sequence": 1,
+                   "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
+                   "rejection_counters": {"enhancement": 2}, "findings": []}
+        body = json.dumps(verdict).encode()
+        # A valid exhaustive structured result must survive provider footer/log
+        # bytes that push the raw capture past the old 64 KiB exact bound.
+        footer = (b"\nprovider usage footer\n" + b"x" * 70000 + b"\n")
+        self.assertGreater(len(body) + len(footer), 65536)
+        self.assertLess(len(body) + len(footer), runner.REVIEW_RAW_CAPTURE_LIMIT)
+        self.assertEqual(verdict,
+                         runner.structured_review_result(body + footer, binding))
+        # The raw capture itself stays bounded: an unbounded flood still fails.
+        with self.assertRaisesRegex(runner.RunnerError, "empty or unbounded"):
+            runner.structured_review_result(body + b"y" * (1024 * 1024 + 1), binding)
+        # And an extracted result larger than the strict bound still fails.
+        oversized = {**verdict, "rejection_counters": {}}
+        oversized["findings"] = [{"code": f"F{i}", "severity": "low",
+            "summary": "s" * 1024, "paths": ["src/a.py"], "symbols": [],
+            "evidence": "e" * 1024, "impact": "i" * 1024,
+            "failure_condition": "f" * 1024, "acceptance_condition": "a" * 1024,
+            "impact_categories": ["clarity"],
+            "scope_classification": "candidate_bug",
+            "cited_contract": "c" * 1024} for i in range(32)]
+        self.assertGreater(len(runner.canonical(oversized)), 65536)
+        with self.assertRaisesRegex(runner.RunnerError, "bounded capture contract"):
+            runner.structured_review_result(json.dumps(oversized).encode(), binding)
+
+    def test_structured_review_parser_requires_admitted_scope_fields(self):
+        binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
+                   "reviewer_role": "reviewer_a", "sequence": 1}
+        base = {"schema_version": runner.REVIEW_RESULT_SCHEMA,
+                "candidate_sha": binding["candidate_sha"],
+                "policy_identity": binding["policy_identity"],
+                "reviewer_role": "reviewer_a", "sequence": 1,
+                "verdict": "findings", "truncated": False, "omitted_finding_count": 0,
+                "rejection_counters": {}, "findings": [
+                    {"code": "F0", "severity": "high", "summary": "gap",
+                     "paths": ["src/a.py"], "symbols": [], "evidence": "missing guard",
+                     "impact": "runtime broken", "failure_condition": "invoke path",
+                     "acceptance_condition": "restore guard",
+                     "impact_categories": ["supported_runtime"],
+                     "scope_classification": "candidate_bug",
+                     "cited_contract": "PDR 2.2 scope gate"}]}
+        self.assertEqual(base, runner.structured_review_result(
+            json.dumps(base).encode(), binding))
+        for mutate in (lambda v: v["findings"][0].pop("scope_classification"),
+                       lambda v: v["findings"][0].__setitem__("scope_classification", "enhancement"),
+                       lambda v: v["findings"][0].__setitem__("cited_contract", ""),
+                       lambda v: v.__setitem__("rejection_counters", {"nice_to_have": 1}),
+                       lambda v: v.pop("rejection_counters")):
+            variant = json.loads(json.dumps(base))
+            mutate(variant)
+            with self.assertRaisesRegex(runner.RunnerError,
+                                        "malformed or unbounded|admitted scope|schema/binding"):
+                runner.structured_review_result(json.dumps(variant).encode(), binding)
+
     def test_reviewer_stdout_finalizer_requires_exact_result_and_fresh_single_session(self):
         binding = {"candidate_sha": "1" * 40, "policy_identity": "2" * 64,
                    "reviewer_role": "reviewer_a", "sequence": 1}
@@ -547,7 +616,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                    "policy_identity": binding["policy_identity"],
                    "reviewer_role": "reviewer_a", "sequence": 1,
                    "verdict": "pass", "truncated": False, "omitted_finding_count": 0,
-                   "findings": []}
+                   "rejection_counters": {}, "findings": []}
         root = self.tmp / "stdout-finalizer"; root.mkdir()
         capture = root / "capture.json"; stdout = root / "stdout.log"
         metadata = root / "session_metadata"; metadata.mkdir()
@@ -601,7 +670,9 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertNotIn(b"\r", response)
         shipped_prompt = (out / "prompt.md").read_text()
         for instruction in ("code, severity, summary, paths", "low|medium|high|critical",
-                            "PASS is allowed", "finding verdict", "no markdown", "at most 32"):
+                            "scope_classification", "cited_contract", "rejection_counters",
+                            "Scope admission precedes severity", "OUT OF SCOPE",
+                            "PASS is allowed", "findings verdict", "no markdown", "at most 32"):
             self.assertIn(instruction, shipped_prompt)
         receipt_path = out / "receipt.json"
         self.assertLess(receipt_path.stat().st_size, policy["limits"]["max_receipt_bytes"])

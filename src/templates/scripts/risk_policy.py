@@ -24,8 +24,15 @@ RELEASE_PRODUCER_SCHEMA = "juno_bolt_release_gate_producer.v1"
 RELEASE_TOOL_ID = "yylo.release-gate"
 MANAGED_RUNNER_SCHEMA = "juno_managed_agent_runner.v1"
 REVIEW_BINDING_SCHEMA = "juno_managed_review_binding.v1"
-REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v2"
-FINDING_POLICY_REVISION = "yy_review_finding_policy.v1"
+REVIEW_RESULT_SCHEMA = "juno_managed_review_result.v3"
+FINDING_POLICY_REVISION = "yy_review_finding_policy.v2"
+ADMITTED_SCOPE_CLASSIFICATIONS = {
+    "requirement_gap", "candidate_bug", "candidate_regression",
+    "safety_invariant_violation"}
+REJECTED_OBSERVATION_CLASSES = {
+    "enhancement", "scope_addition", "design_preference",
+    "speculative_hardening", "unrelated_preexisting"}
+MAX_REJECTED_OBSERVATIONS = 64
 REVIEW_FINDING_IMPACT_CATEGORIES = {
     "bounded_product_defect", "maintainability", "clarity",
     "supported_install", "supported_runtime", "supported_config",
@@ -891,6 +898,7 @@ def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
                                reviewer: str, max_string_bytes: int) -> None:
     keys = {"reviewer", "sequence", "candidate_sha", "session_id", "verdict",
             "finding_count", "advisory_count", "blocking_count", "findings",
+            "rejected_observation_count", "rejection_counters",
             "finding_policy_revision", "review_result_sha256", "tool_id", "completed_at",
             "managed_runner", "review_binding"}
     if not isinstance(value, dict) or set(value) != keys:
@@ -907,6 +915,15 @@ def _validate_persisted_review(value: Any, candidate_sha: str, sequence: int,
             or not isinstance(value.get("blocking_count"), int)
             or isinstance(value.get("blocking_count"), bool) or value["blocking_count"] < 0
             or value["finding_count"] != value["advisory_count"] + value["blocking_count"]
+            or not isinstance(value.get("rejected_observation_count"), int)
+            or isinstance(value.get("rejected_observation_count"), bool)
+            or value["rejected_observation_count"] < 0
+            or value["rejected_observation_count"] > MAX_REJECTED_OBSERVATIONS
+            or not isinstance(value.get("rejection_counters"), dict)
+            or set(value["rejection_counters"]) - REJECTED_OBSERVATION_CLASSES
+            or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
+                   for count in value["rejection_counters"].values())
+            or sum(value["rejection_counters"].values()) != value["rejected_observation_count"]
             or not isinstance(value.get("findings"), list)
             or len(value["findings"]) != value["finding_count"]
             or value.get("finding_policy_revision") != FINDING_POLICY_REVISION
@@ -1049,7 +1066,18 @@ def reviewer_command(script_dir: Path, *, controller_root: Path, controller_bran
 
 
 def normalize_review_finding(finding: dict[str, Any]) -> dict[str, Any]:
-    """Verify and normalize one review finding against the exact compiled policy."""
+    """Verify and normalize one review finding against the exact compiled policy.
+
+    Scope admission precedes severity: a finding without an admitted scope
+    classification and a cited contract fails closed here and can never reach
+    severity normalization, deduplication, advisory persistence, or repair
+    disposition. Rejected observations are never findings; they live only in
+    the bounded aggregate result-level rejection counters.
+    """
+    if finding["scope_classification"] not in ADMITTED_SCOPE_CLASSIFICATIONS:
+        raise RiskPolicyError(
+            "review finding lacks an admitted scope classification: "
+            f"{finding.get('scope_classification')!r}")
     categories = finding["impact_categories"]
     if set(categories) & CRITICAL_IMPACTS:
         severity = "critical"
@@ -1111,7 +1139,8 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
     result = _bounded_object(response.get("path"), response.get("sha256"), plan,
                              "managed runner review result")
     result_keys = {"schema_version", "candidate_sha", "policy_identity", "reviewer_role",
-                   "sequence", "verdict", "truncated", "omitted_finding_count", "findings"}
+                   "sequence", "verdict", "truncated", "omitted_finding_count",
+                   "rejection_counters", "findings"}
     if (set(result) != result_keys or result.get("schema_version") != REVIEW_RESULT_SCHEMA
             or result.get("candidate_sha") != candidate_sha
             or result.get("policy_identity") != policy_identity
@@ -1127,7 +1156,8 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
             or response["bytes"] != Path(response["path"]).stat().st_size):
         raise RiskPolicyError("managed runner review result schema/binding is invalid")
     finding_keys = {"code", "severity", "summary", "paths", "symbols", "evidence",
-                    "impact", "failure_condition", "acceptance_condition", "impact_categories"}
+                    "impact", "failure_condition", "acceptance_condition",
+                    "impact_categories", "scope_classification", "cited_contract"}
     normalized_findings = []
     for finding in result["findings"]:
         if not isinstance(finding, dict):
@@ -1148,12 +1178,23 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
                 or not isinstance(finding.get("code"), str) or not finding["code"]
                 or len(finding["code"].encode()) > 64
                 or finding.get("severity") not in {"low", "medium", "high", "critical"}
+                or finding.get("scope_classification") not in ADMITTED_SCOPE_CLASSIFICATIONS
+                or not isinstance(finding.get("cited_contract"), str)
+                or not finding["cited_contract"]
+                or len(finding["cited_contract"].encode()) > 1024
                 or any(not isinstance(finding.get(field), str) or not finding[field]
                        or len(finding[field].encode()) > 1024
                        for field in ("summary", "evidence", "impact", "failure_condition",
                                      "acceptance_condition"))):
             raise RiskPolicyError("managed runner review finding is malformed or unbounded")
         normalized_findings.append(normalize_review_finding(finding))
+    counters = result.get("rejection_counters")
+    if (not isinstance(counters, dict)
+            or set(counters) - REJECTED_OBSERVATION_CLASSES
+            or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
+                   for count in counters.values())
+            or sum(counters.values()) > MAX_REJECTED_OBSERVATIONS):
+        raise RiskPolicyError("managed runner review rejection counters are malformed or unbounded")
     if result["truncated"]:
         raise RiskPolicyError("managed runner review result is truncated")
     if (result["verdict"] == "pass") != (not result["findings"]):
@@ -1174,6 +1215,8 @@ def _compact_review(value: Any, expected_reviewer: str, sequence: int,
             "verdict": result["verdict"], "finding_count": len(normalized_findings),
             "advisory_count": len(normalized_findings) - blocking_count,
             "blocking_count": blocking_count, "findings": normalized_findings,
+            "rejected_observation_count": sum(result["rejection_counters"].values()),
+            "rejection_counters": dict(sorted(result["rejection_counters"].items())),
             "finding_policy_revision": FINDING_POLICY_REVISION,
             "review_result_sha256": response["sha256"],
             "managed_runner": {"schema_version": MANAGED_RUNNER_SCHEMA,
