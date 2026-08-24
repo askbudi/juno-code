@@ -352,9 +352,7 @@
       "source": "scripts/task_workspace.py",
       "destination": ".juno_task/scripts/task_workspace.py",
       "installClass": "script",
-      "type": "script",
-      "installedSha256": "0b22a80f21b9aee290b693ed432b9e67ec5f5d9197616f3e55dc4d130ea86ec9",
-      "sourceSha256": "0b22a80f21b9aee290b693ed432b9e67ec5f5d9197616f3e55dc4d130ea86ec9"
+      "type": "script"
     },
     {
       "source": "scripts/target_runtime_provenance.py",
@@ -372,9 +370,7 @@
       "source": "scripts/merge_queue.py",
       "destination": ".juno_task/scripts/merge_queue.py",
       "installClass": "script",
-      "type": "script",
-      "installedSha256": "3f54de4168fe6018564f4fb9ded3c03a66618626d96acbc0dec685881c0b831a",
-      "sourceSha256": "3f54de4168fe6018564f4fb9ded3c03a66618626d96acbc0dec685881c0b831a"
+      "type": "script"
     },
     {
       "source": "scripts/release_train.py",
@@ -392,9 +388,7 @@
       "source": "scripts/tests/test_task_workspace.py",
       "destination": ".juno_task/scripts/tests/test_task_workspace.py",
       "installClass": "script",
-      "type": "script",
-      "installedSha256": "3ed179136beb1e4fcf1e13ec70caa73360faf0a68b2030e29063ddba520b6312",
-      "sourceSha256": "3ed179136beb1e4fcf1e13ec70caa73360faf0a68b2030e29063ddba520b6312"
+      "type": "script"
     },
     {
       "source": "scripts/tests/test_integration_workspace.py",
@@ -406,17 +400,13 @@
       "source": "scripts/tests/test_merge_queue.py",
       "destination": ".juno_task/scripts/tests/test_merge_queue.py",
       "installClass": "script",
-      "type": "script",
-      "installedSha256": "b82ee901a0037e49dbd3da62bde3575747776ece36ea97b420492a7461c0637f",
-      "sourceSha256": "b82ee901a0037e49dbd3da62bde3575747776ece36ea97b420492a7461c0637f"
+      "type": "script"
     },
     {
       "source": "scripts/task_workflow_helper.py",
       "destination": ".juno_task/scripts/task_workflow_helper.py",
       "installClass": "script",
-      "type": "script",
-      "installedSha256": "c10df68204bb93c11f09223147b7cadd5f661a858737eb50c15d884da5eba030",
-      "sourceSha256": "c10df68204bb93c11f09223147b7cadd5f661a858737eb50c15d884da5eba030"
+      "type": "script"
     },
     {
       "source": "scripts/workflow_run_evidence.py",
