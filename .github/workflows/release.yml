@@ -1,8 +1,11 @@
-name: Publish YYLO CLI
+name: Verify YYLO CLI release artifact
 
-# Package-level exact routing: an explicit exact version and channel are
-# required; there is no generic `v*` fanout. The artifact is packed, hashed,
-# and published as the exact reviewed tarball, then verified by readback.
+# Package-level exact verification aligned to the one guarded release
+# contract: an explicit exact version and channel are required, the exact
+# artifact is packed and hash-bound, and the registry readback is compared
+# against it. There is deliberately no publish step and no npm token here:
+# publication authority belongs exclusively to the guarded
+# scripts/release-yylo.py plan/apply flow through scripts/release-authority.sh.
 
 on:
   workflow_dispatch:
@@ -16,18 +19,13 @@ on:
         required: true
         type: choice
         options: [next, latest]
-      publish:
-        description: Publish the verified exact artifact
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Verify and publish @yylo/cli
+  verify:
+    name: Verify and bind @yylo/cli artifact
     runs-on: ubuntu-latest
     env:
       PACKAGE_NAME: "@yylo/cli"
@@ -68,18 +66,13 @@ jobs:
           NODE
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
-      - name: Publish the exact artifact
-        if: inputs.publish
+      - name: Compare the bound artifact against the registry readback
         run: |
-          tgz=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].filename)")
-          npm publish "$RUNNER_TEMP/artifacts/$tgz" --access public --tag "${{ inputs.dist_tag }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Verify registry readback
-        if: inputs.publish
-        run: |
-          tgz=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].filename)")
           expected=$(node -e "console.log(require(process.env.RUNNER_TEMP + '/pack.json')[0].shasum)")
-          actual=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-shasum)
-          [ "$expected" = "$actual" ] || { echo "registry dist-shasum drift: $actual"; exit 1; }
-          npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json
+          if actual=$(npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-shasum 2>/dev/null); then
+            [ "$expected" = "$actual" ] && echo "registry already carries the exact bound artifact" \
+              || { echo "registry artifact differs from this build: $actual"; exit 1; }
+            npm view "${PACKAGE_NAME}@${{ inputs.version }}" dist-tags --json
+          else
+            echo "registry does not carry ${PACKAGE_NAME}@${{ inputs.version }} yet; publication remains the guarded apply flow"
+          fi
