@@ -415,6 +415,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/tests/test_workflow_runner_resume_contract.py",
+      "destination": ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/task_workflow_helper.py",
       "destination": ".juno_task/scripts/task_workflow_helper.py",
       "installClass": "script",
@@ -455,12 +461,6 @@
       "destination": ".juno_task/prompts/lifecycle/merge-semantic-repair.md",
       "installClass": "controller",
       "type": "prompt"
-    },
-    {
-      "source": "scripts/tests/test_workflow_runner_resume_contract.py",
-      "destination": ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py",
-      "installClass": "script",
-      "type": "script"
     }
   ]
 }
