@@ -3750,6 +3750,28 @@ raise SystemExit(2)
             with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, reason):
                 task_runtime.git_pathnames(self.repository, "diff", "--name-only", "-z", "A..B")
 
+    def test_status_path_parser_preserves_xy_columns_and_rename_records(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["git"], returncode=0,
+            stdout=(b" M src/unstaged.txt\0M  src/staged.txt\0?? src/untracked.txt\0"
+                    b"R  src/renamed.txt\0src/original.txt\0"), stderr=b"")
+        with mock.patch.object(task_runtime.subprocess, "run", return_value=result):
+            self.assertEqual(task_runtime.git_status_pathnames(self.repository), [
+                "src/renamed.txt", "src/staged.txt", "src/unstaged.txt", "src/untracked.txt",
+            ])
+
+    def test_status_path_parser_rejects_truncated_and_non_utf8_records(self) -> None:
+        truncated = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=b" M src/dirty.txt", stderr=b"")
+        with mock.patch.object(task_runtime.subprocess, "run", return_value=truncated):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "malformed porcelain"):
+                task_runtime.git_status_pathnames(self.repository)
+        non_utf8 = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=b"?? src/non-utf8-\xff.txt\0", stderr=b"")
+        with mock.patch.object(task_runtime.subprocess, "run", return_value=non_utf8):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "not valid UTF-8"):
+                task_runtime.git_status_pathnames(self.repository)
+
     def test_status_and_finish_share_fail_closed_live_worktree_identity(self) -> None:
         self.payload("start", "X")
         worktree = self.workspaces / "X"

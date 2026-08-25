@@ -121,6 +121,6 @@ describe('yylo.sh router allowlist contract', () => {
     expect(source).toMatch(
       /-V\|--version\|info\|where\|benchmark\|ledger\|kanban\|task\|merge\|integration\|evidence\) return 0/,
     );
-    expect(source).toMatch(/case "\$operation" in kanban\|task\|merge\|integration\|evidence\) ;; \*\) return 1 ;; esac/);
+    expect(source).toMatch(/case "\$operation" in ledger\|kanban\|task\|merge\|integration\|evidence\) ;; \*\) return 1 ;; esac/);
   });
 });

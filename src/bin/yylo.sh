@@ -246,10 +246,10 @@ read_runtime_version() {
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
-    case "$operation" in kanban|task|merge|integration|evidence) ;; *) return 1 ;; esac
+    case "$operation" in ledger|kanban|task|merge|integration|evidence) ;; *) return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
-        kanban:*) effective_operation=kanban ;;
+        ledger:*|kanban:*) effective_operation=kanban ;;
         task:status|task:preflight|task:recovery-plan|task:doctor|task:|task:-h|task:--help) effective_operation=kanban ;;
         task:start|task:run|task:hydrate|task:finish|task:checkpoint|task:child-checkpoint|task:sync|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap) effective_operation=orchestration ;;
         merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
@@ -427,7 +427,7 @@ main() {
             finish_wrapper_invocation "$status"
             return "$status"
         }
-        if [ "$PREBOOTSTRAP_COMMAND" = benchmark ] || [ "$PREBOOTSTRAP_COMMAND" = ledger ]; then
+        if [ "$PREBOOTSTRAP_COMMAND" = benchmark ]; then
             if current_runtime_supports_lifecycle; then
                 exec_transparent_delegate_runtime "$@"
             fi

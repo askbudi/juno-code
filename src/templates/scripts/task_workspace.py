@@ -213,6 +213,51 @@ def git_pathnames(root: Path, *args: str) -> list[str]:
             raise TaskWorkspaceError("Git produced an unsafe changed path")
         paths.append(value)
     return sorted(set(paths))
+
+
+def git_status_pathnames(root: Path) -> list[str]:
+    """Read porcelain-v1 status without trimming its significant XY columns."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all", "-z"],
+        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+        raise TaskWorkspaceError(detail or "Git status command failed")
+    raw = result.stdout
+    if raw and not raw.endswith(b"\0"):
+        raise TaskWorkspaceError("Git produced malformed porcelain status output")
+    entries = raw.split(b"\0")[:-1] if raw else []
+    paths: list[str] = []
+
+    def validate_path(item: bytes) -> str:
+        try:
+            value = item.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise TaskWorkspaceError(
+                "Git uncommitted path is not valid UTF-8 and cannot be represented in canonical JSON"
+            ) from exc
+        path = PurePosixPath(value)
+        if (path.is_absolute() or path.as_posix() != value or value == "."
+                or ".." in path.parts or ".git" in path.parts):
+            raise TaskWorkspaceError("Git produced an unsafe uncommitted path")
+        return value
+
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4 or entry[2:3] != b" ":
+            raise TaskWorkspaceError("Git produced malformed porcelain status output")
+        paths.append(validate_path(entry[3:]))
+        if entry[0:1] in (b"R", b"C") or entry[1:2] in (b"R", b"C"):
+            if index >= len(entries):
+                raise TaskWorkspaceError("Git produced malformed porcelain status output")
+            validate_path(entries[index])
+            index += 1
+    return sorted(set(paths))
+
+
 def load_package_bound_test_fixture(test_file: str, fixture_name: str) -> Any:
     """Load a fixture only from a verified installed package or canonical source tree."""
     if not re.fullmatch(r"[A-Za-z0-9_]+\.py", fixture_name):
@@ -3669,26 +3714,7 @@ def observe_task_diff(record: dict[str, Any], configured_repository: Path,
         worktree, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRTUXB",
         "-z", f"{record['base_sha']}..{head}"
     )
-    raw = git(worktree, "status", "--porcelain=v1", "--untracked-files=all", "-z")
-    uncommitted: list[str] = []
-    entries = raw.split("\0") if raw else []
-    index = 0
-    while index < len(entries):
-        entry = entries[index]
-        index += 1
-        if not entry:
-            continue
-        if len(entry) < 4 or entry[2] != " ":
-            raise TaskWorkspaceError("Git produced malformed porcelain status output")
-        value = entry[3:]
-        path = PurePosixPath(value)
-        if (path.is_absolute() or path.as_posix() != value or value == "."
-                or ".." in path.parts or ".git" in path.parts):
-            raise TaskWorkspaceError("Git produced an unsafe uncommitted path")
-        uncommitted.append(value)
-        if entry[0] in "RC" and index < len(entries):
-            index += 1  # porcelain v1 -z renames/copies append the original path
-    uncommitted = sorted(set(uncommitted))
+    uncommitted = git_status_pathnames(worktree)
     return recorded_repository, worktree, head, committed, uncommitted
 
 
