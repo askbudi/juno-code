@@ -289,13 +289,15 @@ describe('ypl wrapper', () => {
       await execa('git', ['config', '--local', 'juno.controller.path', controller], { cwd: integration });
       await execa('git', ['config', '--local', 'juno.controller.branch', 'refs/heads/controller'], { cwd: integration });
 
-      const leadingOption = await execa(path.join(launcherBin, 'yy'), ['--quiet', 'kanban', 'list'], {
-        cwd: path.join(integration, 'nested', 'directory'), reject: false,
-        env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
-      });
-      expect(leadingOption.exitCode).toBe(0);
-      expect(JSON.parse(leadingOption.stdout).args).toEqual(['--quiet', 'kanban', 'list']);
-      expect((await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration })).stdout).toBe(before.stdout);
+      for (const surface of ['ledger', 'kanban']) {
+        const leadingOption = await execa(path.join(launcherBin, 'yy'), ['--quiet', surface, 'list'], {
+          cwd: path.join(integration, 'nested', 'directory'), reject: false,
+          env: { ...process.env, PATH: `${launcherBin}${path.delimiter}${process.env.PATH ?? ''}` },
+        });
+        expect(leadingOption.exitCode).toBe(0);
+        expect(JSON.parse(leadingOption.stdout).args).toEqual(['--quiet', surface, 'list']);
+        expect((await execa('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: integration })).stdout).toBe(before.stdout);
+      }
 
       await execa('git', ['config', '--local', '--add', 'juno.controller.path', controller], { cwd: integration });
       const ambiguous = await execa(path.join(launcherBin, 'yy'), ['merge', 'status'], {
