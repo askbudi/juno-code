@@ -5572,6 +5572,115 @@ steps:
         self.assertEqual(self.board_task("X")["status"], "in_progress")
 
 
+class QueueAttributionReceiptTests(unittest.TestCase):
+    """write_state must bind the dirty queue document to an exact attribution receipt."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.controller = self.root / "controller"
+        self.controller.mkdir()
+        git(self.controller, "init", "-b", "task")
+        git(self.controller, "config", "user.email", "test@example.com")
+        git(self.controller, "config", "user.name", "Test")
+        (self.controller / ".gitignore").write_text("/.juno_task/runtime/\n")
+        state = self.controller / ".juno_task/state/tasks.json"
+        state.parent.mkdir(parents=True)
+        state.write_text(json.dumps({
+            "schema_version": task_runtime.STATE_SCHEMA,
+            "tasks": {"A": {"state": "WORKING"}, "B": {"state": "QUEUED"}},
+            "queues": {"task_workspace_fifo": {
+                "schema_version": "juno_task_workspace_fifo.v1", "next": 5}},
+        }) + "\n")
+        (self.controller / ".juno_task/config.json").write_text(json.dumps({
+            "gitCheckpoint": {"include": [
+                ".gitignore", ".juno_task/tasks", ".juno_task/ledger",
+                ".juno_task/state/tasks.json", ".juno_task/task-scopes",
+            ]},
+        }) + "\n")
+        git(self.controller, "add", ".gitignore", ".juno_task/config.json",
+            ".juno_task/state/tasks.json")
+        git(self.controller, "commit", "-m", "canonical queue state")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def receipt(self) -> Optional[dict]:
+        path = self.controller / task_runtime.QUEUE_ATTRIBUTION_PATH
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
+    def write(self, mutate) -> bytes:
+        state = task_runtime.read_state(self.controller)
+        mutate(state)
+        task_runtime.write_state(self.controller, state)
+        return (self.controller / ".juno_task/state/tasks.json").read_bytes()
+
+    def test_enqueue_write_binds_exact_task_and_fifo_shared_field(self) -> None:
+        def enqueue(state):
+            state["tasks"]["A"] = {**state["tasks"]["A"], "state": "QUEUED",
+                                    "enqueue_sequence": 5}
+            state["queues"]["task_workspace_fifo"]["next"] = 6
+        data = self.write(enqueue)
+        receipt = self.receipt()
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["schema_version"], task_runtime.QUEUE_ATTRIBUTION_SCHEMA)
+        self.assertEqual(receipt["task_ids"], ["A"])
+        self.assertEqual(receipt["shared_fields"], ["queues.task_workspace_fifo.next"])
+        self.assertEqual(receipt["queue_document_sha256"],
+                         hashlib.sha256(data).hexdigest())
+
+    def test_sequential_queue_writes_describe_the_head_baseline_exactly(self) -> None:
+        def first(state):
+            state["queues"].setdefault("h1", {"conflicts": {}, "last_attempt": None})
+            state["queues"]["h1"]["last_attempt"] = {"x": 1}
+            state["tasks"]["A"] = {**state["tasks"]["A"], "state": "MERGING"}
+        self.write(first)
+        def second(state):
+            # A later wholesale rewrite must not widen the declared paths past
+            # the direct HEAD-to-worktree walk the checkpoint verifies.
+            state["queues"]["h1"]["last_attempt"] = {"x": 2, "y": {"deep": [1, 2]}}
+            state["tasks"]["A"] = {**state["tasks"]["A"], "state": "MERGED",
+                                    "last_queue_outcome": "MERGED"}
+        data = self.write(second)
+        receipt = self.receipt()
+        self.assertEqual(receipt["task_ids"], ["A"])
+        self.assertEqual(receipt["shared_fields"], ["queues.h1"])
+        self.assertEqual(receipt["queue_document_sha256"],
+                         hashlib.sha256(data).hexdigest())
+
+    def test_shared_only_drift_writes_no_receipt(self) -> None:
+        self.write(lambda state: state["queues"].__setitem__("stray", {"n": 1}))
+        self.assertIsNone(self.receipt())
+
+    def test_task_checkpoint_admits_receipt_bound_queue_mutation(self) -> None:
+        def enqueue(state):
+            state["tasks"]["A"] = {**state["tasks"]["A"], "state": "QUEUED",
+                                    "enqueue_sequence": 5, "queue_attempt": {"s": 1}}
+            state["queues"]["task_workspace_fifo"]["next"] = 6
+            state["queues"].setdefault("h1", {"conflicts": {}, "last_attempt": None,
+                                                "repository_identity": "r", "target_ref": "t"})
+            state["queues"]["h1"]["last_attempt"] = {"task_id": "A", "outcome": "MERGED"}
+        self.write(enqueue)
+        checkpoint = SCRIPT.parent / "controller_checkpoint.py"
+        sanitized = {**os.environ, "JUNO_TASK_ROOT": "", "JUNO_CONTROLLER_BRANCH": "",
+                     "JUNO_WORKSPACE_ROLE": ""}
+        committed = subprocess.run(
+            [sys.executable, str(checkpoint), "--root", str(self.controller),
+             "--task-id", "A", "commit", "--message",
+             "chore(controller): checkpoint queued projection", "--json"],
+            cwd=self.controller, text=True, capture_output=True, env=sanitized)
+        if committed.returncode:
+            raise AssertionError(committed.stderr or committed.stdout)
+        payload = json.loads(committed.stdout.strip().splitlines()[-1])
+        self.assertEqual(payload["outcome"], "committed")
+        self.assertIn(".juno_task/state/tasks.json", payload["selected"])
+        # The attribution chain resets with the durable queue commit.
+        self.assertFalse((self.controller / task_runtime.QUEUE_ATTRIBUTION_PATH).exists())
+        self.assertEqual(git(self.controller, "status", "--porcelain=v1"), "")
+
+
 class MinimumRcLifecycleContractTests(unittest.TestCase):
     def test_documentation_routes_inert_active_and_unsafe_without_process_guessing(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime

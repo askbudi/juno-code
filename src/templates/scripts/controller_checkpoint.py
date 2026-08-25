@@ -50,6 +50,29 @@ RELEASE_PATHS = (
     "frontend/generated/package-facts.json",
     "scripts/release-juno-code.sh",
 )
+QUEUE_STATE_PATH = ".juno_task/state/tasks.json"
+QUEUE_ATTRIBUTION_SCHEMA = "juno_checkpoint_queue_attribution.v1"
+QUEUE_ATTRIBUTION_PATH = ".juno_task/runtime/controller-checkpoint/queue-attribution.json"
+QUEUE_ATTRIBUTION_RECEIPT_KEYS = {
+    "schema_version", "producer", "task_ids", "shared_fields", "queue_document_sha256",
+}
+# Queue-owned shared state lives only under the canonical "queues" section.
+# Any other shared drift (schema version, unknown roots) stays inadmissible.
+QUEUE_SHARED_FIELD_RE = re.compile(r"queues(?:\.[A-Za-z0-9_.-]+)+")
+TASK_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Fields a queue-owned transition may rewrite on a task record other than the
+# checkpoint's primary task. The primary task record itself is unrestricted:
+# enqueue/finalize legitimately rewrite it wholesale.
+QUEUE_RECORD_TRANSITION_FIELDS = (
+    "enqueue_sequence",
+    "kanban_sync",
+    "last_queue_outcome",
+    "queue_attempt",
+    "stale_refresh",
+    "state",
+    "umbrella_child_progress",
+)
+_MISSING = object()
 DEFAULT_INCLUDE = (
     ".juno_task/tasks",
     ".juno_task/ledger",
@@ -321,39 +344,181 @@ def selected(path: str, includes: tuple[str, ...]) -> bool:
     return any(path == entry or path.startswith(entry + "/") for entry in includes)
 
 
-def scoped_includes(includes: tuple[str, ...], task_id: str | None) -> tuple[str, ...]:
+def shared_queue_delta(before: Any, after: Any) -> list[str]:
+    """Deterministic dotted paths for changed non-task queue state.
+
+    The writer (task_workspace.write_state) and this verifier must enumerate
+    identical paths, so both use structurally identical walkers: dictionaries
+    recurse per key, every other value (including lists) is a leaf, and a
+    missing key differs from any present value.
+    """
+    paths: set[str] = set()
+
+    def walk(old: Any, new: Any, prefix: str) -> None:
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in sorted(set(old) | set(new)):
+                walk(old.get(key, _MISSING), new.get(key, _MISSING),
+                     f"{prefix}.{key}" if prefix else str(key))
+            return
+        if old is _MISSING or new is _MISSING or old != new:
+            paths.add(prefix)
+
+    if isinstance(before, dict) and isinstance(after, dict):
+        for key in sorted(set(before) | set(after)):
+            if key == "tasks":
+                continue
+            walk(before.get(key, _MISSING), after.get(key, _MISSING), str(key))
+    else:
+        paths.add("<state>")
+    return sorted(paths)
+
+
+def record_delta_fields(before: Any, after: Any) -> list[str]:
+    """Top-level record fields that differ between two task records."""
+    fields: set[str] = set()
+    if isinstance(before, dict) and isinstance(after, dict):
+        for key in set(before) | set(after):
+            if before.get(key, _MISSING) != after.get(key, _MISSING):
+                fields.add(str(key))
+    else:
+        fields.add("<record>")
+    return sorted(fields)
+
+
+def load_queue_attribution(root: Path) -> dict[str, Any] | None:
+    """Load one strictly validated queue-attribution receipt, or None."""
+    try:
+        payload = json.loads((root / QUEUE_ATTRIBUTION_PATH).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != QUEUE_ATTRIBUTION_RECEIPT_KEYS:
+        return None
+    if payload["schema_version"] != QUEUE_ATTRIBUTION_SCHEMA:
+        return None
+    if not isinstance(payload["producer"], str) or not payload["producer"].strip():
+        return None
+    task_ids = payload["task_ids"]
+    if (not isinstance(task_ids, list) or not task_ids
+            or any(not isinstance(item, str) or not TASK_ID_RE.fullmatch(item) for item in task_ids)
+            or sorted(set(task_ids)) != sorted(task_ids)):
+        return None
+    shared_fields = payload["shared_fields"]
+    if (not isinstance(shared_fields, list)
+            or any(not isinstance(item, str) or not QUEUE_SHARED_FIELD_RE.fullmatch(item)
+                   for item in shared_fields)
+            or sorted(set(shared_fields)) != sorted(shared_fields)):
+        return None
+    digest = payload["queue_document_sha256"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    return payload
+
+
+def clear_queue_attribution(root: Path) -> None:
+    """Reset the attribution chain once the queue document is committed."""
+    try:
+        (root / QUEUE_ATTRIBUTION_PATH).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def umbrella_child_scope_files(root: Path, task_id: str) -> list[str]:
+    """Scope files an umbrella's own canonical scope declares for its children."""
+    scope_path = root / ".juno_task/task-scopes" / task_id[:2].lower() / f"{task_id}.json"
+    try:
+        payload = json.loads(scope_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("schema_version") != "juno_task_canonical_scope.v1":
+        return []
+    relations = payload.get("umbrella_relations")
+    children = relations.get("children") if isinstance(relations, dict) else None
+    if not isinstance(children, list):
+        return []
+    declared = {child for child in children
+                if isinstance(child, str) and TASK_ID_RE.fullmatch(child) and child != task_id}
+    return sorted(f".juno_task/task-scopes/{child[:2].lower()}/{child}.json" for child in declared)
+
+
+def scoped_includes(root: Path, includes: tuple[str, ...], task_id: str | None) -> tuple[str, ...]:
     """Select only state attributable to one lifecycle task operation."""
     if task_id is None:
         return includes
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
+    if not TASK_ID_RE.fullmatch(task_id):
         raise CheckpointError("--task-id is invalid")
     prefix = task_id[:2].lower()
     replacements = {
         ".juno_task/tasks": f".juno_task/tasks/{prefix}/{task_id}.md",
         ".juno_task/ledger": f".juno_task/ledger/{prefix}/{task_id}",
-        ".juno_task/task-scopes": f".juno_task/task-scopes/{prefix}/{task_id}.json",
     }
-    scoped = [replacement for root, replacement in replacements.items() if selected(root, includes)]
-    queue_state = ".juno_task/state/tasks.json"
-    if selected(queue_state, includes):
-        scoped.append(queue_state)
+    scoped = [replacement for include_root, replacement in replacements.items()
+              if selected(include_root, includes)]
+    # Task-scope files are revision-bound controller metadata written by the
+    # managed admission path, so the task-scoped selection always admits the
+    # task's own scope file plus the children its umbrella scope declares.
+    scoped.append(f".juno_task/task-scopes/{prefix}/{task_id}.json")
+    scoped.extend(umbrella_child_scope_files(root, task_id))
+    if selected(QUEUE_STATE_PATH, includes):
+        scoped.append(QUEUE_STATE_PATH)
+        scoped.extend(receipt_task_namespaces(root, task_id, includes))
     return tuple(scoped)
 
 
-def require_attributable_queue_state(root: Path, chosen: list[str], task_id: str | None) -> None:
-    """Prove a shared queue document changed only the named task record."""
-    queue_path = ".juno_task/state/tasks.json"
-    if task_id is None or queue_path not in chosen:
-        return
+def receipt_task_namespaces(root: Path, task_id: str, includes: tuple[str, ...]) -> list[str]:
+    """Task/ledger namespaces a receipt-bound queue transition may dirty.
+
+    Widening requires the receipt to name this task, to digest-bind the exact
+    current queue document bytes, and those bytes to still differ from HEAD.
+    A stale receipt therefore can never widen a strict single-task selection.
+    """
+    receipt = load_queue_attribution(root)
+    if receipt is None or task_id not in receipt["task_ids"]:
+        return []
+    try:
+        current = (root / QUEUE_STATE_PATH).read_bytes()
+    except OSError:
+        return []
+    head = subprocess.run(
+        ["git", "-C", str(root), "show", f"HEAD:{QUEUE_STATE_PATH}"],
+        capture_output=True, stdin=subprocess.DEVNULL,
+    )
+    if head.returncode or head.stdout == current:
+        return []
+    if hashlib.sha256(current).hexdigest() != receipt["queue_document_sha256"]:
+        return []
+    extra: set[str] = set()
+    for other in receipt["task_ids"]:
+        if other == task_id:
+            continue
+        other_prefix = other[:2].lower()
+        if selected(".juno_task/tasks", includes):
+            extra.add(f".juno_task/tasks/{other_prefix}/{other}.md")
+        if selected(".juno_task/ledger", includes):
+            extra.add(f".juno_task/ledger/{other_prefix}/{other}")
+    return sorted(extra)
+
+
+def require_attributable_queue_state(root: Path, chosen: list[str], task_id: str | None) -> dict[str, Any] | None:
+    """Prove the shared queue document changed only through attributable queue ownership.
+
+    Strict single-task attribution needs no receipt: only the named task's
+    record changed and no shared state moved. Any wider delta must be bound by
+    the queue writer's attribution receipt: the exact changed-task set, the
+    exact queue-owned shared fields, and the exact current document bytes.
+    """
+    if task_id is None or QUEUE_STATE_PATH not in chosen:
+        return None
     before_result = subprocess.run(
-        ["git", "-C", str(root), "show", f"HEAD:{queue_path}"],
+        ["git", "-C", str(root), "show", f"HEAD:{QUEUE_STATE_PATH}"],
         capture_output=True, text=True, stdin=subprocess.DEVNULL,
     )
     if before_result.returncode:
         raise CheckpointError("task-scoped queue state must already be canonical tracked state")
     try:
         before = json.loads(before_result.stdout)
-        after = json.loads((root / queue_path).read_text(encoding="utf-8"))
+        after = json.loads((root / QUEUE_STATE_PATH).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CheckpointError(f"task-scoped queue state is invalid: {exc}") from exc
     if not isinstance(before, dict) or not isinstance(after, dict):
@@ -362,17 +527,61 @@ def require_attributable_queue_state(root: Path, chosen: list[str], task_id: str
     after_tasks = after.get("tasks")
     if not isinstance(before_tasks, dict) or not isinstance(after_tasks, dict):
         raise CheckpointError("task-scoped queue state must contain a tasks object")
-    before_shared = {key: value for key, value in before.items() if key != "tasks"}
-    after_shared = {key: value for key, value in after.items() if key != "tasks"}
-    missing = object()
     changed_tasks = sorted(
         key for key in set(before_tasks) | set(after_tasks)
-        if before_tasks.get(key, missing) != after_tasks.get(key, missing)
+        if before_tasks.get(key, _MISSING) != after_tasks.get(key, _MISSING)
     )
-    if before_shared != after_shared or changed_tasks != [task_id]:
-        raise CheckpointError(
-            "task-scoped queue attribution refused: "
-            f"task_id={task_id} changed_tasks={changed_tasks} shared_fields_changed={before_shared != after_shared}")
+    shared_delta = shared_queue_delta(before, after)
+    if not shared_delta and changed_tasks == [task_id]:
+        return None
+    reason = queue_attribution_refusal(
+        root, task_id, before_tasks, after_tasks, changed_tasks, shared_delta)
+    if reason is not None:
+        raise CheckpointError("task-scoped queue attribution refused: " + reason)
+    return load_queue_attribution(root)
+
+
+def queue_attribution_refusal(
+    root: Path, task_id: str, before_tasks: dict[str, Any], after_tasks: dict[str, Any],
+    changed_tasks: list[str], shared_delta: list[str],
+) -> str | None:
+    """Return None when a valid receipt admits the observed queue mutation."""
+    receipt = load_queue_attribution(root)
+    if receipt is None:
+        return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                f"shared_fields_changed={bool(shared_delta)}; "
+                "no queue attribution receipt binds this queue document "
+                f"({QUEUE_ATTRIBUTION_PATH} is missing or invalid)")
+    try:
+        current_digest = hashlib.sha256((root / QUEUE_STATE_PATH).read_bytes()).hexdigest()
+    except OSError as exc:
+        return f"queue document unreadable: {exc}"
+    if task_id not in receipt["task_ids"]:
+        return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                f"shared_fields_changed={bool(shared_delta)}; receipt attributes "
+                f"task_ids={receipt['task_ids']} without this task")
+    if receipt["queue_document_sha256"] != current_digest:
+        return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                f"shared_fields_changed={bool(shared_delta)}; receipt digest does not "
+                "bind the current queue document bytes")
+    if receipt["task_ids"] != changed_tasks:
+        return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                f"shared_fields_changed={bool(shared_delta)}; receipt task set "
+                f"{receipt['task_ids']} does not match the observed change")
+    if receipt["shared_fields"] != shared_delta:
+        return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                f"shared_fields_changed={bool(shared_delta)}; receipt shared fields "
+                f"{receipt['shared_fields']} do not match the observed change {shared_delta}")
+    for other in changed_tasks:
+        if other == task_id:
+            continue
+        fields = record_delta_fields(before_tasks.get(other), after_tasks.get(other))
+        escaped = [field for field in fields if field not in QUEUE_RECORD_TRANSITION_FIELDS]
+        if escaped or not fields:
+            return (f"task_id={task_id} changed_tasks={changed_tasks} "
+                    f"shared_fields_changed={bool(shared_delta)}; task {other} record "
+                    f"delta escapes queue transition fields: {fields}")
+    return None
 
 
 def workspace_policy(root: Path) -> dict[str, Any] | None:
@@ -412,8 +621,10 @@ def status_names(item: Dirty) -> tuple[str, ...]:
 
 
 def unrelated_task_residue(path: str, includes: tuple[str, ...]) -> bool:
-    scoped = any(item.startswith(".juno_task/tasks/") for item in includes)
-    return scoped and path.startswith((".juno_task/tasks/", ".juno_task/ledger/")) and not selected(path, includes)
+    scoped = any(item.startswith((".juno_task/tasks/", ".juno_task/ledger/",
+                                 ".juno_task/task-scopes/")) for item in includes)
+    return scoped and path.startswith((".juno_task/tasks/", ".juno_task/ledger/",
+                                       ".juno_task/task-scopes/")) and not selected(path, includes)
 
 
 def inspect_boundary(root: Path, relative: str) -> None:
@@ -766,6 +977,11 @@ def stage_and_commit(root: Path, includes: tuple[str, ...], frozen: dict[str, An
         commits.append(git(root, "rev-parse", "HEAD").strip())
         frozen["head"] = commits[-1]
         remaining = [path for path in remaining if path not in paths]
+        if QUEUE_STATE_PATH in paths:
+            # The queue document is durable now; its attribution chain resets so
+            # the next queue command starts from committed truth.
+            clear_queue_attribution(root)
+            frozen["fingerprints"].pop(QUEUE_STATE_PATH, None)
     post = inspect(root, includes, task_id=task_id)
     if post["selected"]:
         raise CheckpointError(f"checkpoint postcondition failed; selected dirt remains: {post['selected']}")
@@ -1132,7 +1348,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = repo_root(args.root)
     includes, agent_config = load_config(root)
-    includes = scoped_includes(includes, args.task_id)
+    includes = scoped_includes(root, includes, args.task_id)
     persisted_role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False).strip()
     pending_commands = {"plan", "commit", "require-clean", "staged-check"}
     if persisted_role == "controller":
