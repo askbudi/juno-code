@@ -55,6 +55,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          # yy-version-derivation-block begin
           TAG_VERSION="${TAG_NAME#"$TAG_PREFIX"}"
           if [ "$TAG_VERSION" = "$TAG_NAME" ]; then
             echo "tag $TAG_NAME does not carry the required $TAG_PREFIX prefix" >&2
@@ -71,6 +72,7 @@ jobs:
           const prerelease = version.includes('-');
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${prerelease}\n`);
+          # yy-version-derivation-block end
           NODE
 
       - run: npm ci
