@@ -216,6 +216,7 @@
       "kanban",
       "ledger",
       "logs",
+      "loop",
       "merge",
       "migrate",
       "pi",

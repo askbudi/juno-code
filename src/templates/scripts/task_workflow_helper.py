@@ -1476,7 +1476,7 @@ def default_documentation_policy() -> dict[str, Any]:
         "cli_top_level": [
             "auth", "benchmark", "branches", "cc", "clone", "completion", "continue",
             "continue-scope", "continuity", "doctor", "evidence", "feedback", "help", "info",
-            "init", "integration", "kanban", "ledger", "logs", "merge", "migrate", "pi",
+            "init", "integration", "kanban", "ledger", "logs", "loop", "merge", "migrate", "pi",
             "release", "scripts", "services", "session", "setup-git", "skills", "start",
             "switch", "task", "test", "view-log", "watch", "where", "wiki",
         ],

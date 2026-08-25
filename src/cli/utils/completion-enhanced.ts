@@ -484,7 +484,7 @@ export class CompletionInstaller {
   /**
    * Generate enhanced completion script with context-aware features
    */
-  private generateEnhancedCompletion(shell: ShellType, commandName: string): string {
+  generateEnhancedCompletion(shell: ShellType, commandName: string): string {
     switch (shell) {
       case 'bash':
         return this.generateEnhancedBashCompletion(commandName);
@@ -513,7 +513,7 @@ _${commandName}_completion() {
     prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
     # Commands
-    local commands="init start feedback session setup-git claude cursor codex gemini pi completion"
+    local commands="init start feedback session setup-git claude cursor codex gemini pi loop completion"
 
     # Global options
     local global_opts="--verbose --quiet --config --log-file --no-color --log-level --help --version"
@@ -639,6 +639,23 @@ _${commandName}_completion() {
                     ;;
             esac
             ;;
+        loop)
+            opts="-n --iterations --step --workflow --continuity --on-error $global_opts"
+            case "$prev" in
+                --workflow)
+                    _${commandName}_complete_files
+                    return 0
+                    ;;
+                --continuity)
+                    COMPREPLY=( $(compgen -W "iteration run shell" -- $cur) )
+                    return 0
+                    ;;
+                --on-error)
+                    COMPREPLY=( $(compgen -W "continue stop" -- $cur) )
+                    return 0
+                    ;;
+            esac
+            ;;
         completion)
             local completion_commands="install uninstall status"
             case "\${COMP_WORDS[2]}" in
@@ -749,6 +766,7 @@ _${commandName}() {
         'codex:Execute with Codex subagent'
         'gemini:Execute with Gemini subagent'
         'pi:Execute with Pi subagent'
+        'loop:Repeat an ordered sequence of arbitrary shell commands'
     )
 
     local global_opts=(
@@ -816,6 +834,15 @@ _${commandName}() {
                                 \$global_opts
                             ;;
                     esac
+                    ;;
+                loop)
+                    _arguments \
+                        '(-n --iterations)'{-n,--iterations}'[Number of outer workflow iterations]:count:' \
+                        '*--step[Shell command to run; repeatable]:command:' \
+                        '--workflow[YAML workflow file]:workflow:_files -g "*.(yaml|yml)"' \
+                        '--continuity[Continuity scope]:mode:(iteration run shell)' \
+                        '--on-error[Failure policy]:policy:(continue stop)' \
+                        $global_opts
                     ;;
                 completion)
                     local completion_commands=(
@@ -903,6 +930,7 @@ complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'cursor' -d 'Execute
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'codex' -d 'Execute with Codex'
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'gemini' -d 'Execute with Gemini'
 complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'pi' -d 'Execute with Pi'
+complete -c ${commandName} -f -n '__fish_use_subcommand' -a 'loop' -d 'Repeat ordered shell commands'
 
 # Global options
 complete -c ${commandName} -s v -l verbose -d 'Enable verbose output'
@@ -939,6 +967,13 @@ complete -c ${commandName} -f -n '__fish_seen_subcommand_from session' -a 'clean
 
 # Session info/remove completion with session IDs
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from session; and __fish_seen_subcommand_from info remove' -a '(__${commandName}_complete_sessions)'
+
+# Loop command options
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from loop' -s n -l iterations -d 'Number of outer workflow iterations' -r
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from loop' -l step -d 'Shell command to run; repeatable' -r
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from loop' -l workflow -d 'YAML workflow file' -r
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from loop' -l continuity -d 'Continuity scope' -xa 'iteration run shell'
+complete -c ${commandName} -f -n '__fish_seen_subcommand_from loop' -l on-error -d 'Failure policy' -xa 'continue stop'
 
 # Completion command options
 complete -c ${commandName} -f -n '__fish_seen_subcommand_from completion' -a 'install' -d 'Install completion'

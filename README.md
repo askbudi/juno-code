@@ -380,7 +380,7 @@ These local commands authorize neither push/deploy nor production-board conversi
 The RC installation remains explicit and independent:
 
 ```bash
-npm install -g @yylo/cli@0.1.0-rc.1
+npm install -g @yylo/cli@0.1.0-rc.15
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -662,7 +662,7 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 
 ```bash
 # Install the RC
-npm install -g @yylo/cli@0.1.0-rc.1
+npm install -g @yylo/cli@0.1.0-rc.15
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -752,6 +752,65 @@ yylo test --run
 # View and parse log files
 yylo view-log .juno_task/logs/claude_shell_*.log --output json-only --limit 50
 ```
+
+### Iterative command workflows with `yylo loop`
+
+`yylo loop` (also available through the short `yy` alias) repeats arbitrary shell commands sequentially. Its `-n/--iterations`
+flag bounds the **outer command workflow**; the existing global and agent
+`-i/--max-iterations` flag still bounds iterations inside an agent invocation.
+The loop does not parse or rewrite `yy pi`, `yy cc`, clone, switch, or other
+provider commands.
+
+Inline steps are repeatable:
+
+```bash
+yylo loop -n 5 \
+  --step 'yy pi "Implement the next increment"' \
+  --step 'yy cc "Inspect and improve your work"' \
+  --step 'npm test'
+```
+
+For a reusable workflow, save the same contract as YAML:
+
+```yaml
+iterations: 5
+continuity: iteration
+on_error: continue
+steps:
+  - run: yy pi "Implement the next increment"
+  - run: yy cc "Inspect and improve your work"
+  - run: npm test
+```
+
+```bash
+yylo loop --workflow flow.yaml
+```
+
+CLI values override YAML top-level defaults, for example
+`yylo loop --workflow flow.yaml -n 2 --continuity run --on-error stop`.
+The workflow accepts only `iterations`, `continuity`, `on_error`, and a nonempty
+ordered `steps` list. Every step requires nonempty `run` text and may set its own
+`on_error: continue|stop`.
+
+Continuity controls which existing YYLO continue scope child commands share:
+
+- `iteration` (default): every iteration gets a new scope. `yy pi`, `yy cc`,
+  `yy clone`, and `yy switch` steps in that iteration share it; the next
+  iteration is isolated.
+- `run`: all iterations share one scope, enabling explicit continuation or
+  cloning across iteration boundaries.
+- `shell`: the loop injects no scope and preserves the caller's inherited
+  `YYLO_CONTINUE_SCOPE` behavior.
+
+The default failure policy is `continue`: a failed step is recorded, remaining
+steps in that iteration are skipped, and the next iteration starts. With
+`--on-error stop` (or a YAML step override of `on_error: stop`), nothing further
+is launched. Any failed command makes the final loop exit nonzero even if later
+iterations run. SIGINT/SIGTERM stop the active child and prevent later launches.
+The terminal summary reports the loop ID and completed, failed, and skipped work.
+
+Every step receives one-based loop metadata through `YYLO_LOOP_ID`,
+`YYLO_ITERATION`, `YYLO_ITERATION_COUNT`, `YYLO_STEP`, and `YYLO_STEP_COUNT`.
 
 ### Global Options
 
@@ -1758,7 +1817,7 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 
 ```bash
 # Install the RC globally
-npm install -g @yylo/cli@0.1.0-rc.1
+npm install -g @yylo/cli@0.1.0-rc.15
 
 # Initialize in your project
 cd your-project
