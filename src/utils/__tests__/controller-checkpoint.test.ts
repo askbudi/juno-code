@@ -275,6 +275,80 @@ describe('controller_checkpoint.py template script', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('queue-attributed receipt admits path-keyed doctor shared fields', async () => {
+    await configureMetadataController();
+    await fs.writeFile(path.join(repo, '.gitignore'), '/.juno_task/runtime/\n');
+    git(repo, 'add', '.gitignore');
+    git(repo, 'commit', '-m', 'ignore controller runtime');
+    const queue = path.join(repo, '.juno_task', 'state', 'tasks.json');
+    // Real queue documents key the managed-runtime doctor report by exact
+    // identity: script leaves carry absolute paths (empty leading dotted
+    // segment plus slashes) and toolchain leaves carry colon-bearing keys.
+    const doctorKey = '.juno_task/scripts/controller_checkpoint.py';
+    const toolchainKey = 'python:3.13';
+    const queueKey = '15ecaf9a9ce6b646';
+    const doctorSection = (value: string) => ({
+      last_attempt: { managed_runtime_refresh: { doctor: {
+        scripts: { [doctorKey]: { actual_sha256: value } },
+        toolchains: { [toolchainKey]: { actual_sha256: value } },
+      } } },
+    });
+    const doctorLeaf = (section: string) =>
+      `queues.${queueKey}.last_attempt.managed_runtime_refresh.doctor.${section}`;
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'QUEUED' },
+    }, queues: { [queueKey]: doctorSection('0'.repeat(64)) } });
+    git(repo, 'add', '.juno_task/state/tasks.json');
+    git(repo, 'commit', '-m', 'canonical queue state');
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'MERGED', last_queue_outcome: 'MERGED' },
+    }, queues: { [queueKey]: doctorSection('1'.repeat(64)) } });
+    const digest = createHash('sha256').update(await fs.readFile(queue)).digest('hex');
+    const receiptPath = path.join(repo, '.juno_task', 'runtime', 'controller-checkpoint', 'queue-attribution.json');
+    await fs.outputJson(receiptPath, {
+      schema_version: 'juno_checkpoint_queue_attribution.v1',
+      producer: 'task_workspace.write_state',
+      task_ids: ['A'],
+      shared_fields: [
+        `${doctorLeaf('scripts')}.${doctorKey}.actual_sha256`,
+        `${doctorLeaf('toolchains')}.${toolchainKey}.actual_sha256`,
+      ],
+      queue_document_sha256: digest,
+    });
+    const result = run(repo, '--task-id', 'A', 'commit', '--message',
+      'checkpoint drained queue projection', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.outcome).toBe('committed');
+    expect(payload.selected).toEqual(['.juno_task/state/tasks.json']);
+    expect(await fs.pathExists(receiptPath)).toBe(false);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+
+    // Section-boundary truth survives: tasks-rooted, unknown-root, and
+    // whitespace/control-bearing shared fields keep the receipt invalid.
+    for (const invalid of ['tasks.A.state', 'schema_version', 'unknown.root',
+      'queues.doctor report', 'queues\u0000fifo', 'queues\n']) {
+      await fs.outputJson(queue, { schema_version: 1, tasks: {
+        A: { state: 'MERGED', last_queue_outcome: 'MERGED', queue_attempt: { candidate_sha: 'c' } },
+      }, queues: { [queueKey]: doctorSection('2'.repeat(64)) } });
+      const stale = createHash('sha256').update(await fs.readFile(queue)).digest('hex');
+      await fs.outputJson(receiptPath, {
+        schema_version: 'juno_checkpoint_queue_attribution.v1',
+        producer: 'task_workspace.write_state',
+        task_ids: ['A'],
+        shared_fields: [invalid],
+        queue_document_sha256: stale,
+      });
+      const refused = run(repo, '--task-id', 'A', 'plan');
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toMatch(/task-scoped queue attribution refused/);
+      expect(refused.stderr).toContain('no queue attribution receipt');
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+      spawnSync('git', ['-C', repo, 'checkout', '--', '.juno_task/state/tasks.json']);
+      await fs.remove(receiptPath);
+    }
+  });
+
   it('refuses queue-attributed mutations that escape the receipt binding', async () => {
     await configureMetadataController();
     await fs.writeFile(path.join(repo, '.gitignore'), '/.juno_task/runtime/\n');

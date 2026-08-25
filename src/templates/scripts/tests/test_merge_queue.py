@@ -22,6 +22,7 @@ TASK = SCRIPTS / "task_workspace.py"
 QUEUE = SCRIPTS / "merge_queue.py"
 sys.path.insert(0, str(SCRIPTS))
 import merge_queue as merge_runtime  # noqa: E402
+import controller_checkpoint as checkpoint_runtime  # noqa: E402
 import risk_policy as risk_runtime  # noqa: E402
 import task_workspace as task_runtime  # noqa: E402
 import test_task_workspace  # noqa: E402
@@ -1548,6 +1549,43 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 2)
         self.assertIn("task-scoped queue attribution refused", refused.stderr)
         self.assertIn("no queue attribution receipt", refused.stderr)
+
+    def test_queue_attribution_receipt_gate_admits_path_keyed_shared_fields(self) -> None:
+        """The receipt gate keys ownership by section, not by segment charset.
+
+        Real queue documents key the managed-runtime doctor report by exact
+        identities: script leaves carry absolute file paths (empty leading
+        dotted segment, slashes) and toolchain leaves carry colon-bearing
+        keys. The first dotted segment must remain the only boundary.
+        """
+        doctor = ("queues.15ecaf9a9ce6b646.last_attempt.managed_runtime_refresh.doctor"
+                  ".scripts..juno_task/scripts/controller_checkpoint.py.actual_sha256")
+        toolchain = ("queues.15ecaf9a9ce6b646.last_attempt.managed_runtime_refresh"
+                     ".doctor.toolchains.python:3.13.actual_sha256")
+
+        def write_receipt(root: Path, shared_fields: list) -> None:
+            receipt = root / checkpoint_runtime.QUEUE_ATTRIBUTION_PATH
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(
+                json.dumps({
+                    "schema_version": checkpoint_runtime.QUEUE_ATTRIBUTION_SCHEMA,
+                    "producer": "task_workspace.write_state",
+                    "task_ids": ["A"],
+                    "shared_fields": shared_fields,
+                    "queue_document_sha256": "0" * 64,
+                }) + "\n")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_receipt(root, [doctor, toolchain])
+            loaded = checkpoint_runtime.load_queue_attribution(root)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["shared_fields"], [doctor, toolchain])
+            for invalid in ("tasks.A.state", "schema_version", "unknown.root",
+                            "queues.space key", "queues\u0000nul", "queues\nnext", ""):
+                write_receipt(root, [invalid])
+                self.assertIsNone(
+                    checkpoint_runtime.load_queue_attribution(root), invalid)
 
     def test_merge_drive_repairs_each_latest_pointer_independently(self) -> None:
         self.install_merge_drive_assets()

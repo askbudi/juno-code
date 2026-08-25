@@ -58,7 +58,11 @@ QUEUE_ATTRIBUTION_RECEIPT_KEYS = {
 }
 # Queue-owned shared state lives only under the canonical "queues" section.
 # Any other shared drift (schema version, unknown roots) stays inadmissible.
-QUEUE_SHARED_FIELD_RE = re.compile(r"queues(?:\.[A-Za-z0-9_.-]+)+")
+# The section boundary is the real invariant, not any segment charset: real
+# queue documents key sub-sections by exact identities and paths (the
+# managed-runtime doctor reports scripts by absolute file path), so later
+# segments may contain slashes, colons, or an empty leading component.
+QUEUE_SHARED_FIELD_ROOT = "queues"
 TASK_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Fields a queue-owned transition may rewrite on a task record other than the
 # checkpoint's primary task. The primary task record itself is unrestricted:
@@ -385,6 +389,22 @@ def record_delta_fields(before: Any, after: Any) -> list[str]:
     return sorted(fields)
 
 
+def queue_owned_shared_field(item: object) -> bool:
+    """A shared field is queue-owned iff its first dotted segment is ``queues``.
+
+    The dotted-path walk already confines shared state to non-task roots, so
+    the first segment is the authoritative boundary. Whitespace and control
+    characters stay inadmissible in any position; every other byte is legal
+    because later segments are verbatim JSON keys, including path-like keys.
+    """
+    if not isinstance(item, str) or not item:
+        return False
+    if any(character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+           for character in item):
+        return False
+    return item.split(".", 1)[0] == QUEUE_SHARED_FIELD_ROOT
+
+
 def load_queue_attribution(root: Path) -> dict[str, Any] | None:
     """Load one strictly validated queue-attribution receipt, or None."""
     try:
@@ -404,8 +424,7 @@ def load_queue_attribution(root: Path) -> dict[str, Any] | None:
         return None
     shared_fields = payload["shared_fields"]
     if (not isinstance(shared_fields, list)
-            or any(not isinstance(item, str) or not QUEUE_SHARED_FIELD_RE.fullmatch(item)
-                   for item in shared_fields)
+            or any(not queue_owned_shared_field(item) for item in shared_fields)
             or sorted(set(shared_fields)) != sorted(shared_fields)):
         return None
     digest = payload["queue_document_sha256"]
