@@ -1,0 +1,122 @@
+name: Create the package GitHub Release from its version tag
+
+# Automatic tag-triggered counterpart of the guarded release apply flow
+# (the guarded release apply contract in the monorepo). Only exact `cli-v*` tags can
+# trigger it; the package version must equal package.json at the tagged
+# commit; the package release gate must pass; and the release is created
+# from the already-existing remote tag with the same deterministic
+# title/notes/prerelease identity the guarded apply produces, so
+# automatic-first and guarded-first orderings converge to one release.
+# There is deliberately no asset upload (source archives are provided by
+# GitHub; the guarded apply path reconciles exact registry artifacts) and
+# no npm token or publication authority of any kind.
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+# Least privilege: creating one GitHub Release page is the only mutation.
+permissions:
+  contents: write
+
+# One serial lane per tag: retries serialize without ever suppressing a
+# release that a previous run already created.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: "@yylo/cli"
+  TAG_PREFIX: "cli-v"
+
+jobs:
+  release:
+    name: Verify the tagged package and create its GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+
+      - name: Enforce Node >=20.10
+        run: node -e "const [major,minor]=process.versions.node.split('.').map(Number); if (major<20 || (major===20 && minor<10)) { console.error('Node >=20.10 required'); process.exit(1); }"
+
+      - name: Derive and verify the exact tagged version
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${TAG_NAME#"$TAG_PREFIX"}"
+          if [ "$TAG_VERSION" = "$TAG_NAME" ]; then
+            echo "tag $TAG_NAME does not carry the required $TAG_PREFIX prefix" >&2
+            exit 1
+          fi
+          TAG_VERSION="$TAG_VERSION" node - <<'NODE'
+          const fs = require('fs');
+          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+          const version = process.env.TAG_VERSION;
+          if (!semver.test(version)) throw new Error(`tag ${process.env.TAG_NAME} does not carry a valid SemVer version: ${version}`);
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (pkg.name !== process.env.PACKAGE_NAME) throw new Error(`package.json name mismatch: ${pkg.name}`);
+          if (pkg.version !== version) throw new Error(`tag/manifest mismatch: ${process.env.TAG_NAME} expects package.json version ${pkg.version}`);
+          const prerelease = version.includes('-');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${prerelease}\n`);
+          NODE
+
+      - run: npm ci
+
+      # Package-focused release gate: the tagged commit must pass its own
+      # suite, typecheck, and build before any release page exists.
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Verify or create the release identity from the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          target="$(git rev-parse "${TAG_NAME}^{commit}")"
+          verify_identity() {
+            RELEASE_IDENTITY="$1" node - <<'NODE'
+          const identity = JSON.parse(process.env.RELEASE_IDENTITY);
+          const expectedPrerelease = process.env.RELEASE_PRERELEASE === 'true';
+          const problems = [];
+          if (identity.tagName !== process.env.TAG_NAME) problems.push(`tagName ${identity.tagName}`);
+          if (identity.targetCommitish !== process.env.EXPECTED_TARGET) {
+            problems.push(`target ${identity.targetCommitish} != ${process.env.EXPECTED_TARGET}`);
+          }
+          if (identity.isPrerelease !== expectedPrerelease) problems.push(`prerelease ${identity.isPrerelease}`);
+          if (problems.length) {
+            console.error(`conflicting existing release at ${process.env.TAG_NAME}: ${problems.join('; ')}; refusing to edit or delete it`);
+            process.exit(1);
+          }
+          NODE
+          }
+          if identity="$(gh release view "$TAG_NAME" --json tagName,targetCommitish,isPrerelease 2>"$RUNNER_TEMP/view.err")"; then
+            EXPECTED_TARGET="$target" verify_identity "$identity"
+            echo "matching release already exists (guarded apply won the race); identity verified"
+            exit 0
+          fi
+          if ! grep -qi 'not found' "$RUNNER_TEMP/view.err"; then
+            cat "$RUNNER_TEMP/view.err" >&2
+            echo "release view failed without an explicit not-found response" >&2
+            exit 1
+          fi
+          notes="$(printf 'Automated %s %s release.\n\nAttached assets are the exact registry-published artifacts.' "$PACKAGE_NAME" "$RELEASE_VERSION")"
+          args=(--verify-tag --target "$target" --title "${PACKAGE_NAME} ${RELEASE_VERSION}" --notes "$notes")
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$TAG_NAME" "${args[@]}"
+          identity="$(gh release view "$TAG_NAME" --json tagName,targetCommitish,isPrerelease)"
+          EXPECTED_TARGET="$target" verify_identity "$identity"
+          echo "created ${PACKAGE_NAME} ${RELEASE_VERSION} release from ${TAG_NAME}"
