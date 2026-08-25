@@ -24,6 +24,10 @@ export default mergeConfig(baseConfig, defineConfig({
       // MCP integration tests (require real server connection, slow/flaky)
       '**/mcp-timeout-validation.test.ts',
       'src/mcp/__tests__/mcp-integration.test.ts',
+      // Real-daemon integration tests spawn a warm daemon child plus a cold
+      // Vitest child; they run in the full suite only to keep the fast
+      // loop inside the Wave 1 performance envelope.
+      'src/test-daemon/__tests__/daemon-real.integration.test.ts',
       'src/__tests__/integration/**',
       'src/__tests__/e2e/**',
     ],

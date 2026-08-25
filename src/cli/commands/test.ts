@@ -22,6 +22,10 @@ import { ValidationError, ConfigurationError, RuntimeError } from '../types.js';
 import type { JunoTaskConfig, SubagentType } from '../../types/index.js';
 import type { ProgressEvent } from '../../types/execution.js';
 import type { SessionManager } from '../../core/session.js';
+import {
+  runTestAffectedCommand,
+  runTestDaemonCommand,
+} from '../../test-daemon/cli.js';
 
 // ============================================================================
 // Test Framework Types
@@ -1471,7 +1475,37 @@ export function configureTestCommand(program: Command): void {
     .option('--framework <name>', 'Testing framework', 'vitest')
     .option('--watch', 'Watch mode for continuous testing')
     .option('--reporters <items>', 'Test reporters (comma-separated)')
+    // Advisory test-daemon options (ignored by the AI test framework path).
+    .option('--json', 'Emit machine-readable daemon output')
+    .option('--daemon', 'Use the warm advisory daemon for affected runs', true)
+    .option('--no-daemon', 'Skip the warm daemon and run the cold path directly')
+    .option('--changed-base <ref>', 'Base ref for affected-test selection (default HEAD)')
+    .option('--daemon-force', 'Stop any stale daemon owner before starting')
+    .option('--daemon-idle-timeout-ms <ms>', 'Daemon idle shutdown bound')
+    .option('--daemon-max-requests <n>', 'Daemon request ceiling')
+    .option('--daemon-timeout-ms <ms>', 'Per-run timeout for warm affected runs')
+    .allowUnknownOption(true)
     .action(async (target, options, command) => {
+      // Advisory test-daemon surface (Wave 2 of PDR 7djT8N): bounded
+      // subcommands routed before the variadic target interpretation.
+      if (target[0] === 'daemon') {
+        await runTestDaemonCommand(target.slice(1), {
+          json: options.json === true || Boolean(process.env.YYLO_TEST_DAEMON_JSON),
+          force: options.daemonForce === true,
+          idleTimeoutMs: options.daemonIdleTimeoutMs,
+          maxRequests: options.daemonMaxRequests,
+        });
+        return;
+      }
+      if (target[0] === 'affected') {
+        await runTestAffectedCommand(target.slice(1), {
+          json: options.json === true || Boolean(process.env.YYLO_TEST_DAEMON_JSON),
+          changedBase: options.changedBase,
+          timeoutMs: options.daemonTimeoutMs,
+          useDaemon: options.daemon !== false,
+        });
+        return;
+      }
       const testOptions: TestCommandOptions = {
         type: options.type,
         subagent: options.subagent,
@@ -1506,6 +1540,11 @@ export function configureTestCommand(program: Command): void {
 Examples:
   $ yylo test --generate                          # Generate tests for current project
   $ yylo test --run                              # Run existing tests
+  $ yylo test daemon start                       # Start the advisory warm test daemon
+  $ yylo test daemon status                      # Bounded daemon status (<500ms)
+  $ yylo test daemon stop                        # Graceful daemon stop
+  $ yylo test affected                           # Warm affected-test edit loop (cold fallback)
+  $ yylo test affected --no-daemon               # Force the cold path for this run
   $ yylo test --generate --run                   # Generate and run tests
   $ yylo test src/utils.ts --generate            # Generate tests for specific file
   $ yylo test --type unit --intelligence smart   # Generate smart unit tests

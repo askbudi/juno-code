@@ -6,6 +6,9 @@ environments, an explicit retry quarantine policy, and content-addressed
 immutable fixture bases that remove per-invocation venv and real-Git
 controller construction.
 
+Wave 2 (persistent advisory test daemon, warm affected edit loop, and the
+warm/cold equivalence matrix) is documented in [test-daemon.md](./test-daemon.md).
+
 ## Benchmark profile
 
 The harness `scripts/test-performance/benchmark-profile.mjs` measures one
