@@ -1481,6 +1481,74 @@ class MergeQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(merge_runtime.MergeQueueError, "artifact collision"):
             merge_runtime.merge_drive(self.controller.resolve())
 
+    def _install_checkpoint_contract(self) -> None:
+        """Canonical tracked queue state plus a checkpoint include configuration."""
+        (self.controller / ".gitignore").write_text("/.juno_task/runtime/\n")
+        (self.controller / ".juno_task/config.json").write_text(json.dumps({
+            "gitCheckpoint": {"include": [
+                ".gitignore", ".juno_task/tasks", ".juno_task/ledger",
+                ".juno_task/tasks.md", ".juno_task/config", ".juno_task/config.json",
+                ".juno_task/state/tasks.json",
+            ]},
+        }) + "\n")
+        task_runtime.write_state(self.controller, {
+            "schema_version": task_runtime.STATE_SCHEMA, "tasks": {}, "queues": {}})
+        git(self.controller, "rm", "-r", "--cached", "--ignore-unmatch",
+            ".juno_task/runtime")
+        git(self.controller, "add", ".gitignore", ".juno_task/config.json",
+            ".juno_task/state/tasks.json")
+        git(self.controller, "commit", "-m", "canonical checkpoint contract")
+        git(self.controller, "config", "extensions.worktreeConfig", "true")
+        git(self.controller, "config", "--worktree", "juno.workspace.role", "controller")
+        git(self.controller, "config", "--local", "juno.controller.path", str(self.controller))
+        git(self.controller, "config", "--local", "juno.controller.branch", "controller")
+
+    def _run_checkpoint(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        checkpoint = SCRIPTS / "controller_checkpoint.py"
+        sanitized = {**os.environ, "JUNO_TASK_ROOT": "", "JUNO_CONTROLLER_BRANCH": "",
+                     "JUNO_WORKSPACE_ROLE": ""}
+        result = subprocess.run(
+            [sys.executable, str(checkpoint), "--root", str(self.controller), *args],
+            cwd=self.controller, text=True, capture_output=True, env=sanitized)
+        if check and result.returncode:
+            raise AssertionError(result.stderr or result.stdout)
+        return result
+
+    def test_merge_finalization_checkpoint_admits_queue_attribution(self) -> None:
+        self._install_checkpoint_contract()
+        self.install_merge_drive_assets()
+        tip = self.commit_feature("X", "src/checkpoint-queue.txt", "queue\n")
+        merged = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(merged["state"], "MERGED_THROUGH")
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+        receipt = self.controller / task_runtime.QUEUE_ATTRIBUTION_PATH
+        self.assertTrue(receipt.exists())
+        bound = json.loads(receipt.read_text())
+        self.assertEqual(bound["task_ids"], ["X"])
+        self.assertTrue(all(field.startswith("queues.") for field in bound["shared_fields"]))
+
+        committed = self._run_checkpoint("--task-id", "X", "commit", "--message",
+                                         "chore(controller): checkpoint merged projection",
+                                         "--json")
+        payload = json.loads(committed.stdout.strip().splitlines()[-1])
+        self.assertEqual(payload["outcome"], "committed")
+        self.assertIn(".juno_task/state/tasks.json", payload["selected"])
+        durable = git(self.controller, "show", "--name-only", "--format=", "HEAD").splitlines()
+        self.assertIn(".juno_task/state/tasks.json", durable)
+        self.assertFalse(receipt.exists())
+        self.assertEqual(git(self.controller, "status", "--porcelain=v1"), "")
+
+        # Strict single-task truth survives: a hand edit without a fresh
+        # receipt-bound queue write must keep failing closed.
+        state = json.loads((self.controller / ".juno_task/state/tasks.json").read_text())
+        state["tasks"]["Y"] = {"state": "MERGED"}
+        (self.controller / ".juno_task/state/tasks.json").write_text(
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        refused = self._run_checkpoint("--task-id", "X", "plan", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("task-scoped queue attribution refused", refused.stderr)
+        self.assertIn("no queue attribution receipt", refused.stderr)
+
     def test_merge_drive_repairs_each_latest_pointer_independently(self) -> None:
         self.install_merge_drive_assets()
         tip = self.commit_feature("X", "src/pointer-repair.txt", "drive\n")
