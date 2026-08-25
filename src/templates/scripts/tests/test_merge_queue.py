@@ -73,6 +73,9 @@ class MergeQueueTests(unittest.TestCase):
         target_task_runtime = self.repository / ".juno_task/scripts/task_workspace.py"
         target_task_runtime.parent.mkdir(parents=True)
         target_task_runtime.write_bytes(TASK.read_bytes())
+        target_task_template = self.repository / "juno-code/src/templates/scripts/task_workspace.py"
+        target_task_template.parent.mkdir(parents=True)
+        target_task_template.write_bytes(TASK.read_bytes())
         target_policy = self.repository / ".juno_task/config/task-workspace.json"
         target_policy.parent.mkdir(parents=True)
         target_policy.write_text(json.dumps({
@@ -89,7 +92,7 @@ class MergeQueueTests(unittest.TestCase):
                                       "timeout_seconds": 10, "max_output_bytes": 4096},
         }) + "\n")
         managed_definition = self.repository / "juno-code/src/templates/managed-assets.json"
-        managed_definition.parent.mkdir(parents=True)
+        managed_definition.parent.mkdir(parents=True, exist_ok=True)
         managed_definition.write_text(json.dumps({"schemaVersion": 1, "assets": [{
             "source": "scripts/task_workspace.py",
             "destination": ".juno_task/scripts/task_workspace.py",
