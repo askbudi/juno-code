@@ -19,17 +19,22 @@ describe('Bolt task workspace managed runtime', () => {
         }>;
       };
       expect(policy.focused_validation.map(({ id }) => id)).toEqual([
-        'task-workspace', 'integration-workspace', 'script-installer',
+        'task-workspace-decisions', 'task-workspace-adapter-canary',
+        'integration-workspace', 'script-installer',
       ]);
-      const [task, integration, installer] = policy.focused_validation;
-      expect(task?.resource).toEqual(installer?.resource);
-      expect(task?.resource).toMatchObject({
+      const [pure, adapter, integration, installer] = policy.focused_validation;
+      expect(adapter?.resource).toEqual(installer?.resource);
+      expect(adapter?.resource).toMatchObject({
         id: 'yylo-real-git-managed-install',
         lock_path: '/tmp/yylo-focused-real-git-managed-install.lock',
       });
-      expect(task!.resource!.wait_timeout_seconds).toBe(1200);
+      expect(adapter!.resource!.wait_timeout_seconds).toBe(1200);
+      expect(pure?.resource).toBeUndefined();
       expect(integration?.resource).toBeUndefined();
-      expect(task?.argv).toContain('src/utils/__tests__/task-workspace.test.ts');
+      expect(pure?.argv).toContain('test_task_workspace_decisions.py');
+      expect(adapter?.argv).toContain(
+        'TaskWorkspaceTests.test_finish_queues_clean_committed_tip_without_merging_or_cleanup',
+      );
       expect(installer?.argv).toContain('src/utils/__tests__/script-installer.test.ts');
       expect(integration?.argv).toContain('src/utils/__tests__/integration-workspace.test.ts');
     }
