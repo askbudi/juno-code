@@ -3142,6 +3142,73 @@ steps:
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 1))
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
+    def test_resume_preserves_stored_full_suite_admission_state(self) -> None:
+        """Regression: an explicit `next` resume of an awaiting-risk decision
+        must not drop the stored full-suite admission reference while the
+        immutable claim stays on disk (the first high-tier candidate wedged
+        exactly this way)."""
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "full_suite_validation",
+                side_effect=merge_runtime.MergeQueueError("crash before suite"),
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "crash before suite"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        resumed = merge_runtime.merge_next(self.controller.resolve(), "X")
+        self.assertEqual(resumed["outcome"], "AWAITING_RISK")
+        admission = resumed["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual(admission["state"], "CLAIMED")
+        self.assertEqual(admission["attempt_number"], 1)
+
+    def test_orphaned_identity_verified_claim_is_adopted_after_state_loss(self) -> None:
+        """Regression: a claim whose admission reference was lost from state is
+        adopted after strict identity re-derivation instead of colliding
+        forever; attacker bytes still refuse."""
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        with mock.patch.object(
+                merge_runtime, "full_suite_validation",
+                side_effect=merge_runtime.MergeQueueError("crash before suite"),
+        ):
+            with self.assertRaisesRegex(merge_runtime.MergeQueueError, "crash before suite"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        # Simulate the pre-fix state loss: drop only review_progress.
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        for key in ("risk", "review"):
+            stored = state["tasks"]["X"]["queue_attempt"].get(key)
+            if isinstance(stored, dict):
+                stored.pop("review_progress", None)
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        complete = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 1))
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+
+    def test_drive_review_never_requests_overlap(self) -> None:
+        """Regression: Reviewer A's managed prompt binds full-suite receipts at
+        render time, so an overlapped dispatch raised 'review prompt full-suite
+        evidence is missing' for the first real high-tier candidate. The drive
+        review phase must run suite-first, keeping A strictly before B."""
+        self.install_merge_drive_assets()
+        self.commit_feature("X", "src/security/overlap-drive.py", "secure = True\n")
+        observed: list[bool] = []
+        original = merge_runtime.merge_review
+
+        def capture(controller: Path, task_id: str, *, overlap_suite: bool = False):
+            observed.append(overlap_suite)
+            return original(controller, task_id, overlap_suite=overlap_suite)
+
+        with mock.patch.object(merge_runtime, "merge_review", side_effect=capture), \
+                mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            merged = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(merged["state"], "MERGED_THROUGH")
+        self.assertTrue(observed)
+        self.assertFalse(any(observed))
+
     def test_missing_risk_policy_fails_closed_before_reviewer(self) -> None:
         self.commit_feature("X", "src/security/auth.py", "auth\n")
         self.queue_payload("next")

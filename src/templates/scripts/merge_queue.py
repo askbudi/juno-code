@@ -2109,7 +2109,16 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
             if checkout_value else validate_record(config, repository, record))
     assert_frozen_candidate(controller, config, root, candidate_sha)
     decision = review_candidate(controller, record, candidate_sha, repository, expected, root, attempt)
-    attempt = {**attempt, "risk": decision, "review": decision}
+    stored_risk = attempt.get("risk") if isinstance(attempt.get("risk"), dict) else {}
+    preserved_progress = stored_risk.get("review_progress")
+    merged_risk = {**stored_risk, **decision}
+    if isinstance(preserved_progress, dict) and not isinstance(
+            decision.get("review_progress"), dict):
+        # An explicit resume must never drop the stored full-suite admission,
+        # attempt counters, or completed reviewer steps: the immutable claim
+        # files remain on disk and losing their reference wedges the candidate.
+        merged_risk["review_progress"] = preserved_progress
+    attempt = {**attempt, "risk": merged_risk, "review": merged_risk}
     if decision["status"] != "ELIGIBLE":
         attempt["outcome"] = decision["status"]
         persist_attempt(controller, attempt, state_name=decision["status"])
@@ -3461,6 +3470,55 @@ def full_suite_producer_lock(controller: Path, task_id: str, candidate_sha: str,
         yield
 
 
+def adopt_orphaned_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any],
+                                     identity: dict[str, str], commands: list[dict[str, Any]],
+                                     routing: dict[str, Any],
+                                     attempt_number: int) -> Optional[dict[str, Any]]:
+    """Adopt an identity-verified orphaned CLAIMED claim after state loss.
+
+    A paused review can lose its stored full-suite admission reference (for
+    example when an explicit ``next`` resumes the risk decision) while the
+    immutable claim file remains on disk. Rather than failing closed forever
+    on the canonical-path collision, strictly re-derive the expected claim
+    identity and adopt it only when every bound field still matches exactly;
+    the caller's suite runner re-verifies any receipt prefix before resuming.
+    """
+    root = full_suite_attempt_root(
+        controller, task_id, plan["candidate"]["candidate_sha"], attempt_number)
+    claim_path = root / "claim.json"
+    if not claim_path.is_file():
+        return None
+    try:
+        stored = json.loads(claim_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    receipt_paths = full_suite_receipt_paths(root, commands)
+    expected_lock = {"path": str(root / "producer.lock"), "kind": "flock"}
+    expected = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_V2_SCHEMA,
+                "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                             "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                "task_id": task_id,
+                "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                              "candidate_tree": plan["candidate"]["candidate_tree"]},
+                "policy_identity": plan["policy_identity"],
+                "validation_identity": identity, "commands": commands,
+                "routing": routing, "producer_lock": expected_lock,
+                "attempt_number": attempt_number,
+                "expected_receipt_paths": [str(path) for path in receipt_paths]}
+    comparison = {key: stored.get(key) for key in expected}
+    if comparison != expected or not isinstance(stored.get("token"), str):
+        return None
+    return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+            "state": "CLAIMED", "attempt_number": attempt_number,
+            "token": stored["token"],
+            "claim": {"claim_path": str(claim_path),
+                      "claim_sha256": hashlib.sha256(claim_path.read_bytes()).hexdigest()},
+            "expected_receipt_paths": [str(path) for path in receipt_paths],
+            "producer_lock": expected_lock}
+
+
 def create_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any],
                             identity: dict[str, str], commands: list[dict[str, Any]],
                             routing: dict[str, Any], attempt_number: int) -> dict[str, Any]:
@@ -3470,6 +3528,10 @@ def create_full_suite_claim(controller: Path, task_id: str, plan: dict[str, Any]
     lock_path = root / "producer.lock"
     receipt_paths = full_suite_receipt_paths(root, commands)
     if claim_path.exists() or any(path.exists() for path in receipt_paths):
+        adopted = adopt_orphaned_full_suite_claim(
+            controller, task_id, plan, identity, commands, routing, attempt_number)
+        if adopted is not None:
+            return adopted
         raise MergeQueueError("queue admission canonical path already exists")
     token = secrets.token_hex(24)
     producer_lock = {"path": str(lock_path), "kind": "flock"}
@@ -5972,7 +6034,12 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                     elif operation["phase"] == "resolve-continue":
                         merge_resolve(controller, task_id)
                     elif operation["phase"] == "review":
-                        merge_review(controller, task_id, overlap_suite=True)
+                        # The managed review prompt binds full-suite receipts at
+                        # render time, so Reviewer A can only dispatch after the
+                        # suite admits. Overlap would dispatch A while the
+                        # receipts cannot exist yet, so the drive never requests
+                        # it; suite-first keeps the durable A-before-B ordering.
+                        merge_review(controller, task_id, overlap_suite=False)
                     elif operation["phase"] in {"risk-ready-next", "stale-next"}:
                         merge_next(controller, task_id)
                     elif operation["phase"] == "cas-finalize":
