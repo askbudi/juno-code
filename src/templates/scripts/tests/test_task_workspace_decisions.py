@@ -1,0 +1,551 @@
+#!/usr/bin/env python3
+"""Pure table/property tests for task-workspace lifecycle decisions.
+
+Wave 3 pilot of 7djT8N: the decision core in ``task_workspace_decisions.py``
+is proven here without Git, filesystem mutation, subprocesses, locks, clocks,
+environment, or network. Purity is enforced three ways:
+
+1. an AST import audit against a strict stdlib allowlist;
+2. every planner call in the pure classes runs with ``open`` and process/
+   socket creation poisoned;
+3. the whole module is bounded to the Wave 3 budget (2 seconds).
+
+Characterization parity: refusal messages are pinned to the exact strings the
+real-Git scenario suite (``test_task_workspace.py``) asserts end to end, so
+semantic drift fails both suites. The wiring class additionally proves the
+imperative shell routes its gates through the pure planners.
+"""
+from __future__ import annotations
+
+import ast
+import builtins
+import contextlib
+import io
+import sys
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import task_workspace_decisions as decisions  # noqa: E402
+
+MODULE_STARTED = time.monotonic()
+PURE_BUDGET_SECONDS = 2.0
+
+# Commands that address task lifecycle state.
+COMMANDS = (
+    "start", "hydrate", "status", "checkpoint", "evidence-run",
+    "evidence-status", "evidence-await", "preflight", "finish",
+    "child-checkpoint",
+)
+
+# Every durable lifecycle state the shell records, plus the missing record.
+STATES = (
+    None, "NOT_STARTED", "WORKING", "QUEUED", "HYDRATING", "HYDRATION_FAILED",
+    "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED", "AWAITING_RISK",
+    "AWAITING_RELEASE", "REVIEWING", "CONFLICT", "CONFLICT_RESOLVED",
+    "REOPENING", "REQUEUING_STALE", "RISK_EVIDENCE_READY", "MERGING",
+    "MERGED", "KANBAN_SYNC_REQUIRED", "WITHDRAWN",
+)
+
+ALLOWED_IMPORTS = {"__future__", "dataclasses", "typing"}
+FORBIDDEN_IDENTIFIERS = {"open", "eval", "exec", "compile", "__import__",
+                         "globals", "locals", "breakpoint"}
+
+
+@contextlib.contextmanager
+def poisoned_surface():
+    """Fail any filesystem, process, or socket touch inside the block."""
+    def refused(*args, **kwargs):
+        raise AssertionError(
+            "pure decision planner touched a poisoned surface "
+            f"({args[0] if args else kwargs})")
+    with mock.patch.object(builtins, "open", refused), \
+            mock.patch("subprocess.Popen", refused), \
+            mock.patch("subprocess.run", refused), \
+            mock.patch("socket.socket", refused), \
+            mock.patch.object(time, "time", refused), \
+            mock.patch.object(time, "monotonic", refused):
+        yield
+
+
+class PurityContract(unittest.TestCase):
+    """The decision core must stay import-clean and side-effect free."""
+
+    def test_import_graph_is_strictly_pure(self) -> None:
+        source = Path(decisions.__file__).read_text()
+        tree = ast.parse(source)
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[0])
+        self.assertTrue(imported, "decision core must declare its imports")
+        self.assertEqual(
+            imported - ALLOWED_IMPORTS, set(),
+            f"impure imports leaked into the decision core: "
+            f"{sorted(imported - ALLOWED_IMPORTS)}")
+
+    def test_no_dynamic_or_io_identifiers(self) -> None:
+        tree = ast.parse(Path(decisions.__file__).read_text())
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        leaked = names & FORBIDDEN_IDENTIFIERS
+        self.assertEqual(leaked, set(),
+                         f"forbidden identifiers in decision core: {sorted(leaked)}")
+
+    def test_snapshot_and_decision_types_are_immutable(self) -> None:
+        frozen = (decisions.CommandRequest, decisions.TaskSnapshot,
+                  decisions.Finding, decisions.TransitionDecision,
+                  decisions.StatusProjection, decisions.ReceiptFact,
+                  decisions.EvidenceCommandPlan, decisions.EvidenceReusePlan)
+        for cls in frozen:
+            self.assertTrue(hasattr(cls, "__dataclass_fields__"), cls.__name__)
+            self.assertTrue(cls.__dataclass_params__.frozen,
+                            f"{cls.__name__} must be a frozen dataclass")
+
+    def test_module_completes_inside_the_pure_budget(self) -> None:
+        self.assertLess(time.monotonic() - MODULE_STARTED, PURE_BUDGET_SECONDS,
+                        "pure decision tables exceeded the Wave 3 budget")
+
+
+class TransitionMatrixTables(unittest.TestCase):
+    """State x command admission tables with characterization-pinned messages."""
+
+    def plan(self, command, state, owner=None, task_id="X"):
+        with poisoned_surface():
+            return decisions.plan_command_transition(
+                decisions.CommandRequest(command, task_id),
+                decisions.TaskSnapshot(task_id, state, owner))
+
+    def test_working_admits_every_stateful_command(self) -> None:
+        for command in COMMANDS:
+            decision = self.plan(command, "WORKING")
+            self.assertTrue(decision.admitted, command)
+            self.assertIsNone(decision.finding)
+            self.assertEqual(decision.phase, "working")
+
+    def test_missing_record_refusals_are_exact(self) -> None:
+        cases = {
+            "checkpoint": "standing checkpoint requires a WORKING task",
+            "evidence-run": "standing evidence run requires a WORKING task",
+            "preflight": "task has not been started",
+            "finish": "task has not been started",
+            "child-checkpoint": "umbrella child checkpoint requires a WORKING umbrella",
+        }
+        for command, message in cases.items():
+            decision = self.plan(command, None)
+            self.assertFalse(decision.admitted, command)
+            self.assertEqual(decision.finding.message, message, command)
+
+    def test_wrong_state_refusals_name_the_state(self) -> None:
+        for state in ("MERGED", "KANBAN_SYNC_REQUIRED", "HYDRATION_FAILED"):
+            self.assertEqual(
+                self.plan("preflight", state).finding.message,
+                f"task cannot preflight from {state}")
+            self.assertEqual(
+                self.plan("finish", state).finding.message,
+                f"task cannot finish from {state}")
+            self.assertEqual(
+                self.plan("checkpoint", state).finding.message,
+                "standing checkpoint requires a WORKING task")
+            self.assertEqual(
+                self.plan("evidence-run", state).finding.message,
+                "standing evidence run requires a WORKING task")
+
+    def test_tracking_only_children_are_redirected_to_their_umbrella(self) -> None:
+        owner = "UMB"
+        self.assertEqual(
+            self.plan("checkpoint", None, owner).finding.message,
+            f"task X is tracking-only under umbrella {owner}; "
+            f"checkpoint the umbrella child instead: yy task child-checkpoint {owner} X")
+        self.assertEqual(
+            self.plan("preflight", None, owner).finding.message,
+            f"task X is tracking-only under umbrella {owner}; "
+            f"preflight the umbrella instead: yy task preflight {owner}")
+        self.assertEqual(
+            self.plan("finish", None, owner).finding.message,
+            f"task X is tracking-only under umbrella {owner}; "
+            f"finish the umbrella instead: yy task finish {owner}")
+        self.assertEqual(
+            self.plan("start", None, owner).finding.message,
+            f"task X is tracking-only under umbrella {owner}")
+
+    def test_hydrate_admits_exactly_the_frozen_hydration_states(self) -> None:
+        for state in STATES:
+            decision = self.plan("hydrate", state)
+            hydrated = state in decisions.HYDRATABLE_STATES
+            self.assertEqual(decision.admitted, hydrated, state)
+            if not hydrated:
+                self.assertEqual(
+                    decision.finding.message,
+                    f"task cannot hydrate from {state if state is not None else 'missing'}")
+
+    def test_queued_finish_is_idempotent_reverification(self) -> None:
+        decision = self.plan("finish", "QUEUED")
+        self.assertTrue(decision.admitted)
+        self.assertTrue(decision.idempotent)
+        self.assertEqual(decision.phase, "queued")
+        self.assertFalse(self.plan("finish", "WORKING").idempotent)
+
+    def test_status_and_evidence_reads_never_refuse(self) -> None:
+        for command in ("status", "evidence-status", "evidence-await"):
+            for state in STATES:
+                decision = self.plan(command, state)
+                self.assertTrue(decision.admitted, (command, state))
+                self.assertIsNone(decision.finding, (command, state))
+
+    def test_unknown_command_is_a_programming_error(self) -> None:
+        with poisoned_surface():
+            self.assertRaises(
+                ValueError, decisions.plan_command_transition,
+                decisions.CommandRequest("rebase", "X"), decisions.TaskSnapshot("X"))
+
+    def test_matrix_totality_properties(self) -> None:
+        for command in COMMANDS:
+            for state in STATES:
+                for owner in (None, "UMB"):
+                    decision = self.plan(command, state, owner)
+                    self.assertEqual(decision.command, command)
+                    self.assertEqual(decision.task_id, "X")
+                    self.assertEqual(decision.admitted, decision.finding is None)
+                    if decision.finding is not None:
+                        self.assertTrue(decision.finding.message)
+                        self.assertTrue(decision.finding.code)
+                    self.assertIsInstance(decision.phase, str)
+                    self.assertTrue(decision.phase)
+
+    def test_start_idempotence_flag_marks_existing_records(self) -> None:
+        self.assertFalse(self.plan("start", None).idempotent)
+        for state in ("WORKING", "QUEUED", "MERGED"):
+            self.assertTrue(self.plan("start", state).idempotent, state)
+
+
+class StatusProjectionTables(unittest.TestCase):
+    def test_tracking_only_projection_redirects_progress_recording(self) -> None:
+        with poisoned_surface():
+            projection = decisions.status_projection(
+                decisions.TaskSnapshot("X", None, "UMB"))
+        self.assertEqual(projection.state, "TRACKING_ONLY")
+        self.assertEqual(projection.umbrella_owner_task_id, "UMB")
+        self.assertEqual(
+            projection.next_action,
+            "implement inside the umbrella worktree; "
+            "record progress with: yy task child-checkpoint UMB X")
+
+    def test_absent_task_projects_not_started(self) -> None:
+        with poisoned_surface():
+            projection = decisions.status_projection(decisions.TaskSnapshot("X"))
+        self.assertEqual(projection.state, "NOT_STARTED")
+        self.assertIsNone(projection.umbrella_owner_task_id)
+        self.assertIsNone(projection.next_action)
+
+
+class HandoffPhaseTables(unittest.TestCase):
+    def test_every_durable_state_has_a_phase(self) -> None:
+        expected = {
+            "NOT_STARTED": "planned", "WORKING": "working", "QUEUED": "queued",
+            "AWAITING_RISK": "validating", "REVIEWING": "reviewing",
+            "REVIEW_FINDINGS": "findings",
+            "REVIEW_FINDINGS_EXHAUSTED": "exhausted", "CONFLICT": "conflict",
+            "CONFLICT_RESOLVED": "resolved", "REOPENING": "reopening",
+            "REQUEUING_STALE": "restale", "RISK_EVIDENCE_READY": "approved",
+            "MERGING": "merging", "MERGED": "merged",
+            "KANBAN_SYNC_REQUIRED": "kanban-sync-required",
+            "WITHDRAWN": "withdrawn",
+        }
+        with poisoned_surface():
+            for state, phase in expected.items():
+                self.assertEqual(decisions.handoff_phase(state), phase, state)
+            self.assertEqual(decisions.handoff_phase("FUTURE_STATE"), "FUTURE_STATE")
+
+
+class PathAdmissionTables(unittest.TestCase):
+    def test_exact_roots_admit_their_tree_and_nothing_else(self) -> None:
+        with poisoned_surface():
+            self.assertTrue(decisions.path_within("juno-code/src/a.ts", ["juno-code"]))
+            self.assertTrue(decisions.path_within("juno-code", ["juno-code"]))
+            self.assertFalse(decisions.path_within("juno-codex/a", ["juno-code"]))
+            self.assertFalse(decisions.path_within("juno-code", ["juno-code/src"]))
+            self.assertFalse(decisions.path_within("", ["juno-code"]))
+            # Lexical prefix semantics by design: Git pathnames never contain
+            # dot components, and callers pass canonical Git output only.
+            self.assertTrue(
+                decisions.path_within("juno-code/../secret", ["juno-code"]))
+
+    def test_empty_root_set_admits_nothing(self) -> None:
+        with poisoned_surface():
+            self.assertFalse(decisions.path_within("juno-code", []))
+
+
+class ValidationRoutingTables(unittest.TestCase):
+    CONFIG = {
+        "validation_profiles": [
+            {"id": "benchmark-suite", "path_roots": ["juno-benchmark"],
+             "commands": [{"id": "benchmark-test"}, {"id": "benchmark-build"}]},
+        ],
+        "full_suite_validation": {"id": "full-suite"},
+        "focused_validation": [
+            {"id": "task-workspace", "cwd": "juno-code"},
+            {"id": "integration-workspace", "cwd": "juno-code"},
+            {"id": "benchmark-lint", "cwd": "juno-benchmark"},
+        ],
+    }
+
+    def selection(self, changed):
+        with poisoned_surface():
+            return decisions.validation_profile_selection(self.CONFIG, changed)
+
+    def test_uncovered_paths_route_conservatively_to_the_default_suite(self) -> None:
+        selection = self.selection(["juno-code/src/a.ts"])
+        self.assertEqual(selection["mode"], "default")
+        self.assertEqual(selection["profile_ids"], [])
+        self.assertEqual(selection["authored_path_count"], 1)
+        selection = self.selection([])
+        self.assertEqual(selection["mode"], "default")
+
+    def test_one_fully_covered_profile_selects_that_suite_alone(self) -> None:
+        selection = self.selection(["juno-benchmark/a.ts", "juno-benchmark/b.js"])
+        self.assertEqual(selection["mode"], "profile")
+        self.assertEqual(selection["profile_ids"], ["benchmark-suite"])
+
+    def test_spread_or_partial_coverage_uses_union_semantics(self) -> None:
+        selection = self.selection(["juno-benchmark/a.ts", "juno-code/src/a.ts"])
+        self.assertEqual(selection["mode"], "union")
+        self.assertEqual(selection["profile_ids"], ["benchmark-suite"])
+        selection = self.selection(["juno-benchmark/a.ts", "docs/x.md"])
+        self.assertEqual(selection["mode"], "union")
+
+    def test_full_suite_commands_add_default_only_outside_profile_mode(self) -> None:
+        with poisoned_surface():
+            commands, selection = decisions.selected_full_suite_commands(
+                self.CONFIG, ["juno-benchmark/a.ts"])
+        self.assertEqual([row["id"] for row in commands],
+                         ["benchmark-test", "benchmark-build"])
+        self.assertEqual(selection["mode"], "profile")
+        with poisoned_surface():
+            commands, _ = decisions.selected_full_suite_commands(
+                self.CONFIG, ["juno-code/src/a.ts"])
+        self.assertEqual([row["id"] for row in commands], ["full-suite"])
+        with poisoned_surface():
+            commands, _ = decisions.selected_full_suite_commands(
+                self.CONFIG, ["juno-benchmark/a.ts", "docs/x.md"])
+        self.assertEqual([row["id"] for row in commands],
+                         ["benchmark-test", "benchmark-build", "full-suite"])
+
+    def test_focused_rows_run_everything_unless_one_profile_covers_all(self) -> None:
+        with poisoned_surface():
+            rows = decisions.selected_focused_rows(self.CONFIG, ["juno-code/src/a.ts"])
+        self.assertEqual([row["id"] for row in rows],
+                         ["task-workspace", "integration-workspace", "benchmark-lint"])
+        with poisoned_surface():
+            rows = decisions.selected_focused_rows(
+                self.CONFIG, ["juno-benchmark/a.ts"])
+        self.assertEqual([row["id"] for row in rows], ["benchmark-lint"])
+
+    def test_non_string_paths_are_ignored_rather_than_routed(self) -> None:
+        selection = self.selection([None, 3, "juno-benchmark/a.ts"])
+        self.assertEqual(selection["authored_path_count"], 1)
+        self.assertEqual(selection["mode"], "profile")
+
+
+class EvidenceReuseTables(unittest.TestCase):
+    ROW = {"id": "task-workspace", "cwd": "juno-code", "argv": ["npm", "test"],
+           "timeout_seconds": 900, "max_output_bytes": 32768}
+
+    def plan(self, facts, commands=None, readiness="r1", route=None):
+        with poisoned_surface():
+            return decisions.plan_evidence_reuse(
+                commands if commands is not None else [self.ROW],
+                facts, readiness, route)
+
+    def test_absent_receipt_executes(self) -> None:
+        plan = self.plan([None])
+        self.assertEqual(plan.entries[0].action, decisions.ACTION_EXECUTE)
+        self.assertEqual(plan.counters, {"executed": 1, "reused": 0, "invalidated": 0})
+        self.assertIsNone(plan.terminal)
+
+    def test_passing_receipt_is_reused_exactly(self) -> None:
+        plan = self.plan([decisions.ReceiptFact(present=True, valid=True,
+                                                 failed_prior=False,
+                                                 readiness_sha256="r1")])
+        self.assertEqual(plan.entries[0].action, decisions.ACTION_REUSE)
+        self.assertEqual(plan.counters, {"executed": 0, "reused": 1, "invalidated": 0})
+
+    def test_failed_receipt_with_unchanged_readiness_stands(self) -> None:
+        plan = self.plan([decisions.ReceiptFact(present=True, valid=True,
+                                                 failed_prior=True,
+                                                 readiness_sha256="r1")],
+                         readiness="r1")
+        entry = plan.entries[0]
+        self.assertEqual(entry.action, decisions.ACTION_FAILURE_STANDS)
+        self.assertTrue(entry.stop_after)
+        self.assertIsNone(entry.finding)
+
+    def test_failed_receipt_with_new_readiness_gets_one_supersession(self) -> None:
+        plan = self.plan([decisions.ReceiptFact(present=True, valid=True,
+                                                 failed_prior=True,
+                                                 readiness_sha256="r0")],
+                         readiness="r1")
+        entry = plan.entries[0]
+        self.assertEqual(entry.action, decisions.ACTION_INVALIDATE)
+        self.assertEqual(entry.invalidation,
+                         [{"field": "readiness_sha256", "old": "r0", "new": "r1"}])
+        self.assertEqual(entry.supersession_suffix, ".readiness-r1.json")
+        self.assertEqual(plan.counters["invalidated"], 1)
+
+    def test_consumed_supersession_fails_closed(self) -> None:
+        plan = self.plan([decisions.ReceiptFact(present=True, valid=True,
+                                                 failed_prior=True,
+                                                 readiness_sha256="r0",
+                                                 supersession_exists=True)],
+                         readiness="r1")
+        entry = plan.entries[0]
+        self.assertEqual(entry.action, "fail_closed")
+        self.assertEqual(entry.finding.code, "supersession_exhausted")
+        self.assertEqual(entry.finding.message,
+                         "failed evidence already consumed its one readiness supersession")
+        self.assertTrue(entry.stop_after)
+
+    def test_malformed_receipt_is_never_silently_repaired(self) -> None:
+        plan = self.plan([decisions.ReceiptFact(present=True, valid=False)])
+        entry = plan.entries[0]
+        self.assertEqual(entry.action, "fail_closed")
+        self.assertEqual(entry.finding.code, "malformed_receipt")
+        self.assertEqual(entry.finding.message, "standing command receipt is malformed")
+
+    def test_zero_command_plan_carries_its_terminal_decision(self) -> None:
+        plan = self.plan([], commands=[], route={"mode": "inert_zero_command",
+                                                 "route_sha256": "d1"})
+        terminal = plan.terminal
+        self.assertEqual(terminal["command_id"], "documentation-zero-command")
+        self.assertEqual(terminal["decision"], "skipped")
+        self.assertEqual(terminal["closure"], {"input_closure_sha256": "d1"})
+        self.assertEqual(terminal["reason"], "exact inert-documentation profile proof")
+        plan = self.plan([], commands=[], route={"mode": "default",
+                                                 "route_sha256": "d2"})
+        self.assertEqual(plan.terminal["command_id"], "focused-validation")
+        self.assertEqual(plan.terminal["decision"], "not_applicable")
+        self.assertEqual(plan.terminal["closure"], {"input_closure_sha256": "d2"})
+
+    def test_mixed_plan_counters_partition_the_commands(self) -> None:
+        plan = self.plan([
+            None,
+            decisions.ReceiptFact(present=True, valid=True, failed_prior=False),
+            decisions.ReceiptFact(present=True, valid=True, failed_prior=True,
+                                  readiness_sha256="r0"),
+        ], commands=[self.ROW, self.ROW, self.ROW], readiness="r1")
+        self.assertEqual(plan.counters,
+                         {"executed": 1, "reused": 1, "invalidated": 1})
+
+
+class FailureContractTables(unittest.TestCase):
+    def test_timeout_message_names_command_and_budget(self) -> None:
+        with poisoned_surface():
+            message = decisions.validation_failure_message(
+                self.row(), {"timed_out": True, "exit_code": 124,
+                             "stderr_tail": "", "stdout_tail": "x"})
+        self.assertEqual(message, "focused validation timed out (suite) after 900s")
+
+    def test_exit_message_prefers_stderr_then_stdout(self) -> None:
+        row, result = self.row(), {"timed_out": False, "exit_code": 1,
+                                   "stderr_tail": "boom", "stdout_tail": "out"}
+        with poisoned_surface():
+            self.assertEqual(
+                decisions.validation_failure_message(row, result),
+                "focused validation failed (suite, exit 1): boom")
+        result = {"timed_out": False, "exit_code": 2,
+                  "stderr_tail": "", "stdout_tail": "out"}
+        with poisoned_surface():
+            self.assertEqual(
+                decisions.validation_failure_message(row, result),
+                "focused validation failed (suite, exit 2): out")
+
+    @staticmethod
+    def row():
+        return {"id": "suite", "timeout_seconds": 900}
+
+
+class QueueingDecisionTables(unittest.TestCase):
+    def test_sequence_admission_contract(self) -> None:
+        with poisoned_surface():
+            self.assertEqual(decisions.next_enqueue_sequence(
+                {"schema_version": "juno_task_workspace_fifo.v1", "next": 7}), 7)
+            for bad in (None, 3, {}, {"schema_version": "other", "next": 1},
+                        {"schema_version": "juno_task_workspace_fifo.v1"},
+                        {"schema_version": "juno_task_workspace_fifo.v1",
+                         "next": True},
+                        {"schema_version": "juno_task_workspace_fifo.v1", "next": 0},
+                        {"schema_version": "juno_task_workspace_fifo.v1",
+                         "next": 2**63},
+                        {"schema_version": "juno_task_workspace_fifo.v1", "next": 1,
+                         "extra": 2}):
+                self.assertRaises(ValueError, decisions.next_enqueue_sequence, bad)
+
+    def test_shared_queue_delta_reports_only_queue_owned_changes(self) -> None:
+        before = {"schema_version": "s", "tasks": {"A": {"state": "WORKING"}},
+                  "queues": {"fifo": {"next": 1}}}
+        after = {"schema_version": "s", "tasks": {"A": {"state": "QUEUED"}},
+                 "queues": {"fifo": {"next": 2}}}
+        with poisoned_surface():
+            self.assertEqual(decisions.shared_queue_delta(before, after),
+                             ["queues.fifo.next"])
+            self.assertEqual(decisions.shared_queue_delta(before, before), [])
+            self.assertEqual(decisions.shared_queue_delta({}, {"queues": {}}),
+                             ["queues"])
+            self.assertEqual(decisions.shared_queue_delta(5, {}), ["<state>"])
+
+    def test_missing_keys_and_unequal_leaves_differ(self) -> None:
+        with poisoned_surface():
+            self.assertEqual(
+                decisions.shared_queue_delta(
+                    {"queues": {"a": 1}}, {"queues": {"a": 2}}), ["queues.a"])
+            self.assertEqual(
+                decisions.shared_queue_delta(
+                    {"queues": {"a": 1}}, {"queues": {}}), ["queues.a"])
+
+
+class ShellWiringCharacterization(unittest.TestCase):
+    """The imperative shell must route its gates through the pure planners."""
+
+    def test_shell_aliases_the_pure_core(self) -> None:
+        import task_workspace as shell
+        self.assertIs(shell.path_within, decisions.path_within)
+        self.assertIs(shell.validation_profile_selection,
+                      decisions.validation_profile_selection)
+        self.assertIs(shell.selected_full_suite_commands,
+                      decisions.selected_full_suite_commands)
+        self.assertIs(shell.selected_focused_rows, decisions.selected_focused_rows)
+        self.assertIs(shell._handoff_phase, decisions.handoff_phase)
+
+    def test_shell_gates_call_the_planner(self) -> None:
+        shell = (Path(__file__).resolve().parents[1] / "task_workspace.py").read_text()
+        self.assertIn("import task_workspace_decisions as decisions", shell)
+        for marker in (
+            'decisions.CommandRequest("start", task_id)',
+            'decisions.CommandRequest("hydrate", task_id)',
+            'decisions.CommandRequest("checkpoint", task_id)',
+            'decisions.CommandRequest("evidence-run", task_id)',
+            'decisions.CommandRequest("preflight", task_id)',
+            'decisions.CommandRequest("finish", task_id)',
+            'decisions.CommandRequest("child-checkpoint", task_id)',
+        ):
+            self.assertIn(marker, shell)
+        self.assertIn("decisions.plan_evidence_reuse(", shell)
+        self.assertIn("decisions.validation_failure_message(", shell)
+        self.assertIn("decisions.status_projection(", shell)
+        self.assertIn("decisions.next_enqueue_sequence(", shell)
+
+
+def tearDownModule() -> None:
+    elapsed = time.monotonic() - MODULE_STARTED
+    if elapsed >= PURE_BUDGET_SECONDS:
+        raise AssertionError(
+            f"pure decision test module exceeded the Wave 3 budget: {elapsed:.2f}s")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

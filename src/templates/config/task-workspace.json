@@ -27,6 +27,7 @@
     ".juno_task/scripts/target_runtime_provenance.py",
     ".juno_task/scripts/task_workflow_helper.py",
     ".juno_task/scripts/task_workspace.py",
+    ".juno_task/scripts/task_workspace_decisions.py",
     ".juno_task/scripts/tests/test_controller_registration.py",
     ".juno_task/scripts/tests/test_integration_workspace.py",
     ".juno_task/scripts/tests/test_managed_agent_runner.py",
@@ -35,6 +36,7 @@
     ".juno_task/scripts/tests/test_release_train.py",
     ".juno_task/scripts/tests/test_risk_policy.py",
     ".juno_task/scripts/tests/test_task_workspace.py",
+    ".juno_task/scripts/tests/test_task_workspace_decisions.py",
     ".juno_task/scripts/watch_progress.py",
     ".juno_task/scripts/wiki_lint.py",
     ".juno_task/scripts/workflow_runner.sh",
@@ -64,15 +66,24 @@
   ],
   "focused_validation": [
     {
-      "id": "task-workspace",
-      "cwd": "juno-code",
-      "timeout_seconds": 900,
+      "id": "task-workspace-decisions",
+      "cwd": ".juno_task/scripts/tests",
+      "timeout_seconds": 30,
       "max_output_bytes": 32768,
       "argv": [
-        "npm",
-        "test",
-        "--",
-        "src/utils/__tests__/task-workspace.test.ts"
+        "python3",
+        "test_task_workspace_decisions.py"
+      ]
+    },
+    {
+      "id": "task-workspace-adapter-canary",
+      "cwd": ".juno_task/scripts/tests",
+      "timeout_seconds": 30,
+      "max_output_bytes": 32768,
+      "argv": [
+        "python3",
+        "test_task_workspace.py",
+        "TaskWorkspaceTests.test_finish_queues_clean_committed_tip_without_merging_or_cleanup"
       ],
       "resource": {
         "id": "yylo-real-git-managed-install",

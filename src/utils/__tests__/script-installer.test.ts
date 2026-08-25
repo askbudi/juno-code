@@ -244,6 +244,7 @@ describe('ScriptInstaller', {
         'risk_policy.py',
         'target_runtime_provenance.py',
         'task_workspace.py',
+        'task_workspace_decisions.py',
         'tests/test_controller_registration.py',
         'tests/test_integration_workspace.py',
         'tests/test_managed_agent_runner.py',
@@ -253,6 +254,7 @@ describe('ScriptInstaller', {
         'tests/test_release_train.py',
         'tests/test_risk_policy.py',
         'tests/test_task_workspace.py',
+        'tests/test_task_workspace_decisions.py',
         'tests/test_workflow_runner_resume_contract.py',
         'watch_progress.py',
         'worktree_hydration.py',
@@ -377,12 +379,14 @@ describe('ScriptInstaller', {
         { name: 'invocation_correlation.py', installed: false },
         { name: 'watch_progress.py', installed: false },
         { name: 'task_workspace.py', installed: false },
+        { name: 'task_workspace_decisions.py', installed: false },
         { name: 'target_runtime_provenance.py', installed: false },
         { name: 'integration_workspace.py', installed: false },
         { name: 'merge_queue.py', installed: false },
         { name: 'release_train.py', installed: false },
         { name: 'tests/test_release_train.py', installed: false },
         { name: 'tests/test_task_workspace.py', installed: false },
+        { name: 'tests/test_task_workspace_decisions.py', installed: false },
         { name: 'tests/test_integration_workspace.py', installed: false },
         { name: 'tests/test_merge_queue.py', installed: false },
         { name: 'tests/test_workflow_runner_resume_contract.py', installed: false },
@@ -528,6 +532,10 @@ describe('ScriptInstaller', {
         '#!/usr/bin/env python3\nprint("task workspace")',
       );
       await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_task_workspace_decisions.py'),
+        '#!/usr/bin/env python3\nprint("task workspace decisions")',
+      );
+      await fs.writeFile(
         path.join(scriptsDir, 'tests/test_controller_workspace.py'),
         '#!/usr/bin/env python3\nprint("controller workspace")',
       );
@@ -562,6 +570,7 @@ describe('ScriptInstaller', {
       await fs.writeFile(path.join(scriptsDir, 'invocation_correlation.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_lifecycle.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'task_workspace.py'), '#!/usr/bin/env python3\n');
+      await fs.writeFile(path.join(scriptsDir, 'task_workspace_decisions.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'target_runtime_provenance.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'merge_queue.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'release_train.py'), '#!/usr/bin/env python3\n');
@@ -639,12 +648,14 @@ describe('ScriptInstaller', {
         { name: 'invocation_correlation.py', installed: true },
         { name: 'watch_progress.py', installed: true },
         { name: 'task_workspace.py', installed: true },
+        { name: 'task_workspace_decisions.py', installed: true },
         { name: 'target_runtime_provenance.py', installed: true },
         { name: 'integration_workspace.py', installed: true },
         { name: 'merge_queue.py', installed: true },
         { name: 'release_train.py', installed: true },
         { name: 'tests/test_release_train.py', installed: true },
         { name: 'tests/test_task_workspace.py', installed: true },
+        { name: 'tests/test_task_workspace_decisions.py', installed: true },
         { name: 'tests/test_integration_workspace.py', installed: true },
         { name: 'tests/test_merge_queue.py', installed: true },
         { name: 'tests/test_workflow_runner_resume_contract.py', installed: true },

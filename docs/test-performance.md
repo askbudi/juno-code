@@ -90,3 +90,42 @@ Bases live under `$(realpath tmpdir)/yylo-fixture-bases/` and overlays under
 all fixture environment semantics are unchanged; only construction cost is
 removed. Phase instrumentation is available to the harness through
 `YYLO_TEST_GLOBAL_SETUP_PHASE_REPORT=<path>`.
+
+## Task-workspace functional-core pilot (Wave 3)
+
+`task_workspace_decisions.py` now owns the pure state/command, path-admission,
+validation-routing, standing-evidence reuse, failure, and FIFO decisions. The
+existing `task_workspace.py` remains the imperative shell for physical identity,
+Git and filesystem I/O, locks, subprocess dispatch, receipt persistence, and CLI
+rendering. Runtime and package-template copies are managed parity twins.
+
+The pure table suite forbids filesystem/process/socket/clock access and covers
+the complete lifecycle state × command matrix. Configured focused validation
+runs that suite plus one real-Git finish/validation/receipt/FIFO adapter canary;
+the comprehensive real-Git scenarios and installed-package canaries remain in
+the full suite. No admission schema or public CLI behavior changed.
+
+Controlled macOS profile (Node 22.22.3, Python 3.13.9, five measured runs after
+one warm-up):
+
+- pure decision tables: p50 107.312 ms, p95 108.629 ms; artifact SHA-256
+  `ce0b457236bbad67fe7dc4a779529717227d0a703863b531720f53606c256eed`;
+- real-Git adapter canary: p50 2518.448 ms, p95 14566.675 ms; artifact SHA-256
+  `a89496d120c2e6a61b92ff317b23444c8f25b9d00df8f5a942e7d99c2537ddfd`.
+
+Reproduce the profiles from `juno-code/`:
+
+```bash
+node scripts/test-performance/benchmark-profile.mjs --label wave3-pure-decisions \
+  --cwd .. --repetitions 5 --warmup 1 -- \
+  python3 .juno_task/scripts/tests/test_task_workspace_decisions.py
+node scripts/test-performance/benchmark-profile.mjs --label wave3-adapter-canary \
+  --cwd .. --repetitions 5 --warmup 1 -- \
+  python3 .juno_task/scripts/tests/test_task_workspace.py \
+  TaskWorkspaceTests.test_finish_queues_clean_committed_tip_without_merging_or_cleanup
+```
+
+The pilot supports extracting similarly stable pure decisions from merge-queue
+code later, but current evidence does not justify absorbing that high-risk,
+broad refactor into Wave 3. Reassess only with a separate task and measured
+merge-queue profile.

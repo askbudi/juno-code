@@ -35,6 +35,19 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
 import task_workflow_helper as lifecycle_runtime
+import task_workspace_decisions as decisions
+
+# --- Pure functional core (Wave 3 pilot of 7djT8N) ---
+# Decision planners live in task_workspace_decisions; this shell keeps only
+# physical identity resolution, Git/filesystem mutation, locks, validator
+# dispatch, receipt persistence, and rendering. The aliases below preserve
+# the historical module surface for callers and tests.
+path_within = decisions.path_within
+validation_profile_selection = decisions.validation_profile_selection
+selected_full_suite_commands = decisions.selected_full_suite_commands
+selected_focused_rows = decisions.selected_focused_rows
+_QUEUE_MISSING = decisions.QUEUE_MISSING
+_shared_queue_delta = decisions.shared_queue_delta
 
 CONFIG_SCHEMA = "juno_task_workspace_config.v1"
 STATE_SCHEMA = "juno_task_workspace_state.v1"
@@ -490,57 +503,6 @@ def _validated_validation_profiles(value: dict[str, Any], full_suite_id: str,
     return profiles
 
 
-def validation_profile_selection(config: dict[str, Any],
-                                 changed_paths: Any) -> dict[str, Any]:
-    """Deterministically route validation from the authored Git path set.
-
-    Exactly one matched profile covering every authored path selects that
-    package-local suite alone. Any uncovered path, or a spread across profiles,
-    conservatively adds the repository default suite (union semantics).
-    """
-    paths = [path for path in (changed_paths or []) if isinstance(path, str)]
-    matched = sorted(
-        (profile for profile in (config.get("validation_profiles") or [])
-         if isinstance(profile, dict)
-         and any(path_within(path, profile.get("path_roots", [])) for path in paths)),
-        key=lambda profile: str(profile.get("id")))
-    covered_roots = [root for profile in matched for root in profile["path_roots"]]
-    covered = bool(paths) and all(path_within(path, covered_roots) for path in paths)
-    if not matched or not paths:
-        mode = "default"
-    elif covered and len(matched) == 1:
-        mode = "profile"
-    else:
-        mode = "union"
-    return {"mode": mode, "profile_ids": [profile["id"] for profile in matched],
-            "authored_path_count": len(paths)}
-
-
-def selected_full_suite_commands(config: dict[str, Any],
-                                 changed_paths: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Return the ordered full-suite command rows plus their routing selection."""
-    selection = validation_profile_selection(config, changed_paths)
-    commands: list[dict[str, Any]] = []
-    for profile_id in selection["profile_ids"]:
-        profile = next(row for row in config.get("validation_profiles") or []
-                       if row["id"] == profile_id)
-        commands.extend(profile["commands"])
-    if selection["mode"] != "profile":
-        commands.append(config["full_suite_validation"])
-    return commands, selection
-
-
-def selected_focused_rows(config: dict[str, Any], changed_paths: Any) -> list[dict[str, Any]]:
-    """Route pre-queue focused rows; mixed or default candidates run every row."""
-    selection = validation_profile_selection(config, changed_paths)
-    if selection["mode"] != "profile":
-        return config["focused_validation"]
-    roots = next(row for row in config.get("validation_profiles") or []
-                 if row["id"] == selection["profile_ids"][0])["path_roots"]
-    return [row for row in config["focused_validation"]
-            if path_within(row["cwd"], roots)]
-
-
 def lexical_absolute(path: Path) -> Path:
     """Normalize spelling without following a filesystem object."""
     return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
@@ -807,35 +769,6 @@ QUEUE_ATTRIBUTION_PATH = ".juno_task/runtime/controller-checkpoint/queue-attribu
 _QUEUE_MISSING = object()
 
 
-def _shared_queue_delta(before: Any, after: Any) -> list[str]:
-    """Deterministic dotted paths for changed non-task queue state.
-
-    Structurally identical to the verifier in controller_checkpoint.py:
-    dictionaries recurse per key, every other value is a leaf, and a missing
-    key differs from any present value. Only the canonical "queues" section
-    is queue-owned shared state.
-    """
-    paths: set[str] = set()
-
-    def walk(old: Any, new: Any, prefix: str) -> None:
-        if isinstance(old, dict) and isinstance(new, dict):
-            for key in sorted(set(old) | set(new)):
-                walk(old.get(key, _QUEUE_MISSING), new.get(key, _QUEUE_MISSING),
-                     f"{prefix}.{key}" if prefix else str(key))
-            return
-        if old is _QUEUE_MISSING or new is _QUEUE_MISSING or old != new:
-            paths.add(prefix)
-
-    if isinstance(before, dict) and isinstance(after, dict):
-        for key in sorted(set(before) | set(after)):
-            if key == "tasks":
-                continue
-            walk(before.get(key, _QUEUE_MISSING), after.get(key, _QUEUE_MISSING), str(key))
-    else:
-        paths.add("<state>")
-    return sorted(paths)
-
-
 def _committed_state_bytes(controller: Path) -> Optional[bytes]:
     result = subprocess.run(
         ["git", "-C", str(controller), "show", "HEAD:.juno_task/state/tasks.json"],
@@ -896,12 +829,10 @@ def assign_enqueue_sequence(state: dict[str, Any]) -> int:
     meta = state["queues"].setdefault(
         "task_workspace_fifo", {"schema_version": "juno_task_workspace_fifo.v1", "next": 1}
     )
-    if (not isinstance(meta, dict) or set(meta) != {"schema_version", "next"}
-            or meta.get("schema_version") != "juno_task_workspace_fifo.v1"
-            or not isinstance(meta.get("next"), int) or isinstance(meta.get("next"), bool)
-            or not 1 <= meta["next"] <= 2**63 - 1):
-        raise TaskWorkspaceError("task FIFO sequence state is invalid")
-    value = meta["next"]
+    try:
+        value = decisions.next_enqueue_sequence(meta)
+    except ValueError as exc:
+        raise TaskWorkspaceError(str(exc)) from exc
     meta["next"] += 1
     return value
 
@@ -1277,10 +1208,6 @@ def run_focused_validations(rows: list[dict[str, Any]], worktree: Path) -> list[
             on_critical_path = lane == critical_lane
             evidence["schedule"]["critical_path"] = on_critical_path
     return [evidence for evidence in results if evidence is not None]
-
-
-def path_within(path: str, roots: list[str]) -> bool:
-    return any(path == root or path.startswith(root + "/") for root in roots)
 
 
 def target_blob(repository: Path, target_sha: str, path: str) -> bytes | None:
@@ -1995,8 +1922,12 @@ def umbrella_child_checkpoint(controller: Path, task_id: str, child_id: str) -> 
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
-        if not isinstance(record, dict) or record.get("state") != "WORKING":
-            raise TaskWorkspaceError("umbrella child checkpoint requires a WORKING umbrella")
+        umbrella_gate = decisions.plan_command_transition(
+            decisions.CommandRequest("child-checkpoint", task_id),
+            decisions.TaskSnapshot(
+                task_id, None if not isinstance(record, dict) else record.get("state")))
+        if not umbrella_gate.admitted:
+            raise TaskWorkspaceError(umbrella_gate.finding.message)
         admission = frozen_umbrella_admission(record)
         if not isinstance(admission, dict):
             raise TaskWorkspaceError("task has no frozen umbrella admission")
@@ -2988,8 +2919,11 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
         state = read_state(controller)
         reservations = child_reservations(state)
         reserved_owner = reservations.get(task_id)
-        if reserved_owner is not None and reserved_owner != task_id:
-            raise TaskWorkspaceError(f"task {task_id} is tracking-only under umbrella {reserved_owner}")
+        start_admission = decisions.plan_command_transition(
+            decisions.CommandRequest("start", task_id),
+            decisions.TaskSnapshot(task_id, None, reserved_owner))
+        if not start_admission.admitted:
+            raise TaskWorkspaceError(start_admission.finding.message)
         if umbrella_input is not None:
             locked_baseline, locked_entries = selected_task_paths(
                 config, repository, target_sha, requested_paths)
@@ -3293,9 +3227,13 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
         with state_lock(controller):
             state = read_state(controller)
             record = state["tasks"].get(task_id)
-            if not isinstance(record, dict) or record.get("state") not in {
-                    "WORKING", "HYDRATION_FAILED", "HYDRATING", "REVIEW_FINDINGS"}:
-                raise TaskWorkspaceError(f"task cannot hydrate from {record.get('state') if isinstance(record, dict) else 'missing'}")
+            hydrate_admission = decisions.plan_command_transition(
+                decisions.CommandRequest("hydrate", task_id),
+                decisions.TaskSnapshot(
+                    task_id,
+                    None if not isinstance(record, dict) else record.get("state")))
+            if not hydrate_admission.admitted:
+                raise TaskWorkspaceError(hydrate_admission.finding.message)
             receipt = record.get("creation_receipt", {})
             if stable_sha256(receipt) != record.get("workspace_identity", {}).get("create_receipt_sha256"):
                 raise TaskWorkspaceError("task hydration creation identity drifted")
@@ -4002,14 +3940,14 @@ def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
-        if not isinstance(record, dict) or record.get("state") != "WORKING":
-            reserved_owner = child_reservations(state).get(task_id)
-            if reserved_owner is not None:
-                raise TaskWorkspaceError(
-                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
-                    f"checkpoint the umbrella child instead: "
-                    f"yy task child-checkpoint {reserved_owner} {task_id}")
-            raise TaskWorkspaceError("standing checkpoint requires a WORKING task")
+        checkpoint_admission = decisions.plan_command_transition(
+            decisions.CommandRequest("checkpoint", task_id),
+            decisions.TaskSnapshot(
+                task_id,
+                None if not isinstance(record, dict) else record.get("state"),
+                child_reservations(state).get(task_id)))
+        if not checkpoint_admission.admitted:
+            raise TaskWorkspaceError(checkpoint_admission.finding.message)
         frozen = json.loads(json.dumps(record))
     verify_hydration_evidence(frozen, Path(frozen["worktree"]))
     _repo, worktree, head, changed = observe_working_task(
@@ -4145,27 +4083,34 @@ def standing_evidence_run(controller: Path, task_id: str,
     repository = product_repository(controller, config)
     with state_lock(controller):
         record = read_state(controller)["tasks"].get(task_id)
-    if not isinstance(record, dict) or record.get("state") != "WORKING":
-        raise TaskWorkspaceError("standing evidence run requires a WORKING task")
+    evidence_gate = decisions.plan_command_transition(
+        decisions.CommandRequest("evidence-run", task_id),
+        decisions.TaskSnapshot(
+            task_id, None if not isinstance(record, dict) else record.get("state")))
+    if not evidence_gate.admitted:
+        raise TaskWorkspaceError(evidence_gate.finding.message)
     _repo, worktree, head, changed = observe_working_task(record, repository, config, task_id)
     if head != plan["tip_sha"] or changed != plan["changed_paths"]:
         raise TaskWorkspaceError("standing checkpoint is stale; create a new task checkpoint")
     lane = _standing_root(controller, task_id) / ".local-lane.lock"
     lane.parent.mkdir(parents=True, exist_ok=True)
-    receipts: list[dict[str, Any]] = []
-    decisions: list[dict[str, Any]] = []
+    decision_log: list[dict[str, Any]] = []
     executed = reused = invalidated = 0
     failure: Optional[tuple[dict[str, Any], dict[str, Any]]] = None
     readiness_sha256 = _standing_readiness_identity(record, worktree, config)
     with lane.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        # Adapter half: gather immutable receipt facts, then plan purely.
+        facts: list[Optional[decisions.ReceiptFact]] = []
+        loaded: list[Optional[dict[str, Any]]] = []
+        base_paths: list[Path] = []
         for index, planned in enumerate(plan["commands"]):
             row, closure = planned["command"], planned["input_closure"]
             key = closure["input_closure_sha256"]
             base_receipt_path = (_standing_root(controller, task_id) / plan["plan_sha256"]
                                  / f"command-{index}-{key}.json")
-            receipt_path = base_receipt_path
             receipt: Optional[dict[str, Any]] = None
+            fact: Optional[decisions.ReceiptFact] = None
             if base_receipt_path.exists():
                 try: receipt = json.loads(base_receipt_path.read_text())
                 except (OSError, json.JSONDecodeError): receipt = None
@@ -4173,24 +4118,49 @@ def standing_evidence_run(controller: Path, task_id: str,
                         or receipt.get("input_closure") != closure or receipt.get("command") != row
                         or not isinstance(receipt.get("result"), dict)):
                     raise TaskWorkspaceError("standing command receipt is malformed")
-                failed_prior = bool(receipt["result"].get("timed_out") or receipt["result"].get("exit_code"))
-                if failed_prior:
-                    prior_readiness = receipt.get("readiness_sha256")
-                    if prior_readiness == readiness_sha256:
-                        failure = (row, receipt["result"])
-                    else:
-                        receipt_path = base_receipt_path.with_name(
-                            base_receipt_path.stem + f".readiness-{readiness_sha256}.json")
-                        if receipt_path.exists():
-                            raise TaskWorkspaceError(
-                                "failed evidence already consumed its one readiness supersession")
-                        receipt = None; invalidated += 1
-                        decisions.append(lifecycle_runtime.evidence_decision(
-                            row["id"], "invalidated", closure=closure,
-                            invalidation=[{"field": "readiness_sha256",
-                                           "old": prior_readiness, "new": readiness_sha256}],
-                            reason="failed evidence remains immutable; readiness changed"))
-            if receipt is None:
+                failed_prior = bool(receipt["result"].get("timed_out")
+                                    or receipt["result"].get("exit_code"))
+                prior_readiness = receipt.get("readiness_sha256")
+                supersession_path = base_receipt_path.with_name(
+                    base_receipt_path.stem + f".readiness-{readiness_sha256}.json")
+                fact = decisions.ReceiptFact(
+                    present=True, valid=True, failed_prior=failed_prior,
+                    readiness_sha256=prior_readiness,
+                    supersession_exists=(failed_prior
+                                         and prior_readiness != readiness_sha256
+                                         and supersession_path.exists()))
+            facts.append(fact)
+            loaded.append(receipt)
+            base_paths.append(base_receipt_path)
+        reuse_plan = decisions.plan_evidence_reuse(
+            plan["commands"], facts, readiness_sha256,
+            plan.get("documentation_route"))
+        receipts: list[dict[str, Any]] = []
+        for index, entry in enumerate(reuse_plan.entries):
+            planned = plan["commands"][index]
+            row, closure = planned["command"], planned["input_closure"]
+            base_receipt_path = base_paths[index]
+            receipt_path = base_receipt_path
+            receipt = loaded[index]
+            if entry.finding is not None:
+                raise TaskWorkspaceError(entry.finding.message)
+            if entry.action == decisions.ACTION_FAILURE_STANDS:
+                failure = (row, receipt["result"])
+            elif entry.action == decisions.ACTION_INVALIDATE:
+                receipt_path = base_receipt_path.with_name(
+                    base_receipt_path.stem + (entry.supersession_suffix or ""))
+                receipt = None; invalidated += 1
+                decision_log.append(lifecycle_runtime.evidence_decision(
+                    row["id"], "invalidated", closure=closure,
+                    invalidation=entry.invalidation,
+                    reason="failed evidence remains immutable; readiness changed"))
+            elif entry.action == decisions.ACTION_REUSE:
+                reused += 1
+                decision_log.append(lifecycle_runtime.evidence_decision(
+                    row["id"], "reused", closure=closure,
+                    source={"path": str(receipt_path),
+                            "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}))
+            else:
                 cwd = (worktree / row["cwd"]).resolve()
                 try: cwd.relative_to(worktree)
                 except ValueError as exc:
@@ -4206,34 +4176,27 @@ def standing_evidence_run(controller: Path, task_id: str,
                            "input_closure": closure, "readiness_sha256": readiness_sha256,
                            "result": evidence, "recorded_at_unix_ns": time.time_ns()}
                 _standing_atomic(receipt_path, receipt); executed += 1
-                decisions.append(lifecycle_runtime.evidence_decision(
+                decision_log.append(lifecycle_runtime.evidence_decision(
                     row["id"], "executed", closure=closure,
                     source={"path": str(receipt_path)}))
-            elif failure is None:
-                reused += 1
-                decisions.append(lifecycle_runtime.evidence_decision(
-                    row["id"], "reused", closure=closure,
-                    source={"path": str(receipt_path),
-                            "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}))
+                if receipt["result"]["timed_out"] or receipt["result"]["exit_code"]:
+                    failure = (row, receipt["result"])
             receipts.append({"path": str(receipt_path),
                              "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
                              "command_id": row["id"]})
-            if receipt["result"]["timed_out"] or receipt["result"]["exit_code"]:
-                failure = (row, receipt["result"]); break
-        if not plan["commands"]:
-            inert = plan["documentation_route"]["mode"] == "inert_zero_command"
-            decisions.append(lifecycle_runtime.evidence_decision(
-                "documentation-zero-command" if inert else "focused-validation",
-                "skipped" if inert else "not_applicable",
-                closure={"input_closure_sha256": plan["documentation_route"]["route_sha256"]},
-                reason=("exact inert-documentation profile proof" if inert
-                        else "selected package profile has no matching focused command")))
+            if failure is not None:
+                break
+        if reuse_plan.terminal is not None:
+            terminal = reuse_plan.terminal
+            decision_log.append(lifecycle_runtime.evidence_decision(
+                terminal["command_id"], terminal["decision"],
+                closure=terminal["closure"], reason=terminal["reason"]))
         summary = {"schema_version": STANDING_EVIDENCE_SCHEMA, "task_id": task_id,
                    "plan_sha256": plan["plan_sha256"], "tip_sha": head,
                    "outcome": "FAILED" if failure else "PASSED",
                    "executed": executed, "reused": reused, "invalidated": invalidated,
-                   "decisions": decisions,
-                   "counters": lifecycle_runtime.evidence_counters(decisions),
+                   "decisions": decision_log,
+                   "counters": lifecycle_runtime.evidence_counters(decision_log),
                    "documentation_route": plan["documentation_route"],
                    "grouped_coherence": plan["grouped_coherence"],
                    "readiness_sha256": readiness_sha256, "receipts": receipts,
@@ -4241,12 +4204,7 @@ def standing_evidence_run(controller: Path, task_id: str,
         _standing_atomic(plan_path.parent / "summary.json", summary)
     if failure and raise_on_failure:
         row, result = failure
-        if result["timed_out"]:
-            raise TaskWorkspaceError(
-                f"focused validation timed out ({row['id']}) after {row['timeout_seconds']}s")
-        detail = result["stderr_tail"] or result["stdout_tail"]
-        raise TaskWorkspaceError(
-            f"focused validation failed ({row['id']}, exit {result['exit_code']}): {detail}")
+        raise TaskWorkspaceError(decisions.validation_failure_message(row, result))
     return summary
 
 
@@ -4276,15 +4234,14 @@ def preflight(controller: Path, task_id: str) -> dict[str, Any]:
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
-        if not isinstance(record, dict):
-            reserved_owner = child_reservations(state).get(task_id)
-            if reserved_owner is not None:
-                raise TaskWorkspaceError(
-                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
-                    f"preflight the umbrella instead: yy task preflight {reserved_owner}")
-            raise TaskWorkspaceError("task has not been started")
-        if record.get("state") != "WORKING":
-            raise TaskWorkspaceError(f"task cannot preflight from {record.get('state')}")
+        preflight_admission = decisions.plan_command_transition(
+            decisions.CommandRequest("preflight", task_id),
+            decisions.TaskSnapshot(
+                task_id,
+                None if not isinstance(record, dict) else record.get("state"),
+                child_reservations(state).get(task_id)))
+        if not preflight_admission.admitted:
+            raise TaskWorkspaceError(preflight_admission.finding.message)
         frozen_record = json.loads(json.dumps(record))
     verify_hydration_evidence(frozen_record, Path(frozen_record["worktree"]))
     _, worktree, head, changed, closure = review_ready_closure(
@@ -4308,17 +4265,16 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
-        if not record:
-            reserved_owner = child_reservations(state).get(task_id)
-            if reserved_owner is not None:
-                raise TaskWorkspaceError(
-                    f"task {task_id} is tracking-only under umbrella {reserved_owner}; "
-                    f"finish the umbrella instead: yy task finish {reserved_owner}")
-            raise TaskWorkspaceError("task has not been started")
-        if record.get("state") == "QUEUED":
+        finish_admission = decisions.plan_command_transition(
+            decisions.CommandRequest("finish", task_id),
+            decisions.TaskSnapshot(
+                task_id,
+                None if not isinstance(record, dict) else record.get("state"),
+                child_reservations(state).get(task_id)))
+        if not finish_admission.admitted:
+            raise TaskWorkspaceError(finish_admission.finding.message)
+        if finish_admission.idempotent:
             queued_record = record
-        elif record.get("state") != "WORKING":
-            raise TaskWorkspaceError(f"task cannot finish from {record.get('state')}")
         else:
             frozen_record = json.loads(json.dumps(record))
     if queued_record is not None:
@@ -4484,17 +4440,7 @@ HANDOFF_NEXT_COMMANDS = {
 }
 
 
-def _handoff_phase(state: str) -> str:
-    return {
-        "NOT_STARTED": "planned", "WORKING": "working", "QUEUED": "queued",
-        "AWAITING_RISK": "validating", "AWAITING_RELEASE": "awaiting-release",
-        "REVIEWING": "reviewing", "REVIEW_FINDINGS": "findings",
-        "REVIEW_FINDINGS_EXHAUSTED": "exhausted", "CONFLICT": "conflict",
-        "CONFLICT_RESOLVED": "resolved", "REOPENING": "reopening",
-        "REQUEUING_STALE": "restale", "RISK_EVIDENCE_READY": "approved",
-        "MERGING": "merging", "MERGED": "merged",
-        KANBAN_SYNC_STATE: "kanban-sync-required", "WITHDRAWN": "withdrawn",
-    }.get(state, state)
+_handoff_phase = decisions.handoff_phase
 
 
 def run_handoff(controller: Path, task_id: str) -> dict[str, Any]:
@@ -4646,16 +4592,16 @@ def status(controller: Path, task_id: str) -> dict[str, Any]:
     state = read_state(controller)
     record = state["tasks"].get(task_id)
     if not record:
-        reserved_owner = child_reservations(state).get(task_id)
-        if reserved_owner is not None:
-            return {"schema_version": RECORD_SCHEMA, "task_id": task_id,
-                    "state": "TRACKING_ONLY", "outcome": "status",
-                    "umbrella_owner_task_id": reserved_owner,
-                    "runtime_generation": generation,
-                    "next_action": ("implement inside the umbrella worktree; "
-                                    f"record progress with: yy task child-checkpoint {reserved_owner} {task_id}")}
-        return {"schema_version": RECORD_SCHEMA, "task_id": task_id, "state": "NOT_STARTED",
-                "outcome": "status", "runtime_generation": generation}
+        projection = decisions.status_projection(
+            decisions.TaskSnapshot(task_id, None, child_reservations(state).get(task_id)))
+        projected: dict[str, Any] = {
+            "schema_version": RECORD_SCHEMA, "task_id": task_id,
+            "state": projection.state, "outcome": "status",
+            "runtime_generation": generation}
+        if projection.umbrella_owner_task_id is not None:
+            projected["umbrella_owner_task_id"] = projection.umbrella_owner_task_id
+            projected["next_action"] = projection.next_action
+        return projected
     result = {**record, "outcome": "status", "runtime_generation": generation}
     if isinstance(record.get("kanban_sync"), dict):
         kanban_sync = record["kanban_sync"]

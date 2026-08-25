@@ -86,6 +86,8 @@ describe('Bolt task workspace managed runtime', () => {
       '.juno_task/scripts/release_train.py',
       '.juno_task/scripts/target_runtime_provenance.py',
       '.juno_task/scripts/task_workflow_helper.py',
+      '.juno_task/scripts/task_workspace_decisions.py',
+      '.juno_task/scripts/tests/test_task_workspace_decisions.py',
       '.juno_task/scripts/tests/test_release_train.py',
       '.juno_task/scripts/tests/test_risk_policy.py',
       '.juno_task/scripts/wiki_lint.py',
@@ -235,4 +237,67 @@ describe('Bolt task workspace managed runtime', () => {
       stdio: 'pipe',
     });
   }, 120_000);
+
+  it('runs the pure task-workspace decision tables inside the Wave 3 budget', () => {
+    const decisionsTests = resolve(
+      repository, 'juno-code/src/templates/scripts/tests/test_task_workspace_decisions.py',
+    );
+    execFileSync('python3', [decisionsTests], {
+      cwd: repository,
+      env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-task-workspace-decisions-test-pycache' },
+      stdio: 'pipe',
+    });
+  }, 10_000);
+
+  it('keeps the pure decision core a managed parity-bound twin', () => {
+    const policies = [
+      resolve(repository, '.juno_task/config/task-workspace.json'),
+      resolve(repository, 'juno-code/src/templates/config/task-workspace.json'),
+    ];
+    const managed = JSON.parse(
+      readFileSync(resolve(repository, 'juno-code/src/templates/managed-assets.json'), 'utf8'),
+    ) as { assets: Array<{ source: string; destination: string; installClass: string }> };
+    const decisionsPair = [
+      'scripts/task_workspace_decisions.py',
+      'scripts/tests/test_task_workspace_decisions.py',
+    ];
+    for (const source of decisionsPair) {
+      const destination = `.juno_task/${source}`;
+      const entry = managed.assets.find((asset) => asset.source === source);
+      expect(entry?.destination).toBe(destination);
+      expect(entry?.installClass).toBe('script');
+      expect(
+        readFileSync(resolve(repository, `juno-code/src/templates/${source}`)),
+      ).toEqual(
+        readFileSync(resolve(repository, destination)),
+      );
+    }
+    for (const policyPath of policies) {
+      const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as {
+        allowed_paths: string[];
+        focused_validation: Array<{ id: string; cwd: string; argv: string[]; timeout_seconds: number }>;
+      };
+      expect(policy.allowed_paths).toEqual(
+        expect.arrayContaining([
+          '.juno_task/scripts/task_workspace_decisions.py',
+          '.juno_task/scripts/tests/test_task_workspace_decisions.py',
+        ]),
+      );
+      expect(policy.focused_validation).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'task-workspace-decisions',
+            cwd: '.juno_task/scripts/tests',
+            argv: ['python3', 'test_task_workspace_decisions.py'],
+            timeout_seconds: 30,
+          }),
+          expect.objectContaining({
+            id: 'task-workspace-adapter-canary',
+            cwd: '.juno_task/scripts/tests',
+            timeout_seconds: 30,
+          }),
+        ]),
+      );
+    }
+  });
 });
