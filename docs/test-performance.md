@@ -21,7 +21,8 @@ size, and sha256 rather than committed).
 Reproduce a focused-gate profile:
 
 ```bash
-npm run test:performance-profile -- --label focused-task-workspace \
+node scripts/test-performance/benchmark-profile.mjs \
+  --label focused-task-workspace \
   -- npm test -- src/utils/__tests__/environment.test.ts
 ```
 
