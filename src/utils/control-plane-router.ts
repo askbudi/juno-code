@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import type { ControllerOperation, ControllerResolution, WorkspaceRole } from './controller-resolver.js';
 import { resolveController } from './controller-resolver.js';
 import { buildChildProcessEnvironment } from '../core/child-process-environment.js';
@@ -20,6 +21,17 @@ const VALUE_GLOBAL_OPTIONS = new Set([
   '--on-hourly-limit', '--thinking',
 ]);
 const OPTIONAL_VERBOSE_VALUES = new Set(['0', '1', '2', 'true', 'false', 'yes', 'no']);
+
+/** Return true when the invocation is nested beneath Juno's managed marker. */
+export function hasManagedWorkspaceMarker(workingDirectory: string): boolean {
+  let current = path.resolve(workingDirectory);
+  while (true) {
+    if (existsSync(path.join(current, '.juno_task'))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
 
 /** Return the first command after routing-safe global options, without mutating argv. */
 export function classifyLeadingCommand(argv: readonly string[]): { command?: string; index: number } {

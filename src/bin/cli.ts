@@ -16,7 +16,7 @@ import chalk from 'chalk';
 import { EXIT_CODES, isCLIError } from '../cli/types.js';
 import type { SubagentType } from '../types/index.js';
 import { resolveAutomaticProjectBootstrap } from '../utils/controller-resolver.js';
-import { classifyLeadingCommand } from '../utils/control-plane-router.js';
+import { classifyLeadingCommand, hasManagedWorkspaceMarker } from '../utils/control-plane-router.js';
 import {
   InvocationLifecycle,
   joinActiveInvocation,
@@ -2116,7 +2116,10 @@ async function main(): Promise<void> {
     await runBenchmarkDelegate(initialArgs.slice(initialLeading.index + 1));
     return;
   }
-  if (initialArgs[initialLeading.index] === 'ledger') {
+  if (
+    initialArgs[initialLeading.index] === 'ledger' &&
+    !hasManagedWorkspaceMarker(process.cwd())
+  ) {
     await runLedgerDelegate(initialArgs.slice(initialLeading.index + 1));
     return;
   }
