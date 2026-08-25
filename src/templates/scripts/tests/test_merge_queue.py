@@ -4774,6 +4774,45 @@ class EvidenceReuseTests(unittest.TestCase):
                 for patch in patches: patch.stop()
         return references, reuse, calls
 
+    def test_cache_reuse_binds_the_compact_candidate_contract(self) -> None:
+        """Regression: production compose builds a rich candidate record
+        (changed paths, digests, parents); a derived-reuse receipt copied it
+        verbatim while verify_full_suite_receipt_v3 requires the exact compact
+        {candidate_sha, candidate_tree} binding, so every cache-reused
+        full-suite receipt failed admission verification."""
+        rich_plan = {**self.plan, "candidate": {
+            "candidate_sha": "c" * 40, "candidate_tree": "3" * 40,
+            "base_sha": "b" * 40, "candidate_kind": "direct_descendant",
+            "changed_paths": ["src/security/auth.py"], "parents": ["b" * 40],
+            "target_ref": "refs/heads/product", "target_sha": "b" * 40}}
+        claim = self._claim(1)
+        with mock.patch.object(merge_runtime.task_runtime, "run_validation",
+                               side_effect=lambda row, cwd: _retry_evidence(
+                                   "suite", ["npm", "test"], exit_code=0,
+                                   stderr_tail="suite output\n Test Files  0 failed\n")):
+            merge_runtime.full_suite_validation(
+                self.commands, self.candidate, rich_plan, self.identity,
+                [self._receipt_path(1)], claim, controller=self.controller,
+                repository=self.repository)
+        derived_path = self._receipt_path(2)
+        second_claim = self._claim(2)
+        with mock.patch.object(merge_runtime.task_runtime, "run_validation",
+                               side_effect=AssertionError("reuse must not re-execute")):
+            references, _reuse = merge_runtime.full_suite_validation(
+                self.commands, self.candidate, rich_plan, self.identity,
+                [derived_path], second_claim, controller=self.controller,
+                repository=self.repository)
+        self.assertEqual(len(references), 1)
+        derived = json.loads(derived_path.read_text())
+        self.assertEqual(derived["candidate"],
+                         {"candidate_sha": "c" * 40, "candidate_tree": "3" * 40})
+        verified = risk_runtime.verify_full_suite_receipt_v3(
+            references[0], rich_plan, self.identity, self.commands,
+            {"claim_path": second_claim["claim_path"],
+             "claim_sha256": second_claim["claim_sha256"],
+             "token": "t" * 48, "attempt_number": 2}, require_success=False)
+        self.assertEqual(verified["exit_code"], 0)
+
     def test_green_pass_is_cached_then_reused_without_reexecution(self) -> None:
         references, _reuse, calls = self._run(self._claim(1), self._receipt_path(1),
                                       controller=self.controller,

@@ -1522,7 +1522,9 @@ def store_cached_evidence(controller: Path, key_sha256: str,
     whose source receipts are still referenced by live queue/task records.
     """
     entry = {"schema_version": EVIDENCE_CACHE_SCHEMA, "key_sha256": key_sha256,
-             "source": {"receipt": reference, "candidate": plan["candidate"],
+             "source": {"receipt": reference,
+                        "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                                       "candidate_tree": plan["candidate"]["candidate_tree"]},
                         "policy_identity": plan["policy_identity"],
                         "validation_identity": identity, "commands": commands,
                         "command_index": index},
@@ -1746,7 +1748,11 @@ def _derived_reuse_receipt(source: dict[str, Any],
         "schema_version": risk_runtime.FULL_SUITE_RECEIPT_V3_SCHEMA,
         "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
                      "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
-        "candidate": source["candidate"],
+        # Derived receipts must bind the exact compact candidate contract the
+        # verifier enforces; a legacy cache entry may carry a richer candidate
+        # record from the composing plan, so compact it defensively here.
+        "candidate": {"candidate_sha": source["candidate"]["candidate_sha"],
+                       "candidate_tree": source["candidate"]["candidate_tree"]},
         "policy_identity": source["policy_identity"],
         "claim": claim,
         "validation_identity": source["validation_identity"],
