@@ -1874,6 +1874,9 @@ def umbrella_child_allowed_paths(admission: dict[str, Any], child_id: str) -> li
     declaration = canonical_scope.get("declaration") or {}
     scope = declaration.get("scope") or {}
     if scope.get("baseline"):
+        # Baseline children union the unreserved baseline surface with their
+        # own declared scope; a sibling reservation never strips a path the
+        # child itself explicitly declared (sequential same-file children).
         reserved_elsewhere: list[str] = []
         for other in admission.get("child_bindings", []):
             if not isinstance(other, dict) or other.get("task_id") == child_id:
@@ -1882,8 +1885,8 @@ def umbrella_child_allowed_paths(admission: dict[str, Any], child_id: str) -> li
                 path for path in other.get("required_paths", []) if isinstance(path, str))
             for row in generated.get(other.get("task_id"), []):
                 reserved_elsewhere.extend((row["source"], row["destination"]))
-        allowed = [path for path in admission.get("union_paths", [])
-                   if not path_within(path, reserved_elsewhere)]
+        allowed.extend(path for path in admission.get("union_paths", [])
+                       if not path_within(path, reserved_elsewhere))
     return sorted(set(allowed))
 
 

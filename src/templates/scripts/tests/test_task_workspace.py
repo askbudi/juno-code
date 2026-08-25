@@ -1279,6 +1279,72 @@ class TaskWorkspaceTests(unittest.TestCase):
                                     "no committed diff since checkpoint base"):
             task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
 
+    def test_umbrella_baseline_child_keeps_shared_required_path_across_siblings(self) -> None:
+        shared = "child/shared.txt"
+        exclusive = "child/exclusive-z.txt"
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\nOrdered same-file tracking children\n[task_id]Y Z[/task_id]\n"
+        )
+        for child_id in ("Y", "Z"):
+            target = self.repository / shared
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{child_id} base\n")
+            task_runtime.task_file(self.controller, child_id).write_text(
+                f"---\nid: {child_id}\nstatus: todo\n---\nExact required path: {shared}\n"
+            )
+        exclusive_target = self.repository / exclusive
+        exclusive_target.parent.mkdir(parents=True, exist_ok=True)
+        exclusive_target.write_text("Z base\n")
+        task_runtime.task_file(self.controller, "Z").write_text(
+            f"---\nid: Z\nstatus: todo\n---\nExact required paths: {shared} and {exclusive}\n"
+        )
+        self.write_task_scope("X", children=["Y", "Z"], baseline=True)
+        self.write_task_scope("Y", owner="X", required=[shared], baseline=True)
+        self.write_task_scope("Z", owner="X", required=[shared, exclusive], baseline=True)
+        git(self.repository, "add", "child")
+        git(self.repository, "commit", "-m", "add shared-path baseline child fixtures")
+        self.base = git(self.repository, "rev-parse", "HEAD")
+        declaration = self.root / "umbrella-shared.json"
+        declaration.write_text(json.dumps({
+            "schema_version": task_runtime.UMBRELLA_INPUT_SCHEMA,
+            "execution_mode": task_runtime.UMBRELLA_EXECUTION_MODE,
+            "children": ["Y", "Z"],
+        }, indent=2) + "\n")
+        started = task_runtime.start(self.controller, "X", umbrella_input=declaration)
+        admission = started["creation_receipt"]["umbrella_admission"]
+        bindings = {row["task_id"]: row for row in admission["child_bindings"]}
+        self.assertEqual(bindings["Y"]["required_paths"], [shared])
+        self.assertEqual(bindings["Z"]["required_paths"], sorted([shared, exclusive]))
+
+        # Baseline expansion still excludes a sibling's exclusively reserved path.
+        worktree = self.workspaces / "X"
+        (worktree / exclusive).write_text("Y bleed\n")
+        git(worktree, "add", exclusive)
+        git(worktree, "commit", "-m", "baseline child bleeds into sibling-only scope")
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "escapes its admitted scope"):
+            task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+        git(worktree, "reset", "--hard", "HEAD~1")
+
+        # Both baseline children checkpoint sequentially over the shared path.
+        first_tip = self.commit_task("X", shared)
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Y")
+        self.assertEqual(recorded["outcome"], "umbrella_child_checkpointed")
+        self.assertEqual(recorded["checkpoint"]["changed_paths"], [shared])
+        self.assertEqual(recorded["checkpoint"]["tip_sha"], first_tip)
+        self.assertEqual(recorded["current_child_id"], "Z")
+
+        second_increment = self.workspaces / "X" / shared
+        second_increment.write_text("Z increment\n")
+        git(self.workspaces / "X", "add", shared)
+        git(self.workspaces / "X", "commit", "-m", "feature Z")
+        second_tip = git(self.workspaces / "X", "rev-parse", "HEAD")
+        recorded = task_runtime.umbrella_child_checkpoint(self.controller, "X", "Z")
+        self.assertEqual(recorded["checkpoint"]["base_sha"], first_tip)
+        self.assertEqual(recorded["checkpoint"]["changed_paths"], [shared])
+        self.assertEqual(recorded["checkpoint"]["tip_sha"], second_tip)
+        self.assertIsNone(recorded["current_child_id"])
+        self.assertEqual(recorded["remaining_child_ids"], [])
+
     def test_umbrella_child_status_and_finish_refuse_tracking_only_children(self) -> None:
         declaration = self.umbrella_fixture()
         task_runtime.start(self.controller, "X", umbrella_input=declaration)
