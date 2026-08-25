@@ -485,7 +485,7 @@ describe('ypl wrapper', () => {
       const operationMarker = path.join(tempDir, 'resolver-operation');
       const runtimeMarker = path.join(tempDir, 'runtime-ran');
       await fs.ensureDir(controller);
-      await fs.ensureDir(integration);
+      await fs.ensureDir(path.join(integration, '.juno_task'));
       await fs.ensureDir(launcherBin);
       await fs.ensureDir(packagedScripts);
       await execa('git', ['init', '-b', 'controller'], { cwd: controller });

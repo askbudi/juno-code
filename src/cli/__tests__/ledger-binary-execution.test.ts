@@ -32,10 +32,18 @@ afterEach(async () => Promise.all(fixtures.splice(0).map((item) => rm(item, { re
 describe('built yy/yylo ledger delegation', () => {
   it.each(['yy', 'yylo'])('preserves %s args, help, stdio, cwd, environment, and exit status', async (surface) => {
     const item = await fixture();
+    await import('node:fs/promises').then(async ({ symlink }) => {
+      await symlink(wrapper, path.join(item.root, 'yylo'));
+      await symlink(wrapper, path.join(item.root, 'yy'));
+    });
     const launcher = path.join(item.root, surface);
-    await import('node:fs/promises').then(({ symlink }) => symlink(wrapper, launcher));
-    const result = await execa(launcher, ['ledger', 'list', '--help'], { cwd: item.root, env: { ...item.env, FAKE_EXIT: '43' }, input: 'request body', reject: false });
-    expect(result.exitCode).toBe(43);
+    const result = await execa(launcher, ['ledger', 'list', '--help'], {
+      cwd: item.root,
+      env: { ...item.env, PATH: `${item.root}${path.delimiter}${item.env.PATH}`, FAKE_EXIT: '43' },
+      input: 'request body',
+      reject: false,
+    });
+    expect(result.exitCode, result.stderr).toBe(43);
     expect(result.stdout).toBe('standalone stdout');
     expect(result.stderr).toBe('standalone stderr');
     expect(JSON.parse(await readFile(item.record, 'utf8'))).toEqual({ argv: ['list', '--help'], cwd: await realpath(item.root), input: 'request body' });

@@ -8,7 +8,11 @@ import {
   resolveAutomaticProjectBootstrap,
   resolveController,
 } from '../controller-resolver.js';
-import { classifyLeadingCommand, routeControlPlane } from '../control-plane-router.js';
+import {
+  classifyLeadingCommand,
+  hasManagedWorkspaceMarker,
+  routeControlPlane,
+} from '../control-plane-router.js';
 
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
@@ -36,6 +40,20 @@ function git(cwd: string, ...args: string[]) {
 }
 
 describe('control-plane argv classification', () => {
+  it('detects a managed marker from nested paths without classifying its parent', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yylo-managed-marker-'));
+    try {
+      const managed = path.join(root, 'managed');
+      const nested = path.join(managed, 'nested');
+      await fs.ensureDir(path.join(managed, '.juno_task'));
+      await fs.ensureDir(nested);
+      expect(hasManagedWorkspaceMarker(nested)).toBe(true);
+      expect(hasManagedWorkspaceMarker(root)).toBe(false);
+    } finally {
+      await fs.remove(root);
+    }
+  });
+
   it.each([
     { argv: ['--quiet', 'kanban', 'list'], command: 'kanban', index: 1 },
     { argv: ['--config', 'controller.json', '--no-color', 'task', 'status'], command: 'task', index: 3 },

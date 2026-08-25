@@ -243,10 +243,21 @@ read_runtime_version() {
     printf '%s\n' "$output" | tail -n 1 | sed -E 's/^yylo[[:space:]]+//; s/^v//'
 }
 
+has_managed_workspace_marker() {
+    local current="$PWD" parent
+    while true; do
+        [ -d "$current/.juno_task" ] && return 0
+        parent="$(dirname "$current")"
+        [ "$parent" != "$current" ] || return 1
+        current="$parent"
+    done
+}
+
 route_registered_product_control() {
     local operation="${1:-}"
     shift || true
     case "$operation" in ledger|kanban|task|merge|integration|evidence) ;; *) return 1 ;; esac
+    case "$operation" in ledger|kanban) has_managed_workspace_marker || return 1 ;; esac
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
         ledger:*|kanban:*) effective_operation=kanban ;;
