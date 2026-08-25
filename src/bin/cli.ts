@@ -96,6 +96,7 @@ import { configureKanbanCommand } from '../cli/commands/kanban.js';
 import { configureMigrationCommand } from '../cli/commands/migrate.js';
 import { configureWorkspaceCommands } from '../cli/commands/workspace.js';
 import { configureWikiCommand } from '../cli/commands/wiki.js';
+import { configureLoopCommand } from '../cli/commands/loop.js';
 import {
   configureBenchmarkCommand,
   forwardBenchmarkSignal,
@@ -2064,6 +2065,7 @@ function configureCommandSurface(program: Command): void {
   configureMigrationCommand(program);
   configureWorkspaceCommands(program, VERSION);
   configureWikiCommand(program);
+  configureLoopCommand(program);
   configureBenchmarkCommand(program);
   setupCompletion(program);
   setupAliases(program);
