@@ -1,15 +1,18 @@
 name: Create the package GitHub Release from its version tag
 
-# Automatic tag-triggered counterpart of the guarded release apply flow
-# (the guarded release apply contract in the monorepo). Only exact `cli-v*` tags can
+# Automatic tag-triggered counterpart of the guarded release apply contract
+# (the guarded release apply in the monorepo). Only exact `cli-v*` tags can
 # trigger it; the package version must equal package.json at the tagged
-# commit; the package release gate must pass; and the release is created
-# from the already-existing remote tag with the same deterministic
-# title/notes/prerelease identity the guarded apply produces, so
-# automatic-first and guarded-first orderings converge to one release.
-# There is deliberately no asset upload (source archives are provided by
-# GitHub; the guarded apply path reconciles exact registry artifacts) and
-# no npm token or publication authority of any kind.
+# commit; the package release gate (test, typecheck, build, and one exact
+# pack with identity binding) must pass; and the release is created from the
+# already-existing remote tag with the same deterministic title/notes/
+# prerelease identity the guarded apply produces, so automatic-first and
+# guarded-first orderings converge to one release. Creation is race-tolerant:
+# if guarded apply creates the matching release concurrently, the workflow
+# re-reads and accepts the exact identity instead of failing. There is
+# deliberately no asset upload (source archives are provided by GitHub; the
+# guarded apply path reconciles exact registry artifacts) and no npm token or
+# publication authority of any kind.
 
 on:
   push:
@@ -73,10 +76,25 @@ jobs:
       - run: npm ci
 
       # Package-focused release gate: the tagged commit must pass its own
-      # suite, typecheck, and build before any release page exists.
+      # suite, typecheck, and build, and must pack exactly one npm artifact
+      # with the tagged identity, before any release page exists.
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
+      - name: Pack and verify the exact publishable artifact
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          npm pack --json --pack-destination "$RUNNER_TEMP/artifacts" > "$RUNNER_TEMP/pack.json"
+          node - <<'NODE'
+          const summary = require(process.env.RUNNER_TEMP + '/pack.json');
+          const row = summary[0];
+          if (row.name !== process.env.PACKAGE_NAME || row.version !== process.env.EXPECTED_VERSION) {
+            throw new Error(`packed identity mismatch: ${row.name}@${row.version}`);
+          }
+          console.log(`packed ${row.filename} sha1=${row.shasum}`);
+          NODE
 
       - name: Verify or create the release identity from the existing tag
         env:
@@ -85,6 +103,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
+          # yy-release-identity-block begin
           set -euo pipefail
           target="$(git rev-parse "${TAG_NAME}^{commit}")"
           verify_identity() {
@@ -116,7 +135,20 @@ jobs:
           notes="$(printf 'Automated %s %s release.\n\nAttached assets are the exact registry-published artifacts.' "$PACKAGE_NAME" "$RELEASE_VERSION")"
           args=(--verify-tag --target "$target" --title "${PACKAGE_NAME} ${RELEASE_VERSION}" --notes "$notes")
           if [ "$RELEASE_PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-          gh release create "$TAG_NAME" "${args[@]}"
+          if ! gh release create "$TAG_NAME" "${args[@]}"; then
+            # Concurrency cannot serialize the separate guarded apply process:
+            # a failed create may mean guarded apply produced the expected
+            # release concurrently. Re-read and accept only the exact match.
+            if identity="$(gh release view "$TAG_NAME" --json tagName,targetCommitish,isPrerelease 2>"$RUNNER_TEMP/race.err")" \
+                && EXPECTED_TARGET="$target" verify_identity "$identity"; then
+              echo "matching release appeared concurrently with the expected identity; accepted"
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/race.err" >&2 || true
+            echo "release creation failed without a concurrently matching release" >&2
+            exit 1
+          fi
           identity="$(gh release view "$TAG_NAME" --json tagName,targetCommitish,isPrerelease)"
           EXPECTED_TARGET="$target" verify_identity "$identity"
           echo "created ${PACKAGE_NAME} ${RELEASE_VERSION} release from ${TAG_NAME}"
+          # yy-release-identity-block end
