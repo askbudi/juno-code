@@ -1754,6 +1754,27 @@ class TaskWorkspaceTests(unittest.TestCase):
                 "juno-code/scripts/implementation-contract.json"):
             assert_juno_admission_fixture(self.repository)
 
+    def test_shared_real_git_fixture_contract_tracks_admission_requirements(self) -> None:
+        """Regression absorbing the remaining 6AqluB requirement (via MXPgR3).
+
+        The centralized minimum real-Git fixture must declare every
+        authoritative admission asset the implementation requires. Admission
+        manifests are enumerated from the task runtime's own constants, so a
+        new ``*_DECLARATION`` required by admission fails here until the
+        shared fixture contract installs it — fixtures can no longer drift
+        behind admission and surface as dozens of downstream failures."""
+        implementation_required = {
+            value for name, value in vars(task_runtime).items()
+            if name.endswith("_DECLARATION") and isinstance(value, str)
+        }
+        fixture_declared = set(_fixture.REQUIRED_DECLARATIONS)
+        self.assertEqual(
+            fixture_declared,
+            implementation_required | {"juno-code/package.json"},
+            "shared real-Git fixture declarations drifted from admission "
+            "requirements; update real_git_fixture.py in the same change",
+        )
+
     def test_declared_generator_and_managed_outputs_are_hash_bound_and_queue_at_byte_parity(self) -> None:
         fixtures = self.install_declared_output_fixtures()
         started = self.payload("start", "X")

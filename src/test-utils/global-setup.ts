@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -7,6 +6,30 @@ import {
   captureGitMutationSnapshot,
   type GitMutationSnapshot,
 } from './git-mutation-sentinel.js';
+import {
+  createColdFixture,
+  createFixtureOverlay,
+  ensureFixtureBase,
+  fixtureBaseKey,
+  fixtureIdentityForRepository,
+  FIXTURE_BASE_DISABLE_ENV,
+  type FixtureOverlay,
+} from './fixture-base-cache.js';
+
+/** Optional phase report consumed by scripts/test-performance/benchmark-profile.mjs. */
+function reportPhases(phases: Record<string, number | string | null>): void {
+  const target = process.env.YYLO_TEST_GLOBAL_SETUP_PHASE_REPORT?.trim();
+  if (!target) return;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(
+      target,
+      `${JSON.stringify({ schema_version: 'juno.test.global_setup.phases.v1', ...phases }, null, 2)}\n`,
+    );
+  } catch {
+    // Phase reporting is diagnostic only; never fail setup on it.
+  }
+}
 
 function gitValue(root: string, args: string[]): string | undefined {
   try {
@@ -53,21 +76,40 @@ export function protectedRoots(
 }
 
 export default function setup() {
+  const phases: Record<string, number | null> = {};
+
   const roots = protectedRoots();
   const before = roots.map(({ identity, root }) => captureGitMutationSnapshot(identity, root));
 
-  // Default test processes receive only suite-owned controller/metadata state.
-  // Git-aware runner tests construct narrower per-test controllers as well, so
-  // finalization and checkpoint paths cannot fall back to an external checkout.
-  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yylo-suite-'));
-  const fixtureController = path.join(fixtureRoot, 'controller');
-  const fixtureScripts = path.join(fixtureController, '.juno_task', 'scripts');
-  const fixtureBin = path.join(fixtureController, '.venv_juno', 'bin');
-  fs.mkdirSync(fixtureScripts, { recursive: true });
-  execFileSync('git', ['init', '-b', 'fixture-controller', fixtureController], { stdio: 'ignore' });
-  const python = execFileSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim();
-  execFileSync(python, ['-m', 'venv', path.dirname(fixtureBin)], { stdio: 'ignore' });
+  // Wave 1 (7djT8N): the suite-owned fixture controller is materialized once
+  // per identity into a sealed content-addressed base; every run copies a
+  // disposable overlay. Cold fallback preserves the pre-cache construction
+  // when the cache is disabled or its root is unusable.
+  let fixture: FixtureOverlay;
+  let baseKey: string | null = null;
+  const fixtureStarted = process.hrtime.bigint();
+  const cacheDisabled = process.env[FIXTURE_BASE_DISABLE_ENV] === '1';
+  if (cacheDisabled) {
+    fixture = createColdFixture();
+  } else {
+    try {
+      const identity = fixtureIdentityForRepository(path.resolve(import.meta.dirname, '../../..'));
+      const key = fixtureBaseKey(identity);
+      const base = ensureFixtureBase(key, identity);
+      baseKey = base.key;
+      const overlayStarted = process.hrtime.bigint();
+      fixture = createFixtureOverlay(base);
+      phases.overlay_ms = Number(process.hrtime.bigint() - overlayStarted) / 1e6;
+    } catch {
+      fixture = createColdFixture();
+    }
+  }
+  phases.total_setup_ms = Number(process.hrtime.bigint() - fixtureStarted) / 1e6;
+  phases.cold = fixture.cold ? 1 : 0;
+  reportPhases({ base_key: baseKey, ...phases });
 
+  const fixtureRoot = fixture.root;
+  const fixtureController = fixture.controllerPath;
   process.env.YYLO_TEST_FIXTURE_ROOT = fixtureRoot;
   process.env.JUNO_TASK_ROOT = fixtureController;
   process.env.JUNO_WORKSPACE_ROLE = 'controller';
@@ -77,6 +119,7 @@ export default function setup() {
   process.env.GIT_OPTIONAL_LOCKS = '0';
 
   return () => {
+    const teardownStarted = process.hrtime.bigint();
     let assertionError: unknown;
     try {
       const after: GitMutationSnapshot[] = roots.map(({ identity, root }) =>
@@ -85,7 +128,14 @@ export default function setup() {
     } catch (error) {
       assertionError = error;
     }
-    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    try {
+      fixture.release();
+    } catch {
+      // Overlay cleanup is best effort; the mutation-sentinel assertion below
+      // remains the authoritative teardown gate.
+    }
+    const teardownMs = Number(process.hrtime.bigint() - teardownStarted) / 1e6;
+    reportPhases({ base_key: baseKey, ...phases, total_teardown_ms: teardownMs });
     if (assertionError) throw assertionError;
   };
 }

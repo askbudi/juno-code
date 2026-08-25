@@ -87,7 +87,8 @@
     "deploy:minor": "bash scripts/publish-all.sh minor",
     "deploy:major": "bash scripts/publish-all.sh major",
     "deploy:dry-run": "bash scripts/publish-all.sh patch --dry-run",
-    "test:ledger-release-artifacts": "node scripts/verify-ledger-release-artifacts.mjs"
+    "test:ledger-release-artifacts": "node scripts/verify-ledger-release-artifacts.mjs",
+    "test:performance-profile": "node scripts/test-performance/benchmark-profile.mjs"
   },
   "dependencies": {
     "chalk": "^5.3.0",

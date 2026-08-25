@@ -8,10 +8,42 @@ export const MANAGED_INSTALL_POOL_MATCH_GLOBS: [string, 'forks'][] = [
   ['src/utils/__tests__/script-installer.test.ts', 'forks'],
 ];
 
+/**
+ * Wave 1 (7djT8N) retry policy: ordinary failures execute exactly once.
+ * Retries are a reported quarantine affordance only — an explicit opt-in
+ * through YYLO_TEST_QUARANTINE_RETRIES that admission argv never sets, so a
+ * retried pass can never become an eligible first-pass receipt.
+ */
+export function quarantineRetryCount(
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = environment.YYLO_TEST_QUARANTINE_RETRIES?.trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 5) {
+    throw new Error(
+      `YYLO_TEST_QUARANTINE_RETRIES must be an integer in [0, 5]; received ${JSON.stringify(raw)}`,
+    );
+  }
+  if (value > 0) {
+    // Explicit, reported quarantine: the structured marker is emitted to the
+    // console and captured in raw logs; lifecycle admission argv carries no
+    // such environment so its receipts stay first-pass-only.
+    process.stderr.write(
+      `[quarantine] retries=${value} reason=YYLO_TEST_QUARANTINE_RETRIES results=advisory-not-first-pass\n`,
+    );
+  }
+  return value;
+}
+
 export default defineConfig({
   test: {
     globals: true,
-    environment: 'happy-dom',
+    // Wave 1 (7djT8N): Node is the default environment; the suite has no
+    // browser-DOM dependence (verified by the vitest-policy tests). Files
+    // that later need a DOM must opt in with a `@vitest-environment happy-dom`
+    // docblock so Node-only runs never load happy-dom.
+    environment: 'node',
     globalSetup: ['./src/test-utils/global-setup.ts'],
     setupFiles: ['./src/test-utils/setup.ts'],
     include: [
@@ -72,7 +104,7 @@ export default defineConfig({
     // Test execution
     testTimeout: 10000,
     hookTimeout: 10000,
-    retry: 2,
+    retry: quarantineRetryCount(),
     bail: 1,  // Stop on first failure in CI
 
     // Performance
