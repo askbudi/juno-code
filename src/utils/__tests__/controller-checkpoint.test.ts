@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 
 const helper = path.resolve(process.cwd(), 'src/templates/scripts/controller_checkpoint.py');
@@ -227,6 +228,173 @@ describe('controller_checkpoint.py template script', () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/queue attribution refused|blocked non-controller paths/);
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('queue-attributed receipt admits queue-owned shared fields and multi-task mutations', async () => {
+    await configureMetadataController();
+    await fs.writeFile(path.join(repo, '.gitignore'), '/.juno_task/runtime/\n');
+    git(repo, 'add', '.gitignore');
+    git(repo, 'commit', '-m', 'ignore controller runtime');
+    const queue = path.join(repo, '.juno_task', 'state', 'tasks.json');
+    const canonical = { schema_version: 1, tasks: {
+      A: { state: 'QUEUED' }, B: { state: 'QUEUED' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 4,
+    } } };
+    await fs.outputJson(queue, canonical);
+    git(repo, 'add', '.juno_task/state/tasks.json');
+    git(repo, 'commit', '-m', 'canonical queue state');
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'MERGED', queue_attempt: { candidate_sha: 'c' }, last_queue_outcome: 'MERGED' },
+      B: { state: 'MERGED', last_queue_outcome: 'MERGED' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 5,
+    } } });
+    const digest = createHash('sha256').update(await fs.readFile(queue)).digest('hex');
+    const receiptPath = path.join(repo, '.juno_task', 'runtime', 'controller-checkpoint', 'queue-attribution.json');
+    await fs.outputJson(receiptPath, {
+      schema_version: 'juno_checkpoint_queue_attribution.v1',
+      producer: 'task_workspace.write_state',
+      task_ids: ['A', 'B'],
+      shared_fields: ['queues.task_workspace_fifo.next'],
+      queue_document_sha256: digest,
+    });
+    await fs.outputFile(path.join(repo, '.juno_task', 'ledger', 'b', 'B', '000001.ndjson'), '{}\n');
+    const result = run(repo, '--task-id', 'A', 'commit', '--message', 'checkpoint merged projection', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.outcome).toBe('committed');
+    expect(payload.selected).toEqual([
+      '.juno_task/ledger/b/B/000001.ndjson',
+      '.juno_task/state/tasks.json',
+    ]);
+    expect(git(repo, 'show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean))
+      .toEqual(['.juno_task/ledger/b/B/000001.ndjson', '.juno_task/state/tasks.json']);
+    // The attribution chain resets with the durable queue commit.
+    expect(await fs.pathExists(receiptPath)).toBe(false);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('refuses queue-attributed mutations that escape the receipt binding', async () => {
+    await configureMetadataController();
+    await fs.writeFile(path.join(repo, '.gitignore'), '/.juno_task/runtime/\n');
+    git(repo, 'add', '.gitignore');
+    git(repo, 'commit', '-m', 'ignore controller runtime');
+    const queue = path.join(repo, '.juno_task', 'state', 'tasks.json');
+    const receiptPath = path.join(repo, '.juno_task', 'runtime', 'controller-checkpoint', 'queue-attribution.json');
+    const seed = async () => {
+      spawnSync('git', ['-C', repo, 'checkout', '--', '.juno_task/state/tasks.json']);
+      await fs.outputJson(queue, { schema_version: 1, tasks: {
+        A: { state: 'QUEUED' }, B: { state: 'QUEUED' },
+      }, queues: { task_workspace_fifo: {
+        schema_version: 'juno_task_workspace_fifo.v1', next: 4,
+      } } });
+      if (git(repo, 'status', '--porcelain=v1', '--', '.juno_task/state/tasks.json')) {
+        git(repo, 'add', '.juno_task/state/tasks.json');
+        git(repo, 'commit', '-m', 'canonical queue state');
+      }
+    };
+    const bind = async (mutation: Record<string, unknown>) => {
+      await fs.outputJson(queue, mutation);
+      const digest = createHash('sha256').update(await fs.readFile(queue)).digest('hex');
+      return digest;
+    };
+
+    // Digest binding: a receipt naming older bytes cannot admit current dirt.
+    await seed();
+    const stale = await bind({ schema_version: 1, tasks: {
+      A: { state: 'MERGED' }, B: { state: 'QUEUED' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 5,
+    } } });
+    await fs.outputJson(queue, { schema_version: 1, tasks: {
+      A: { state: 'MERGED' }, B: { state: 'QUEUED' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 6,
+    } } });
+    await fs.outputJson(receiptPath, {
+      schema_version: 'juno_checkpoint_queue_attribution.v1',
+      producer: 'task_workspace.write_state',
+      task_ids: ['A'],
+      shared_fields: ['queues.task_workspace_fifo.next'],
+      queue_document_sha256: stale,
+    });
+    let result = run(repo, '--task-id', 'A', 'plan');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('receipt digest does not bind the current queue document bytes');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+
+    // Transition-field confinement: another task may only move queue fields.
+    await seed();
+    const escaped = await bind({ schema_version: 1, tasks: {
+      A: { state: 'MERGED', last_queue_outcome: 'MERGED' },
+      B: { state: 'MERGED', worktree: '/elsewhere' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 5,
+    } } });
+    await fs.outputJson(receiptPath, {
+      schema_version: 'juno_checkpoint_queue_attribution.v1',
+      producer: 'task_workspace.write_state',
+      task_ids: ['A', 'B'],
+      shared_fields: ['queues.task_workspace_fifo.next'],
+      queue_document_sha256: escaped,
+    });
+    result = run(repo, '--task-id', 'A', 'plan');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('task B record delta escapes queue transition fields');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+
+    // Exact set truth: a receipt may not attribute tasks that did not change.
+    await seed();
+    await bind({ schema_version: 1, tasks: {
+      A: { state: 'MERGED', last_queue_outcome: 'MERGED' }, B: { state: 'QUEUED' },
+    }, queues: { task_workspace_fifo: {
+      schema_version: 'juno_task_workspace_fifo.v1', next: 5,
+    } } });
+    const digest = createHash('sha256').update(await fs.readFile(queue)).digest('hex');
+    await fs.outputJson(receiptPath, {
+      schema_version: 'juno_checkpoint_queue_attribution.v1',
+      producer: 'task_workspace.write_state',
+      task_ids: ['A', 'B'],
+      shared_fields: ['queues.task_workspace_fifo.next'],
+      queue_document_sha256: digest,
+    });
+    result = run(repo, '--task-id', 'A', 'plan');
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("receipt task set ['A', 'B'] does not match the observed change");
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('task-scoped selection commits umbrella-declared child scope files', async () => {
+    await configureMetadataController();
+    await fs.outputJson(path.join(repo, '.juno_task', 'task-scopes', 'u1', 'U1.json'), {
+      schema_version: 'juno_task_canonical_scope.v1', task_id: 'U1',
+      umbrella_relations: { owner: null, children: ['C1', 'C2'] },
+      scope: { baseline: true, selectable_paths: [], required_paths: [], generated_paths: [] },
+    });
+    await fs.outputJson(path.join(repo, '.juno_task', 'task-scopes', 'c1', 'C1.json'), {
+      schema_version: 'juno_task_canonical_scope.v1', task_id: 'C1',
+    });
+    await fs.outputJson(path.join(repo, '.juno_task', 'task-scopes', 'c2', 'C2.json'), {
+      schema_version: 'juno_task_canonical_scope.v1', task_id: 'C2',
+    });
+    // An undeclared sibling scope file stays unadmitted controller residue.
+    await fs.outputJson(path.join(repo, '.juno_task', 'task-scopes', 'z9', 'Z9.json'), {
+      schema_version: 'juno_task_canonical_scope.v1', task_id: 'Z9',
+    });
+    const result = run(repo, '--task-id', 'U1', 'commit', '--message', 'checkpoint umbrella scopes', '--json');
+    expect(result.status, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.outcome).toBe('committed');
+    expect(payload.selected).toEqual([
+      '.juno_task/task-scopes/c1/C1.json',
+      '.juno_task/task-scopes/c2/C2.json',
+      '.juno_task/task-scopes/u1/U1.json',
+    ]);
+    expect(git(repo, 'show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean))
+      .toEqual(['.juno_task/task-scopes/c1/C1.json', '.juno_task/task-scopes/c2/C2.json',
+                '.juno_task/task-scopes/u1/U1.json']);
+    expect(git(repo, 'status', '--porcelain')).toContain('.juno_task/task-scopes/z9/');
   });
 
   it('task-scoped checkpoints exclude another task namespace residue', async () => {

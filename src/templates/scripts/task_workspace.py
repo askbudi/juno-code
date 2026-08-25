@@ -799,6 +799,97 @@ def write_state(controller: Path, state: dict[str, Any]) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    _record_queue_attribution(controller, data)
+
+
+QUEUE_ATTRIBUTION_SCHEMA = "juno_checkpoint_queue_attribution.v1"
+QUEUE_ATTRIBUTION_PATH = ".juno_task/runtime/controller-checkpoint/queue-attribution.json"
+_QUEUE_MISSING = object()
+
+
+def _shared_queue_delta(before: Any, after: Any) -> list[str]:
+    """Deterministic dotted paths for changed non-task queue state.
+
+    Structurally identical to the verifier in controller_checkpoint.py:
+    dictionaries recurse per key, every other value is a leaf, and a missing
+    key differs from any present value. Only the canonical "queues" section
+    is queue-owned shared state.
+    """
+    paths: set[str] = set()
+
+    def walk(old: Any, new: Any, prefix: str) -> None:
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in sorted(set(old) | set(new)):
+                walk(old.get(key, _QUEUE_MISSING), new.get(key, _QUEUE_MISSING),
+                     f"{prefix}.{key}" if prefix else str(key))
+            return
+        if old is _QUEUE_MISSING or new is _QUEUE_MISSING or old != new:
+            paths.add(prefix)
+
+    if isinstance(before, dict) and isinstance(after, dict):
+        for key in sorted(set(before) | set(after)):
+            if key == "tasks":
+                continue
+            walk(before.get(key, _QUEUE_MISSING), after.get(key, _QUEUE_MISSING), str(key))
+    else:
+        paths.add("<state>")
+    return sorted(paths)
+
+
+def _committed_state_bytes(controller: Path) -> Optional[bytes]:
+    result = subprocess.run(
+        ["git", "-C", str(controller), "show", "HEAD:.juno_task/state/tasks.json"],
+        capture_output=True, stdin=subprocess.DEVNULL)
+    return result.stdout if result.returncode == 0 else None
+
+
+def _record_queue_attribution(controller: Path, data: bytes) -> None:
+    """Bind the dirty queue document to an exact checkpoint attribution receipt.
+
+    The receipt always describes the delta from the committed HEAD baseline to
+    the exact bytes now on disk, using the same dotted-path walk the controller
+    checkpoint verifier applies, so the declared task set and shared fields can
+    never drift from what a task-scoped checkpoint will observe. The consumer
+    admits queue-owned multi-task and shared-field mutations that strict
+    single-task scoping must keep refusing.
+    """
+    baseline = _committed_state_bytes(controller)
+    try:
+        before = (json.loads(baseline) if baseline is not None
+                  else {"schema_version": STATE_SCHEMA, "tasks": {}, "queues": {}})
+        current = json.loads(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(before, dict) or not isinstance(current, dict):
+        return
+    before_tasks = before.get("tasks") if isinstance(before.get("tasks"), dict) else {}
+    current_tasks = current.get("tasks") if isinstance(current.get("tasks"), dict) else {}
+    changed_tasks = sorted(
+        key for key in set(before_tasks) | set(current_tasks)
+        if before_tasks.get(key, _QUEUE_MISSING) != current_tasks.get(key, _QUEUE_MISSING)
+    )
+    if not changed_tasks:
+        # Shared-only drift is not attributable to any task lifecycle.
+        return
+    receipt = {
+        "schema_version": QUEUE_ATTRIBUTION_SCHEMA,
+        "producer": "task_workspace.write_state",
+        "task_ids": changed_tasks,
+        "shared_fields": _shared_queue_delta(before, current),
+        "queue_document_sha256": hashlib.sha256(data).hexdigest(),
+    }
+    receipt_path = controller / QUEUE_ATTRIBUTION_PATH
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{receipt_path.name}.", dir=receipt_path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, receipt_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def assign_enqueue_sequence(state: dict[str, Any]) -> int:
