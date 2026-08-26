@@ -20,9 +20,9 @@ describe('Bolt task workspace managed runtime', () => {
       };
       expect(policy.focused_validation.map(({ id }) => id)).toEqual([
         'task-workspace-decisions', 'task-workspace-adapter-canary',
-        'integration-workspace', 'script-installer',
+        'integration-workspace', 'script-installer', 'root-scripts-telemetry',
       ]);
-      const [pure, adapter, integration, installer] = policy.focused_validation;
+      const [pure, adapter, integration, installer, telemetry] = policy.focused_validation;
       expect(adapter?.resource).toEqual(installer?.resource);
       expect(adapter?.resource).toMatchObject({
         id: 'yylo-real-git-managed-install',
@@ -31,6 +31,8 @@ describe('Bolt task workspace managed runtime', () => {
       expect(adapter!.resource!.wait_timeout_seconds).toBe(1200);
       expect(pure?.resource).toBeUndefined();
       expect(integration?.resource).toBeUndefined();
+      expect(telemetry?.resource).toBeUndefined();
+      expect(telemetry?.argv).toContain('agent-session-telemetry.test.py');
       expect(pure?.argv).toContain('test_task_workspace_decisions.py');
       expect(adapter?.argv).toContain(
         'TaskWorkspaceTests.test_finish_queues_clean_committed_tip_without_merging_or_cleanup',
