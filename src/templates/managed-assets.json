@@ -142,6 +142,12 @@
       "type": "wiki"
     },
     {
+      "source": "wiki/controller/sealed_release_epochs.md",
+      "destination": ".juno_task/wiki/controller/sealed_release_epochs.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
       "source": "wiki/effective_lifecycle_field_guide.md",
       "destination": ".juno_task/wiki/effective_lifecycle_field_guide.md",
       "installClass": "project",

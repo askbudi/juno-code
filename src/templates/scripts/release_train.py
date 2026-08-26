@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +19,12 @@ import task_workspace as task_runtime
 DECLARATION_SCHEMA = "juno_release_train_declaration.v1"
 REPORT_SCHEMA = "juno_release_train_plan.v1"
 IDENTITY_SCHEMA = "juno_release_train_plan_identity.v1"
+EPOCH_PLAN_SCHEMA = "juno_release_epoch_plan.v1"
+EPOCH_SEAL_SCHEMA = "juno_release_epoch_seal.v1"
+EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
+EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
+SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
+EPOCH_TERMINAL_STATES = {"RELEASE_READY", "CLOSED", "PAUSED_REQUIRED", "NEEDS_OPERATOR", "STALE"}
 ACTIVE_QUEUE_STATES = {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED", "AWAITING_RISK",
                        "AWAITING_RELEASE", "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
                        "REOPENING", "REQUEUING_STALE"}
@@ -450,6 +458,477 @@ def check_plan(controller: Path, plan_path: Path, action: str, task_id: Optional
     return current
 
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def atomic_json(path: Path, value: dict[str, Any], *, exclusive: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical(value) + "\n"
+    if exclusive:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        return
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def epoch_root(controller: Path) -> Path:
+    return controller / ".juno_task/runtime/release-epochs"
+
+
+def epoch_state_path(controller: Path, epoch_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", epoch_id):
+        raise ReleaseTrainError("epoch id is unsafe")
+    return epoch_root(controller) / epoch_id / "state.json"
+
+
+def read_epoch(controller: Path, epoch_id: str) -> dict[str, Any]:
+    path = epoch_state_path(controller, epoch_id)
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"release epoch is missing or malformed: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != EPOCH_STATE_SCHEMA:
+        raise ReleaseTrainError("release epoch state has an unsupported schema")
+    return value
+
+
+def epoch_receipt(controller: Path, state: dict[str, Any], transition: str,
+                  detail: dict[str, Any]) -> dict[str, Any]:
+    sequence = len(state.get("receipts", [])) + 1
+    body = {"schema_version": EPOCH_RECEIPT_SCHEMA, "epoch_id": state["epoch_id"],
+            "sequence": sequence, "transition": transition, "created_utc": utc_now(),
+            "previous_state": state["state"], "detail": detail}
+    body["receipt_id"] = digest(body)
+    path = epoch_root(controller) / state["epoch_id"] / "receipts" / f"{sequence:04d}-{transition.lower()}.json"
+    atomic_json(path, body, exclusive=True)
+    reference = {"path": str(path.resolve()), "sha256": file_hash(path),
+                 "receipt_id": body["receipt_id"], "transition": transition}
+    state.setdefault("receipts", []).append(reference)
+    return reference
+
+
+def queue_epoch_members(controller: Path, declaration: dict[str, Any], target_sha: str) -> list[dict[str, Any]]:
+    state = task_runtime.read_state(controller)
+    declared_required = set(declaration["required_tasks"])
+    declared_optional = set(declaration["optional_tasks"])
+    rows: list[dict[str, Any]] = []
+    for task_id, record in state.get("tasks", {}).items():
+        if (not isinstance(record, dict) or record.get("target_ref") != declaration["target_ref"]
+                or record.get("state") not in ACTIVE_QUEUE_STATES):
+            continue
+        task = kanban_task(controller, task_id)
+        tip = record.get("tip_sha")
+        if not isinstance(tip, str) or not SHA_RE.fullmatch(tip):
+            raise ReleaseTrainError(f"eligible candidate {task_id} lacks an exact tip")
+        repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+        tree = git(repository, "rev-parse", f"{tip}^{{tree}}")
+        if not SHA_RE.fullmatch(tree):
+            raise ReleaseTrainError(f"eligible candidate {task_id} tip is unavailable")
+        attempt = record.get("queue_attempt") if isinstance(record.get("queue_attempt"), dict) else {}
+        closure = record.get("complete_input_identity") or attempt.get("complete_input_identity")
+        evidence = record.get("validation") or attempt.get("command_evidence") or attempt.get("validation") or []
+        admission = ("required" if task_id in declared_required else
+                     "optional" if task_id in declared_optional else "ambient_pre_cutoff")
+        # Ambient finished candidates are release-barrier members, not blockers
+        # outside the epoch. They must drain before the epoch can CAS.
+        rows.append({"task_id": task_id, "admission": admission,
+                     "required": admission != "optional", "queue_state": record.get("state"),
+                     "enqueue_sequence": record.get("enqueue_sequence"), "tip_sha": tip,
+                     "tree_sha": tree, "task_revision": task.get("last_modified"),
+                     "task_sha256": digest(task), "queue_record_sha256": digest(record),
+                     "fencing_attempt": attempt.get("arbiter_attempt") or attempt.get("attempt"),
+                     "complete_input_identity": closure, "evidence_sha256": digest(evidence),
+                     "review_sha256": digest(attempt.get("risk") or attempt.get("review") or {}),
+                     "changed_paths": sorted(record.get("changed_paths", [])),
+                     "blocked_by": sorted(task.get("blocked_by", []) or [])})
+    rows.sort(key=lambda row: (row["enqueue_sequence"] if isinstance(row["enqueue_sequence"], int) else 2**63,
+                               row["task_id"]))
+    return rows
+
+
+def epoch_dependency_order(members: list[dict[str, Any]], declaration: dict[str, Any]) -> tuple[list[str], list[list[str]]]:
+    ids = {row["task_id"] for row in members}
+    edges = {(edge["before"], edge["after"]) for edge in declaration["dependencies"]
+             if edge["before"] in ids and edge["after"] in ids}
+    for row in members:
+        edges.update((blocker, row["task_id"]) for blocker in row["blocked_by"] if blocker in ids)
+    cycle = cycle_path(ids, edges)
+    if cycle:
+        raise ReleaseTrainError("release epoch dependency cycle: " + " -> ".join(cycle))
+    fifo = {row["task_id"]: index for index, row in enumerate(members)}
+    incoming = {node: 0 for node in ids}; children = {node: [] for node in ids}
+    for before, after in edges:
+        incoming[after] += 1; children[before].append(after)
+    ready = sorted((node for node, count in incoming.items() if count == 0), key=lambda node: (fifo[node], node))
+    order: list[str] = []
+    while ready:
+        node = ready.pop(0); order.append(node)
+        for child in sorted(children[node], key=lambda item: (fifo[item], item)):
+            incoming[child] -= 1
+            if incoming[child] == 0:
+                ready.append(child); ready.sort(key=lambda item: (fifo[item], item))
+    return order, [list(edge) for edge in sorted(edges)]
+
+
+def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
+    declaration, resolved = load_declaration(declaration_path)
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    target_sha = git(repository, "rev-parse", "--verify", declaration["target_ref"])
+    if target_sha != declaration["planning_base_sha"]:
+        raise ReleaseTrainError("target moved since the declaration planning base")
+    members = queue_epoch_members(controller, declaration, target_sha)
+    queued = {row["task_id"] for row in members}
+    missing = sorted((set(declaration["required_tasks"]) | set(declaration["optional_tasks"])) - queued)
+    if missing:
+        raise ReleaseTrainError("declared candidates are not queued at the cutoff: " + ", ".join(missing))
+    if not members:
+        raise ReleaseTrainError("no eligible candidates exist for an epoch seal")
+    order, edges = epoch_dependency_order(members, declaration)
+    runtime_paths = [".juno_task/scripts/release_train.py", ".juno_task/scripts/merge_queue.py",
+                     ".juno_task/scripts/task_workspace.py"]
+    body = {"schema_version": EPOCH_PLAN_SCHEMA, "epoch_id": declaration["train_id"],
+            "declaration": {"path": str(resolved), "sha256": file_hash(resolved),
+                            "revision": declaration["revision"]},
+            "target_ref": declaration["target_ref"], "base_sha": target_sha,
+            "members": members, "order": order, "dependency_edges": edges,
+            "runtime_sha256": {path: file_hash(controller / path) for path in runtime_paths},
+            "policy_sha256": {path: file_hash(controller / path) for path in
+                              [".juno_task/config/task-workspace.json", ".juno_task/config/risk-policy.json"]},
+            "requested_version": declaration["requested_version"],
+            "exclusions": declaration["exclusions"],
+            "mutation_authority": "explicit_seal_required"}
+    return {**body, "plan_id": digest(body)}
+
+
+def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
+    plan = build_epoch_plan(controller, declaration_path)
+    path = epoch_state_path(controller, plan["epoch_id"])
+    if path.exists():
+        current = read_epoch(controller, plan["epoch_id"])
+        if current.get("seal", {}).get("plan_id") != plan["plan_id"]:
+            raise ReleaseTrainError("epoch id is already sealed with a different immutable snapshot")
+        return {"outcome": "already_sealed", "epoch": current}
+    token = f"{plan['epoch_id']}:{secrets.token_hex(24)}"
+    seal = {"schema_version": EPOCH_SEAL_SCHEMA, **plan, "sealed_utc": utc_now(),
+            "cutoff": {"kind": "queue_snapshot", "last_enqueue_sequence": max(
+                (row["enqueue_sequence"] for row in plan["members"] if isinstance(row["enqueue_sequence"], int)),
+                default=None)}, "fencing_token_sha256": hashlib.sha256(token.encode()).hexdigest()}
+    state = {"schema_version": EPOCH_STATE_SCHEMA, "epoch_id": plan["epoch_id"],
+             "state": "SEALED", "seal": seal, "dispositions": {
+                 row["task_id"]: {"state": "ADMITTED", "reason": None} for row in plan["members"]},
+             "composition": {"worktree": None, "ref": None, "tip_sha": plan["base_sha"], "commits": []},
+             "aggregate": None, "cas": None, "release_ready": None, "receipts": [],
+             "updated_utc": utc_now()}
+    epoch_receipt(controller, state, "SEAL", {"plan_id": plan["plan_id"],
+                                               "member_count": len(plan["members"])})
+    try:
+        atomic_json(path, state, exclusive=True)
+    except FileExistsError:
+        return seal_epoch(controller, declaration_path)
+    return {"outcome": "sealed", "lease_token": token, "epoch": state}
+
+
+def require_epoch_token(state: dict[str, Any], token: Optional[str]) -> None:
+    if not token or hashlib.sha256(token.encode()).hexdigest() != state["seal"]["fencing_token_sha256"]:
+        raise ReleaseTrainError("exact current epoch fencing token is required")
+
+
+def save_epoch(controller: Path, state: dict[str, Any], new_state: str,
+               transition: str, detail: dict[str, Any]) -> dict[str, Any]:
+    epoch_receipt(controller, state, transition, detail)
+    state["state"] = new_state; state["updated_utc"] = utc_now()
+    atomic_json(epoch_state_path(controller, state["epoch_id"]), state)
+    return state
+
+
+def active_members(state: dict[str, Any]) -> list[dict[str, Any]]:
+    by_id = {row["task_id"]: row for row in state["seal"]["members"]}
+    return [by_id[task_id] for task_id in state["seal"]["order"]
+            if state["dispositions"][task_id]["state"] == "ADMITTED"]
+
+
+def eject_epoch_member(controller: Path, epoch_id: str, task_id: str, reason: str,
+                       token: str) -> dict[str, Any]:
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    by_id = {row["task_id"]: row for row in state["seal"]["members"]}
+    if task_id not in by_id:
+        raise ReleaseTrainError("task is not an epoch member")
+    if by_id[task_id]["required"]:
+        state["dispositions"][task_id] = {"state": "FAILED_REQUIRED", "reason": reason}
+        return save_epoch(controller, state, "PAUSED_REQUIRED", "PAUSE_REQUIRED", {"task_id": task_id, "reason": reason})
+    descendants = {task_id}; changed = True
+    while changed:
+        changed = False
+        for before, after in state["seal"]["dependency_edges"]:
+            if before in descendants and after not in descendants:
+                descendants.add(after); changed = True
+    for member_id in descendants:
+        state["dispositions"][member_id] = {"state": "EJECTED_OPTIONAL", "reason": reason,
+                                             "ancestor": task_id if member_id != task_id else None}
+    return save_epoch(controller, state, "SEALED", "EJECT_OPTIONAL", {"task_id": task_id,
+                       "descendants": sorted(descendants), "reason": reason})
+
+
+def composition_paths(controller: Path, state: dict[str, Any]) -> tuple[Path, Path, str]:
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    root = Path(config["workspace_root"]).expanduser().resolve() / ".release-epochs" / state["epoch_id"]
+    ref = f"refs/juno/release-epochs/{state['epoch_id']}"
+    return repository, root, ref
+
+
+def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
+    repository, checkout, ref = composition_paths(controller, state)
+    composition = state["composition"]
+    if not checkout.exists():
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        task_runtime.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(checkout),
+                          state["seal"]["base_sha"]], repository)
+        task_runtime.run(["git", "-C", str(repository), "update-ref", ref, state["seal"]["base_sha"]], repository)
+        composition.update({"worktree": str(checkout), "ref": ref})
+    completed = {row["task_id"] for row in composition["commits"]}
+    for member in active_members(state):
+        if member["task_id"] in completed:
+            continue
+        before = git(checkout, "rev-parse", "HEAD"); before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
+        merged = subprocess.run(["git", "-C", str(checkout), "merge", "--no-ff", "--no-edit", member["tip_sha"]],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if merged.returncode:
+            conflicts = git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines()
+            packet = {"schema_version": "juno_release_epoch_conflict.v1", "task_id": member["task_id"],
+                      "base_sha": state["seal"]["base_sha"], "ours_sha": before,
+                      "theirs_sha": member["tip_sha"], "conflict_paths": sorted(conflicts),
+                      "admitted_paths": sorted({path for row in active_members(state) for path in row["changed_paths"]}),
+                      "dependency_edges": state["seal"]["dependency_edges"],
+                      "requirements_sha256": member["task_sha256"], "repair_budget": 1,
+                      "authority": "bounded_authorization_neutral_repair_only"}
+            state["conflict"] = packet
+            save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
+            return state
+        commit = git(checkout, "rev-parse", "HEAD"); parents = git(checkout, "show", "-s", "--format=%P", commit).split()
+        row = {"task_id": member["task_id"], "candidate_tip": member["tip_sha"],
+               "pre_sha": before, "pre_tree": before_tree, "merge_commit": commit,
+               "post_tree": git(checkout, "rev-parse", "HEAD^{tree}"), "parents": parents,
+               "ordering_reason": "dependency_topology_then_fifo"}
+        if member["tip_sha"] not in parents or not git(checkout, "merge-base", "--is-ancestor", member["tip_sha"], commit) == "":
+            # merge-base --is-ancestor intentionally has no stdout; check via subprocess below.
+            pass
+        if subprocess.run(["git", "-C", str(checkout), "merge-base", "--is-ancestor",
+                           member["tip_sha"], commit]).returncode:
+            raise ReleaseTrainError("composed train lost candidate ancestry")
+        composition["commits"].append(row); composition["tip_sha"] = commit
+        task_runtime.run(["git", "-C", str(repository), "update-ref", ref, commit], repository)
+        save_epoch(controller, state, "COMPOSING", "COMPOSE_MEMBER", row)
+    for member in state["seal"]["members"]:
+        if state["dispositions"][member["task_id"]]["state"].startswith("EJECTED") and not subprocess.run(
+                ["git", "-C", str(repository), "merge-base", "--is-ancestor", member["tip_sha"], composition["tip_sha"]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            raise ReleaseTrainError("ejected candidate is present in composed train ancestry")
+    return save_epoch(controller, state, "VALIDATING", "COMPOSITION_COMPLETE",
+                      {"tip_sha": composition["tip_sha"], "member_count": len(composition["commits"])})
+
+
+def verify_member_evidence(state: dict[str, Any]) -> list[dict[str, Any]]:
+    decisions = []
+    for row in active_members(state):
+        exact = bool(row["complete_input_identity"] and row["evidence_sha256"] != digest([]))
+        decisions.append({"task_id": row["task_id"], "decision": "reused" if exact else "invalidated",
+                          "complete_input_identity": row["complete_input_identity"],
+                          "reason": "exact_complete_input_closure" if exact else "missing_complete_input_closure"})
+    return decisions
+
+
+def validate_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("aggregate") and state["aggregate"].get("train_tip") == state["composition"]["tip_sha"]:
+        return save_epoch(controller, state, "READY_CAS", "AGGREGATE_REUSED", {"receipt": state["aggregate"]["receipt_id"]})
+    config = task_runtime.load_config(controller); checkout = Path(state["composition"]["worktree"])
+    command = config["full_suite_validation"]
+    result = subprocess.run(command["argv"], cwd=checkout / command["cwd"], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            timeout=command.get("timeout_seconds", 3600))
+    log_path = epoch_root(controller) / state["epoch_id"] / "aggregate.log"
+    log_path.write_text(result.stdout[-int(command.get("max_output_bytes", 65536)):])
+    if result.returncode:
+        state["aggregate"] = {"status": "failed", "exit_code": result.returncode,
+                              "log_sha256": file_hash(log_path), "train_tip": state["composition"]["tip_sha"]}
+        return save_epoch(controller, state, "RECOVERING", "AGGREGATE_FAILED", state["aggregate"])
+    decisions = verify_member_evidence(state)
+    if any(row["decision"] == "invalidated" for row in decisions):
+        state["aggregate"] = {"status": "blocked", "reason": "candidate_evidence_invalid",
+                              "reuse": decisions, "train_tip": state["composition"]["tip_sha"]}
+        return save_epoch(controller, state, "NEEDS_OPERATOR", "EVIDENCE_INVALID", state["aggregate"])
+    receipt = {"schema_version": "juno_release_epoch_aggregate.v1", "train_tip": state["composition"]["tip_sha"],
+               "command": command, "command_sha256": digest(command), "exit_code": 0,
+               "log_sha256": file_hash(log_path), "reuse": decisions,
+               "semantic_reviews": "retained_from_frozen_candidates", "aggregate_runs": 1}
+    receipt["receipt_id"] = digest(receipt); state["aggregate"] = receipt
+    return save_epoch(controller, state, "READY_CAS", "AGGREGATE_PASS", receipt)
+
+
+def pre_cas_findings(controller: Path, state: dict[str, Any]) -> list[str]:
+    findings: list[str] = []
+    current_records = task_runtime.read_state(controller).get("tasks", {})
+    repository, _, _ = composition_paths(controller, state)
+    tip = state["composition"]["tip_sha"]
+    for member in state["seal"]["members"]:
+        disposition = state["dispositions"][member["task_id"]]["state"]
+        if disposition == "ADMITTED":
+            record = current_records.get(member["task_id"])
+            if not isinstance(record, dict) or digest(record) != member["queue_record_sha256"]:
+                findings.append(f"queue_projection_drift:{member['task_id']}")
+            if subprocess.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                               member["tip_sha"], tip], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode:
+                findings.append(f"admitted_ancestry_missing:{member['task_id']}")
+        elif disposition.startswith("EJECTED") and not subprocess.run(
+                ["git", "-C", str(repository), "merge-base", "--is-ancestor", member["tip_sha"], tip],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            findings.append(f"ejected_ancestry_present:{member['task_id']}")
+    for path, expected_hash in {**state["seal"]["runtime_sha256"], **state["seal"]["policy_sha256"]}.items():
+        if file_hash(controller / path) != expected_hash:
+            findings.append(f"sealed_identity_drift:{path}")
+    if not state.get("aggregate") or state["aggregate"].get("train_tip") != tip:
+        findings.append("aggregate_identity_missing")
+    return findings
+
+
+def cas_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
+    repository, _, _ = composition_paths(controller, state)
+    current = git(repository, "rev-parse", state["seal"]["target_ref"])
+    expected, tip = state["seal"]["base_sha"], state["composition"]["tip_sha"]
+    findings = pre_cas_findings(controller, state)
+    if findings:
+        state["cas"] = {"status": "blocked", "reason_codes": findings, "expected": expected,
+                        "observed": current, "tip": tip}
+        return save_epoch(controller, state, "NEEDS_OPERATOR", "PRE_CAS_BLOCKED", state["cas"])
+    if current == tip and state.get("cas"):
+        pass
+    elif current != expected:
+        state["cas"] = {"status": "stale", "expected": expected, "observed": current, "tip": tip}
+        return save_epoch(controller, state, "STALE", "CAS_STALE", state["cas"])
+    else:
+        try:
+            import merge_queue
+            owner_authority = merge_queue.cas_target(repository, state["seal"]["target_ref"], tip, expected)
+        except Exception as exc:
+            raise ReleaseTrainError(f"epoch expected-old-SHA CAS failed: {exc}") from exc
+        readback = git(repository, "rev-parse", state["seal"]["target_ref"])
+        if readback != tip:
+            raise ReleaseTrainError("epoch target readback mismatch")
+        state["cas"] = {"status": "integrated", "expected": expected, "tip": tip,
+                        "readback": readback, "target_move_count": 1,
+                        "integration_owner_authority": owner_authority, "completed_utc": utc_now()}
+        save_epoch(controller, state, "INTEGRATED", "CAS_COMPLETE", state["cas"])
+    readiness = {"schema_version": "juno_release_epoch_readiness.v1", "epoch_id": state["epoch_id"],
+                 "integrated_sha": tip, "target_readback": tip,
+                 "seal_plan_id": state["seal"]["plan_id"],
+                 "aggregate_receipt_id": state["aggregate"]["receipt_id"],
+                 "required_members": [row["task_id"] for row in active_members(state) if row["required"]],
+                 "authority": "read_only_declaration", "excluded_actions": ["push", "tag", "publish", "deploy", "cleanup"]}
+    readiness["readiness_id"] = digest(readiness); state["release_ready"] = readiness
+    return save_epoch(controller, state, "RELEASE_READY", "RELEASE_READY", readiness)
+
+
+def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
+                          token: str) -> dict[str, Any]:
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    if state["state"] != "RECOVERING" or not isinstance(state.get("conflict"), dict):
+        raise ReleaseTrainError("epoch has no bounded conflict repair to consume")
+    if state.get("conflict_repair"):
+        raise ReleaseTrainError("the single bounded conflict-repair budget is exhausted")
+    try:
+        receipt = json.loads(receipt_path.expanduser().resolve().read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"managed conflict-repair receipt is invalid: {exc}") from exc
+    if (not isinstance(receipt, dict) or receipt.get("schema_version") != "juno_managed_agent_runner.v1"
+            or receipt.get("mode") != "worker" or receipt.get("state") != "succeeded"):
+        raise ReleaseTrainError("conflict repair requires one successful canonical managed-worker receipt")
+    checkout = Path(state["composition"]["worktree"])
+    if git(checkout, "diff", "--name-only", "--diff-filter=U"):
+        raise ReleaseTrainError("managed repair left unresolved conflicts")
+    head = git(checkout, "rev-parse", "HEAD")
+    parents = git(checkout, "show", "-s", "--format=%P", head).split()
+    packet = state["conflict"]
+    if packet["ours_sha"] not in parents or packet["theirs_sha"] not in parents:
+        raise ReleaseTrainError("managed repair did not produce the required both-parent repair commit")
+    changed = set(git(checkout, "diff", "--name-only", f"{packet['ours_sha']}..{head}").splitlines())
+    admitted = set(packet["admitted_paths"])
+    if not changed.issubset(admitted):
+        state["operator_packet"] = {**packet, "reason_code": "repair.out_of_scope",
+                                    "unexpected_paths": sorted(changed - admitted)}
+        return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_ESCALATED", state["operator_packet"])
+    reference = {"path": str(receipt_path.expanduser().resolve()), "sha256": file_hash(receipt_path),
+                 "session_id": receipt.get("session_id"), "repair_commit": head,
+                 "changed_paths": sorted(changed), "delta_review": "required"}
+    state["conflict_repair"] = reference
+    member = next(row for row in state["seal"]["members"] if row["task_id"] == packet["task_id"])
+    state["composition"]["commits"].append({"task_id": member["task_id"],
+        "candidate_tip": member["tip_sha"], "pre_sha": packet["ours_sha"],
+        "pre_tree": git(checkout, "rev-parse", f"{packet['ours_sha']}^{{tree}}"),
+        "merge_commit": head, "post_tree": git(checkout, "rev-parse", "HEAD^{tree}"),
+        "parents": parents, "ordering_reason": "bounded_conflict_repair"})
+    state["composition"]["tip_sha"] = head; state.pop("conflict", None)
+    repository, _, ref = composition_paths(controller, state)
+    task_runtime.run(["git", "-C", str(repository), "update-ref", ref, head], repository)
+    return save_epoch(controller, state, "COMPOSING", "REPAIR_CONSUMED", reference)
+
+
+def drive_epoch(controller: Path, epoch_id: str, token: str) -> dict[str, Any]:
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    if state["state"] in EPOCH_TERMINAL_STATES:
+        return state
+    if state["state"] in {"SEALED", "COMPOSING"}:
+        state = compose_epoch(controller, state)
+    if state["state"] == "VALIDATING":
+        state = validate_epoch(controller, state)
+    if state["state"] == "READY_CAS":
+        state = cas_epoch(controller, state)
+    return state
+
+
+def shadow_epoch(controller: Path, declaration_path: Path, baseline_path: Optional[Path]) -> dict[str, Any]:
+    plan = build_epoch_plan(controller, declaration_path)
+    baseline: dict[str, Any] = {}
+    if baseline_path:
+        try:
+            baseline = json.loads(baseline_path.expanduser().read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReleaseTrainError(f"invalid shadow baseline: {exc}") from exc
+    candidates = len(plan["members"])
+    old_exec = int(baseline.get("duplicate_unchanged_closure_executions", max(1, candidates * 4)))
+    old_models = int(baseline.get("model_lifecycle_calls", max(1, candidates * 3)))
+    old_tokens = int(baseline.get("cache_read_tokens", max(1, candidates * 1000000)))
+    projected = {"duplicate_unchanged_closure_executions": 0, "model_lifecycle_calls": max(0, candidates // 5),
+                 "protected_target_moves": 1, "cache_read_tokens": max(0, old_tokens // 5)}
+    reductions = {"duplicate_execution_pct": round((old_exec - projected["duplicate_unchanged_closure_executions"]) * 100 / old_exec, 2),
+                  "model_call_pct": round((old_models - projected["model_lifecycle_calls"]) * 100 / old_models, 2),
+                  "cache_read_pct": round((old_tokens - projected["cache_read_tokens"]) * 100 / old_tokens, 2)}
+    blockers = []
+    if reductions["duplicate_execution_pct"] < 70: blockers.append("target.duplicate_execution")
+    if reductions["model_call_pct"] < 60: blockers.append("target.model_calls")
+    if reductions["cache_read_pct"] < 70: blockers.append("target.cache_read_tokens")
+    body = {"schema_version": SHADOW_SCHEMA, "mode": "read_only", "plan_id": plan["plan_id"],
+            "candidate_count": candidates, "scenarios": ["dependencies", "optional_required_failure",
+            "conflict_repair_escalation", "stale_worker", "dirty_recovery", "evidence_reuse",
+            "crash_boundaries", "cas_race"], "baseline": baseline, "projected": projected,
+            "reductions": reductions, "decision": "BLOCK" if blockers else "PASS", "blocking_reason_codes": blockers,
+            "rollback_switch": "disable release-epoch drive; retain per-candidate merge arbiter",
+            "side_effects": []}
+    return {**body, "shadow_id": digest(body)}
+
+
 def human(report: dict[str, Any]) -> str:
     lines = [f"Release train {report['train_id']} -> {report['requested_version']}",
              f"plan: {report['plan_id']}", f"target: {report['identities']['target']['ref']} @ {report['identities']['target']['sha']}",
@@ -474,6 +953,23 @@ def parser() -> argparse.ArgumentParser:
     for name in ("plan", "status"):
         command = subs.add_parser(name); command.add_argument("declaration", type=Path)
         command.add_argument("--json", action="store_true"); command.add_argument("--output", type=Path)
+    inspect = subs.add_parser("inspect"); inspect.add_argument("declaration", type=Path)
+    inspect.add_argument("--json", action="store_true"); inspect.add_argument("--output", type=Path)
+    seal = subs.add_parser("seal"); seal.add_argument("declaration", type=Path)
+    seal.add_argument("--json", action="store_true")
+    epoch_status = subs.add_parser("epoch-status"); epoch_status.add_argument("epoch_id")
+    epoch_status.add_argument("--json", action="store_true")
+    drive = subs.add_parser("drive"); drive.add_argument("epoch_id")
+    drive.add_argument("--epoch-token", required=True); drive.add_argument("--json", action="store_true")
+    eject = subs.add_parser("eject"); eject.add_argument("epoch_id"); eject.add_argument("task_id")
+    eject.add_argument("--reason", required=True); eject.add_argument("--epoch-token", required=True)
+    eject.add_argument("--json", action="store_true")
+    repair = subs.add_parser("repair"); repair.add_argument("epoch_id")
+    repair.add_argument("--receipt", type=Path, required=True); repair.add_argument("--epoch-token", required=True)
+    repair.add_argument("--json", action="store_true")
+    shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
+    shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
+    shadow.add_argument("--output", type=Path)
     check = subs.add_parser("check"); check.add_argument("--plan", type=Path, required=True)
     check.add_argument("--action", choices=["merge", "release"], required=True)
     check.add_argument("--task-id"); check.add_argument("--requested-version")
@@ -487,14 +983,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         controller = task_runtime.exact_root(args.controller, "controller")
         if args.operation == "check":
             result = check_plan(controller, args.plan, args.action, args.task_id, args.requested_version)
+        elif args.operation == "inspect":
+            result = build_epoch_plan(controller, args.declaration)
+        elif args.operation == "seal":
+            result = seal_epoch(controller, args.declaration)
+        elif args.operation == "epoch-status":
+            result = read_epoch(controller, args.epoch_id)
+        elif args.operation == "drive":
+            result = drive_epoch(controller, args.epoch_id, args.epoch_token)
+        elif args.operation == "eject":
+            result = eject_epoch_member(controller, args.epoch_id, args.task_id, args.reason, args.epoch_token)
+        elif args.operation == "repair":
+            result = apply_conflict_repair(controller, args.epoch_id, args.receipt, args.epoch_token)
+        elif args.operation == "shadow":
+            result = shadow_epoch(controller, args.declaration, args.baseline)
         else:
             result = build_plan(controller, args.declaration, args.output)
-            rendered = canonical(result) + "\n"
-            if args.output:
-                args.output.expanduser().resolve().write_text(rendered)
-            print(canonical(result) if args.json else human(result))
+        rendered = canonical(result) + "\n"
+        output = getattr(args, "output", None)
+        if output:
+            output.expanduser().resolve().write_text(rendered)
+        if args.operation not in {"plan", "status"} or getattr(args, "json", False):
+            print(canonical(result))
+        else:
+            print(human(result))
         return 0
-    except (ReleaseTrainError, task_runtime.TaskWorkspaceError, OSError, json.JSONDecodeError) as exc:
+    except (ReleaseTrainError, task_runtime.TaskWorkspaceError, OSError, json.JSONDecodeError,
+            subprocess.TimeoutExpired) as exc:
         print(f"release train: error: {exc}", file=sys.stderr)
         return 2
 

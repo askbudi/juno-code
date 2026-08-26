@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'shadow';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -32,16 +32,59 @@ export async function invokeReleaseTrain(
 export function configureReleaseTrainCommand(
   program: Command, invoke: ReleaseTrainInvoker = invokeReleaseTrain,
 ): void {
-  const train = program.command('release').description('Plan explicitly declared release trains')
-    .command('train').description('Inspect a release train without mutation');
-  for (const operation of ['plan', 'status'] as const) {
+  const train = program.command('release').description('Plan and drive explicitly sealed release epochs')
+    .command('train').description('Inspect, seal, and drive a release epoch');
+  for (const operation of ['plan', 'status', 'inspect'] as const) {
     train.command(operation)
       .argument('<declaration>', 'Versioned release-train declaration JSON')
       .option('--json', 'Emit stable versioned JSON')
-      .option('--output <path>', 'Write the exact JSON plan for a later stale-plan gate')
+      .option('--output <path>', 'Write the exact JSON projection')
       .action((declaration: string, options: { json?: boolean; output?: string }) => invoke(
         operation, declaration,
         [...(options.json ? ['--json'] : []), ...(options.output ? ['--output', options.output] : [])],
       ));
   }
+  train.command('seal')
+    .argument('<declaration>', 'Versioned release-train declaration JSON')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((declaration: string, options: { json?: boolean }) => invoke(
+      'seal', declaration, options.json ? ['--json'] : [],
+    ));
+  train.command('epoch-status')
+    .argument('<epoch-id>', 'Sealed epoch identity')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: { json?: boolean }) => invoke(
+      'epoch-status', epochId, options.json ? ['--json'] : [],
+    ));
+  train.command('drive')
+    .argument('<epoch-id>', 'Sealed epoch identity')
+    .requiredOption('--epoch-token <token>', 'Exact fencing token emitted once by seal')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: { epochToken: string; json?: boolean }) => invoke(
+      'drive', epochId, ['--epoch-token', options.epochToken, ...(options.json ? ['--json'] : [])],
+    ));
+  train.command('eject')
+    .argument('<epoch-id>', 'Sealed epoch identity')
+    .argument('<task-id>', 'Optional failed member')
+    .requiredOption('--reason <reason>', 'Receipt-bound failure reason')
+    .requiredOption('--epoch-token <token>', 'Exact epoch fencing token')
+    .action((epochId: string, taskId: string, options: { reason: string; epochToken: string }) => invoke(
+      'eject', epochId, [taskId, '--reason', options.reason, '--epoch-token', options.epochToken],
+    ));
+  train.command('repair')
+    .argument('<epoch-id>', 'Recovering epoch identity')
+    .requiredOption('--receipt <path>', 'Successful canonical managed-worker receipt')
+    .requiredOption('--epoch-token <token>', 'Exact epoch fencing token')
+    .action((epochId: string, options: { receipt: string; epochToken: string }) => invoke(
+      'repair', epochId, ['--receipt', options.receipt, '--epoch-token', options.epochToken],
+    ));
+  train.command('shadow')
+    .argument('<declaration>', 'Versioned release-train declaration JSON')
+    .option('--baseline <path>', 'Frozen telemetry baseline JSON')
+    .option('--json', 'Emit stable versioned JSON')
+    .option('--output <path>', 'Write the canary decision receipt')
+    .action((declaration: string, options: { baseline?: string; json?: boolean; output?: string }) => invoke(
+      'shadow', declaration, [...(options.baseline ? ['--baseline', options.baseline] : []),
+        ...(options.json ? ['--json'] : []), ...(options.output ? ['--output', options.output] : [])],
+    ));
 }

@@ -40,6 +40,7 @@ class ReleaseTrainTests(unittest.TestCase):
                                       "timeout_seconds": 10, "max_output_bytes": 1024}}) + "\n")
         (self.root / ".juno_task/config/risk-policy.json").write_text("{}\n")
         (self.root / "src").mkdir()
+        (self.root / "src/.keep").write_text("fixture\n")
         (self.root / "yylo").mkdir()
         (self.root / "juno-code").mkdir()
         (self.root / "juno-code/package.json").write_text('{"version":"1.0.0"}\n')
@@ -201,6 +202,77 @@ raise SystemExit(2)
         self.base = run(self.root, "git", "rev-parse", "HEAD")
         self.write_declaration(["REQ", "DEP"], [])
         self.lean_checkout()
+
+    def prepare_epoch(self) -> tuple[str, str]:
+        """Queue two immutable divergent candidates with exact closure evidence."""
+        tree = run(self.root, "git", "rev-parse", f"{self.base}^{{tree}}")
+        req = subprocess.check_output(["git", "commit-tree", tree, "-p", self.base], cwd=self.root,
+                                      text=True, input="REQ candidate\n").strip()
+        old = subprocess.check_output(["git", "commit-tree", tree, "-p", self.base], cwd=self.root,
+                                      text=True, input="OLD candidate\n").strip()
+        for sequence, (task_id, tip) in enumerate((("OLD", old), ("REQ", req)), 1):
+            self.state["tasks"][task_id].update({
+                "tip_sha": tip, "enqueue_sequence": sequence,
+                "complete_input_identity": "c" * 64,
+                "validation": [{"status": "passed", "receipt_id": task_id}],
+            })
+        self.write_state()
+        self.board["OLD"].update(status="in_progress", blocked_by=[])
+        self.board["REQ"].update(status="in_progress", blocked_by=[])
+        self.write_board()
+        self.write_declaration(["REQ"], [])
+        declaration = json.loads(self.declaration.read_text())
+        declaration["optional_tasks"] = ["OLD"]
+        self.declaration.write_text(json.dumps(declaration, sort_keys=True) + "\n")
+        return old, req
+
+    def test_epoch_seal_is_complete_immutable_and_idempotent(self) -> None:
+        self.prepare_epoch()
+        plan = runtime.build_epoch_plan(self.root, self.declaration)
+        self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in plan["members"]])
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        self.assertEqual("sealed", sealed["outcome"])
+        self.assertEqual("SEALED", sealed["epoch"]["state"])
+        self.assertEqual("already_sealed", runtime.seal_epoch(self.root, self.declaration)["outcome"])
+        # A post-cutoff queue candidate cannot grow the immutable seal.
+        self.state["tasks"]["DEP"] = {"task_id": "DEP", "state": "QUEUED",
+            "target_ref": "refs/heads/product", "enqueue_sequence": 3,
+            "tip_sha": self.base, "complete_input_identity": "d" * 64,
+            "validation": [{"status": "passed"}], "changed_paths": ["src/dep"]}
+        self.write_state()
+        current = runtime.read_epoch(self.root, "rc-1")
+        self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in current["seal"]["members"]])
+
+    def test_epoch_composes_history_validates_once_and_cas_once(self) -> None:
+        old, req = self.prepare_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas):
+            state = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("RELEASE_READY", state["state"])
+        self.assertEqual(2, len(state["composition"]["commits"]))
+        self.assertEqual(1, state["aggregate"]["aggregate_runs"])
+        self.assertEqual(1, state["cas"]["target_move_count"])
+        self.assertEqual(state["composition"]["tip_sha"], run(self.root, "git", "rev-parse", "refs/heads/product"))
+        for tip in (old, req):
+            subprocess.run(["git", "merge-base", "--is-ancestor", tip,
+                            state["composition"]["tip_sha"]], cwd=self.root, check=True)
+        # Retry is observation-only and cannot duplicate commits, validation, or CAS.
+        self.assertEqual(state, runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"]))
+
+    def test_required_failure_pauses_and_shadow_is_read_only(self) -> None:
+        self.prepare_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        paused = runtime.eject_epoch_member(self.root, "rc-1", "REQ", "seeded failure", sealed["lease_token"])
+        self.assertEqual("PAUSED_REQUIRED", paused["state"])
+        before = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
+        # Use another id because the first declaration is already sealed; shadow itself is read-only.
+        report = runtime.shadow_epoch(self.root, self.declaration, None)
+        self.assertEqual("PASS", report["decision"])
+        self.assertEqual([], report["side_effects"])
+        self.assertEqual(before, run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"))
 
     def test_lean_target_drift_refuses_release(self) -> None:
         self.lean_checkout()
