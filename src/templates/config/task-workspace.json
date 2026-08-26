@@ -42,6 +42,7 @@
     ".juno_task/scripts/workflow_runner.sh",
     ".juno_task/scripts/worktree_hydration.py",
     ".juno_task/wiki",
+    ".pi/skills/yylo-seo",
     "AGENTS.md",
     "README.md",
     "juno-benchmark",
