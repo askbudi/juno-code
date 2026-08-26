@@ -121,6 +121,16 @@
         "lock_path": "/tmp/yylo-focused-real-git-managed-install.lock",
         "wait_timeout_seconds": 1200
       }
+    },
+    {
+      "id": "root-scripts-telemetry",
+      "cwd": "scripts/tests",
+      "timeout_seconds": 120,
+      "max_output_bytes": 32768,
+      "argv": [
+        "python3",
+        "agent-session-telemetry.test.py"
+      ]
     }
   ],
   "full_suite_validation": {
