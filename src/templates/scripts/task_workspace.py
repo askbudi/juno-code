@@ -1953,7 +1953,8 @@ def umbrella_child_allowed_paths(admission: dict[str, Any], child_id: str) -> li
     return sorted(set(allowed))
 
 
-def umbrella_child_checkpoint(controller: Path, task_id: str, child_id: str) -> dict[str, Any]:
+def umbrella_child_checkpoint(controller: Path, task_id: str, child_id: str,
+                              lease_token: Optional[str] = None) -> dict[str, Any]:
     """Record one sequential child's committed increment on the umbrella worktree."""
     if not TASK_RE.fullmatch(task_id) or not TASK_RE.fullmatch(child_id):
         raise TaskWorkspaceError("unsafe task id")
@@ -1967,6 +1968,7 @@ def umbrella_child_checkpoint(controller: Path, task_id: str, child_id: str) -> 
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
+        _require_lease_fence(controller, "child-checkpoint", task_id, lease_token, record=record)
         umbrella_gate = decisions.plan_command_transition(
             decisions.CommandRequest("child-checkpoint", task_id),
             decisions.TaskSnapshot(
@@ -2205,12 +2207,14 @@ def record_control_audit(controller: Path, surface: str, operation: str,
                          task_id: Optional[str] = None) -> dict[str, str]:
     routing = routing_identity(controller)
     forwarded_policy = routing.get("policy_operation")
-    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status", "doctor"}
+    expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status", "doctor", "lease-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
             "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
             "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
-            "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor"}:
+            "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor",
+            "lease-status", "lease-heartbeat", "lease-handoff", "lease-successor",
+            "lease-revoke", "lease-release"}:
         raise TaskWorkspaceError(f"unsupported task audit operation: {operation}")
     if surface == "merge" and operation not in {"status", "drive", "next", "resolve", "review", "reopen", "reconcile", "refresh", "withdraw"}:
         raise TaskWorkspaceError(f"unsupported merge audit operation: {operation}")
@@ -2750,7 +2754,8 @@ def _demote_to_kanban_sync_required(record: dict[str, Any], exc: KanbanSyncError
                             "restore_state": restore}}
 
 
-def recover_kanban_sync(controller: Path, task_id: str) -> dict[str, Any]:
+def recover_kanban_sync(controller: Path, task_id: str,
+                        lease_token: Optional[str] = None) -> dict[str, Any]:
     """One exact recovery command for a pending lifecycle board projection.
 
     Resumes a ``KANBAN_SYNC_REQUIRED`` record (restoring its saved lifecycle
@@ -2766,6 +2771,7 @@ def recover_kanban_sync(controller: Path, task_id: str) -> dict[str, Any]:
         record = state["tasks"].get(task_id)
     if not isinstance(record, dict):
         raise TaskWorkspaceError("task has not been started")
+    _require_lease_fence(controller, "sync", task_id, lease_token, record=record)
     pending = record.get("state") == KANBAN_SYNC_STATE
     pending_evidence = record.get("kanban_sync") if isinstance(record.get("kanban_sync"), dict) else {}
     restore_state = pending_evidence.get("restore_state") if pending else record.get("state")
@@ -2937,7 +2943,8 @@ def kanban_sync_doctor(controller: Path, task_id: Optional[str] = None) -> dict[
 
 
 def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] = None,
-          umbrella_input: Optional[Path] = None) -> dict[str, Any]:
+          umbrella_input: Optional[Path] = None,
+          lease_token: Optional[str] = None) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     repository = product_repository(controller, config)
@@ -2983,6 +2990,7 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                 raise TaskWorkspaceError("umbrella admission changed before mutation")
         existing = state["tasks"].get(task_id)
         if existing:
+            _require_lease_fence(controller, "start", task_id, lease_token, record=existing)
             receipt = existing.get("creation_receipt", {})
             if receipt.get("requested_paths", []) != requested_paths:
                 raise TaskWorkspaceError("task start required paths differ from the frozen creation receipt")
@@ -3131,6 +3139,19 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                       "branch_ref": branch, "worktree": str(worktree), "tip_sha": target_sha,
                       "workspace_identity": identity, "creation_receipt": creation_receipt, "routing": routing,
                       "changed_paths": [], "validation": []}
+            # Fresh admission issues the initial fencing attempt before the
+            # first durable record write; its receipt precedes the state
+            # mutation, and the bearer token is returned exactly once.
+            issue_payload = {
+                "schema_version": FENCING_RECEIPT_SCHEMA, "kind": "issue",
+                "task_id": task_id, "attempt": 1, "authority_kind": "initial",
+                "reason": "task start", "recorded_utc": _utc_now(),
+            }
+            issue_receipt = _write_fencing_receipt(controller, task_id, issue_payload)
+            initial_lease, initial_token = _new_lease(
+                task_id, 1, "process", "initial", issue_receipt, reason="task start",
+                producer_pid=os.getpid())
+            record = _apply_lease(record, initial_lease)
             state["tasks"][task_id] = record
             if umbrella_admission is not None:
                 for child_id in umbrella_admission["ordered_child_ids"]:
@@ -3258,10 +3279,11 @@ def start(controller: Path, task_id: str, requested_paths: Optional[list[str]] =
                         "task creation failed and registered-worktree rollback was incomplete; preserve evidence and inspect Git worktrees"
                     ) from creation_error
             raise
-    return {**record, "outcome": "started"}
+    return {**record, "outcome": "started", "lease_token": initial_token,
+            "lease_note": "store this fencing token; gated task mutations require --lease-token"}
 
 
-def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
+def hydrate(controller: Path, task_id: str, lease_token: Optional[str] = None) -> dict[str, Any]:
     """Explicitly rerun frozen hydration without broadening task authority."""
     if not TASK_RE.fullmatch(task_id):
         raise TaskWorkspaceError("unsafe task id")
@@ -3272,6 +3294,7 @@ def hydrate(controller: Path, task_id: str) -> dict[str, Any]:
         with state_lock(controller):
             state = read_state(controller)
             record = state["tasks"].get(task_id)
+            _require_lease_fence(controller, "hydrate", task_id, lease_token, record=record)
             hydrate_admission = decisions.plan_command_transition(
                 decisions.CommandRequest("hydrate", task_id),
                 decisions.TaskSnapshot(
@@ -3958,7 +3981,8 @@ def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
     )
 
 
-def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
+def standing_checkpoint(controller: Path, task_id: str,
+                        lease_token: Optional[str] = None) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     repository = product_repository(controller, config)
@@ -3966,6 +3990,7 @@ def standing_checkpoint(controller: Path, task_id: str) -> dict[str, Any]:
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
+        _require_lease_fence(controller, "checkpoint", task_id, lease_token, record=record)
         checkpoint_admission = decisions.plan_command_transition(
             decisions.CommandRequest("checkpoint", task_id),
             decisions.TaskSnapshot(
@@ -4103,12 +4128,14 @@ def _standing_readiness_identity(record: dict[str, Any], worktree: Path,
 
 
 def standing_evidence_run(controller: Path, task_id: str,
-                          *, raise_on_failure: bool = True) -> dict[str, Any]:
+                          *, raise_on_failure: bool = True,
+                          lease_token: Optional[str] = None) -> dict[str, Any]:
     plan, plan_path = _standing_plan(controller, task_id)
     config = load_config(controller)
     repository = product_repository(controller, config)
     with state_lock(controller):
         record = read_state(controller)["tasks"].get(task_id)
+    _require_lease_fence(controller, "evidence-run", task_id, lease_token, record=record)
     evidence_gate = decisions.plan_command_transition(
         decisions.CommandRequest("evidence-run", task_id),
         decisions.TaskSnapshot(
@@ -4283,7 +4310,8 @@ def preflight(controller: Path, task_id: str) -> dict[str, Any]:
             "changed_paths": changed, "review_ready_closure": closure}
 
 
-def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
+def _finish_once(controller: Path, task_id: str,
+                 lease_token: Optional[str] = None) -> dict[str, Any]:
     config = load_config(controller)
     require_task(controller, task_id)
     configured_repository = product_repository(controller, config)
@@ -4294,6 +4322,7 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     with state_lock(controller):
         state = read_state(controller)
         record = state["tasks"].get(task_id)
+        _require_lease_fence(controller, "finish", task_id, lease_token, record=record)
         finish_admission = decisions.plan_command_transition(
             decisions.CommandRequest("finish", task_id),
             decisions.TaskSnapshot(
@@ -4312,6 +4341,17 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         # The queued branch/worktree must still sit at the recorded tip; a
         # moved tip means the queue closure no longer describes the current
         # candidate and must not be reported as successful validation.
+        released_record = _ensure_lease_released(
+            controller, task_id, queued_record, reason="queued")
+        if released_record is not queued_record:
+            # Commit only the terminal lease release; any other concurrent
+            # drift stays a hard error on the comparisons below.
+            with state_lock(controller):
+                state = read_state(controller)
+                if state["tasks"].get(task_id) == queued_record:
+                    state["tasks"][task_id] = released_record
+                    write_state(controller, state)
+                    queued_record = released_record
         queued_worktree = exact_root(Path(queued_record["worktree"]), "recorded task worktree")
         queued_head = git(queued_worktree, "rev-parse", "HEAD")
         queued_branch = git(queued_worktree, "symbolic-ref", "-q", "HEAD", check=False)
@@ -4349,9 +4389,10 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
         else frozen_record.get("creation_receipt", {}).get("umbrella_admission")
     )
     routing = validation_profile_selection(config, changed)
-    checkpoint_plan = standing_checkpoint(controller, task_id)
+    checkpoint_plan = standing_checkpoint(controller, task_id, lease_token)
     selected_focused = [planned["command"] for planned in checkpoint_plan["commands"]]
-    standing = standing_evidence_run(controller, task_id, raise_on_failure=False)
+    standing = standing_evidence_run(controller, task_id, raise_on_failure=False,
+                                     lease_token=lease_token)
     if checkpoint_plan["plan_sha256"] != standing["plan_sha256"]:
         raise TaskWorkspaceError("standing evidence plan changed during finish")
     validations = [json.loads(Path(reference["path"]).read_text())["result"]
@@ -4399,6 +4440,9 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
               "validation_routing": routing,
               "review_round": 1,
               "validation": validations, "last_validation_outcome": "PASSED"}
+    # Queueing terminates worker authority: one terminal release receipt
+    # precedes the queued record mutation so the boundary is crash-idempotent.
+    queued = _ensure_lease_released(controller, task_id, queued, reason="queued")
     with state_lock(controller):
         state = read_state(controller)
         current = state["tasks"].get(task_id)
@@ -4436,13 +4480,13 @@ def _finish_once(controller: Path, task_id: str) -> dict[str, Any]:
     return {**queued, "outcome": "queued"}
 
 
-def finish(controller: Path, task_id: str) -> dict[str, Any]:
+def finish(controller: Path, task_id: str, lease_token: Optional[str] = None) -> dict[str, Any]:
     # Same-task finish calls serialize across validation; different task IDs use
     # different leases and continue in parallel.
     if not TASK_RE.fullmatch(task_id):
         raise TaskWorkspaceError("unsafe task id")
     with finish_lock(controller, task_id):
-        return _finish_once(controller, task_id)
+        return _finish_once(controller, task_id, lease_token)
 
 
 HANDOFF_SCHEMA = "juno_run_handoff.v1"
@@ -5796,7 +5840,8 @@ def _verify_dependency_tree(worktree: Path, config: dict[str, Any],
             f"the hydration manifest: {', '.join(drift)}")
 
 
-def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[str, Any]:
+def _managed_hydration_gate(controller: Path, record: dict[str, Any],
+                            lease_token: Optional[str] = None) -> dict[str, Any]:
     """Verify frozen hydration/dependency evidence before any worker budget.
 
     A resumed WORKING task must not spend its sole model attempt or receive
@@ -5811,7 +5856,7 @@ def _managed_hydration_gate(controller: Path, record: dict[str, Any]) -> dict[st
         verify_hydration_evidence(record, worktree)
         _verify_dependency_tree(worktree, config, record.get("hydration"))
     except TaskWorkspaceError:
-        hydrate(controller, record["task_id"])
+        hydrate(controller, record["task_id"], lease_token)
         with state_lock(controller):
             refreshed = read_state(controller)["tasks"].get(record["task_id"])
         if not isinstance(refreshed, dict):
@@ -6023,6 +6068,30 @@ def _task_projection(controller: Path, task_id: str, run_dir: Path,
     return projection
 
 
+def _ensure_run_fence(controller: Path, task_id: str) -> Optional[str]:
+    """Natural receipt-bound successor for the controller-owned worker.
+
+    A provably dead predecessor attempt yields exactly one successor lease
+    here without operator cleanup; every other authority failure stops with
+    its actionable machine code. Returns the holder token when a successor
+    was issued.
+    """
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+    lease = _lease_view(record)
+    if lease is None or lease.get("state") != decisions.LEASE_ACTIVE:
+        return None
+    observation = _observe_producer(lease.get("producer"))
+    authority = decisions.plan_lease_authority(
+        "run", task_id, lease, None, observation, os.getpid())
+    if authority.admitted:
+        return None
+    if authority.code != decisions.LEASE_CODE_PRODUCER_DEAD:
+        raise TaskWorkspaceError(f"task run refused ({authority.code}): {authority.message}")
+    successor = lease_successor(controller, task_id)
+    return successor["lease_token"]
+
+
 def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
     """Resume one durably claimed controller-owned typed task workflow."""
     if not TASK_RE.fullmatch(task_id):
@@ -6032,6 +6101,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
     lock_path = root / ".claim.lock"
     with lifecycle_runtime.lifecycle_claim(lock_path):
         task_path, task_bytes = task_manifest(controller, task_id)
+        run_token = _ensure_run_fence(controller, task_id)
         current_plan = lifecycle_runtime.compile_lifecycle_template(
             controller, "task-run", task_id, model_identity=os.environ.get("JUNO_MODEL"))
         execution_identity = _task_plan_execution_identity(current_plan)
@@ -6216,7 +6286,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
             if not isinstance(state_record, dict):
                 lifecycle_runtime.lifecycle_checkpoint(
                     journal_path, journal, phase="admit", boundary="PRE")
-                start(controller, task_id)
+                start(controller, task_id, lease_token=run_token)
                 with state_lock(controller):
                     state_record = read_state(controller)["tasks"][task_id]
                 lifecycle_runtime.lifecycle_checkpoint(
@@ -6233,7 +6303,8 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
             # frozen hydration/dependency evidence, with one durable authorized
             # exact-lock rerun when the evidence is stale. No worker receipt,
             # model budget, or product edit is spent before this gate passes.
-            hydration_gate = _managed_hydration_gate(controller, state_record)
+            hydration_gate = _managed_hydration_gate(controller, state_record,
+                                                      lease_token=run_token)
             state_record = hydration_gate["record"]
 
             completed_worker = next((item for item in journal["workers"]
@@ -6304,7 +6375,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 lifecycle_runtime.lifecycle_checkpoint(
                     journal_path, journal, phase="finish-initial", boundary="PRE")
                 try:
-                    queued = finish(controller, task_id)
+                    queued = finish(controller, task_id, lease_token=run_token)
                 except TaskWorkspaceError as exc:
                     attributable = ("focused validation failed" in str(exc)
                                     or "parsed" in str(exc) or "test" in str(exc).lower())
@@ -6332,7 +6403,8 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     # worker counters, or recording the launch PRE checkpoint,
                     # so an unrecoverable gate consumes no repair budget and
                     # leaves no pending repair attempt behind.
-                    repair_gate = _managed_hydration_gate(controller, state_record)
+                    repair_gate = _managed_hydration_gate(controller, state_record,
+                                                          lease_token=run_token)
                     state_record = repair_gate["record"]
                     index = journal["attempts"]["worker_launches"] + 1
                     attempt_dir = run_dir / "workers" / f"attributable-repair-{index:04d}"
@@ -6365,7 +6437,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     raise TaskWorkspaceError("attributable test repair did not complete")
                 lifecycle_runtime.lifecycle_checkpoint(
                     journal_path, journal, phase="finish-after-repair", boundary="PRE")
-                queued = finish(controller, task_id)
+                queued = finish(controller, task_id, lease_token=run_token)
                 lifecycle_runtime.lifecycle_checkpoint(
                     journal_path, journal, phase="finish-after-repair", boundary="POST",
                     detail={"outcome": queued.get("outcome"), "tip_sha": queued.get("tip_sha")})
@@ -6381,13 +6453,452 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 detail={"error_type": type(exc).__name__, "error": str(exc)[:1024]})
             raise TaskWorkspaceError(str(exc)) from exc
 
+
+# ---------------------------------------------------------------------------
+# Fenced task/worktree attempts (task rrx4b8, Wave 2 of the sealed
+# merge-train PDR). The lease is controller-issued mutation authority over
+# one task record. Producers prove identity with the exact bearer token;
+# in-process workers additionally pass through live same-pid continuity.
+# Expiry alone never grants takeover: successor issuance requires a proven
+# dead producer, an explicit handoff receipt, or an operator revoke receipt.
+# Every lease transition writes one immutable receipt under the task's
+# private runtime directory before the state mutation commits it.
+# ---------------------------------------------------------------------------
+
+FENCING_SCHEMA = "juno_task_fencing_lease.v1"
+FENCING_RECEIPT_SCHEMA = "juno_task_fencing_receipt.v1"
+FENCING_RECEIPT_ROOT = ".juno_task/runtime/leases"
+FENCING_HISTORY_LIMIT = 16
+FENCING_DIRTY_PATH_LIMIT = 64
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _fencing_root(controller: Path, task_id: str) -> Path:
+    return controller / FENCING_RECEIPT_ROOT / task_id[:2].lower() / task_id
+
+
+def _producer_lstart(pid: int) -> Optional[str]:
+    """Bounded process start-time readback; None when unobservable."""
+    try:
+        result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                                capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _observe_producer(producer: Any) -> decisions.LeaseObservation:
+    """Controller-owned liveness readback for one lease producer.
+
+    "dead" requires a positive observation: the pid is gone, or a live pid
+    whose start time differs from the recorded anchor (recycled pid). A
+    missing anchor or unreadable ps leaves the producer "unknown", which
+    never grants takeover.
+    """
+    if not isinstance(producer, dict) or not isinstance(producer.get("pid"), int) \
+            or isinstance(producer.get("pid"), bool):
+        return decisions.LeaseObservation("unknown", "producer pid is not recorded")
+    pid = producer["pid"]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return decisions.LeaseObservation("dead", f"pid {pid} no longer exists")
+    except PermissionError:
+        pass
+    except OSError as exc:
+        return decisions.LeaseObservation("unknown", f"pid {pid} probe failed: {exc}")
+    anchored = producer.get("lstart")
+    if not isinstance(anchored, str) or not anchored:
+        return decisions.LeaseObservation("unknown", f"pid {pid} is alive without a start-time anchor")
+    current = _producer_lstart(pid)
+    if current is None:
+        return decisions.LeaseObservation("unknown", f"pid {pid} start time is unreadable")
+    if current != anchored:
+        return decisions.LeaseObservation(
+            "dead", f"pid {pid} was recycled (start time changed)")
+    return decisions.LeaseObservation("alive", f"pid {pid} anchored at {anchored}")
+
+
+def _write_fencing_receipt(controller: Path, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Write one immutable lease receipt; the state mutation commits it."""
+    directory = _fencing_root(controller, task_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    name = f"{int(payload['attempt']):04d}-{payload['kind']}-{secrets.token_hex(6)}.json"
+    data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {"path": str((directory / name).resolve()),
+            "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _lease_view(record: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    lease = record.get("fencing") if isinstance(record, dict) else None
+    return lease if isinstance(lease, dict) else None
+
+
+def _token_digest(token: Optional[str]) -> Optional[str]:
+    if not isinstance(token, str) or not token:
+        return None
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _new_lease(task_id: str, attempt: int, producer_kind: str, authority_kind: str,
+               receipt: dict[str, Any], *, reason: Optional[str],
+               producer_pid: Optional[int], recovery: Optional[dict[str, Any]] = None) \
+        -> tuple[dict[str, Any], str]:
+    token = f"{task_id}:{attempt}:{secrets.token_hex(20)}"
+    pid = producer_pid if isinstance(producer_pid, int) else os.getpid()
+    lease = {
+        "schema_version": FENCING_SCHEMA,
+        "attempt": attempt,
+        "state": decisions.LEASE_ACTIVE,
+        "producer_kind": producer_kind,
+        "producer": {"pid": pid, "lstart": _producer_lstart(pid),
+                     "host": os.uname().nodename, "issued_utc": _utc_now()},
+        "token_sha256": _token_digest(token),
+        "issued_utc": _utc_now(),
+        "heartbeat_utc": None,
+        "heartbeat_seq": 0,
+        "authority": {"kind": authority_kind, "reason": reason,
+                      "receipt_path": receipt["path"],
+                      "receipt_sha256": receipt["sha256"]},
+    }
+    if recovery is not None:
+        lease["recovery"] = recovery
+    return lease, token
+
+
+def _history_entry(lease: dict[str, Any], *, state: str, reason: Optional[str]) -> dict[str, Any]:
+    return {"attempt": lease.get("attempt"), "state": state,
+            "producer_kind": lease.get("producer_kind"),
+            "issued_utc": lease.get("issued_utc"), "ended_utc": _utc_now(),
+            "reason": reason,
+            "authority": lease.get("authority", {}).get("kind")}
+
+
+def _apply_lease(record: dict[str, Any], lease: dict[str, Any]) -> dict[str, Any]:
+    previous = _lease_view(record)
+    history = list(record.get("fencing_history") or []) \
+        if isinstance(record.get("fencing_history"), list) else []
+    if previous is not None:
+        history.append(_history_entry(previous, state=lease["state"],
+                                      reason=lease["authority"].get("reason")))
+    del history[:-FENCING_HISTORY_LIMIT]
+    return {**record, "fencing": lease, "fencing_history": history}
+
+
+_LEASE_RECORD_UNSET = object()
+
+
+def _require_lease_fence(controller: Path, command: str, task_id: str,
+                         lease_token: Optional[str], *,
+                         record: Any = _LEASE_RECORD_UNSET) -> Optional[dict[str, Any]]:
+    """Fail closed unless this command holds task mutation authority.
+
+    Read-only: gated operations call this inside their existing state lock
+    so the authority observation cannot race a concurrent lease transition.
+    Heartbeat refresh is an explicit holder command and never a side effect
+    of another mutation, so frozen-record comparisons stay stable.
+    """
+    if record is _LEASE_RECORD_UNSET:
+        with state_lock(controller):
+            record = read_state(controller)["tasks"].get(task_id)
+    lease = _lease_view(record)
+    observation = (_observe_producer(lease.get("producer"))
+                   if isinstance(lease, dict) else
+                   decisions.LeaseObservation("unknown", "no lease"))
+    decision = decisions.plan_lease_authority(
+        command, task_id, lease, _token_digest(lease_token),
+        observation, os.getpid())
+    if not decision.admitted:
+        raise TaskWorkspaceError(
+            f"task {command} refused ({decision.code}): {decision.message}")
+    return lease
+
+
+def _ensure_lease_released(controller: Path, task_id: str, record: dict[str, Any],
+                           *, reason: str) -> dict[str, Any]:
+    """Terminate an ACTIVE lease terminally (queue/withdrawal boundary)."""
+    lease = _lease_view(record)
+    if lease is None or lease.get("state") != decisions.LEASE_ACTIVE:
+        return record
+    receipt_payload = {
+        "schema_version": FENCING_RECEIPT_SCHEMA, "kind": "release",
+        "task_id": task_id, "attempt": lease.get("attempt"),
+        "token_sha256": lease.get("token_sha256"), "reason": reason,
+        "recorded_utc": _utc_now(),
+    }
+    receipt = _write_fencing_receipt(controller, task_id, receipt_payload)
+    terminal = {**lease, "state": decisions.LEASE_RELEASED,
+                "released_utc": _utc_now(), "release_reason": reason,
+                "release_receipt": receipt}
+    return _apply_lease(record, terminal)
+
+
+def lease_status(controller: Path, task_id: str) -> dict[str, Any]:
+    """Read-only fencing observation with actionable reason codes."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    require_task(controller, task_id)
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+    lease = _lease_view(record)
+    observation = (_observe_producer(lease.get("producer"))
+                   if isinstance(lease, dict) else None)
+    authority = decisions.plan_lease_authority(
+        "status", task_id, lease, None,
+        observation or decisions.LeaseObservation("unknown", "no lease"),
+        os.getpid())
+    successor = decisions.plan_lease_successor(
+        task_id, lease, observation or decisions.LeaseObservation("unknown", "no lease"),
+        lease.get("handoff") if isinstance(lease, dict) else None)
+    return {
+        "schema_version": FENCING_SCHEMA, "task_id": task_id,
+        "lease": lease, "history": (record or {}).get("fencing_history") or [],
+        "producer_observation": {"status": observation.status, "detail": observation.detail}
+        if observation else None,
+        "mutation_authority": {"admitted": authority.admitted, "code": authority.code,
+                               "message": authority.message},
+        "successor_readiness": {"admitted": successor.admitted, "code": successor.code,
+                                "authority_kind": successor.authority_kind,
+                                "message": successor.message},
+    }
+
+
+def _lease_holder_authority(controller: Path, command: str, task_id: str,
+                            lease_token: Optional[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Holder-exclusive authority: only the exact token admits."""
+    with state_lock(controller):
+        record = read_state(controller)["tasks"].get(task_id)
+    if not isinstance(record, dict):
+        raise TaskWorkspaceError("task has not been started")
+    lease = _lease_view(record)
+    if lease is None or lease.get("state") != decisions.LEASE_ACTIVE:
+        raise TaskWorkspaceError(
+            f"task {command} refused (lease_not_active): "
+            f"task {task_id} holds no ACTIVE fencing lease")
+    digest = _token_digest(lease_token)
+    if digest is None or digest != lease.get("token_sha256"):
+        raise TaskWorkspaceError(
+            f"task {command} refused (lease_fence_stale): "
+            f"present the current --lease-token for attempt {lease.get('attempt')}")
+    return record, lease
+
+
+def lease_heartbeat(controller: Path, task_id: str, lease_token: Optional[str]) -> dict[str, Any]:
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    require_task(controller, task_id)
+    record, lease = _lease_holder_authority(controller, "lease-heartbeat", task_id, lease_token)
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != record:
+            raise TaskWorkspaceError("task state changed during lease heartbeat; retry")
+        refreshed = {**lease, "heartbeat_utc": _utc_now(),
+                     "heartbeat_seq": int(lease.get("heartbeat_seq") or 0) + 1}
+        state["tasks"][task_id] = _apply_lease(current, refreshed)
+        write_state(controller, state)
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "heartbeat", "attempt": refreshed["attempt"],
+                "heartbeat_seq": refreshed["heartbeat_seq"],
+                "heartbeat_utc": refreshed["heartbeat_utc"]}
+
+
+def lease_handoff(controller: Path, task_id: str, lease_token: Optional[str],
+                  reason: Optional[str]) -> dict[str, Any]:
+    """Holder releases authority to one explicit successor receipt."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    require_task(controller, task_id)
+    record, lease = _lease_holder_authority(controller, "lease-handoff", task_id, lease_token)
+    receipt_payload = {
+        "schema_version": FENCING_RECEIPT_SCHEMA, "kind": "handoff",
+        "task_id": task_id, "attempt": lease.get("attempt"),
+        "token_sha256": lease.get("token_sha256"), "reason": reason,
+        "producer": lease.get("producer"), "recorded_utc": _utc_now(),
+    }
+    receipt = _write_fencing_receipt(controller, task_id, receipt_payload)
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != record:
+            raise TaskWorkspaceError("task state changed during lease handoff; retry")
+        handed = {**lease, "state": decisions.LEASE_HANDED_OFF,
+                 "handed_off_utc": _utc_now(), "handoff": receipt}
+        state["tasks"][task_id] = _apply_lease(current, handed)
+        write_state(controller, state)
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "handed_off", "attempt": handed["attempt"],
+                "handoff_receipt": receipt,
+                "next_command": f"yy task lease-successor {task_id} --handoff-receipt {receipt['path']}"}
+
+
+def lease_revoke(controller: Path, task_id: str, reason: Optional[str]) -> dict[str, Any]:
+    """Operator-only explicit termination of task mutation authority."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    if not reason or not reason.strip():
+        raise TaskWorkspaceError("lease revoke requires --reason (operator decision record)")
+    require_task(controller, task_id)
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+    if not isinstance(record, dict):
+        raise TaskWorkspaceError("task has not been started")
+    lease = _lease_view(record)
+    if lease is None:
+        raise TaskWorkspaceError("task holds no fencing lease to revoke")
+    if lease.get("state") == decisions.LEASE_RELEASED:
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "already_released", "attempt": lease.get("attempt")}
+    receipt_payload = {
+        "schema_version": FENCING_RECEIPT_SCHEMA, "kind": "revoke",
+        "task_id": task_id, "attempt": lease.get("attempt"),
+        "reason": reason, "operator": os.environ.get("USER") or None,
+        "recorded_utc": _utc_now(),
+    }
+    receipt = _write_fencing_receipt(controller, task_id, receipt_payload)
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != record:
+            raise TaskWorkspaceError("task state changed during lease revoke; retry")
+        revoked = {**lease, "state": decisions.LEASE_REVOKED,
+                   "revoked_utc": _utc_now(), "revoke_reason": reason,
+                   "revoke_receipt": receipt}
+        state["tasks"][task_id] = _apply_lease(current, revoked)
+        write_state(controller, state)
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "revoked", "attempt": revoked["attempt"],
+                "revoke_receipt": receipt,
+                "next_command": f"yy task lease-successor {task_id}"}
+
+
+def _worktree_recovery_classification(record: dict[str, Any]) -> dict[str, Any]:
+    """Bounded dirty-bytes inventory for one successor attempt."""
+    worktree = record.get("worktree")
+    if not isinstance(worktree, str) or not Path(worktree).exists():
+        return {"classification": "worktree_absent",
+                "next_command": "yy task status " + str(record.get("task_id"))}
+    porcelain = git(Path(worktree), "status", "--porcelain=v1",
+                    "--untracked-files=all", check=False) or ""
+    dirty = [line[3:] for line in porcelain.splitlines() if line.strip()]
+    if not dirty:
+        return {"classification": "clean_resume",
+                "next_command": "yy task status " + str(record.get("task_id"))}
+    return {
+        "classification": "dirty_recovery_required",
+        "dirty_paths": dirty[:FENCING_DIRTY_PATH_LIMIT],
+        "dirty_path_count": len(dirty),
+        "preservation": "dirty bytes are preserved for one bounded recovery agent",
+        "escalate_only": ["semantic ambiguity", "scope or authority expansion",
+                          "sensitive action", "unrecoverable state"],
+        "next_command": "yy task handoff " + str(record.get("task_id")),
+    }
+
+
+def lease_successor(controller: Path, task_id: str,
+                    handoff_receipt_path: Optional[Path] = None) -> dict[str, Any]:
+    """Issue the next fencing attempt after proven predecessor termination."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    require_task(controller, task_id)
+    handoff_receipt: Optional[dict[str, Any]] = None
+    if handoff_receipt_path is not None:
+        try:
+            handoff_receipt = json.loads(Path(handoff_receipt_path).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError(f"handoff receipt is unreadable: {exc}") from exc
+        if (not isinstance(handoff_receipt, dict)
+                or handoff_receipt.get("schema_version") != FENCING_RECEIPT_SCHEMA
+                or handoff_receipt.get("kind") != "handoff"
+                or handoff_receipt.get("task_id") != task_id):
+            raise TaskWorkspaceError("handoff receipt is not an exact task handoff receipt")
+    with state_lock(controller):
+        state = read_state(controller)
+        record = state["tasks"].get(task_id)
+        if not isinstance(record, dict):
+            raise TaskWorkspaceError("task has not been started")
+        lease = _lease_view(record)
+        observation = (_observe_producer(lease.get("producer"))
+                       if isinstance(lease, dict) else
+                       decisions.LeaseObservation("unknown", "no lease"))
+        recorded_handoff = lease.get("handoff") if isinstance(lease, dict) else None
+        if handoff_receipt is not None and recorded_handoff is not None:
+            receipt_file_sha = hashlib.sha256(
+                Path(handoff_receipt_path).read_bytes()).hexdigest()
+            if (handoff_receipt.get("attempt") != lease.get("attempt")
+                    or receipt_file_sha != recorded_handoff.get("sha256")):
+                raise TaskWorkspaceError(
+                    "handoff receipt does not match the recorded handoff for this attempt")
+        plan = decisions.plan_lease_successor(task_id, lease, observation, handoff_receipt)
+        if not plan.admitted:
+            raise TaskWorkspaceError(
+                f"task lease-successor refused ({plan.code}): {plan.message}")
+        recovery = _worktree_recovery_classification(record)
+        attempt = (int(lease["attempt"]) + 1) if isinstance(lease, dict) else 1
+        receipt_payload = {
+            "schema_version": FENCING_RECEIPT_SCHEMA, "kind": "successor",
+            "task_id": task_id, "attempt": attempt,
+            "predecessor_attempt": lease.get("attempt") if isinstance(lease, dict) else None,
+            "authority_kind": plan.authority_kind, "reason": plan.message,
+            "recovery": {"classification": recovery["classification"],
+                         "dirty_path_count": recovery.get("dirty_path_count", 0)},
+            "producer_observation": {"status": observation.status, "detail": observation.detail}
+            if isinstance(lease, dict) else None,
+            "recorded_utc": _utc_now(),
+        }
+        receipt = _write_fencing_receipt(controller, task_id, receipt_payload)
+        lease_next, token = _new_lease(
+            task_id, attempt, "process", plan.authority_kind, receipt,
+            reason=plan.message, producer_pid=os.getpid(), recovery=recovery)
+        state["tasks"][task_id] = _apply_lease(record, lease_next)
+        write_state(controller, state)
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "successor_issued", "attempt": attempt,
+                "authority_kind": plan.authority_kind, "lease_token": token,
+                "recovery": recovery,
+                "receipt": receipt,
+                "note": "the lease token is shown once; store it and present it via --lease-token"}
+
+
+def lease_release(controller: Path, task_id: str, lease_token: Optional[str]) -> dict[str, Any]:
+    """Holder terminal release without queueing (work abandoned or reassigned)."""
+    if not TASK_RE.fullmatch(task_id):
+        raise TaskWorkspaceError("unsafe task id")
+    require_task(controller, task_id)
+    record, lease = _lease_holder_authority(controller, "lease-release", task_id, lease_token)
+    released = _ensure_lease_released(controller, task_id, record, reason="holder release")
+    with state_lock(controller):
+        state = read_state(controller)
+        current = state["tasks"].get(task_id)
+        if current != record:
+            raise TaskWorkspaceError("task state changed during lease release; retry")
+        state["tasks"][task_id] = released
+        write_state(controller, state)
+        return {"schema_version": FENCING_SCHEMA, "task_id": task_id,
+                "outcome": "released", "attempt": lease.get("attempt"),
+                "release_receipt": released["fencing"].get("release_receipt")}
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
         "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
         "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap",
-        "sync", "doctor"))
+        "sync", "doctor", "lease-status", "lease-heartbeat", "lease-handoff",
+        "lease-successor", "lease-revoke", "lease-release"))
     value.add_argument("--task")
     value.add_argument("--child",
                        help="admitted ordered umbrella child task id for child-checkpoint")
@@ -6403,6 +6914,10 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--apply", type=Path)
     value.add_argument("--package-version")
     value.add_argument("--package-runtime-sha256")
+    value.add_argument("--lease-token", help="current fencing lease token for gated mutations")
+    value.add_argument("--reason", help="operator decision record for lease revoke or handoff")
+    value.add_argument("--handoff-receipt", type=Path,
+                       help="exact handoff receipt consumed by lease-successor")
     return value
 
 
@@ -6428,11 +6943,37 @@ def main(argv: list[str] | None = None) -> int:
                 raise TaskWorkspaceError("--child is supported only for task child-checkpoint")
             if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
                 raise TaskWorkspaceError("runtime-bootstrap options are not supported for task lifecycle operations")
+            if args.lease_token and args.operation not in (
+                    set(decisions.LEASE_GATED_COMMANDS) | {"lease-heartbeat", "lease-handoff",
+                                                          "lease-release", "evidence-await"}):
+                raise TaskWorkspaceError("--lease-token is supported only for fenced task mutations and holder lease commands")
+            if args.reason and args.operation not in {"lease-revoke", "lease-handoff"}:
+                raise TaskWorkspaceError("--reason is supported only for lease revoke or handoff")
+            if args.handoff_receipt and args.operation != "lease-successor":
+                raise TaskWorkspaceError("--handoff-receipt is supported only for lease-successor")
             audit = record_control_audit(controller, "task", args.operation, args.task)
-            if args.operation == "start":
+            if args.operation in {"lease-status", "lease-heartbeat", "lease-handoff",
+                                  "lease-successor", "lease-revoke", "lease-release"}:
+                if args.umbrella_admission or args.plan or args.output or args.authorization_receipt:
+                    raise TaskWorkspaceError(
+                        "admission/recovery options are unsupported for lease operations")
+                if args.operation == "lease-status":
+                    result = lease_status(controller, args.task)
+                elif args.operation == "lease-heartbeat":
+                    result = lease_heartbeat(controller, args.task, args.lease_token)
+                elif args.operation == "lease-handoff":
+                    result = lease_handoff(controller, args.task, args.lease_token, args.reason)
+                elif args.operation == "lease-successor":
+                    result = lease_successor(controller, args.task, args.handoff_receipt)
+                elif args.operation == "lease-revoke":
+                    result = lease_revoke(controller, args.task, args.reason)
+                else:
+                    result = lease_release(controller, args.task, args.lease_token)
+            elif args.operation == "start":
                 if args.plan or args.output or args.authorization_receipt:
                     raise TaskWorkspaceError("recovery options are not supported for task start")
-                result = start(controller, args.task, args.path, args.umbrella_admission)
+                result = start(controller, args.task, args.path, args.umbrella_admission,
+                               args.lease_token)
             elif args.operation == "recovery-plan":
                 if not args.umbrella_admission or not args.output or args.authorization_receipt or args.plan:
                     raise TaskWorkspaceError(
@@ -6474,25 +7015,33 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.operation == "handoff":
                     result = run_handoff(controller, args.task)
                 elif args.operation == "checkpoint":
-                    result = standing_checkpoint(controller, args.task)
+                    result = standing_checkpoint(controller, args.task, args.lease_token)
                 elif args.operation == "child-checkpoint":
                     if not args.child:
                         raise TaskWorkspaceError("child-checkpoint requires --child")
-                    result = umbrella_child_checkpoint(controller, args.task, args.child)
+                    result = umbrella_child_checkpoint(controller, args.task, args.child,
+                                                       args.lease_token)
                 elif args.operation == "evidence-run":
-                    result = standing_evidence_run(controller, args.task)
+                    result = standing_evidence_run(controller, args.task,
+                                                   lease_token=args.lease_token)
                 elif args.operation == "evidence-status":
                     result = standing_evidence_status(controller, args.task)
                 elif args.operation == "evidence-await":
                     current = standing_evidence_status(controller, args.task)
-                    result = current if current["state"] == "COMPLETE" else standing_evidence_run(controller, args.task)
+                    result = current if current["state"] == "COMPLETE" else standing_evidence_run(
+                        controller, args.task, lease_token=args.lease_token)
                 elif args.operation == "sync":
-                    result = recover_kanban_sync(controller, args.task)
+                    result = recover_kanban_sync(controller, args.task, args.lease_token)
                 elif args.operation == "doctor":
                     result = kanban_sync_doctor(controller, args.task or None)
+                elif args.operation == "status":
+                    result = status(controller, args.task)
+                elif args.operation == "preflight":
+                    result = preflight(controller, args.task)
+                elif args.operation == "hydrate":
+                    result = hydrate(controller, args.task, args.lease_token)
                 else:
-                    result = {"status": status, "hydrate": hydrate, "preflight": preflight,
-                              "finish": finish}[args.operation](controller, args.task)
+                    result = finish(controller, args.task, args.lease_token)
             result = {**result, "control_audit": audit}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0

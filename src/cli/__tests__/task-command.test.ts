@@ -23,31 +23,46 @@ describe('task workspace CLI', () => {
     expect(runtime).toContain('def hydrate(controller:');
   });
 
-  it.each(['run', 'start', 'status', 'hydrate', 'preflight', 'checkpoint', 'finish'] as const)(
-    'forwards task %s and its positional ID to one managed-runtime invoker',
-    async (operation) => {
+  it.each([
+    { operation: 'run', expected: undefined },
+    { operation: 'start', expected: [] },
+    { operation: 'status', expected: undefined },
+    { operation: 'hydrate', expected: [] },
+    { operation: 'preflight', expected: undefined },
+    { operation: 'checkpoint', expected: [] },
+    { operation: 'finish', expected: [] },
+  ] as const)(
+    'forwards task $operation and its positional ID to one managed-runtime invoker',
+    async ({ operation, expected }) => {
       const invoke = vi.fn(async () => undefined);
       const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
       configureTaskWorkspaceCommand(program, invoke);
       await program.parseAsync(['node', 'yy', 'task', operation, 'T123']);
       expect(invoke).toHaveBeenCalledOnce();
-      expect(invoke).toHaveBeenCalledWith(operation, 'T123', []);
+      if (expected === undefined) {
+        expect(invoke).toHaveBeenCalledWith(operation, 'T123', []);
+      } else {
+        expect(invoke).toHaveBeenCalledWith(operation, 'T123', [], expected);
+      }
     },
   );
 
-  it('exposes preflight, kanban sync, bounded umbrella recovery, and guarded runtime bootstrap below task', () => {
+  it('exposes preflight, kanban sync, fencing leases, bounded umbrella recovery, and guarded runtime bootstrap below task', () => {
     const program = new Command();
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
       'run', 'start', 'preflight', 'checkpoint', 'child-checkpoint', 'hydrate', 'status', 'finish',
-      'doctor', 'sync', 'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
+      'doctor', 'sync', 'lease-status', 'lease-heartbeat', 'lease-handoff', 'lease-successor',
+      'lease-revoke', 'lease-release', 'recovery-plan', 'recovery-authorize', 'recovery-apply',
+      'runtime-bootstrap',
     ]);
     expect(task?.commands.slice(0, 8).every((command) => command.registeredArguments[0]?.required)).toBe(true);
     expect(task?.commands[4]?.registeredArguments).toHaveLength(2);
     expect(task?.commands[8]?.registeredArguments[0]?.required).toBe(false);
-    expect(task?.commands.slice(9, 13).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[13]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.slice(9, 16).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands.slice(16, 19).every((command) => command.registeredArguments[0]?.required)).toBe(true);
+    expect(task?.commands[19]?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -85,12 +100,12 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, invoke);
 
     await program.parseAsync(['node', 'yy', 'task', 'start', 'BASE']);
-    expect(invoke).toHaveBeenLastCalledWith('start', 'BASE', []);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'BASE', [], []);
 
     await program.parseAsync([
       'node', 'yy', 'task', 'start', 'EXTRA', '--path', 'juno_kanban', '--path', 'frontend',
     ]);
-    expect(invoke).toHaveBeenLastCalledWith('start', 'EXTRA', ['juno_kanban', 'frontend']);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'EXTRA', ['juno_kanban', 'frontend'], []);
   });
 
   it('forwards umbrella admission and exact recovery plan/apply arguments', async () => {
@@ -126,13 +141,47 @@ describe('task workspace CLI', () => {
     expect(taskWorkspaceControlOperation('recovery-plan')).toBe('kanban');
     expect(taskWorkspaceControlOperation('status')).toBe('kanban');
     expect(taskWorkspaceControlOperation('doctor')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('lease-status')).toBe('kanban');
+    expect(taskWorkspaceControlOperation('lease-heartbeat')).toBe('orchestration');
+    expect(taskWorkspaceControlOperation('lease-successor')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('sync')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('child-checkpoint')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
   });
 
-  it.each(['run', 'start', 'hydrate', 'finish', 'recovery-authorize', 'recovery-apply'] as const)(
+  it('forwards the fencing lease token and lease command arguments exactly', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride().configureOutput({ writeOut: () => undefined });
+    configureTaskWorkspaceCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'task', 'start', 'T1',
+      '--lease-token', 'tok-1']);
+    expect(invoke).toHaveBeenLastCalledWith('start', 'T1', [], ['--lease-token', 'tok-1']);
+    await program.parseAsync(['node', 'yy', 'task', 'checkpoint', 'T1',
+      '--lease-token', 'tok-1']);
+    expect(invoke).toHaveBeenLastCalledWith('checkpoint', 'T1', [], ['--lease-token', 'tok-1']);
+    await program.parseAsync(['node', 'yy', 'task', 'finish', 'T1']);
+    expect(invoke).toHaveBeenLastCalledWith('finish', 'T1', [], []);
+    await program.parseAsync(['node', 'yy', 'task', 'lease-heartbeat', 'T1',
+      '--lease-token', 'tok-1']);
+    expect(invoke).toHaveBeenLastCalledWith('lease-heartbeat', 'T1', [], ['--lease-token', 'tok-1']);
+    await program.parseAsync(['node', 'yy', 'task', 'lease-handoff', 'T1',
+      '--lease-token', 'tok-1', '--reason', 'session ending']);
+    expect(invoke).toHaveBeenLastCalledWith('lease-handoff', 'T1', [],
+      ['--lease-token', 'tok-1', '--reason', 'session ending']);
+    await program.parseAsync(['node', 'yy', 'task', 'lease-successor', 'T1',
+      '--handoff-receipt', '/tmp/handoff.json']);
+    expect(invoke).toHaveBeenLastCalledWith('lease-successor', 'T1', [],
+      ['--handoff-receipt', '/tmp/handoff.json']);
+    await program.parseAsync(['node', 'yy', 'task', 'lease-revoke', 'T1',
+      '--reason', 'lost session']);
+    expect(invoke).toHaveBeenLastCalledWith('lease-revoke', 'T1', [], ['--reason', 'lost session']);
+    await program.parseAsync(['node', 'yy', 'task', 'lease-status', 'T1']);
+    expect(invoke).toHaveBeenLastCalledWith('lease-status', 'T1', []);
+  });
+
+  it.each(['run', 'start', 'hydrate', 'finish', 'recovery-authorize', 'recovery-apply',
+           'lease-heartbeat', 'lease-handoff', 'lease-successor', 'lease-revoke', 'lease-release'] as const)(
     'checkpoints durable controller state after task %s without replacing its outcome',
     async (operation) => {
       const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));
@@ -142,7 +191,7 @@ describe('task workspace CLI', () => {
     },
   );
 
-  it.each(['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor'] as const)(
+  it.each(['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor', 'lease-status'] as const)(
     'does not checkpoint after read-only task %s',
     async (operation) => {
     const checkpoint = vi.fn(async () => ({ attempted: true, ok: true }));

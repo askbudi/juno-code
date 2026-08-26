@@ -465,3 +465,200 @@ def shared_queue_delta(before: Any, after: Any) -> list[str]:
     else:
         paths.add("<state>")
     return sorted(paths)
+
+
+# ---------------------------------------------------------------------------
+# Fenced task/worktree attempts (Wave 2 of the sealed merge-train PDR).
+#
+# A lease is controller-issued mutation authority over one task record.
+# Expiry (heartbeat staleness) alone never grants takeover: a successor token
+# is planned only after producer death is observable, an explicit handoff
+# receipt exists, or an operator revoke receipt exists. Stale attempts fail
+# closed with one actionable machine code.
+# ---------------------------------------------------------------------------
+
+LEASE_ACTIVE = "ACTIVE"
+LEASE_RELEASED = "RELEASED"
+LEASE_REVOKED = "REVOKED"
+LEASE_HANDED_OFF = "HANDED_OFF"
+LEASE_TERMINAL_STATES = frozenset({LEASE_RELEASED, LEASE_REVOKED, LEASE_HANDED_OFF})
+PRODUCER_KINDS = frozenset({"process", "session"})
+
+# Bounded mutation commands that carry worker authority over the task record.
+LEASE_GATED_COMMANDS = frozenset({
+    "start", "hydrate", "checkpoint", "child-checkpoint",
+    "evidence-run", "finish", "sync",
+})
+
+LEASE_CODE_TOKEN_REQUIRED = "lease_token_required"
+LEASE_CODE_FENCE_STALE = "lease_fence_stale"
+LEASE_CODE_PRODUCER_MISMATCH = "lease_producer_mismatch"
+LEASE_CODE_PRODUCER_DEAD = "lease_producer_dead"
+LEASE_CODE_PRODUCER_LIVE = "lease_producer_live"
+LEASE_CODE_PRODUCER_UNKNOWN = "lease_producer_unknown"
+LEASE_CODE_NOT_ACTIVE = "lease_not_active"
+LEASE_CODE_RELEASED = "lease_released"
+
+
+@dataclass(frozen=True)
+class LeaseObservation:
+    """Controller-owned liveness readback for one lease producer."""
+
+    status: str  # "alive" | "dead" | "unknown"
+    detail: str
+
+
+@dataclass(frozen=True)
+class LeaseAuthorityDecision:
+    """Admission decision for one gated mutation against one lease."""
+
+    command: str
+    task_id: str
+    admitted: bool
+    code: Optional[str]
+    message: str
+    authority: str  # "token" | "producer" | "unfenced"
+
+
+def _lease_refusal(command: str, task_id: str, code: str, message: str) -> LeaseAuthorityDecision:
+    return LeaseAuthorityDecision(command, task_id, False, code, message, "none")
+
+
+def plan_lease_authority(command: str, task_id: str, lease: Any,
+                         presented_token_sha256: Optional[str],
+                         observation: LeaseObservation,
+                         current_pid: Optional[int]) -> LeaseAuthorityDecision:
+    """Plan mutation authority for one gated command against one lease.
+
+    Pure decision half of the fencing gate. ``lease`` is the plain task-record
+    ``fencing`` mapping (or None). The imperative shell owns token hashing,
+    liveness readback, receipts, and state mutation.
+
+    Admission paths, in order:
+
+    1. no ACTIVE lease -> unfenced (legacy or terminal);
+    2. exact current token -> holder authority;
+    3. process lease whose live producer is this very process -> producer
+       continuity (in-process workers and scenario suites).
+
+    Everything else fails closed with one actionable code: a provably dead
+    producer names the successor command; a wrong token is a stale fence; an
+    unrelated live or unprovable producer demands token/handoff/revoke.
+    """
+    if not isinstance(lease, dict) or lease.get("state") != LEASE_ACTIVE:
+        return LeaseAuthorityDecision(command, task_id, True, None,
+                                      "no active fencing lease", "unfenced")
+    token_sha256 = lease.get("token_sha256")
+    producer_pid = (lease.get("producer") or {}).get("pid") \
+        if isinstance(lease.get("producer"), dict) else None
+    if (isinstance(token_sha256, str) and isinstance(presented_token_sha256, str)
+            and presented_token_sha256 == token_sha256):
+        return LeaseAuthorityDecision(command, task_id, True, None,
+                                      "exact fencing token", "token")
+    if (lease.get("producer_kind") == "process"
+            and isinstance(producer_pid, int) and producer_pid == current_pid
+            and observation.status == "alive"):
+        return LeaseAuthorityDecision(command, task_id, True, None,
+                                      "live process producer continuity", "producer")
+    if presented_token_sha256 is not None:
+        # A presented-but-wrong token is a stale fence regardless of current
+        # producer liveness: the caller claims an authority attempt it no
+        # longer holds.
+        return _lease_refusal(
+            command, task_id, LEASE_CODE_FENCE_STALE,
+            f"task {task_id} fencing token is stale for attempt {lease.get('attempt')}; "
+            "obtain the current token from its holder, an explicit handoff, or "
+            f"yy task lease-successor {task_id}")
+    if observation.status == "dead":
+        return _lease_refusal(
+            command, task_id, LEASE_CODE_PRODUCER_DEAD,
+            f"task {task_id} holds fencing attempt {lease.get('attempt')} whose producer is "
+            f"provably ended ({observation.detail}); obtain a receipt-bound successor with: "
+            f"yy task lease-successor {task_id}")
+    if observation.status == "alive":
+        return _lease_refusal(
+            command, task_id, LEASE_CODE_PRODUCER_MISMATCH,
+            f"task {task_id} is fenced by another live producer (attempt "
+            f"{lease.get('attempt')}, {observation.detail}); present the current "
+            "--lease-token, or obtain an explicit handoff or operator revoke")
+    return _lease_refusal(
+        command, task_id, LEASE_CODE_TOKEN_REQUIRED,
+        f"task {task_id} holds fencing attempt {lease.get('attempt')} whose producer cannot be "
+        f"proven ended ({observation.detail}); present the current --lease-token, obtain an "
+        f"explicit handoff, or recover with: yy task lease-revoke {task_id} --reason <why> && "
+        f"yy task lease-successor {task_id}")
+
+
+@dataclass(frozen=True)
+class LeaseSuccessorDecision:
+    """Admission decision for issuing one successor fencing attempt."""
+
+    task_id: str
+    admitted: bool
+    code: Optional[str]
+    authority_kind: str  # "successor_death" | "successor_handoff" | "successor_revoke"
+    message: str
+
+
+def plan_lease_successor(task_id: str, lease: Any,
+                         observation: LeaseObservation,
+                         handoff_receipt: Any) -> LeaseSuccessorDecision:
+    """Plan successor issuance for one lease.
+
+    Precondition matrix (expiry alone is never authority):
+
+    - ACTIVE process lease + provably dead producer -> successor_death;
+    - HANDED_OFF lease + unconsumed exact handoff receipt -> successor_handoff;
+    - REVOKED lease -> successor_revoke (operator already decided);
+    - ACTIVE session lease, live/unknown producer, missing or unconsumable
+      handoff, or RELEASED lease -> refuse with one actionable code.
+    """
+    if not isinstance(lease, dict):
+        return LeaseSuccessorDecision(task_id, False, LEASE_CODE_NOT_ACTIVE,
+                                      "none", "task holds no fencing lease to succeed")
+    state = lease.get("state")
+    attempt = lease.get("attempt")
+    if state == LEASE_ACTIVE:
+        if handoff_receipt is not None:
+            return LeaseSuccessorDecision(
+                task_id, False, LEASE_CODE_PRODUCER_LIVE, "none",
+                f"handoff receipt is not consumable while attempt {attempt} is still ACTIVE; "
+                "the holder must run lease-handoff first")
+        if lease.get("producer_kind") != "process":
+            return LeaseSuccessorDecision(
+                task_id, False, LEASE_CODE_TOKEN_REQUIRED, "none",
+                f"attempt {attempt} is a session lease; producer death is not observable; "
+                f"recover with: yy task lease-revoke {task_id} --reason <why>")
+        if observation.status == "dead":
+            return LeaseSuccessorDecision(
+                task_id, True, None, "successor_death",
+                f"producer of attempt {attempt} provably ended ({observation.detail})")
+        if observation.status == "alive":
+            return LeaseSuccessorDecision(
+                task_id, False, LEASE_CODE_PRODUCER_LIVE, "none",
+                f"producer of attempt {attempt} is alive ({observation.detail}); "
+                "expiry alone never grants takeover")
+        return LeaseSuccessorDecision(
+            task_id, False, LEASE_CODE_PRODUCER_UNKNOWN, "none",
+            f"producer of attempt {attempt} cannot be observed ({observation.detail}); "
+            f"recover with: yy task lease-revoke {task_id} --reason <why>")
+    if state == LEASE_HANDED_OFF:
+        if not isinstance(handoff_receipt, dict):
+            return LeaseSuccessorDecision(
+                task_id, False, LEASE_CODE_TOKEN_REQUIRED, "none",
+                f"attempt {attempt} is handed off; consume its exact handoff receipt with "
+                "--handoff-receipt <path>")
+        return LeaseSuccessorDecision(
+            task_id, True, None, "successor_handoff",
+            f"explicit handoff receipt for attempt {attempt} accepted")
+    if state == LEASE_REVOKED:
+        return LeaseSuccessorDecision(
+            task_id, True, None, "successor_revoke",
+            f"operator revoke of attempt {attempt} authorizes one successor")
+    if state == LEASE_RELEASED:
+        return LeaseSuccessorDecision(
+            task_id, False, LEASE_CODE_RELEASED, "none",
+            f"attempt {attempt} was released terminally; mutation proceeds unfenced")
+    return LeaseSuccessorDecision(
+        task_id, False, LEASE_CODE_NOT_ACTIVE, "none",
+        f"unknown fencing lease state {state!r}")

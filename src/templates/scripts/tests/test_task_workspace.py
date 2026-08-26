@@ -385,6 +385,53 @@ def _release_resource_lock(lock_path: Path, token: str, inode: Optional[list[int
     return _protocol_operation(lock_path, "release", {"token": token, "inode": inode})["outcome"] in ("released", "absent")
 
 
+# ---------------------------------------------------------------------------
+# Fencing lease threading for scenario flows (task rrx4b8).
+#
+# Every gated task mutation must present the current fencing token. The
+# scenario suite drives the engine both in-process and through fresh CLI
+# subprocesses, so the holder token is captured from each issuing surface
+# (in-process start/lease-successor and CLI start/lease-successor output)
+# and re-presented automatically by the command helper. Tests that prove
+# fail-closed refusals pop the token or bypass the helper deliberately.
+# ---------------------------------------------------------------------------
+
+LEASE_GATED_OPERATIONS = frozenset({
+    "start", "hydrate", "checkpoint", "child-checkpoint",
+    "evidence-run", "finish", "sync",
+})
+LEASE_TOKENS: dict[tuple[str, str], str] = {}
+
+
+def _capture_lease_token(controller: Path, task_id: str, result: dict) -> dict:
+    key = (str(controller), task_id)
+    token = result.get("lease_token") if isinstance(result, dict) else None
+    if isinstance(token, str) and token:
+        LEASE_TOKENS[key] = token
+    # Absence is not termination: idempotent re-entries (already_started,
+    # hydration_recovered) keep the fence ACTIVE without echoing the token;
+    # terminal lease operations clear the entry explicitly in command().
+    return result
+
+
+_original_task_start = task_runtime.start
+_original_lease_successor = task_runtime.lease_successor
+
+
+def _capturing_task_start(controller: Path, task_id: str, *args, **kwargs):
+    return _capture_lease_token(controller, task_id,
+                                _original_task_start(controller, task_id, *args, **kwargs))
+
+
+def _capturing_lease_successor(controller: Path, task_id: str, *args, **kwargs):
+    return _capture_lease_token(controller, task_id,
+                                _original_lease_successor(controller, task_id, *args, **kwargs))
+
+
+task_runtime.start = _capturing_task_start
+task_runtime.lease_successor = _capturing_lease_successor
+
+
 def setUpModule() -> None:
     global _RESOURCE_LOCK_TOKEN
     _RESOURCE_LOCK_TOKEN, _ = _acquire_resource_lock(_RESOURCE_LOCK_WORKLOAD, RESOURCE_LOCK_PATH)
@@ -709,7 +756,7 @@ class ValidationProfilesRoundTripTests(unittest.TestCase):
             task_runtime.load_config(self.controller)
 
 
-class TaskWorkspaceTests(unittest.TestCase):
+class TaskWorkspaceFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         # Use the physical temp root so exact-path tests are not aliases through
@@ -853,8 +900,21 @@ class TaskWorkspaceTests(unittest.TestCase):
 
     def command(self, operation: str, task_id: str, check: bool = True,
                 extra: Optional[list[str]] = None) -> subprocess.CompletedProcess[str]:
-        return run(["python3", str(SCRIPT), operation, "--task", task_id,
-                    "--controller", str(self.controller), *(extra or [])], self.controller, check)
+        extra = list(extra or [])
+        if operation in LEASE_GATED_OPERATIONS:
+            token = LEASE_TOKENS.get((str(self.controller), task_id))
+            if token:
+                extra += ["--lease-token", token]
+        result = run(["python3", str(SCRIPT), operation, "--task", task_id,
+                      "--controller", str(self.controller), *extra], self.controller, check)
+        if result.returncode == 0 and operation in {"start", "lease-successor"}:
+            try:
+                _capture_lease_token(self.controller, task_id, json.loads(result.stdout))
+            except json.JSONDecodeError:
+                pass
+        elif result.returncode == 0 and operation in {"lease-handoff", "lease-revoke", "lease-release"}:
+            LEASE_TOKENS.pop((str(self.controller), task_id), None)
+        return result
 
     def payload(self, operation: str, task_id: str) -> dict:
         return json.loads(self.command(operation, task_id).stdout)
@@ -1011,6 +1071,10 @@ class TaskWorkspaceTests(unittest.TestCase):
             "children": ["Y", "Z"],
         }, indent=2) + "\n")
         return declaration
+
+
+class TaskWorkspaceTests(TaskWorkspaceFixture):
+    """Real-Git scenario suite for the canonical task-workspace lifecycle."""
 
     def test_umbrella_start_freezes_exact_ordered_child_union_before_git_mutation(self) -> None:
         declaration = self.umbrella_fixture()
@@ -3351,7 +3415,17 @@ raise SystemExit(2)
         self.assertEqual(stale.returncode, 2)
         self.assertIn("unsupported task audit operation: hydrate", stale.stderr)
 
-        recovered = run([str(PUBLIC_YY), "task", "hydrate", "X"], workspace)
+        # The failed start issued a fencing lease whose holder CLI process has
+        # ended; the honest recovery is one receipt-bound successor before the
+        # hydration retry can present a valid fencing token.
+        successor = json.loads(run(
+            [str(PUBLIC_YY), "task", "lease-successor", "X"], workspace).stdout)
+        self.assertEqual(successor["outcome"], "successor_issued")
+        self.assertEqual(successor["authority_kind"], "successor_death")
+        lease_token = successor["lease_token"]
+
+        recovered = run([str(PUBLIC_YY), "task", "hydrate", "X",
+                         "--lease-token", lease_token], workspace)
         payload = json.loads(recovered.stdout)
         self.assertEqual((payload["outcome"], payload["state"]), ("hydrated", "WORKING"))
         self.assertEqual(payload["creation_receipt"]["hydration_workflow"], frozen)
@@ -3364,7 +3438,7 @@ raise SystemExit(2)
         self.assertTrue(Path(payload["hydration"]["manifest_path"]).is_file())
 
         repeated = json.loads(run(
-            [str(PUBLIC_YY), "task", "hydrate", "X"], workspace).stdout)
+            [str(PUBLIC_YY), "task", "hydrate", "X", "--lease-token", lease_token], workspace).stdout)
         self.assertEqual((repeated["outcome"], repeated["state"]), ("hydrated", "WORKING"))
         self.assertEqual(repeated["workspace_identity"]["create_receipt_sha256"], creation_identity)
         self.assertEqual(Path(repeated["worktree"]), workspace)
@@ -5635,6 +5709,266 @@ steps:
         recovered = self.payload("sync", "X")
         self.assertEqual(recovered["outcome"], "projected")
         self.assertEqual(self.board_task("X")["status"], "in_progress")
+
+
+class TaskFencingLeaseTests(TaskWorkspaceFixture):
+    """Real-Git/process scenarios for fenced task/worktree attempts (rrx4b8).
+
+    Proves the acceptance matrix end to end: bearer-token authority, two
+    competing sessions, killed producer with natural receipt-bound successor,
+    delayed stale writes, explicit handoff, dirty recovery classification,
+    crash-at-receipt-boundary idempotence, operator revoke, heartbeat, and
+    terminal release at the queue boundary.
+    """
+
+    def lease_root(self, task_id: str) -> Path:
+        return self.controller / ".juno_task/runtime/leases" / task_id[:2].lower() / task_id
+
+    def fencing_record(self, task_id: str) -> dict:
+        return task_runtime.read_state(self.controller)["tasks"][task_id]["fencing"]
+
+    def task_record(self, task_id: str) -> dict:
+        return task_runtime.read_state(self.controller)["tasks"][task_id]
+
+    def rewrite_producer(self, task_id: str, producer: dict) -> None:
+        with task_runtime.state_lock(self.controller):
+            state = task_runtime.read_state(self.controller)
+            record = state["tasks"][task_id]
+            record["fencing"] = {**record["fencing"], "producer": producer}
+            state["tasks"][task_id] = record
+            task_runtime.write_state(self.controller, state)
+
+    def test_start_issues_bearer_lease_and_finish_releases_terminally(self) -> None:
+        started = self.payload("start", "X")
+        self.assertIn("lease_token", started)
+        lease = self.fencing_record("X")
+        self.assertEqual((lease["state"], lease["attempt"], lease["producer_kind"]),
+                         ("ACTIVE", 1, "process"))
+        self.assertNotIn(started["lease_token"], json.dumps(lease))
+        observed = self.payload("lease-status", "X")
+        self.assertEqual(observed["lease"]["state"], "ACTIVE")
+        self.assertTrue(any(self.lease_root("X").glob("0001-issue-*.json")))
+        self.commit_task("X")
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        terminal = self.fencing_record("X")
+        self.assertEqual(terminal["state"], "RELEASED")
+        self.assertIn("release_receipt", terminal)
+        status_after = self.payload("lease-status", "X")
+        self.assertEqual(status_after["successor_readiness"]["code"], "lease_released")
+        # The queued idempotent retry proceeds unfenced and stays released.
+        again = self.payload("finish", "X")
+        self.assertEqual((again["outcome"], self.fencing_record("X")["state"]),
+                         ("already_queued", "RELEASED"))
+
+    def test_cli_competing_dead_producer_fails_closed_and_recovers_via_successor(self) -> None:
+        self.payload("start", "X")
+        LEASE_TOKENS.pop((str(self.controller), "X"))
+        self.commit_task("X")
+        refused = self.command("finish", "X", False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("lease_producer_dead", refused.stderr)
+        self.assertIn("lease-successor", refused.stderr)
+        successor = self.payload("lease-successor", "X")
+        self.assertEqual((successor["outcome"], successor["authority_kind"]),
+                         ("successor_issued", "successor_death"))
+        self.assertEqual(successor["recovery"]["classification"], "clean_resume")
+        token_two = LEASE_TOKENS[(str(self.controller), "X")]
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        self.assertEqual(self.fencing_record("X")["attempt"], 2)
+        # History holds exactly the attempt-1 succession and the attempt-2
+        # terminal release; nothing else may append lease history.
+        self.assertEqual([entry["attempt"] for entry in
+                          self.task_record("X")["fencing_history"]], [1, 2])
+        self.assertTrue(any(self.lease_root("X").glob("0002-successor-*.json")))
+        self.assertNotEqual(token_two, "")
+
+    def test_inprocess_live_producer_refuses_foreign_cli_mutation(self) -> None:
+        task_runtime.start(self.controller, "X")
+        LEASE_TOKENS.pop((str(self.controller), "X"))
+        self.commit_task("X")
+        refused = self.command("finish", "X", False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("lease_producer_mismatch", refused.stderr)
+        # Expiry is never authority: the heartbeat can be arbitrarily stale and
+        # a successor still refuses while the producer is observably alive.
+        with task_runtime.state_lock(self.controller):
+            state = task_runtime.read_state(self.controller)
+            lease = state["tasks"]["X"]["fencing"]
+            lease["heartbeat_utc"] = "2020-01-01T00:00:00Z"
+            state["tasks"]["X"]["fencing"] = lease
+            task_runtime.write_state(self.controller, state)
+        denied = self.command("lease-successor", "X", False)
+        self.assertEqual(denied.returncode, 2)
+        self.assertIn("lease_producer_live", denied.stderr)
+        self.assertIn("expiry alone", denied.stderr)
+
+    def test_killed_producer_yields_natural_successor_with_stale_token_refused(self) -> None:
+        task_runtime.start(self.controller, "X")
+        token_one = LEASE_TOKENS[(str(self.controller), "X")]
+        holder = subprocess.Popen(["sleep", "60"])
+        try:
+            producer = {"pid": holder.pid,
+                        "lstart": task_runtime._producer_lstart(holder.pid),
+                        "host": "fixture", "issued_utc": "2026-08-26T00:00:00Z"}
+            self.rewrite_producer("X", producer)
+            self.commit_task("X")
+            LEASE_TOKENS.pop((str(self.controller), "X"))
+            mismatch = self.command("finish", "X", False)
+            self.assertIn("lease_producer_mismatch", mismatch.stderr)
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+        dead = self.command("finish", "X", False)
+        self.assertIn("lease_producer_dead", dead.stderr)
+        successor = self.payload("lease-successor", "X")
+        self.assertEqual(successor["authority_kind"], "successor_death")
+        # The delayed stale write from the killed attempt fails closed.
+        stale = run(["python3", str(SCRIPT), "finish", "--task", "X",
+                     "--controller", str(self.controller),
+                     "--lease-token", token_one], self.controller, False)
+        self.assertEqual(stale.returncode, 2)
+        self.assertIn("lease_fence_stale", stale.stderr)
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+
+    def test_explicit_handoff_consumed_by_successor_and_old_token_stale(self) -> None:
+        self.payload("start", "X")
+        token_one = LEASE_TOKENS[(str(self.controller), "X")]
+        handed = json.loads(
+            run(["python3", str(SCRIPT), "lease-handoff", "--task", "X",
+                 "--controller", str(self.controller),
+                 "--lease-token", token_one,
+                 "--reason", "session rotation"], self.controller).stdout)
+        self.assertEqual(handed["outcome"], "handed_off")
+        self.assertEqual(self.fencing_record("X")["state"], "HANDED_OFF")
+        # A handoff receipt cannot be consumed while the lease is still ACTIVE
+        # (it is not here) and a wrong-receipt successor refuses.
+        wrong = self.command("lease-successor", "X", False)
+        self.assertEqual(wrong.returncode, 2)
+        self.assertIn("lease_token_required", wrong.stderr)
+        receipt_path = handed["handoff_receipt"]["path"]
+        self.assertTrue(Path(receipt_path).is_file())
+        self.commit_task("X")
+        successor = json.loads(
+            run(["python3", str(SCRIPT), "lease-successor", "--task", "X",
+                 "--controller", str(self.controller),
+                 "--handoff-receipt", receipt_path], self.controller).stdout)
+        self.assertEqual(successor["authority_kind"], "successor_handoff")
+        token_two = successor["lease_token"]
+        LEASE_TOKENS[(str(self.controller), "X")] = token_two
+        # Replaying the consumed receipt cannot issue a second successor.
+        replay = run(["python3", str(SCRIPT), "lease-successor", "--task", "X",
+                      "--controller", str(self.controller),
+                      "--handoff-receipt", receipt_path], self.controller, False)
+        self.assertEqual(replay.returncode, 2)
+        # The old holder's delayed write fails closed as a stale fence.
+        stale = run(["python3", str(SCRIPT), "lease-heartbeat", "--task", "X",
+                     "--controller", str(self.controller),
+                     "--lease-token", token_one], self.controller, False)
+        self.assertIn("lease_fence_stale", stale.stderr)
+        beat = json.loads(
+            run(["python3", str(SCRIPT), "lease-heartbeat", "--task", "X",
+                 "--controller", str(self.controller),
+                 "--lease-token", token_two], self.controller).stdout)
+        self.assertEqual((beat["outcome"], beat["heartbeat_seq"]), ("heartbeat", 1))
+        queued = self.payload("finish", "X")
+        self.assertEqual(queued["state"], "QUEUED")
+
+    def test_dirty_worktree_successor_preserves_recovery_packet(self) -> None:
+        self.payload("start", "X")
+        worktree = self.workspaces / "X"
+        (worktree / "src/uncommitted.txt").write_text("dirty bytes\n")
+        successor = self.payload("lease-successor", "X")
+        recovery = successor["recovery"]
+        self.assertEqual(recovery["classification"], "dirty_recovery_required")
+        self.assertEqual(recovery["dirty_paths"], ["src/uncommitted.txt"])
+        self.assertIn("preserved", json.dumps(recovery))
+        # The dirty bytes survive successor issuance untouched.
+        self.assertEqual((worktree / "src/uncommitted.txt").read_text(), "dirty bytes\n")
+        lease = self.fencing_record("X")
+        self.assertEqual(lease["recovery"]["classification"], "dirty_recovery_required")
+
+    def test_crash_between_receipt_and_state_is_idempotent(self) -> None:
+        self.payload("start", "X")
+        original_write_state = task_runtime.write_state
+        refused = {"calls": 0}
+
+        def crashing_write_state(controller: Path, state: dict) -> None:
+            # Simulate process death after the successor receipt was written
+            # but before the state mutation commits it.
+            if any((record.get("fencing") or {}).get("state") == "ACTIVE"
+                   and (record.get("fencing") or {}).get("attempt") == 2
+                   for record in state["tasks"].values()):
+                refused["calls"] += 1
+                raise OSError("simulated crash before state commit")
+            original_write_state(controller, state)
+
+        task_runtime.write_state = crashing_write_state
+        try:
+            with self.assertRaisesRegex(OSError, "simulated crash before state commit"):
+                task_runtime.lease_successor(self.controller, "X")
+        finally:
+            task_runtime.write_state = original_write_state
+        LEASE_TOKENS.pop((str(self.controller), "X"), None)
+        receipts_before = sorted(self.lease_root("X").glob("0002-successor-*.json"))
+        self.assertEqual(len(receipts_before), 1)
+        # The retry completes the same transition exactly once in state.
+        successor = self.payload("lease-successor", "X")
+        self.assertEqual((successor["outcome"], successor["attempt"]),
+                         ("successor_issued", 2))
+        lease = self.fencing_record("X")
+        self.assertEqual((lease["attempt"], lease["state"]), (2, "ACTIVE"))
+        history = self.task_record("X")["fencing_history"]
+        self.assertEqual([entry["attempt"] for entry in history], [1])
+        receipts_after = sorted(self.lease_root("X").glob("0002-successor-*.json"))
+        self.assertEqual(len(receipts_after), 2)
+        self.assertTrue(any(self.lease_root("X").glob("0001-issue-*.json")))
+
+    def test_revoke_requires_reason_then_authorizes_one_successor(self) -> None:
+        self.payload("start", "X")
+        missing = self.command("lease-revoke", "X", False, extra=["--reason", ""])
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("--reason", missing.stderr)
+        self.command("lease-revoke", "X", extra=["--reason", "lost session token"])
+        lease = self.fencing_record("X")
+        self.assertEqual(lease["state"], "REVOKED")
+        self.assertEqual(lease["revoke_reason"], "lost session token")
+        self.assertTrue(any(self.lease_root("X").glob("0001-revoke-*.json")))
+        successor = self.payload("lease-successor", "X")
+        self.assertEqual(successor["authority_kind"], "successor_revoke")
+        # Mutations without authority still fail closed after revoke until the
+        # successor token is presented.
+        LEASE_TOKENS.pop((str(self.controller), "X"))
+        self.commit_task("X")
+        refused = self.command("finish", "X", False)
+        self.assertEqual(refused.returncode, 2)
+
+    def test_session_lease_successor_requires_operator_revoke(self) -> None:
+        self.payload("start", "X")
+        with task_runtime.state_lock(self.controller):
+            state = task_runtime.read_state(self.controller)
+            lease = state["tasks"]["X"]["fencing"]
+            lease["producer_kind"] = "session"
+            state["tasks"]["X"]["fencing"] = lease
+            task_runtime.write_state(self.controller, state)
+        refused = self.command("lease-successor", "X", False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("lease_token_required", refused.stderr)
+        self.assertIn("lease-revoke", refused.stderr)
+
+    def test_holder_release_terminates_without_queueing(self) -> None:
+        self.payload("start", "X")
+        token = LEASE_TOKENS[(str(self.controller), "X")]
+        released = json.loads(
+            run(["python3", str(SCRIPT), "lease-release", "--task", "X",
+                 "--controller", str(self.controller),
+                 "--lease-token", token], self.controller).stdout)
+        self.assertEqual(released["outcome"], "released")
+        self.assertEqual(self.fencing_record("X")["state"], "RELEASED")
+        record = task_runtime.read_state(self.controller)["tasks"]["X"]
+        self.assertEqual(record["state"], "WORKING")
 
 
 class QueueAttributionReceiptTests(unittest.TestCase):

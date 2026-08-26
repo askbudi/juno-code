@@ -23,7 +23,13 @@ export type TaskWorkspaceOperation =
   | 'doctor'
   | 'recovery-plan'
   | 'recovery-authorize'
-  | 'recovery-apply';
+  | 'recovery-apply'
+  | 'lease-status'
+  | 'lease-heartbeat'
+  | 'lease-handoff'
+  | 'lease-successor'
+  | 'lease-revoke'
+  | 'lease-release';
 export type TaskWorkspaceInvoker = (
   operation: TaskWorkspaceOperation,
   taskId: string,
@@ -35,7 +41,7 @@ export type TaskRuntimeBootstrapOptions = { dryRun?: boolean; apply?: string };
 export type TaskRuntimeBootstrapInvoker = (options: TaskRuntimeBootstrapOptions) => Promise<void>;
 
 export function taskWorkspaceControlOperation(operation: TaskWorkspaceOperation): 'kanban' | 'orchestration' {
-  return ['status', 'preflight', 'recovery-plan', 'evidence-status', 'doctor'].includes(operation) ? 'kanban' : 'orchestration';
+  return ['status', 'preflight', 'recovery-plan', 'evidence-status', 'doctor', 'lease-status'].includes(operation) ? 'kanban' : 'orchestration';
 }
 
 export function packagedTaskRuntimeCandidates(): string[] {
@@ -130,7 +136,7 @@ export async function checkpointTaskWorkspaceAfterFinalization(
   checkpoint: TaskWorkspaceCheckpointer = checkpointControllerAfterFinalization,
   taskId?: string,
 ): Promise<void> {
-  if (['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor'].includes(operation)) return;
+  if (['status', 'preflight', 'recovery-plan', 'checkpoint', 'evidence-run', 'evidence-status', 'evidence-await', 'doctor', 'lease-status'].includes(operation)) return;
   if (taskId) await checkpoint(controllerRoot, exitCode, taskId);
   else await checkpoint(controllerRoot, exitCode);
 }
@@ -181,11 +187,12 @@ export function configureTaskWorkspaceCommand(
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .option('--path <path>', 'Additional selectable product root; omit for baseline/default paths', (value, values: string[]) => [...values, value], [])
     .option('--umbrella-admission <file>', 'Versioned ordered-child exact-scope input')
-    .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string }) => (
-      options.umbrellaAdmission
-        ? invoke('start', taskId, options.path, ['--umbrella-admission', options.umbrellaAdmission])
-        : invoke('start', taskId, options.path)
-    ));
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, options: { path: string[]; umbrellaAdmission?: string; leaseToken?: string }) => {
+      const admission = options.umbrellaAdmission ? ['--umbrella-admission', options.umbrellaAdmission] : [];
+      if (options.leaseToken) admission.push('--lease-token', options.leaseToken);
+      return invoke('start', taskId, options.path, admission);
+    });
   task.command('preflight')
     .description('Read-only finish/admission check before expensive validation')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
@@ -193,23 +200,37 @@ export function configureTaskWorkspaceCommand(
   task.command('checkpoint')
     .description('Plan affected validation for one clean coherent committed tip')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
-    .action((taskId: string) => invoke('checkpoint', taskId, []));
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, options: { leaseToken?: string }) => invoke(
+      'checkpoint', taskId, [], options.leaseToken ? ['--lease-token', options.leaseToken] : [],
+    ));
   task.command('child-checkpoint')
     .description('Record one admitted umbrella child sequential committed increment')
     .argument('<task-id>', 'Canonical umbrella YYLO Ledger task ID')
     .argument('<child-id>', 'Admitted ordered tracking-only child task ID')
-    .action((taskId: string, childId: string) => invoke(
-      'child-checkpoint', taskId, [], ['--child', childId],
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, childId: string, options: { leaseToken?: string }) => invoke(
+      'child-checkpoint', taskId, [], [
+        '--child', childId,
+        ...(options.leaseToken ? ['--lease-token', options.leaseToken] : []),
+      ],
     ));
   task.command('hydrate')
     .description('Rerun the frozen task hydration workflow on a clean task worktree')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
-    .action((taskId: string) => invoke('hydrate', taskId, []));
-  for (const operation of ['status', 'finish'] as const) {
-    task.command(operation)
-      .argument('<task-id>', 'Canonical YYLO Ledger task ID')
-      .action((taskId: string) => invoke(operation, taskId, []));
-  }
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, options: { leaseToken?: string }) => invoke(
+      'hydrate', taskId, [], options.leaseToken ? ['--lease-token', options.leaseToken] : [],
+    ));
+  task.command('status')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .action((taskId: string) => invoke('status', taskId, []));
+  task.command('finish')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, options: { leaseToken?: string }) => invoke(
+      'finish', taskId, [], options.leaseToken ? ['--lease-token', options.leaseToken] : [],
+    ));
   task.command('doctor')
     .description('Read-only reconciliation of Kanban board truth versus task lifecycle records')
     .argument('[task-id]', 'Optional YYLO Ledger task ID filter')
@@ -217,7 +238,54 @@ export function configureTaskWorkspaceCommand(
   task.command('sync')
     .description('Recover one pending lifecycle Kanban projection (exact recovery command)')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')
-    .action((taskId: string) => invoke('sync', taskId, []));
+    .option('--lease-token <token>', 'Current fencing lease token for this gated mutation')
+    .action((taskId: string, options: { leaseToken?: string }) => invoke(
+      'sync', taskId, [], options.leaseToken ? ['--lease-token', options.leaseToken] : [],
+    ));
+  task.command('lease-status')
+    .description('Read-only fencing lease observation with actionable reason codes')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .action((taskId: string) => invoke('lease-status', taskId, []));
+  task.command('lease-heartbeat')
+    .description('Refresh the active lease heartbeat (holder token required)')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .requiredOption('--lease-token <token>', 'Current fencing lease token')
+    .action((taskId: string, options: { leaseToken: string }) => invoke(
+      'lease-heartbeat', taskId, [], ['--lease-token', options.leaseToken],
+    ));
+  task.command('lease-handoff')
+    .description('Release authority to one explicit successor receipt (holder token required)')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .requiredOption('--lease-token <token>', 'Current fencing lease token')
+    .option('--reason <text>', 'Bounded handoff reason')
+    .action((taskId: string, options: { leaseToken: string; reason?: string }) => invoke(
+      'lease-handoff', taskId, [], [
+        '--lease-token', options.leaseToken,
+        ...(options.reason ? ['--reason', options.reason] : []),
+      ],
+    ));
+  task.command('lease-successor')
+    .description('Issue the next fencing attempt after proven predecessor termination')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .option('--handoff-receipt <file>', 'Exact handoff receipt consumed by this successor')
+    .action((taskId: string, options: { handoffReceipt?: string }) => invoke(
+      'lease-successor', taskId, [],
+      options.handoffReceipt ? ['--handoff-receipt', options.handoffReceipt] : [],
+    ));
+  task.command('lease-revoke')
+    .description('Operator-only explicit termination of task mutation authority')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .requiredOption('--reason <text>', 'Operator decision record')
+    .action((taskId: string, options: { reason: string }) => invoke(
+      'lease-revoke', taskId, [], ['--reason', options.reason],
+    ));
+  task.command('lease-release')
+    .description('Holder terminal lease release without queueing')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .requiredOption('--lease-token <token>', 'Current fencing lease token')
+    .action((taskId: string, options: { leaseToken: string }) => invoke(
+      'lease-release', taskId, [], ['--lease-token', options.leaseToken],
+    ));
   task.command('recovery-plan')
     .argument('<task-id>', 'Canonical umbrella YYLO Ledger task ID')
     .requiredOption('--umbrella-admission <file>', 'Frozen ordered-child exact-scope input')

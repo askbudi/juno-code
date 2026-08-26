@@ -539,6 +539,139 @@ class ShellWiringCharacterization(unittest.TestCase):
         self.assertIn("decisions.status_projection(", shell)
         self.assertIn("decisions.next_enqueue_sequence(", shell)
 
+    def test_shell_fence_gates_call_the_lease_planners(self) -> None:
+        shell = (Path(__file__).resolve().parents[1] / "task_workspace.py").read_text()
+        self.assertIn("decisions.plan_lease_authority(", shell)
+        self.assertIn("decisions.plan_lease_successor(", shell)
+        self.assertIn("_require_lease_fence(controller, \"start\"", shell)
+        self.assertIn("_require_lease_fence(controller, \"hydrate\"", shell)
+        self.assertIn("_require_lease_fence(controller, \"checkpoint\"", shell)
+        self.assertIn("_require_lease_fence(controller, \"finish\"", shell)
+        self.assertIn("_require_lease_fence(controller, \"sync\"", shell)
+
+
+class LeaseAuthorityTables(unittest.TestCase):
+    """Pure tables for fenced mutation authority and successor issuance."""
+
+    @staticmethod
+    def lease(state: str = "ACTIVE", kind: str = "process", pid: int = 4242,
+              token: str = "digest-a") -> dict:
+        return {"attempt": 1, "state": state, "producer_kind": kind,
+                "producer": {"pid": pid}, "token_sha256": token}
+
+    def run_authority(self, lease, token, observation, pid=999):
+        with poisoned_surface():
+            return decisions.plan_lease_authority(
+                "checkpoint", "T1", lease, token, observation, pid)
+
+    def test_no_active_lease_is_unfenced(self) -> None:
+        for lease in (None, {}, self.lease(state="RELEASED"),
+                      self.lease(state="REVOKED"), self.lease(state="HANDED_OFF")):
+            decision = self.run_authority(
+                lease, None, decisions.LeaseObservation("unknown", "x"))
+            self.assertTrue(decision.admitted)
+            self.assertEqual(decision.authority, "unfenced")
+
+    def test_exact_token_admits_and_wrong_token_is_stale(self) -> None:
+        decision = self.run_authority(
+            self.lease(), "digest-a", decisions.LeaseObservation("alive", "pid live"))
+        self.assertTrue(decision.admitted)
+        self.assertEqual(decision.authority, "token")
+        stale = self.run_authority(
+            self.lease(), "digest-b", decisions.LeaseObservation("alive", "pid live"))
+        self.assertFalse(stale.admitted)
+        self.assertEqual(stale.code, decisions.LEASE_CODE_FENCE_STALE)
+
+    def test_same_pid_live_producer_continuity_admits_only_process_leases(self) -> None:
+        decision = self.run_authority(
+            self.lease(), None, decisions.LeaseObservation("alive", "pid live"), pid=4242)
+        self.assertTrue(decision.admitted)
+        self.assertEqual(decision.authority, "producer")
+        session = self.run_authority(
+            self.lease(kind="session"), None,
+            decisions.LeaseObservation("alive", "pid live"), pid=4242)
+        self.assertFalse(session.admitted)
+        self.assertEqual(session.code, decisions.LEASE_CODE_PRODUCER_MISMATCH)
+
+    def test_dead_producer_and_unprovable_producer_fail_closed_with_codes(self) -> None:
+        dead = self.run_authority(
+            self.lease(), None, decisions.LeaseObservation("dead", "pid gone"))
+        self.assertFalse(dead.admitted)
+        self.assertEqual(dead.code, decisions.LEASE_CODE_PRODUCER_DEAD)
+        self.assertIn("lease-successor", dead.message)
+        unknown = self.run_authority(
+            self.lease(), None, decisions.LeaseObservation("unknown", "ps failed"))
+        self.assertFalse(unknown.admitted)
+        self.assertEqual(unknown.code, decisions.LEASE_CODE_TOKEN_REQUIRED)
+        self.assertIn("lease-revoke", unknown.message)
+
+    def test_gated_command_vocabulary_is_bounded(self) -> None:
+        self.assertEqual(decisions.LEASE_GATED_COMMANDS, frozenset({
+            "start", "hydrate", "checkpoint", "child-checkpoint",
+            "evidence-run", "finish", "sync"}))
+
+
+class LeaseSuccessorTables(unittest.TestCase):
+    @staticmethod
+    def lease(state: str = "ACTIVE", kind: str = "process") -> dict:
+        return {"attempt": 2, "state": state, "producer_kind": kind,
+                "producer": {"pid": 777}, "token_sha256": "digest-z"}
+
+    def run_successor(self, lease, observation, handoff=None):
+        with poisoned_surface():
+            return decisions.plan_lease_successor(
+                "T1", lease, observation, handoff)
+
+    def test_dead_process_producer_admits_death_successor(self) -> None:
+        decision = self.run_successor(
+            self.lease(), decisions.LeaseObservation("dead", "pid gone"))
+        self.assertTrue(decision.admitted)
+        self.assertEqual(decision.authority_kind, "successor_death")
+
+    def test_live_or_unknown_producer_never_yields_successor(self) -> None:
+        live = self.run_successor(
+            self.lease(), decisions.LeaseObservation("alive", "pid live"))
+        self.assertFalse(live.admitted)
+        self.assertEqual(live.code, decisions.LEASE_CODE_PRODUCER_LIVE)
+        self.assertIn("expiry alone", live.message)
+        unknown = self.run_successor(
+            self.lease(), decisions.LeaseObservation("unknown", "no anchor"))
+        self.assertFalse(unknown.admitted)
+        self.assertEqual(unknown.code, decisions.LEASE_CODE_PRODUCER_UNKNOWN)
+
+    def test_session_lease_requires_revoke_and_handoff_needs_receipt(self) -> None:
+        session = self.run_successor(
+            self.lease(kind="session"), decisions.LeaseObservation("dead", "pid gone"))
+        self.assertFalse(session.admitted)
+        self.assertEqual(session.code, decisions.LEASE_CODE_TOKEN_REQUIRED)
+        self.assertIn("lease-revoke", session.message)
+        active_with_receipt = self.run_successor(
+            self.lease(), decisions.LeaseObservation("dead", "pid gone"),
+            handoff={"kind": "handoff"})
+        self.assertFalse(active_with_receipt.admitted)
+        handed_off = self.run_successor(
+            self.lease(state="HANDED_OFF"), decisions.LeaseObservation("alive", "x"))
+        self.assertFalse(handed_off.admitted)
+        self.assertEqual(handed_off.code, decisions.LEASE_CODE_TOKEN_REQUIRED)
+        consumed = self.run_successor(
+            self.lease(state="HANDED_OFF"), decisions.LeaseObservation("alive", "x"),
+            handoff={"kind": "handoff", "attempt": 2})
+        self.assertTrue(consumed.admitted)
+        self.assertEqual(consumed.authority_kind, "successor_handoff")
+
+    def test_revoke_authorizes_and_release_terminates(self) -> None:
+        revoked = self.run_successor(
+            self.lease(state="REVOKED"), decisions.LeaseObservation("alive", "x"))
+        self.assertTrue(revoked.admitted)
+        self.assertEqual(revoked.authority_kind, "successor_revoke")
+        released = self.run_successor(
+            self.lease(state="RELEASED"), decisions.LeaseObservation("dead", "x"))
+        self.assertFalse(released.admitted)
+        self.assertEqual(released.code, decisions.LEASE_CODE_RELEASED)
+        empty = self.run_successor(None, decisions.LeaseObservation("dead", "x"))
+        self.assertFalse(empty.admitted)
+        self.assertEqual(empty.code, decisions.LEASE_CODE_NOT_ACTIVE)
+
 
 def tearDownModule() -> None:
     elapsed = time.monotonic() - MODULE_STARTED

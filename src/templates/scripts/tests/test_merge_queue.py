@@ -67,6 +67,7 @@ class MergeQueueTests(unittest.TestCase):
         self.workspaces = self.root / "features"
         self.counter = self.root / "validation.log"
         self.full_counter = self.root / "full-validation.log"
+        self.lease_tokens: dict[tuple[str, str], str] = {}
         self.repository.mkdir()
         git(self.repository, "init", "-b", "product")
         git(self.repository, "config", "user.email", "test@example.com")
@@ -493,10 +494,32 @@ class MergeQueueTests(unittest.TestCase):
             argv += ["--controller", str(self.controller), *args]
         else:
             argv += [*args, "--controller", str(self.controller)]
-        return run(argv, self.controller, check)
+        result = run(argv, self.controller, check)
+        # Fencing lease threading (task rrx4b8): gated task mutations present
+        # the holder token captured from the issuing start/lease-successor CLI
+        # output, so subprocess-driven scenario flows keep proving the fence.
+        if (script == TASK and result.returncode == 0 and len(args) >= 2
+                and args[0] in {"start", "lease-successor"} and args[1] == "--task"):
+            try:
+                payload = json.loads(result.stdout)
+                key = (str(self.controller), args[2])
+                token = payload.get("lease_token") if isinstance(payload, dict) else None
+                if isinstance(token, str) and token:
+                    self.lease_tokens[key] = token
+                # Absence is not termination (already_started keeps the fence);
+                # a stale stored token fails closed as lease_fence_stale anyway.
+            except json.JSONDecodeError:
+                pass
+        return result
 
     def task(self, operation: str, task_id: str) -> dict:
-        return json.loads(self.command(TASK, [operation, "--task", task_id]).stdout)
+        extra: list[str] = []
+        if operation in {"start", "hydrate", "checkpoint", "child-checkpoint",
+                         "evidence-run", "finish", "sync"}:
+            token = self.lease_tokens.get((str(self.controller), task_id))
+            if token:
+                extra = ["--lease-token", token]
+        return json.loads(self.command(TASK, [operation, "--task", task_id, *extra]).stdout)
 
     def queue(self, operation: str, task_id: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess[str]:
         return self.command(QUEUE, [operation, *([task_id] if task_id else [])], check)
