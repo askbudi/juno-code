@@ -893,6 +893,98 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(reopened["changed_paths"], ["src/security/auth.py"])
         self.assertNotIn(".juno_task/state/target.json", reopened["changed_paths"])
 
+    def test_reopen_tip_refresh_records_reference_and_admits_later_review_repair(self) -> None:
+        self.install_merge_planner_runtime()
+        old_tip = self.commit_feature("X", "src/security/auth.py", "feature\n")
+        target = self.advance_target()
+        refreshed_tip = self.merge_target_into("X")
+
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual(reopened["outcome"], "REQUEUED_AFTER_TIP_REFRESH")
+        self.assertEqual((reopened["state"], reopened["tip_sha"]),
+                         ("QUEUED", refreshed_tip))
+        references = reopened.get("target_refreshes")
+        self.assertEqual(len(references), 1)
+        reference = references[0]
+        self.assertEqual((reference["source_tip"], reference["refreshed_tip"],
+                          reference["target_sha"]),
+                         (old_tip, refreshed_tip, target))
+        self.assertTrue(Path(reference["receipt_path"]).is_file())
+
+        self.queue_payload("next")
+        finding = lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("repaired\n")
+        git(worktree, "add", "src/security/auth.py")
+        git(worktree, "commit", "-m", "repair reopened refresh")
+
+        repaired = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual((repaired["state"], repaired["tip_sha"]),
+                         ("QUEUED", git(worktree, "rev-parse", "HEAD")))
+        self.assertEqual(repaired["changed_paths"], ["src/security/auth.py"])
+        self.assertNotIn(".juno_task/state/target.json", repaired["changed_paths"])
+
+    def test_reopen_tip_refresh_reference_is_tamper_evident(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "src/security/auth.py", "feature\n")
+        self.advance_target()
+        self.merge_target_into("X")
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        self.assertEqual(len(reopened["target_refreshes"]), 1)
+
+        self.queue_payload("next")
+        finding = lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
+
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"]["target_refreshes"][-1]["receipt_sha256"] = "0" * 64
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("repaired\n")
+        git(worktree, "add", "src/security/auth.py")
+        git(worktree, "commit", "-m", "repair reopened refresh")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError,
+                                    "target-refresh identity is invalid"):
+            merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+    def test_review_repair_after_legacy_reopen_tip_refresh_uses_merge_base(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "src/security/auth.py", "feature\n")
+        self.advance_target()
+        self.merge_target_into("X")
+        reopened = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+        # Legacy drift: a pre-fix reopen adopted the refreshed tip without
+        # recording any receipt-bound target-refresh reference.
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"].pop("target_refreshes", None)
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+
+        self.queue_payload("next")
+        finding = lambda *args, **kwargs: self.fake_review(*args, **kwargs, findings=True)
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=finding):
+            reviewed = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(reviewed["outcome"], "REVIEW_FINDINGS")
+
+        worktree = self.workspaces / "X"
+        (worktree / "src/security/auth.py").write_text("repaired\n")
+        git(worktree, "add", "src/security/auth.py")
+        git(worktree, "commit", "-m", "repair legacy refresh")
+
+        repaired = merge_runtime.merge_reopen(self.controller.resolve(), "X")
+
+        self.assertEqual(repaired["changed_paths"], ["src/security/auth.py"])
+        self.assertNotIn(".juno_task/state/target.json", repaired["changed_paths"])
+
     def test_target_refresh_admits_valid_task_authored_package_pair(self) -> None:
         self.install_merge_planner_runtime()
         self.add_package_pair_base()

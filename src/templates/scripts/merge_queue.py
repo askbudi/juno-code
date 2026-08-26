@@ -5157,8 +5157,23 @@ def merge_reopen(controller: Path, task_id: str,
                 raise MergeQueueError(
                     "review repair target-refresh identity is invalid: "
                     f"{refresh_evidence['reason']}")
+            # A reopen-based tip refresh adopted a descendant tip that already
+            # contained the protected target without recording a receipt-bound
+            # reference (legacy queue states). When the reviewed tip still
+            # contains the current target, inherit only bytes authored after
+            # the target entered the tip's history: diff from the exact merge
+            # base of the reviewed tip and the target.
+            reviewed_tip_contains_target = (
+                source_state == "REVIEW_FINDINGS"
+                and not record.get("target_refreshes")
+                and not task_runtime.run(
+                    ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                     target_sha, record["tip_sha"]], repository, check=False).returncode)
             changed_base = (target_sha
                             if queued_tip_refresh or target_refreshed_repair
+                            else task_runtime.git(repository, "merge-base",
+                                                  record["tip_sha"], target_sha)
+                            if reviewed_tip_contains_target
                             else record["base_sha"])
             changed = sorted(set(task_runtime.git(
                 worktree, "diff", "--name-only", f"{changed_base}..{new_tip}"
@@ -5176,6 +5191,29 @@ def merge_reopen(controller: Path, task_id: str,
             if task_runtime.git(worktree, "rev-parse", "HEAD") != new_tip \
                     or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all"):
                 raise MergeQueueError("feature tip changed during reopen validation")
+            target_refresh_reference: Optional[dict[str, Any]] = None
+            if (queued_tip_refresh and target_sha != record["base_sha"]
+                    and not task_runtime.run(
+                        ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                         target_sha, new_tip], repository, check=False).returncode):
+                # The adopted tip already contains the advanced protected
+                # target, so this reopen is a target refresh. Persist the
+                # canonical receipt and record the reference so a later
+                # review-repair reopen validates through
+                # _current_target_refresh_receipt instead of classifying
+                # inherited exact target bytes as authored changes.
+                persisted = persist_target_refresh_plan(controller, task_id)
+                static = assert_static_plan(controller, task_id, "target-refresh")
+                target_refresh_reference = {
+                    "schema_version": "juno_merge_target_refresh_reference.v1",
+                    "plan_id": persisted["plan_id"],
+                    "receipt_path": persisted["receipt"]["path"],
+                    "receipt_sha256": persisted["receipt"]["sha256"],
+                    "source_tip": persisted["source_tip"],
+                    "target_sha": persisted["target_sha"],
+                    "refreshed_tip": persisted["refreshed_tip"],
+                    "feasibility_plan_id": static["plan_id"],
+                }
             checkout_value, token = old_attempt.get("candidate_checkout"), old_attempt.get("candidate_token")
             owner = (read_candidate_owner(controller, Path(checkout_value))
                      if checkout_value else None)
@@ -5266,6 +5304,8 @@ def merge_reopen(controller: Path, task_id: str,
                     "focused_validation": task_runtime.selected_focused_rows(config, changed),
                 }),
             }
+            if target_refresh_reference is not None:
+                reopen_attempt["target_refresh_reference"] = target_refresh_reference
             reopening = {**record, "state": "REOPENING", "reopen_attempt": reopen_attempt}
             with task_runtime.state_lock(controller):
                 state = task_runtime.read_state(controller)
@@ -5375,6 +5415,16 @@ def merge_reopen(controller: Path, task_id: str,
         failure_evidence = reopen_attempt.get("source_failure_evidence")
         if isinstance(failure_evidence, dict):
             queued["prior_queue_failure"] = failure_evidence
+        reference = reopen_attempt.get("target_refresh_reference")
+        if isinstance(reference, dict):
+            # The receipt bound the exact protected target observed at reopen
+            # admission. If the target advanced during the reopen window, drop
+            # the reference: the queued candidate observes staleness itself and
+            # the owner rebinds refresh identity through the refresh machinery.
+            if task_runtime.ref_sha(repository, config["target_ref"]) \
+                    == reference.get("target_sha"):
+                queued["target_refreshes"] = [*record.get("target_refreshes", []),
+                                              reference]
         with task_runtime.state_lock(controller):
             state = task_runtime.read_state(controller)
             if state["tasks"].get(task_id) != record:
