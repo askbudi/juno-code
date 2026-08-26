@@ -34,7 +34,8 @@ describe('YYLO launch identity', () => {
     expect(rootReadme).not.toContain('https://www.npmjs.com/package/juno-code');
     expect(rootReadme).toContain('`v0.1.0-rc.1`');
     expect(packageReadme).toContain('`--set v0.1.0-rc.1`');
-    expect(packageReadme).toContain('npm install -g @yylo/cli@0.1.0-rc.1');
+    const packageVersion = JSON.parse(await fs.readFile(path.resolve('package.json'), 'utf8')).version as string;
+    expect(packageReadme).toContain(`npm install -g @yylo/cli@${packageVersion}`);
     expect(packageReadme).not.toMatch(/npm install -g yylo(?:\s|`|$)/m);
     const releaseGuidance = [rootReadme, packageReadme, launchPost].join('\n');
     expect(releaseGuidance).not.toMatch(/npm install -g (?:juno-code|yylo)(?:\s|`|$)/m);
