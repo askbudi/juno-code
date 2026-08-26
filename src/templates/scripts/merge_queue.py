@@ -3429,7 +3429,7 @@ def _terminal_receipt_claims_success(receipt_path: Path) -> bool:
 def recover_claimed_full_suite_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                identity: dict[str, str], command: dict[str, Any],
                                admission: Any) -> Optional[dict[str, Any]]:
-    admission = verify_queue_claimed_admission(
+    admission = verify_queue_claimed_admission_legacy(
         controller, task_id, plan, identity, command, admission)
     attempt_number = admission["attempt_number"]
     claim_path, receipt_path = full_suite_attempt_paths(

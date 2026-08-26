@@ -1350,6 +1350,74 @@ class MergeQueueTests(unittest.TestCase):
                 "receipt": {"receipt_path": str(receipt_path),
                             "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}}
 
+    def canonical_legacy_claimed_attempt(self, plan: dict, identity: dict,
+                                          command: dict, task_id: str = "X",
+                                          attempt_number: int = 1,
+                                          poison_candidate: bool = False) -> dict:
+        """Write a legacy (v1) CLAIMED admission at its canonical attempt path
+        with one terminal receipt; optionally poison the receipt candidate
+        binding while keeping the result successful."""
+        candidate_sha = plan["candidate"]["candidate_sha"]
+        claim_path, receipt_path = merge_runtime.full_suite_attempt_paths(
+            self.controller.resolve(), task_id, candidate_sha, attempt_number)
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        token = "c" * 48
+        claim = {"schema_version": risk_runtime.FULL_SUITE_CLAIM_SCHEMA,
+                 "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                              "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                 "task_id": task_id,
+                 "candidate": {"candidate_sha": plan["candidate"]["candidate_sha"],
+                               "candidate_tree": plan["candidate"]["candidate_tree"]},
+                 "policy_identity": plan["policy_identity"],
+                 "validation_identity": identity, "command": command,
+                 "token": token, "attempt_number": attempt_number,
+                 "expected_receipt_path": str(receipt_path)}
+        claim_path.write_bytes(risk_runtime.canonical(claim))
+        claim_ref = {"claim_path": str(claim_path),
+                     "claim_sha256": hashlib.sha256(claim_path.read_bytes()).hexdigest()}
+        receipt_candidate = {"candidate_sha": plan["candidate"]["candidate_sha"],
+                             "candidate_tree": plan["candidate"]["candidate_tree"]}
+        if poison_candidate:
+            receipt_candidate = {**receipt_candidate, "base_sha": "0" * 40}
+        digest = hashlib.sha256(b"legacy-claimed-fixture").hexdigest()
+        receipt = {"schema_version": risk_runtime.FULL_SUITE_SCHEMA,
+                   "producer": {"schema_version": risk_runtime.FULL_SUITE_PRODUCER_SCHEMA,
+                                "tool_id": risk_runtime.FULL_SUITE_TOOL_ID},
+                   "candidate": receipt_candidate,
+                   "policy_identity": plan["policy_identity"],
+                   "claim": {**claim_ref, "token": token,
+                             "attempt_number": attempt_number},
+                   "validation_identity": identity, "command": command,
+                   "started_at": "2026-08-09T00:00:00Z",
+                   "completed_at": "2026-08-09T00:00:01Z",
+                   "timing": {"schema_version": risk_runtime.VALIDATION_TIMING_SCHEMA,
+                              "states": [
+                                  {"state": "WAITING_FOR_RESOURCE", "duration_ms": 0},
+                                  {"state": "SETUP", "duration_ms": 0},
+                                  {"state": "RUNNING", "duration_ms": 1},
+                                  {"state": "TEARDOWN", "duration_ms": 0},
+                                  {"state": "PASSED", "duration_ms": 0},
+                              ],
+                              "wall_duration_ms": 1,
+                              "critical_path_contribution_ms": 1},
+                   "resource": {"id": None, "lock_identity_sha256": None,
+                                "wait_timeout_seconds": None,
+                                "owner_diagnostics": None},
+                   "identity": {"command_sha256": digest, "cwd_sha256": digest,
+                                "policy_sha256": digest,
+                                "candidate_sha": plan["candidate"]["candidate_sha"],
+                                "candidate_tree": plan["candidate"]["candidate_tree"]},
+                   "result": {"exit_code": 0, "timed_out": False,
+                              "stdout": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                         "tail": "", "truncated_bytes": 0},
+                              "stderr": {"sha256": hashlib.sha256(b"").hexdigest(),
+                                         "tail": "", "truncated_bytes": 0}}}
+        receipt_path.write_bytes(risk_runtime.canonical(receipt))
+        return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                "state": "CLAIMED", "attempt_number": attempt_number,
+                "token": token, "claim": claim_ref,
+                "expected_receipt_path": str(receipt_path)}
+
     def prepare_failed_resolved_candidate(self) -> tuple[Path, Path, str]:
         self.commit_feature("A", "src/shared.txt", "A\n")
         old_feature = self.commit_feature("B", "src/shared.txt", "B\n")
@@ -3184,6 +3252,40 @@ steps:
         admission = ready["risk"]["review_progress"]["full_suite_admission"]
         self.assertEqual((admission["state"], admission["attempt_number"]), ("COMPLETE", 2))
         self.assertEqual([path.read_bytes() for path in receipts], poisoned)
+
+    def test_legacy_unverifiable_complete_admission_supersedes_with_fresh_attempt(self) -> None:
+        """Regression (t2d0U0, legacy twin): a stored legacy (v1) CLAIMED
+        admission whose single successful receipt carries poisoned provenance
+        supersedes to a fresh canonical attempt instead of dead-ending
+        merge_review."""
+        tip = self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        config = merge_runtime.task_runtime.load_config(self.controller.resolve())
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        record = state["tasks"]["X"]
+        plan = record["queue_attempt"]["risk"]["plan"]
+        identity = merge_runtime.full_validation_identity(
+            self.controller.resolve(), config, record, (self.workspaces / "X").resolve(), tip)
+        claimed = self.canonical_legacy_claimed_attempt(
+            plan, identity, merge_runtime.full_suite_command(config),
+            poison_candidate=True)
+        poisoned_path = Path(claimed["expected_receipt_path"])
+        poisoned_bytes = poisoned_path.read_bytes()
+        record["queue_attempt"]["risk"]["review_progress"] = {
+            "schema_version": "juno_merge_queue_review_progress.v4",
+            "attempt_counter": 0, "review_attempt_counter": 0,
+            "collision_floor": 0,
+            "full_suite_admission": claimed, "steps": []}
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
+        admission = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((admission["state"], admission["attempt_number"]), ("COMPLETE", 2))
+        self.assertIn("/.juno_task/state/merge-queue/full-suite/", admission["claim"]["claim_path"])
+        self.assertEqual(poisoned_path.read_bytes(), poisoned_bytes)
 
     def test_resume_preserves_stored_full_suite_admission_state(self) -> None:
         """Regression: an explicit `next` resume of an awaiting-risk decision
