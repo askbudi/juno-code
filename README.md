@@ -384,7 +384,7 @@ These local commands authorize neither push/deploy nor production-board conversi
 The RC installation remains explicit and independent:
 
 ```bash
-npm install -g @yylo/cli@0.1.0-rc.24
+npm install -g @yylo/cli@0.1.0-rc.25
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -666,7 +666,7 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 
 ```bash
 # Install the RC
-npm install -g @yylo/cli@0.1.0-rc.24
+npm install -g @yylo/cli@0.1.0-rc.25
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -1821,7 +1821,7 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 
 ```bash
 # Install the RC globally
-npm install -g @yylo/cli@0.1.0-rc.24
+npm install -g @yylo/cli@0.1.0-rc.25
 
 # Initialize in your project
 cd your-project
