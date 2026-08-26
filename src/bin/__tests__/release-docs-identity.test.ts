@@ -25,7 +25,9 @@ describe('YYLO release documentation identity', () => {
     expect(readme).toContain('pypi.org/project/yylo-ledger');
     expect(readme).not.toContain('pypi.org/project/juno-ledger');
     expect(security).toContain('`YYLO_*` prefix for application settings');
-    expect(await fs.pathExists(path.resolve('yylo-icon.png'))).toBe(true);
+    // The publishable artwork moved under assets/ (aYaq4g); accept the
+    // canonical shipped logo path instead of the removed root icon (OEeK82).
+    expect(await fs.pathExists(path.resolve('assets/yylo-logo-square-neon-green.png'))).toBe(true);
     expect(await fs.pathExists(path.resolve('Juno-code-icon.png'))).toBe(false);
   });
 });

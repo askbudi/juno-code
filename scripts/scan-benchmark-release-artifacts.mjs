@@ -46,12 +46,154 @@ async function walk(entry) {
   else throw new Error('leak scan refuses non-regular entries');
 }
 
+const strictUtf8Bytes = (bytes) => {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Maximal strict-UTF-8 runs: text semantics apply exactly to clean text
+// regions, and non-UTF-8 bytes are binary covered by byte matching. Testing
+// each region independently gives every clean leak native regex
+// backtracking, so no greedy, overlapping, first-match, or same-start
+// invalid span can mask a later or shorter valid leak.
+function* strictUtf8Segments(bytes) {
+  const isContinuation = (byte) => (byte & 0xc0) === 0x80;
+  let start = 0;
+  let index = 0;
+  while (index < bytes.length) {
+    const byte = bytes[index];
+    if (byte < 0x80) {
+      index += 1;
+      continue;
+    }
+    let length = 0;
+    let lower = 0x80;
+    let upper = 0xbf;
+    if (byte >= 0xc2 && byte <= 0xdf) {
+      length = 2;
+    } else if (byte >= 0xe0 && byte <= 0xef) {
+      length = 3;
+      if (byte === 0xe0) lower = 0xa0;
+      if (byte === 0xed) upper = 0x9f;
+    } else if (byte >= 0xf0 && byte <= 0xf4) {
+      length = 4;
+      if (byte === 0xf0) lower = 0x90;
+      if (byte === 0xf4) upper = 0x8f;
+    } else {
+      if (index > start) yield bytes.subarray(start, index);
+      index += 1;
+      start = index;
+      continue;
+    }
+    let valid = true;
+    for (let offset = 1; offset < length; offset += 1) {
+      const continuation = bytes[index + offset];
+      if (continuation === undefined
+          || !isContinuation(continuation)
+          || (offset === 1 && (continuation < lower || continuation > upper))) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) {
+      if (index > start) yield bytes.subarray(start, index);
+      index += 1;
+      start = index;
+      continue;
+    }
+    index += length;
+  }
+  if (bytes.length > start) yield bytes.subarray(start, bytes.length);
+}
+
 let bytesScanned = 0;
 function detections(bytes) {
-  const text = bytes.toString('utf8');
-  const classes = Object.entries(DETECTORS).filter(([, detector]) => detector.test(text)).map(([id]) => id);
+  const classes = [];
+  for (const segment of strictUtf8Segments(bytes)) {
+    const text = segment.toString('utf8');
+    for (const [id, detector] of Object.entries(DETECTORS)) {
+      if (!classes.includes(id) && detector.test(text)) classes.push(id);
+    }
+  }
   if (forbiddenRuntimeValues.some((value) => bytes.indexOf(value) >= 0)) classes.push('sensitive-runtime-value');
   return classes;
+}
+
+// Minimal fail-closed ustar reader for packed npm tarballs. A packed archive
+// mixes strict-UTF-8 text members (README, package.json) with binary members
+// (PNG artwork), so text semantics must be decided per member: decoding the
+// whole expanded tar as one buffer would let any binary member disable text
+// detection for every text member in the archive.
+export function tarMembers(expanded) {
+  const members = [];
+  let offset = 0;
+  const field = (start, end) => expanded.toString('latin1', start, end).replace(/\0.*$/u, '');
+  const OCTAL_FIELD = /^[0-7]{1,11}[ \0]*$/u;
+  // Fail-closed header validation: trust no member boundary until the block
+  // proves it is a well-formed ustar header with a matching checksum. A
+  // corrupted size field must never be able to absorb and hide a following
+  // member from the detector pipeline.
+  const validateHeader = (header) => {
+    const magic = expanded.toString('latin1', offset + 257, offset + 263);
+    if (magic !== 'ustar\0' && magic !== 'ustar  ') {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    const rawSize = expanded.toString('latin1', offset + 124, offset + 136);
+    if (!OCTAL_FIELD.test(rawSize)) {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    const rawChecksum = expanded.toString('latin1', offset + 148, offset + 156);
+    if (!OCTAL_FIELD.test(rawChecksum)) {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    let recorded;
+    try {
+      recorded = parseInt(rawChecksum.replace(/[ \0].*$/u, ''), 8);
+    } catch {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    let actual = 0;
+    for (let index = 0; index < 512; index += 1) {
+      actual += index >= 148 && index < 156 ? 32 : header[index];
+    }
+    if (!Number.isSafeInteger(recorded) || recorded !== actual) {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+  };
+  while (offset + 512 <= expanded.length) {
+    const header = expanded.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      // ustar end-of-archive: the second all-zero block must be present and no
+      // nonzero byte may follow it (additional all-zero padding is legal).
+      const remainder = expanded.subarray(offset + 512);
+      if (remainder.length < 512 || !remainder.every((byte) => byte === 0)) {
+        throw new Error('leak scan received a truncated expanded tar archive');
+      }
+      return members;
+    }
+    validateHeader(header);
+    const typeflag = String.fromCharCode(header[156]);
+    const size = parseInt(field(offset + 124, offset + 136).trim(), 8);
+    if (!Number.isSafeInteger(size) || size < 0 || offset + 512 + size > expanded.length) {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    const prefix = field(offset + 345, offset + 500);
+    const name = field(offset, offset + 100) || `type:${typeflag}`;
+    if (!name || name === `type:${typeflag}`) {
+      throw new Error('leak scan received a malformed expanded tar archive');
+    }
+    offset += 512;
+    const bytes = expanded.subarray(offset, offset + size);
+    const dataEnd = offset + size;
+    offset += Math.ceil(size / 512) * 512;
+    const framing = Buffer.concat([header, expanded.subarray(dataEnd, offset)]);
+    members.push({ name: prefix ? `${prefix}/${name}` : name, typeflag, bytes, framing });
+  }
+  throw new Error('leak scan received a truncated expanded tar archive');
 }
 class LeakageDetectionError extends Error {
   constructor(detectedClasses, label) {
@@ -66,6 +208,23 @@ export function inspect(bytes, label, count = true) {
   if (count) bytesScanned += bytes.length;
   const found = [...new Set(detections(bytes))].sort();
   if (found.length > 0) throw new LeakageDetectionError(found, label);
+}
+
+// Inspect one packed npm tarball with complete framing coverage: exact
+// sensitive-value byte matching runs on the compressed and whole expanded
+// buffers; the fail-closed ustar reader additionally inspects every member's
+// data AND every member's framing bytes (header block plus data-to-boundary
+// padding), so every byte of the expanded archive belongs to exactly one
+// inspected unit (member data, member framing, or the validated zero
+// terminator). Detector-shaped bytes cannot hide in padding or unused
+// header-field space.
+export function inspectPackedTarball(gzipped, label) {
+  const expanded = gunzipSync(gzipped);
+  inspect(expanded, `${label} (expanded)`);
+  for (const member of tarMembers(expanded)) {
+    inspect(member.bytes, `${label} (member ${member.name})`);
+    inspect(member.framing, `${label} (framing ${member.name})`);
+  }
 }
 
 // Execute one bounded, realistic synthetic artifact per required leak class through
@@ -109,7 +268,7 @@ async function main() {
   for (const file of files) {
     const bytes = await readFile(file);
     inspect(bytes, relative(process.cwd(), file));
-    if (file.endsWith('.tgz')) inspect(gunzipSync(bytes), `${relative(process.cwd(), file)} (expanded)`);
+    if (file.endsWith('.tgz')) inspectPackedTarball(bytes, relative(process.cwd(), file));
   }
 
   const results = runSyntheticLeakageCanaries(sourceTree, commandHash);

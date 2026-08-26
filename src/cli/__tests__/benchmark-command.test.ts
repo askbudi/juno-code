@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { execa } from 'execa';
 import { afterEach, describe, expect, it } from 'vitest';
 import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
 import packageJson from '../../../package.json';
-import { inspect, runSyntheticLeakageCanaries } from '../../../scripts/scan-benchmark-release-artifacts.mjs';
+import { inspect, inspectPackedTarball, runSyntheticLeakageCanaries } from '../../../scripts/scan-benchmark-release-artifacts.mjs';
 import {
   BENCHMARK_VERSION_RANGE,
   BenchmarkDelegateError,
@@ -97,6 +98,242 @@ describe('benchmark release leakage canaries', () => {
       inspect(Buffer.from('_authToken=juno_release_wrong_class_credential\n'), label, count);
     expect(() => runSyntheticLeakageCanaries(leakageSourceTree, leakageCommandHash, rejectAsCredentials))
       .toThrow(/positive control failed: private-registry/u);
+  });
+});
+
+function ustarEntry(name: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(name.slice(0, 99), 0, 100, 'utf8');
+  header.write('0000644\0', 100, 8, 'ascii');
+  header.write('0000000\0', 108, 8, 'ascii');
+  header.write('0000000\0', 116, 8, 'ascii');
+  header.write(`${data.length.toString(8).padStart(11, '0')} `, 124, 12, 'ascii');
+  header.write('00000000000 ', 136, 12, 'ascii');
+  header.write('0', 156, 1, 'ascii');
+  header.write('ustar\0', 257, 6, 'ascii');
+  header.write('00', 263, 2, 'ascii');
+  header.fill(' ', 148, 156);
+  const checksum = header.reduce((sum, byte) => (sum + byte) & 0o7777777, 0);
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
+  return Buffer.concat([header, data, padding]);
+}
+
+function packedTarball(entries: Array<{ name: string; data: Buffer }>, terminator: Buffer = Buffer.alloc(1024)): Buffer {
+  return gzipSync(Buffer.concat([...entries.map((entry) => ustarEntry(entry.name, entry.data)), terminator]));
+}
+
+describe('packed tarball leakage scanning', () => {
+  const binaryArtwork = Buffer.concat([
+    Buffer.from([0xff, 0xfe, 0x00, 0x40, 0x89, 0x50, 0x4e, 0x47]),
+    Buffer.from('http://cv.iptc.org/non-utf8-binary-provenance\n', 'latin1'),
+    Buffer.from([0xc3, 0x28, 0xff, 0x10]),
+  ]);
+
+  it('detects a text leak in a mixed binary/text archive instead of letting the binary member disable text detection', () => {
+    const tarball = packedTarball([
+      { name: 'package/artwork.bin', data: binaryArtwork },
+      { name: 'package/leak.txt', data: Buffer.from('registry=https://npm.private.invalid/repro/\n') },
+    ]);
+    expect(() => inspectPackedTarball(tarball, 'mixed.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['private-registry']) }),
+    );
+  });
+
+  it('inspects every member at its own header offset in multi-member archives', () => {
+    // Distinct member sizes pin per-member header parsing: a reader that
+    // reuses one header's size field desyncs and must fail closed here.
+    const members = [
+      { name: 'package/assets/yylo-logo-square-neon-green.png', data: binaryArtwork },
+      { name: 'package/large.bin', data: Buffer.concat(Array.from({ length: 3 }, () => binaryArtwork)) },
+      { name: 'package/docs/guide.md', data: Buffer.from('# Guide\n\nSafe documentation text.\n'.repeat(12)) },
+      { name: 'package/hidden-leak.txt', data: Buffer.from('_authToken=juno_release_canary_credential_2d65aa\n') },
+    ];
+    const tarball = packedTarball(members);
+    expect(() => inspectPackedTarball(tarball, 'multi.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['auth-credentials']) }),
+    );
+  });
+
+  it('accepts the binary artwork when the remaining text members are clean', () => {
+    const tarball = packedTarball([
+      { name: 'package/assets/yylo-logo-square-neon-green.png', data: binaryArtwork },
+      { name: 'package/package.json', data: Buffer.from('{"name":"@yylo/cli","private":false}\n') },
+    ]);
+    expect(() => inspectPackedTarball(tarball, 'artwork.tgz')).not.toThrow();
+  });
+
+  it('fails closed on a malformed expanded tar archive', () => {
+    expect(() => inspectPackedTarball(gzipSync(Buffer.from('not-a-tar-archive'.repeat(64))), 'broken.tgz'))
+      .toThrow(/malformed expanded tar/u);
+  });
+
+  it('fails closed when the second ustar end-of-archive block is missing', () => {
+    const tarball = packedTarball(
+      [{ name: 'package/artwork.bin', data: binaryArtwork }],
+      Buffer.alloc(512),
+    );
+    expect(() => inspectPackedTarball(tarball, 'truncated.tgz')).toThrow(/truncated expanded tar/u);
+  });
+
+  it('fails closed when nonzero bytes follow the first ustar end-of-archive block', () => {
+    const tarball = packedTarball(
+      [{ name: 'package/artwork.bin', data: binaryArtwork }],
+      Buffer.concat([Buffer.alloc(1024), Buffer.from('X'.repeat(64))]),
+    );
+    expect(() => inspectPackedTarball(tarball, 'trailing.tgz')).toThrow(/truncated expanded tar/u);
+  });
+
+  it('detects detector-shaped trailing bytes after the ustar terminator', () => {
+    const tarball = packedTarball(
+      [{ name: 'package/artwork.bin', data: binaryArtwork }],
+      Buffer.concat([Buffer.alloc(1024), Buffer.from('registry=https://npm.private.invalid/trailing/')]),
+    );
+    expect(() => inspectPackedTarball(tarball, 'trailing-leak.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['private-registry']) }),
+    );
+  });
+
+  it('accepts extra all-zero padding blocks after the ustar terminator', () => {
+    const tarball = packedTarball(
+      [{ name: 'package/assets/yylo-logo-square-neon-green.png', data: binaryArtwork }],
+      Buffer.alloc(2048),
+    );
+    expect(() => inspectPackedTarball(tarball, 'padded.tgz')).not.toThrow();
+  });
+
+  it('cannot hide a leaking member behind a corrupted size header', () => {
+    // Valid members: binary artwork, then a detector-shaped text member.
+    const members = [
+      { name: 'package/artwork.bin', data: binaryArtwork },
+      { name: 'package/leak.txt', data: Buffer.from('registry=https://npm.private.invalid/repro/\n') },
+    ];
+    const expanded = Buffer.concat([
+      ...members.map((entry) => ustarEntry(entry.name, entry.data)),
+      Buffer.alloc(1024),
+    ]);
+    // Corrupt the first header's size to span both members while keeping the
+    // stale checksum. The whole-buffer scan detects the hidden leak even
+    // before header validation rejects the forged boundary.
+    const spanned = 512 + binaryArtwork.length + 512 + 42;
+    expanded.write(`${spanned.toString(8).padStart(11, '0')} `, 124, 12, 'ascii');
+    expect(() => inspectPackedTarball(gzipSync(expanded), 'corrupt-size-leak.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['private-registry']) }),
+    );
+  });
+
+  it('rejects a corrupted size header on structural grounds alone', () => {
+    const members = [
+      { name: 'package/artwork.bin', data: binaryArtwork },
+      { name: 'package/notes.txt', data: Buffer.from('plain absorbed filler text without any leak shape\n') },
+    ];
+    const expanded = Buffer.concat([
+      ...members.map((entry) => ustarEntry(entry.name, entry.data)),
+      Buffer.alloc(1024),
+    ]);
+    const spanned = 512 + binaryArtwork.length + 512 + 48;
+    expanded.write(`${spanned.toString(8).padStart(11, '0')} `, 124, 12, 'ascii');
+    expect(() => inspectPackedTarball(gzipSync(expanded), 'corrupt-size.tgz'))
+      .toThrow(/malformed expanded tar/u);
+  });
+
+  it('rejects a nonzero block without ustar magic even with a self-consistent checksum', () => {
+    const expanded = Buffer.concat([
+      (() => {
+        const header = Buffer.alloc(512, 0x20);
+        header.write('not-ustar', 0, 9, 'ascii');
+        return header;
+      })(),
+      Buffer.alloc(1024),
+    ]);
+    expect(() => inspectPackedTarball(gzipSync(expanded), 'no-magic.tgz'))
+      .toThrow(/malformed expanded tar/u);
+  });
+
+  it('rejects detector-shaped text hidden in member padding even beside invalid bytes', () => {
+    // Valid binary member whose data ends mid-block; hide a registry leak in
+    // the padding together with a stray non-UTF-8 byte in the same framing
+    // unit. Region-wide strict decoding would skip the whole unit; span-level
+    // validation must still catch the clean leak span.
+    const data = binaryArtwork.subarray(0, 100);
+    const entry = ustarEntry('package/artwork.bin', data);
+    const padding = entry.subarray(512 + data.length);
+    padding.write('registry=https://npm.private.invalid/padding/', 0, 45, 'ascii');
+    padding[45 + 4] = 0xff;
+    const tarball = gzipSync(Buffer.concat([entry, Buffer.alloc(1024)]));
+    expect(() => inspectPackedTarball(tarball, 'padding-leak.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['private-registry']) }),
+    );
+  });
+
+  it('rejects an invalid first match without masking a later valid leak of the same detector', () => {
+    // First padding region carries a credential-shaped URL followed by binary
+    // bytes (invalid span, skipped); a second member carries a clean valid
+    // _authToken leak that must still be detected.
+    const noisy = ustarEntry('package/artwork.bin', binaryArtwork.subarray(0, 100));
+    const noisyPadding = noisy.subarray(512 + 100);
+    noisyPadding.write('https://user:', 0, 13, 'ascii');
+    noisyPadding[13] = 0xff;
+    noisyPadding[14] = 0xfe;
+    noisyPadding[15] = 0x40; // '@' shapes a credentials URL across binary bytes
+    const leakMember = ustarEntry(
+      'package/leak.txt',
+      Buffer.from('_authToken=juno_release_canary_credential_2d65aa\n'),
+    );
+    const tarball = gzipSync(Buffer.concat([noisy, leakMember, Buffer.alloc(1024)]));
+    expect(() => inspectPackedTarball(tarball, 'masked-first-match.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['auth-credentials']) }),
+    );
+  });
+
+  it('rejects a valid leak overlapped or masked by invalid greedy matches of the same detector', () => {
+    // One framing region: an invalid greedy credential-shaped URL starts
+    // earlier and would swallow the later clean credential URL inside its
+    // span; segmentation gives the clean region native backtracking so both
+    // overlapping and same-start shorter valid matches stay live.
+    const data = Buffer.from('clean binary artwork bytes\n');
+    const entry = ustarEntry('package/artwork.bin', data);
+    const padding = entry.subarray(512 + data.length);
+    padding.write('https://a', 0, 9, 'ascii');
+    padding[9] = 0xff;
+    padding[10] = 0x40; // '@' ends an invalid greedy span
+    padding.write('https://user:secretpw@npm.private.invalid/x', 16, 42, 'ascii');
+    padding[42 + 16] = 0xff;
+    padding[43 + 16] = 0xfe;
+    padding[44 + 16] = 0x40; // later '@' would extend a greedy span across binary bytes
+    const tarball = gzipSync(Buffer.concat([entry, Buffer.alloc(1024)]));
+    expect(() => inspectPackedTarball(tarball, 'overlapped-leak.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['auth-credentials']) }),
+    );
+  });
+
+  it('keeps accepting the binary artwork whose detector spans cover non-UTF-8 bytes', () => {
+    // The artwork embeds a credential-shaped URL followed by binary bytes;
+    // its regex span is not strict UTF-8, so byte-oriented span validation
+    // must not turn it into a false positive.
+    const tarball = packedTarball([
+      { name: 'package/assets/yylo-logo-square-neon-green.png', data: binaryArtwork },
+      { name: 'package/README.md', data: Buffer.from('# YYLO\n\nClean release documentation.\n') },
+    ]);
+    expect(() => inspectPackedTarball(tarball, 'artwork.tgz')).not.toThrow();
+  });
+
+  it('rejects detector-shaped text hidden after the name NUL inside a header', () => {
+    const data = Buffer.from('clean text member\n');
+    const entry = ustarEntry('package/a.txt', data);
+    // Unused name-field bytes after the terminating NUL are framing bytes and
+    // must not become an uninspected hiding place. Recompute the checksum so
+    // the malicious header is structurally valid and only framing inspection
+    // can catch it.
+    entry.write('registry=https://npm.private.invalid/name/', 40, 43, 'ascii');
+    entry.fill(' ', 148, 156);
+    let checksum = 0;
+    for (let index = 0; index < 512; index += 1) checksum = (checksum + entry[index]) & 0o7777777;
+    entry.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+    const tarball = gzipSync(Buffer.concat([entry, Buffer.alloc(1024)]));
+    expect(() => inspectPackedTarball(tarball, 'name-leak.tgz')).toThrowError(
+      expect.objectContaining({ name: 'LeakageDetectionError', detectedClasses: expect.arrayContaining(['private-registry']) }),
+    );
   });
 });
 

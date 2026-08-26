@@ -34,6 +34,10 @@ describe('YYLO launch identity', () => {
     expect(rootReadme).not.toContain('https://www.npmjs.com/package/juno-code');
     expect(rootReadme).toContain('`v0.1.0-rc.1`');
     expect(packageReadme).toContain('`--set v0.1.0-rc.1`');
+    // The documented install coordinate advances with releases; assert the
+    // canonical scoped package with one concrete exact SemVer (derived from
+    // package.json, the active release truth) instead of pinning a frozen RC
+    // that drifts on every release commit (OEeK82).
     const packageVersion = JSON.parse(await fs.readFile(path.resolve('package.json'), 'utf8')).version as string;
     expect(packageReadme).toContain(`npm install -g @yylo/cli@${packageVersion}`);
     expect(packageReadme).not.toMatch(/npm install -g yylo(?:\s|`|$)/m);
@@ -70,7 +74,7 @@ describe('YYLO launch identity', () => {
   it('includes the active YYLO logo in the publishable npm file set', async () => {
     const packed = await execa('npm', ['pack', '--dry-run', '--json', '--ignore-scripts']);
     const report = JSON.parse(packed.stdout) as Array<{ files: Array<{ path: string }> }>;
-    expect(report[0]?.files.map((file) => file.path)).toContain('yylo-icon.png');
+    expect(report[0]?.files.map((file) => file.path)).toContain('assets/yylo-logo-square-neon-green.png');
   });
 
   it('maps a legacy-only environment value to the canonical name', async () => {

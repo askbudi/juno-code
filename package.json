@@ -39,7 +39,7 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
-    "yylo-icon.png"
+    "assets/yylo-logo-square-neon-green.png"
   ],
   "scripts": {
     "dev": "tsx src/bin/cli.ts",
