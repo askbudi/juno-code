@@ -5834,7 +5834,7 @@ def _merge_drive_projection(controller: Path, repository: Path, config: dict[str
     return projection
 
 
-def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
+def _merge_drive_claimed(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
     """Resume one durably claimed frozen FIFO scope within cumulative budgets."""
     if through is not None and not task_runtime.TASK_RE.fullmatch(through):
         raise MergeQueueError("unsafe --through task id")
@@ -6172,12 +6172,182 @@ def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, An
                 detail={"error_type": type(exc).__name__, "error": str(exc)[:1024]})
             raise MergeQueueError(str(exc)) from exc
 
+
+# One on-demand deterministic owner per protected target. The kernel lock is
+# liveness truth; the durable attempt token fences delayed writers after a dead
+# producer yields a successor. This is intentionally not a daemon: drive starts
+# it only when FIFO work exists and the worker exits at idle or a typed blocker.
+TARGET_ARBITER_SCHEMA = "juno_target_arbiter_attempt.v1"
+TARGET_ARBITER_RECEIPT_SCHEMA = "juno_target_arbiter_receipt.v1"
+TARGET_ARBITER_ROOT = ".juno_task/runtime/target-arbiters"
+TARGET_ARBITER_WORK_STATES = MERGE_DRIVE_ELIGIBLE_STATES - {"MERGED"}
+
+
+def _arbiter_root(controller: Path, repository: Path, target_ref: str) -> Path:
+    identity = digest({"repository_identity": repository_identity(repository),
+                       "target_ref": target_ref})
+    return controller / TARGET_ARBITER_ROOT / identity
+
+
+def _arbiter_state(root: Path) -> Optional[dict[str, Any]]:
+    path = root / "state.json"
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or value.get("schema_version") != TARGET_ARBITER_SCHEMA:
+        raise MergeQueueError("target arbiter state is malformed")
+    return value
+
+
+def _arbiter_observation(state: Optional[dict[str, Any]]) -> dict[str, str]:
+    if not isinstance(state, dict) or state.get("state") != "ACTIVE":
+        return {"status": "inactive", "detail": "no active target arbiter"}
+    observation = task_runtime._observe_producer(state.get("producer"))
+    return {"status": observation.status, "detail": observation.detail}
+
+
+def target_arbiter_status(controller: Path) -> dict[str, Any]:
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    root = _arbiter_root(controller, repository, config["target_ref"])
+    state = _arbiter_state(root)
+    observation = _arbiter_observation(state)
+    queue = status(controller)
+    eligible = [row for row in queue["tasks"]
+                if row.get("state") in TARGET_ARBITER_WORK_STATES]
+    if state and state.get("state") == "ACTIVE" and observation["status"] == "alive":
+        reason_code, next_action = "arbiter_running", "observe with: yy merge arbiter status"
+    elif eligible:
+        reason_code, next_action = "eligible_work", "yy merge arbiter run"
+    else:
+        reason_code, next_action = "queue_idle", "none: worker exits while target queue is idle"
+    return {"schema_version": TARGET_ARBITER_SCHEMA,
+            "target_ref": config["target_ref"], "target_sha": queue["target_sha"],
+            "state": state, "producer_observation": observation,
+            "eligible_task_ids": [row["task_id"] for row in eligible],
+            "reason_code": reason_code, "next_action": next_action}
+
+
+def _arbiter_transition(root: Path, attempt: int, token: str, state_name: str,
+                        *, outcome: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Fenced terminal write; delayed predecessor tokens always fail closed."""
+    current = _arbiter_state(root)
+    token_sha256 = hashlib.sha256(token.encode()).hexdigest()
+    if (not isinstance(current, dict) or current.get("attempt") != attempt
+            or current.get("token_sha256") != token_sha256
+            or current.get("state") != "ACTIVE"):
+        raise MergeQueueError("target arbiter write refused (arbiter_fence_stale)")
+    receipt_body = {"schema_version": TARGET_ARBITER_RECEIPT_SCHEMA,
+                    "attempt": attempt, "target_ref": current["target_ref"],
+                    "state": state_name, "outcome": outcome,
+                    "producer": current["producer"], "detail": detail or {}}
+    receipt_path = root / "receipts" / f"attempt-{attempt}-{state_name.lower()}.json"
+    receipt = lifecycle_runtime.atomic_json(receipt_path, receipt_body, exclusive=True)
+    terminal = {**current, "state": state_name, "outcome": outcome,
+                "terminal_receipt": receipt, "detail": detail or {}}
+    lifecycle_runtime.atomic_json(root / "state.json", terminal)
+    return terminal
+
+
+@contextmanager
+def _target_arbiter_claim(root: Path) -> Iterator[Optional[Any]]:
+    root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(root / "owner.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    stream = os.fdopen(descriptor, "a+")
+    try:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield None
+            return
+        yield stream
+    finally:
+        stream.close()
+
+
+def merge_drive(controller: Path, through: Optional[str] = None) -> dict[str, Any]:
+    """Run the on-demand per-target arbiter until idle or one typed blocker."""
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    # Admission is read-only. No worker attempt is created for an idle queue.
+    admission = target_arbiter_status(controller)
+    if not admission["eligible_task_ids"]:
+        # Preserve immutable terminal-drive replay for observers without
+        # creating a new arbiter attempt. A never-used empty queue is plain IDLE.
+        if not (controller / MERGE_DRIVE_ROOT / "latest.json").is_file():
+            return {**admission, "outcome": "IDLE"}
+        try:
+            return _merge_drive_claimed(controller, through)
+        except MergeQueueError as exc:
+            if "has no FIFO-authorized tasks" not in str(exc):
+                raise
+            return {**admission, "outcome": "IDLE"}
+    _drive_scope(controller, config, through)
+    root = _arbiter_root(controller, repository, config["target_ref"])
+    with _target_arbiter_claim(root) as claim:
+        if claim is None:
+            return {**target_arbiter_status(controller), "outcome": "ALREADY_RUNNING",
+                    "reason_code": "arbiter_owned"}
+        # Recheck after ownership acquisition so two arrivals cannot create an
+        # idle attempt after the first worker drains the queue.
+        admission = target_arbiter_status(controller)
+        if not admission["eligible_task_ids"]:
+            if not (controller / MERGE_DRIVE_ROOT / "latest.json").is_file():
+                return {**admission, "outcome": "IDLE"}
+            try:
+                return _merge_drive_claimed(controller, through)
+            except MergeQueueError as exc:
+                if "has no FIFO-authorized tasks" not in str(exc):
+                    raise
+                return {**admission, "outcome": "IDLE"}
+        _drive_scope(controller, config, through)
+        previous = _arbiter_state(root)
+        observation = _arbiter_observation(previous)
+        if (previous and previous.get("state") == "ACTIVE"
+                and observation["status"] != "dead"):
+            raise MergeQueueError(
+                "target arbiter predecessor is not provably dead; expiry alone never grants takeover")
+        attempt = int((previous or {}).get("attempt") or 0) + 1
+        token = secrets.token_urlsafe(32)
+        active = {"schema_version": TARGET_ARBITER_SCHEMA,
+                  "attempt": attempt, "state": "ACTIVE",
+                  "target_ref": config["target_ref"],
+                  "target_sha_at_start": task_runtime.ref_sha(repository, config["target_ref"]),
+                  "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+                  "producer": {"pid": os.getpid(),
+                               "lstart": task_runtime._producer_lstart(os.getpid())},
+                  "successor_of": ((previous or {}).get("terminal_receipt")
+                                   or ({"attempt": previous.get("attempt"),
+                                        "authority": "producer_death",
+                                        "observation": observation}
+                                       if previous else None))}
+        lifecycle_runtime.atomic_json(root / "state.json", active)
+        try:
+            result = _merge_drive_claimed(controller, through)
+            terminal_state = "IDLE" if result.get("state") == "MERGED_THROUGH" else "PAUSED"
+            terminal = _arbiter_transition(
+                root, attempt, token, terminal_state,
+                outcome=str(result.get("state") or result.get("outcome") or terminal_state),
+                detail={"projection_schema": result.get("schema_version"),
+                        "run_id": result.get("run_id"), "blocker": result.get("blocker")})
+            return {**result, "arbiter": terminal}
+        except Exception as exc:
+            _arbiter_transition(root, attempt, token, "FAILED", outcome=type(exc).__name__,
+                                detail={"error": str(exc)[:1024]})
+            raise
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="operation", required=True)
     sub.add_parser("status")
     drive = sub.add_parser("drive")
     drive.add_argument("--through")
+    arbiter = sub.add_parser("arbiter")
+    arbiter_sub = arbiter.add_subparsers(dest="arbiter_operation", required=True)
+    arbiter_sub.add_parser("status")
+    arbiter_run = arbiter_sub.add_parser("run")
+    arbiter_run.add_argument("--through")
     plan = sub.add_parser("plan")
     plan.add_argument("task_id")
     plan.add_argument("--against")
@@ -6257,6 +6427,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = status(controller)
         elif args.operation == "drive":
             result = merge_drive(controller, args.through)
+        elif args.operation == "arbiter":
+            result = (target_arbiter_status(controller) if args.arbiter_operation == "status"
+                      else merge_drive(controller, args.through))
         elif args.operation == "next":
             result = merge_next(controller, args.task_id, args.plan_id)
         elif args.operation == "resolve":

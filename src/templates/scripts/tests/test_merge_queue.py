@@ -1622,6 +1622,66 @@ class MergeQueueTests(unittest.TestCase):
             str(prompt.relative_to(self.controller)))
         git(self.controller, "commit", "-m", "controller merge workflow")
 
+    def test_target_arbiter_stays_absent_for_idle_queue_and_status_is_read_only(self) -> None:
+        observed = merge_runtime.target_arbiter_status(self.controller.resolve())
+        self.assertEqual(observed["reason_code"], "queue_idle")
+        self.assertEqual(observed["eligible_task_ids"], [])
+        projection = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(projection["outcome"], "IDLE")
+        config = task_runtime.load_config(self.controller.resolve())
+        root = merge_runtime._arbiter_root(
+            self.controller.resolve(), self.repository.resolve(), config["target_ref"])
+        self.assertFalse((root / "state.json").exists())
+
+    def test_target_arbiter_is_one_on_demand_owner_and_exits_idle(self) -> None:
+        self.install_merge_drive_assets()
+        tip = self.commit_feature("X", "src/arbiter.txt", "once\n")
+        config = task_runtime.load_config(self.controller.resolve())
+        root = merge_runtime._arbiter_root(
+            self.controller.resolve(), self.repository.resolve(), config["target_ref"])
+        root.mkdir(parents=True, exist_ok=True)
+        lock = (root / "owner.lock").open("a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            competing = merge_runtime.merge_drive(self.controller.resolve())
+        finally:
+            lock.close()
+        self.assertEqual(competing["outcome"], "ALREADY_RUNNING")
+        self.assertEqual(competing["reason_code"], "arbiter_owned")
+        merged = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(merged["state"], "MERGED_THROUGH")
+        self.assertEqual(merged["arbiter"]["state"], "IDLE")
+        self.assertEqual(merged["arbiter"]["attempt"], 1)
+        self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
+        # Terminal replay is observation-only: no new worker attempt and no
+        # duplicate merge/validation action is created for an idle queue.
+        replay = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(replay["run_id"], merged["run_id"])
+        self.assertNotIn("arbiter", replay)
+        self.assertEqual(json.loads((root / "state.json").read_text())["attempt"], 1)
+
+    def test_target_arbiter_dead_predecessor_yields_fenced_successor(self) -> None:
+        self.install_merge_drive_assets()
+        self.commit_feature("X", "src/arbiter-successor.txt", "successor\n")
+        config = task_runtime.load_config(self.controller.resolve())
+        root = merge_runtime._arbiter_root(
+            self.controller.resolve(), self.repository.resolve(), config["target_ref"])
+        root.mkdir(parents=True, exist_ok=True)
+        old_token = "predecessor-token"
+        old = {"schema_version": merge_runtime.TARGET_ARBITER_SCHEMA,
+               "attempt": 4, "state": "ACTIVE", "target_ref": config["target_ref"],
+               "target_sha_at_start": self.base,
+               "token_sha256": hashlib.sha256(old_token.encode()).hexdigest(),
+               "producer": {"pid": 99999999, "lstart": "ended-producer"},
+               "successor_of": None}
+        merge_runtime.lifecycle_runtime.atomic_json(root / "state.json", old)
+        merged = merge_runtime.merge_drive(self.controller.resolve())
+        self.assertEqual(merged["arbiter"]["attempt"], 5)
+        self.assertEqual(merged["arbiter"]["successor_of"]["authority"], "producer_death")
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "arbiter_fence_stale"):
+            merge_runtime._arbiter_transition(
+                root, 4, old_token, "FAILED", outcome="delayed_stale_write")
+
     def test_merge_drive_adopts_interrupted_projection_publication(self) -> None:
         self.install_merge_drive_assets()
         first_tip = self.commit_feature("X", "src/adopt.txt", "first\n")
@@ -1962,8 +2022,11 @@ class MergeQueueTests(unittest.TestCase):
                            [pool.submit(merge_runtime.merge_drive,
                                         self.controller.resolve(), "X") for _ in range(2)]]
         self.assertEqual(calls, 1)
-        self.assertEqual({row["state"] for row in results}, {"MERGED_THROUGH"})
-        self.assertEqual({row["run_id"] for row in results}, {results[0]["run_id"]})
+        merged = [row for row in results if row.get("state") == "MERGED_THROUGH"]
+        competing = [row for row in results if row.get("outcome") == "ALREADY_RUNNING"]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(competing), 1)
+        self.assertEqual(competing[0]["reason_code"], "arbiter_owned")
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), tip)
 
     def test_merge_drive_serializes_concurrent_scope_and_recovers_post_cas_crash(self) -> None:

@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 import { checkpointControllerAfterFinalization } from '../../utils/controller-checkpoint.js';
 
-export type MergeQueueOperation = 'status' | 'drive' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh' | 'withdraw';
+export type MergeQueueOperation = 'status' | 'drive' | 'arbiter-status' | 'arbiter-run' | 'plan' | 'next' | 'resolve' | 'review' | 'reopen' | 'reconcile' | 'refresh' | 'withdraw';
 export type MergeQueueInvoker = (
   operation: MergeQueueOperation,
   taskId?: string,
@@ -14,7 +14,7 @@ export type MergeQueueInvoker = (
 export type MergeQueueCheckpointer = typeof checkpointControllerAfterFinalization;
 
 export function mergeQueueControlOperation(operation: MergeQueueOperation): 'kanban' | 'orchestration' {
-  return ['status', 'plan'].includes(operation) ? 'kanban' : 'orchestration';
+  return ['status', 'plan', 'arbiter-status'].includes(operation) ? 'kanban' : 'orchestration';
 }
 
 export const MAX_MERGE_RESULT_LINE_CHARS = 1024 * 1024;
@@ -100,7 +100,10 @@ export async function invokeMergeQueueAtController(
   if (!(await fs.pathExists(script))) {
     throw new Error('Missing managed merge queue runtime. Run `yy scripts update` and retry.');
   }
-  const args = [script, operation, ...(taskId ? [taskId] : []), ...extraArgs];
+  const scriptOperation = operation === 'arbiter-status'
+    ? ['arbiter', 'status']
+    : operation === 'arbiter-run' ? ['arbiter', 'run'] : [operation];
+  const args = [script, ...scriptOperation, ...(taskId ? [taskId] : []), ...extraArgs];
   const extractor = new TerminalMergeResultExtractor();
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('python3', args, { cwd: controllerRoot, env, stdio: ['inherit', 'pipe', 'inherit'] });
@@ -148,6 +151,17 @@ export function configureMergeQueueCommand(
     .action((options: { through?: string }) => options.through
       ? invoke('drive', undefined, ['--through', options.through])
       : invoke('drive'));
+  const arbiter = merge.command('arbiter')
+    .description('Observe or run the one on-demand deterministic owner for this protected target');
+  arbiter.command('status')
+    .description('Read arbiter ownership, eligible work, reason code, and next action')
+    .action(() => invoke('arbiter-status'));
+  arbiter.command('run')
+    .description('Start only when work exists; drain deterministically and exit when idle or blocked')
+    .option('--through <task-id>', 'Stop after this FIFO-authorized task')
+    .action((options: { through?: string }) => invoke(
+      'arbiter-run', undefined, [...(options.through ? ['--through', options.through] : [])],
+    ));
   merge
     .command('plan')
     .description('Compute an offline, non-mutating candidate feasibility report')
