@@ -5258,10 +5258,16 @@ class StandingValidationVerificationTests(unittest.TestCase):
             root = Path(temporary)
             receipt_path = root / "plan" / "command.json"
             receipt_path.parent.mkdir()
+            lifecycle = merge_runtime.lifecycle_runtime
+            closure_body = {"schema_version": lifecycle.COMMAND_CLOSURE_SCHEMA,
+                            "observable_tree": "c" * 40, "command": {"id": "focused"}}
+            closure = {**closure_body,
+                       "input_closure_sha256": lifecycle.digest(closure_body)}
             receipt = {"schema_version": task_runtime.STANDING_EVIDENCE_SCHEMA,
                        "task_id": "T1", "tip_sha": "a" * 40,
                        "plan_sha256": "b" * 64,
-                       "command": {"id": "focused"},
+                       "command": {"id": "focused"}, "input_closure": closure,
+                       "complete_input_identity": lifecycle.complete_input_identity(closure),
                        "result": {"exit_code": 0, "timed_out": False}}
             data = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
             receipt_path.write_bytes(data)

@@ -1149,7 +1149,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
-COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v3"
+COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v4"
+COMPLETE_INPUT_IDENTITY_SCHEMA = "juno_complete_input_closure_identity.v1"
+REPLAY_TRACE_SCHEMA = "juno_evidence_replay_trace.v1"
 COMMAND_DECISION_SCHEMA = "juno_command_evidence_decision.v1"
 DOCUMENTATION_ROUTE_SCHEMA = "juno_documentation_validation_route.v1"
 COHERENCE_SCHEMA = "juno_grouped_coherence_report.v1"
@@ -1411,19 +1413,100 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
     return {**body, "input_closure_sha256": digest(body)}
 
 
+def complete_input_identity(closure: Any) -> dict[str, str]:
+    """Sign one complete input closure with a deterministic self-verifying digest.
+
+    This is an integrity signature, not an authority grant.  The canonical
+    controller still owns authority and receipt storage; the signature makes a
+    copied, partial, or field-edited closure impossible to present as exact.
+    """
+    if not isinstance(closure, dict):
+        raise LifecycleContractError("complete input closure is missing or malformed")
+    claimed = closure.get("input_closure_sha256")
+    body = {key: value for key, value in closure.items() if key != "input_closure_sha256"}
+    computed = digest(body)
+    if not isinstance(claimed, str) or claimed != computed:
+        raise LifecycleContractError("complete input closure digest is forged or partial")
+    schema = closure.get("schema_version")
+    if schema != COMMAND_CLOSURE_SCHEMA:
+        raise LifecycleContractError("complete input closure schema is unsupported")
+    signature_body = {"schema_version": COMPLETE_INPUT_IDENTITY_SCHEMA,
+                      "closure_schema": schema, "input_closure_sha256": computed}
+    return {**signature_body, "signature_sha256": digest(signature_body)}
+
+
+def verify_complete_input_closure(previous: Any, current: Any,
+                                  identity: Any) -> dict[str, Any]:
+    """One fail-closed verifier shared by task, queue, refresh, and train stages."""
+    reasons: list[dict[str, Any]] = []
+    try:
+        expected_identity = complete_input_identity(previous)
+    except LifecycleContractError as exc:
+        reasons.append({"code": "CLOSURE_MISSING_FORGED_OR_PARTIAL", "field": "closure",
+                        "reason": str(exc)})
+        expected_identity = None
+    if not isinstance(identity, dict):
+        reasons.append({"code": "CLOSURE_SIGNATURE_MISSING", "field": "signature"})
+    elif expected_identity is not None and identity != expected_identity:
+        code = ("CLOSURE_SCHEMA_UNSUPPORTED" if identity.get("closure_schema") != COMMAND_CLOSURE_SCHEMA
+                else "CLOSURE_SIGNATURE_MISMATCH")
+        reasons.append({"code": code, "field": "signature",
+                        "old_sha256": digest(identity), "new_sha256": digest(expected_identity)})
+    reasons.extend(closure_invalidation(previous, current))
+    return {"valid": not reasons, "reasons": reasons,
+            "identity": expected_identity,
+            "input_closure_sha256": (current.get("input_closure_sha256")
+                                      if isinstance(current, dict) else None)}
+
+
 def closure_invalidation(previous: Any, current: Any) -> list[dict[str, Any]]:
     if not isinstance(previous, dict) or not isinstance(current, dict):
-        return [{"field": "closure", "old": None, "new": None, "reason": "missing_or_malformed"}]
+        return [{"code": "CLOSURE_MISSING_OR_MALFORMED", "field": "closure",
+                 "old": None, "new": None, "reason": "missing_or_malformed"}]
     ignored = {"input_closure_sha256"}
     rows = []
     for key in sorted((set(previous) | set(current)) - ignored):
         if previous.get(key) != current.get(key):
-            rows.append({"field": key, "old_sha256": digest(previous.get(key)),
+            rows.append({"code": "CLOSURE_DRIFT_" + key.upper(), "field": key,
+                         "old_sha256": digest(previous.get(key)),
                          "new_sha256": digest(current.get(key))})
     if not rows and previous.get("input_closure_sha256") != current.get("input_closure_sha256"):
-        rows.append({"field": "input_closure_sha256", "old": previous.get("input_closure_sha256"),
+        rows.append({"code": "CLOSURE_DIGEST_MISMATCH", "field": "input_closure_sha256",
+                     "old": previous.get("input_closure_sha256"),
                      "new": current.get("input_closure_sha256")})
     return rows
+
+
+_RESTART_STAGE_BY_FIELD = {
+    "composition": "COMPOSING", "candidate_order": "COMPOSING",
+    "review": "REVIEWING", "review_policy": "REVIEWING",
+    "closure": "VALIDATING", "signature": "VALIDATING",
+    "schema_version": "VALIDATING", "observable_tree": "VALIDATING",
+    "dependency_locks": "VALIDATING", "gitlinks": "VALIDATING",
+    "routing_config_sha256": "VALIDATING", "risk_policy_sha256": "VALIDATING",
+    "runtime_sha256": "VALIDATING", "runner": "VALIDATING",
+    "command": "VALIDATING", "command_sha256": "VALIDATING",
+    "environment": "VALIDATING", "executables": "VALIDATING",
+    "command_runtime": "VALIDATING", "selection": "VALIDATING",
+}
+
+
+def earliest_safe_restart_stage(reasons: list[dict[str, Any]]) -> str:
+    """Map invalidation/corruption to the smallest deterministic restart stage."""
+    order = {"COMPOSING": 0, "VALIDATING": 1, "REVIEWING": 2, "READY_CAS": 3}
+    stages = [_RESTART_STAGE_BY_FIELD.get(str(row.get("field")), "VALIDATING")
+              for row in reasons if isinstance(row, dict)]
+    return min(stages or ["READY_CAS"], key=order.__getitem__)
+
+
+def evidence_replay_trace(decisions: list[dict[str, Any]], *, phase: str) -> dict[str, Any]:
+    invalidation = [reason for row in decisions if isinstance(row, dict)
+                    for reason in row.get("invalidation", []) if isinstance(reason, dict)]
+    return {"schema_version": REPLAY_TRACE_SCHEMA, "phase": phase,
+            "restart_stage": earliest_safe_restart_stage(invalidation),
+            "decisions": decisions, "counters": evidence_counters(decisions),
+            "model_wakeups": sum(1 for row in decisions
+                                 if isinstance(row, dict) and row.get("decision") == "model_wakeup")}
 
 
 def evidence_decision(command_id: str, decision: str, *, closure: dict[str, Any],

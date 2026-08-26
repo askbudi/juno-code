@@ -1435,7 +1435,7 @@ def validation_evidence_identity(row: dict[str, Any], candidate: Path, cwd: Path
     if lock.is_file():
         lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
     material = {
-        "schema_version": "juno_validation_evidence_identity.v1",
+        "schema_version": lifecycle_runtime.COMMAND_CLOSURE_SCHEMA,
         "candidate_tree": plan["candidate"]["candidate_tree"],
         "policy_identity": plan["policy_identity"],
         "command": {key: row[key] for key in
@@ -1446,7 +1446,7 @@ def validation_evidence_identity(row: dict[str, Any], candidate: Path, cwd: Path
         "repository_identity": repository_identity(repository),
         "environment_keys": list(EVIDENCE_ENV_KEYS),
     }
-    return material
+    return {**material, "input_closure_sha256": lifecycle_runtime.digest(material)}
 
 
 def evidence_cache_path(controller: Path, key_sha256: str) -> Path:
@@ -1477,7 +1477,7 @@ def load_cached_evidence(controller: Path, key_sha256: str, row: dict[str, Any],
         return None
     keys = {"schema_version", "key_sha256", "source", "recorded_at", "reuse_count"}
     source_keys = {"receipt", "candidate", "policy_identity", "validation_identity",
-                   "commands", "command_index"}
+                   "commands", "command_index", "input_closure", "complete_input_identity"}
     if (not isinstance(entry, dict) or set(entry) != keys
             or entry.get("schema_version") != EVIDENCE_CACHE_SCHEMA
             or not isinstance(entry.get("key_sha256"), str)
@@ -1490,6 +1490,13 @@ def load_cached_evidence(controller: Path, key_sha256: str, row: dict[str, Any],
         path.unlink(missing_ok=True)
         return None
     source = entry["source"]
+    closure_verification = lifecycle_runtime.verify_complete_input_closure(
+        source.get("input_closure"), source.get("input_closure"),
+        source.get("complete_input_identity"))
+    if (not closure_verification["valid"]
+            or source["input_closure"].get("input_closure_sha256") != key_sha256):
+        path.unlink(missing_ok=True)
+        return None
     source_plan = {"candidate": source["candidate"],
                    "policy_identity": source["policy_identity"],
                    "evidence_limits": plan["evidence_limits"]}
@@ -1514,7 +1521,7 @@ def load_cached_evidence(controller: Path, key_sha256: str, row: dict[str, Any],
 def store_cached_evidence(controller: Path, key_sha256: str,
                           reference: dict[str, str], plan: dict[str, Any],
                           identity: dict[str, str], commands: list[dict[str, Any]],
-                          index: int) -> None:
+                          index: int, input_closure: dict[str, Any]) -> None:
     """Persist one green evidence entry with bounded retention.
 
     Storage happens only for verified green receipts; garbage collection keeps
@@ -1527,7 +1534,9 @@ def store_cached_evidence(controller: Path, key_sha256: str,
                                        "candidate_tree": plan["candidate"]["candidate_tree"]},
                         "policy_identity": plan["policy_identity"],
                         "validation_identity": identity, "commands": commands,
-                        "command_index": index},
+                        "command_index": index, "input_closure": input_closure,
+                        "complete_input_identity": lifecycle_runtime.complete_input_identity(
+                            input_closure)},
              "recorded_at": risk_runtime.utc_now(), "reuse_count": 0}
     path = evidence_cache_path(controller, key_sha256)
     _write_cache_entry(controller, entry, key_sha256)
@@ -1642,8 +1651,7 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
         if controller is not None and repository is not None:
             evidence_identity = validation_evidence_identity(
                 row, candidate, cwd, identity, plan, repository)
-            key_sha = hashlib.sha256(
-                _canonical_bytes(evidence_identity)).hexdigest()
+            key_sha = evidence_identity["input_closure_sha256"]
             reuse_entry = load_cached_evidence(controller, key_sha, row, plan)
         if reuse_entry is not None:
             source = reuse_entry["source"]
@@ -1718,7 +1726,7 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
         if (controller is not None and repository is not None
                 and not evidence["timed_out"] and evidence["exit_code"] == 0):
             store_cached_evidence(controller, key_sha, reference, plan, identity,
-                                  commands, index)
+                                  commands, index, evidence_identity)
         if evidence["timed_out"] or evidence["exit_code"]:
             detail = evidence["stderr_tail"] or evidence["stdout_tail"]
             raise MergeValidationError(
@@ -3863,7 +3871,11 @@ def verify_standing_validation(record: dict[str, Any],
             data = path.read_bytes(); receipt = json.loads(data)
         except (OSError, json.JSONDecodeError) as exc:
             raise MergeQueueError("standing validation receipt is unavailable") from exc
+        closure_verification = lifecycle_runtime.verify_complete_input_closure(
+            receipt.get("input_closure"), receipt.get("input_closure"),
+            receipt.get("complete_input_identity"))
         if (hashlib.sha256(data).hexdigest() != reference["sha256"]
+                or not closure_verification["valid"]
                 or receipt.get("schema_version") != task_runtime.STANDING_EVIDENCE_SCHEMA
                 or receipt.get("task_id") != record.get("task_id")
                 or receipt.get("tip_sha") != standing["tip_sha"]
@@ -3981,10 +3993,12 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
         source = source_receipts.get(row["id"])
         if source is not None:
             receipt, reference = source
-            invalidation = lifecycle_runtime.closure_invalidation(
-                receipt.get("input_closure"), current)
+            closure_verification = lifecycle_runtime.verify_complete_input_closure(
+                receipt.get("input_closure"), current,
+                receipt.get("complete_input_identity"))
+            invalidation = closure_verification["reasons"]
             result = receipt.get("result")
-            if (not invalidation and isinstance(result, dict)
+            if (closure_verification["valid"] and isinstance(result, dict)
                     and result.get("exit_code") == 0 and not result.get("timed_out")
                     and result.get("result_integrity", {}).get("eligible_pass") is not False):
                 validations.append(result)
@@ -4018,6 +4032,8 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                 f"affected validation failed ({row['id']}): {detail}", validations)
     return validations, {"decisions": decisions,
                          "counters": lifecycle_runtime.evidence_counters(decisions),
+                         "replay_trace": lifecycle_runtime.evidence_replay_trace(
+                             decisions, phase="merge_validation"),
                          "coherence": coherence, "source": "authoritative_cross_stage"}
 
 

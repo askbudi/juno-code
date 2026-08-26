@@ -4167,10 +4167,15 @@ def standing_evidence_run(controller: Path, task_id: str,
             if base_receipt_path.exists():
                 try: receipt = json.loads(base_receipt_path.read_text())
                 except (OSError, json.JSONDecodeError): receipt = None
+                verification = lifecycle_runtime.verify_complete_input_closure(
+                    receipt.get("input_closure") if isinstance(receipt, dict) else None,
+                    closure,
+                    receipt.get("complete_input_identity") if isinstance(receipt, dict) else None)
                 if (not isinstance(receipt, dict) or receipt.get("schema_version") != STANDING_EVIDENCE_SCHEMA
-                        or receipt.get("input_closure") != closure or receipt.get("command") != row
+                        or not verification["valid"] or receipt.get("command") != row
                         or not isinstance(receipt.get("result"), dict)):
-                    raise TaskWorkspaceError("standing command receipt is malformed")
+                    raise TaskWorkspaceError("standing command receipt is malformed: "
+                                             + json.dumps(verification["reasons"], sort_keys=True))
                 failed_prior = bool(receipt["result"].get("timed_out")
                                     or receipt["result"].get("exit_code"))
                 prior_readiness = receipt.get("readiness_sha256")
@@ -4229,7 +4234,9 @@ def standing_evidence_run(controller: Path, task_id: str,
                 receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
                            "task_id": task_id, "plan_sha256": plan["plan_sha256"],
                            "tip_sha": head, "command_index": index, "command": row,
-                           "input_closure": closure, "readiness_sha256": readiness_sha256,
+                           "input_closure": closure,
+                           "complete_input_identity": lifecycle_runtime.complete_input_identity(closure),
+                           "readiness_sha256": readiness_sha256,
                            "result": evidence, "recorded_at_unix_ns": time.time_ns()}
                 _standing_atomic(receipt_path, receipt); executed += 1
                 decision_log.append(lifecycle_runtime.evidence_decision(
@@ -4253,6 +4260,8 @@ def standing_evidence_run(controller: Path, task_id: str,
                    "executed": executed, "reused": reused, "invalidated": invalidated,
                    "decisions": decision_log,
                    "counters": lifecycle_runtime.evidence_counters(decision_log),
+                   "replay_trace": lifecycle_runtime.evidence_replay_trace(
+                       decision_log, phase="task_evidence"),
                    "documentation_route": plan["documentation_route"],
                    "grouped_coherence": plan["grouped_coherence"],
                    "readiness_sha256": readiness_sha256, "receipts": receipts,

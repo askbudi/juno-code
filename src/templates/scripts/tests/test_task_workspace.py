@@ -6151,6 +6151,55 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
         self.assertEqual(lifecycle.evidence_counters(decisions)["reused"], 1)
         self.assertEqual(lifecycle.evidence_counters(decisions)["executed"], 1)
 
+    def test_complete_input_verifier_rejects_drift_tamper_schema_signature_and_partial_closures(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        body = {
+            "schema_version": lifecycle.COMMAND_CLOSURE_SCHEMA,
+            "observable_tree": "a" * 40,
+            "dependency_locks": {"package-lock.json": "b" * 40},
+            "runtime_sha256": "c" * 64,
+            "runner": {"class": "local"},
+            "command": {"id": "suite", "argv": ["npm", "test"]},
+            "selection": {"policy": "focused"},
+            "risk_policy_sha256": "d" * 64,
+        }
+        closure = {**body, "input_closure_sha256": lifecycle.digest(body)}
+        identity = lifecycle.complete_input_identity(closure)
+        self.assertTrue(lifecycle.verify_complete_input_closure(
+            closure, closure, identity)["valid"])
+        for field in ("observable_tree", "dependency_locks", "runtime_sha256", "runner",
+                      "command", "selection", "risk_policy_sha256"):
+            drifted_body = {**body, field: {"drift": field}}
+            drifted = {**drifted_body,
+                       "input_closure_sha256": lifecycle.digest(drifted_body)}
+            result = lifecycle.verify_complete_input_closure(closure, drifted, identity)
+            self.assertFalse(result["valid"], field)
+            self.assertIn(field, [reason["field"] for reason in result["reasons"]])
+        forged = {**closure, "observable_tree": "f" * 40}
+        self.assertEqual(lifecycle.verify_complete_input_closure(
+            forged, closure, identity)["reasons"][0]["code"],
+            "CLOSURE_MISSING_FORGED_OR_PARTIAL")
+        bad_signature = {**identity, "signature_sha256": "0" * 64}
+        self.assertIn("CLOSURE_SIGNATURE_MISMATCH", [reason["code"] for reason in
+                      lifecycle.verify_complete_input_closure(
+                          closure, closure, bad_signature)["reasons"]])
+        unsupported_body = {**body, "schema_version": "unsupported.v1"}
+        unsupported = {**unsupported_body,
+                       "input_closure_sha256": lifecycle.digest(unsupported_body)}
+        self.assertEqual(lifecycle.verify_complete_input_closure(
+            unsupported, closure, identity)["reasons"][0]["code"],
+            "CLOSURE_MISSING_FORGED_OR_PARTIAL")
+        self.assertEqual(lifecycle.earliest_safe_restart_stage(
+            [{"field": "review"}]), "REVIEWING")
+        self.assertEqual(lifecycle.earliest_safe_restart_stage(
+            [{"field": "runtime_sha256"}]), "VALIDATING")
+        trace = lifecycle.evidence_replay_trace([
+            lifecycle.evidence_decision("suite", "invalidated", closure=closure,
+                                        invalidation=[{"field": "dependency_locks"}])],
+            phase="successor_attempt")
+        self.assertEqual(trace["restart_stage"], "VALIDATING")
+        self.assertEqual(trace["counters"]["invalidated"], 1)
+
     def test_command_closure_binds_allowlisted_environment_and_npm_toolchain_fieldwise(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime
         with tempfile.TemporaryDirectory() as temporary:
