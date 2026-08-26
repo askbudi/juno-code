@@ -133,11 +133,14 @@ describe('ManagedProjectAssets', {
     const manifestPath = path.join(projectDir, '.juno_task/managed-assets.json');
     const legacy = await fs.readJson(manifestPath);
     legacy.schemaVersion = 1;
+    legacy.packageName = 'juno-code';
+    legacy.packageVersion = '2.1.1';
     delete legacy.instructionBundle;
     await fs.writeJson(manifestPath, legacy);
     await ManagedProjectAssets.update(projectDir, { silent: true });
     const upgraded = await fs.readJson(manifestPath);
     expect(upgraded.schemaVersion).toBe(2);
+    expect(upgraded.packageName).toBe('@yylo/cli');
     expect(upgraded.instructionBundle.schemaVersion).toBe('juno_instruction_bundle.v1');
 
     upgraded.instructionBundle.assetsSha256 = '0'.repeat(64);

@@ -73,7 +73,7 @@ export interface ManagedInstructionBundleIdentity {
 
 interface ManagedAssetManifest {
   schemaVersion: 1 | 2;
-  packageName: '@yylo/cli';
+  packageName: '@yylo/cli' | 'juno-code';
   packageVersion: string;
   instructionBundle?: ManagedInstructionBundleIdentity;
   assets: Record<string, ManagedAssetRecord>;
@@ -154,8 +154,10 @@ function instructionBundleIdentity(
 
 function validateManifest(manifest: unknown, manifestPath: string): ManagedAssetManifest {
   const parsed = manifest as Partial<ManagedAssetManifest> | null;
+  const packageNameValid = parsed?.packageName === '@yylo/cli' ||
+    (parsed?.schemaVersion === 1 && parsed.packageName === 'juno-code');
   if ((parsed?.schemaVersion !== 1 && parsed?.schemaVersion !== 2) ||
-      parsed.packageName !== '@yylo/cli' || typeof parsed.packageVersion !== 'string' ||
+      !packageNameValid || typeof parsed.packageVersion !== 'string' ||
       typeof parsed.assets !== 'object' || parsed.assets === null) {
     throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
   }
@@ -533,6 +535,7 @@ export class ManagedProjectAssets {
 
     await this.registerPromptMacros(projectDir, result, Boolean(options.force));
     manifest.schemaVersion = 2;
+    manifest.packageName = '@yylo/cli';
     manifest.packageVersion = packageVersion;
     manifest.instructionBundle = instructionBundleIdentity(manifest.assets);
     await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, projectDir);
