@@ -4170,12 +4170,13 @@ def standing_evidence_run(controller: Path, task_id: str,
             receipt = loaded[index]
             if entry.finding is not None:
                 raise TaskWorkspaceError(entry.finding.message)
+            execute = False
             if entry.action == decisions.ACTION_FAILURE_STANDS:
                 failure = (row, receipt["result"])
             elif entry.action == decisions.ACTION_INVALIDATE:
                 receipt_path = base_receipt_path.with_name(
                     base_receipt_path.stem + (entry.supersession_suffix or ""))
-                receipt = None; invalidated += 1
+                receipt = None; invalidated += 1; execute = True
                 decision_log.append(lifecycle_runtime.evidence_decision(
                     row["id"], "invalidated", closure=closure,
                     invalidation=entry.invalidation,
@@ -4187,6 +4188,8 @@ def standing_evidence_run(controller: Path, task_id: str,
                     source={"path": str(receipt_path),
                             "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}))
             else:
+                execute = True
+            if execute:
                 cwd = (worktree / row["cwd"]).resolve()
                 try: cwd.relative_to(worktree)
                 except ValueError as exc:

@@ -5335,6 +5335,49 @@ steps:
                       f"superseded-by-{repaired['plan_sha256']}.json")
         self.assertEqual(json.loads(superseded.read_text())["outcome"], "SUPERSEDED")
 
+    def test_failed_evidence_with_changed_readiness_reexecutes_via_supersession(self) -> None:
+        """Regression (Yx60Pf): a failed focused-validation receipt whose
+        readiness identity then changed must re-execute under its one
+        supersession and persist the supersession receipt instead of raising
+        FileNotFoundError for a receipt that was never written."""
+        counter = self.root / "standing-counter.txt"
+        repair = self.root / "repair.flag"
+        code = ("from pathlib import Path\n"
+                f"Path({str(counter)!r}).open('a').write('run\\n')\n"
+                "import sys\n"
+                f"sys.exit(0) if Path({str(repair)!r}).exists() else sys.exit(3)\n")
+        self.write_policy(validation_code=code)
+        self.payload("start", "X")
+        self.commit_task("X")
+        plan = self.payload("checkpoint", "X")
+        with self.assertRaisesRegex(AssertionError, "focused validation failed"):
+            self.command("evidence-run", "X")
+        self.assertEqual(counter.read_text().splitlines(), ["run"])
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        hydration = state["tasks"]["X"]["hydration"]
+        state["tasks"]["X"]["hydration"] = {
+            **hydration, "yy60pf_readiness_marker": "repaired-environment"}
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        repair.write_text("ready\n")
+        summary = self.payload("evidence-run", "X")
+        self.assertEqual((summary["outcome"], summary["executed"], summary["invalidated"]),
+                         ("PASSED", 1, 1))
+        self.assertEqual(counter.read_text().splitlines(), ["run", "run"])
+        self.assertEqual([item["decision"] for item in summary["decisions"]],
+                         ["invalidated", "executed"])
+        root = self.controller / task_runtime.STANDING_ROOT / "X" / plan["plan_sha256"]
+        receipts = sorted(root.glob("command-0-*.json"))
+        self.assertEqual(len(receipts), 2)
+        supersession = [path for path in receipts if ".readiness-" in path.name]
+        original = [path for path in receipts if ".readiness-" not in path.name]
+        self.assertEqual((len(supersession), len(original)), (1, 1))
+        rerun = json.loads(supersession[0].read_text())
+        failed = json.loads(original[0].read_text())
+        self.assertEqual(rerun["result"]["exit_code"], 0)
+        self.assertEqual(failed["result"]["exit_code"], 3)
+        self.assertNotEqual(rerun["readiness_sha256"], failed["readiness_sha256"])
+
     # --- Receipt-bound projection of durable lifecycle truth onto the board ---
 
     def board_task(self, task_id: str) -> dict:
