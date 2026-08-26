@@ -3,7 +3,7 @@
 YYLO orchestrates AI coding agents and structured development workflows. It works alongside [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [YYLO Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
 
 <p align="center">
-  <img src="./yylo-icon.png" alt="YYLO logo" width="200" />
+  <img src="./assets/yylo-logo-square-neon-green.png" alt="YYLO coding-agent orchestration logo" width="180" />
 </p>
 
 <p align="center">
@@ -13,6 +13,10 @@ YYLO orchestrates AI coding agents and structured development workflows. It work
 <p align="center">
   <a href="https://www.npmjs.com/package/%40yylo%2Fcli"><img src="https://img.shields.io/npm/v/%40yylo%2Fcli.svg" alt="npm version" /></a>
   <a href="https://github.com/yylo-dev/yylo"><img src="https://img.shields.io/github/stars/yylo-dev/yylo?style=social" alt="GitHub stars" /></a>
+</p>
+
+<p align="center">
+  <img src="./assets/yylo-coding-agent-ecosystem-infographic.png" alt="YYLO coding-agent ecosystem connecting YYLO Ledger, YYLO, Git, and YYLO Benchmark" width="960" />
 </p>
 
 ## Installation
@@ -380,7 +384,7 @@ These local commands authorize neither push/deploy nor production-board conversi
 The RC installation remains explicit and independent:
 
 ```bash
-npm install -g @yylo/cli@0.1.0-rc.15
+npm install -g @yylo/cli@0.1.0-rc.23
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -662,7 +666,7 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 
 ```bash
 # Install the RC
-npm install -g @yylo/cli@0.1.0-rc.15
+npm install -g @yylo/cli@0.1.0-rc.23
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -1817,7 +1821,7 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 
 ```bash
 # Install the RC globally
-npm install -g @yylo/cli@0.1.0-rc.15
+npm install -g @yylo/cli@0.1.0-rc.23
 
 # Initialize in your project
 cd your-project
