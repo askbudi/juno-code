@@ -18,9 +18,10 @@ Independent agents and reviewers use fresh `yy pi` contexts. Bare `pi` and indir
    and committed. Repair any closure defect while the task remains `WORKING`.
 5. Run `yy task finish TASK_ID` against that exact preflighted tip. This
    validates affected paths/tests and queues the immutable feature tip.
-6. Use `yy merge status` and `yy merge next` to serialize only target mutation.
-   A moved target is composed deterministically. A conflict is preserved and
-   resumed with `yy merge resolve TASK_ID` after editing only reported paths.
+6. Observe with `yy merge status|arbiter status`. One fenced target owner runs
+   `yy merge arbiter run` or typed `yy merge drive` and exits when idle/blocked;
+   agents never poll. `next|resolve` are explicit recovery mutations. Preserve
+   dirty conflict bytes for one bounded managed repair; expiry is not takeover.
 7. Implementation workers never launch lifecycle-semantic reviewers. The
    managed merge queue is the sole lifecycle-semantic review owner: low risk gets
    zero, normal risk
@@ -28,9 +29,12 @@ Independent agents and reviewers use fresh `yy pi` contexts. Bare `pi` and indir
    candidate. It permits at most one repair candidate; a second material finding
    terminalizes as `REVIEW_FINDINGS_EXHAUSTED`, with no third autonomous review
    or silently created repair task.
-8. After expected-SHA CAS, verify identity/readback only; do not redispatch a
+8. A release wave closes admission with one explicit immutable epoch seal,
+   composes one merge commit per task, reuses exact complete-input evidence,
+   validates/reviews the train once, and advances the target with one CAS.
+9. After expected-SHA CAS, verify identity/readback only; do not redispatch a
    semantic reviewer for byte-identical delivery.
-9. Cleanup is reachability-safe. Push, release, publish, deploy, production
+10. Cleanup is reachability-safe. Push, release, publish, deploy, production
    mutation, restart, and post-deploy E2E always require separate authority.
 
 Do not copy controller ledgers/specs/artifacts into product worktrees, author

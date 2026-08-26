@@ -215,9 +215,9 @@ give each isolated ports and state; otherwise keep the shared stack solely in
 the integration-owner worktree.
 
 The transition is serialized: stop shared servers and require a clean checkout,
-detach the integration owner before `yy merge next|resolve`, drain or pause the
-queue, attach the exact target ref for shared validation/deployment, then detach
-again before another queue mutation. Never leave the target ref attached while
+detach the integration owner before the explicit `yy merge arbiter run` or typed
+`yy merge drive`, await its terminal receipt rather than polling, then attach the
+exact target for shared validation/deployment and detach before another mutation. Never leave the target ref attached while
 expecting queue CAS to advance it.
 
 ## Refusal rules

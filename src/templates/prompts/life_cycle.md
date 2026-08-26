@@ -1,7 +1,7 @@
 ---
 juno_prompt_schema: juno.life_cycle.v1
 public_macro: "@@life_cycle"
-revision: 4
+revision: 5
 ---
 
 # Observable Juno task lifecycle
@@ -27,18 +27,13 @@ Use the installed Juno control plane; do not create another workflow engine.
 3. **Hydrate locally.** In each admitted task worktree use exact-lock dependency
    installation (`npm ci` where applicable). Never symlink dependencies. Keep
    controller metadata and product bytes on their declared surfaces.
-4. **Make execution observable.** For each actual `yy pi`, task finish, merge, or
-   separately authorized release command, use a bounded timeout and capture
-   combined stdout/stderr inside a private task-ID `mktemp -d` run directory.
-   Atomically publish separate PID and strict versioned terminal footer files.
-   Resolve `controller_root=$(yy where controller)` and invoke the absolute
-   `$controller_root/.juno_task/scripts/watch_progress.py` path with those three
-   files; never select a watcher relative to a task, integration, or nested
-   checkout and never embed an ad hoc polling loop. Quiet real-Git or test work
-   remains active until process/footer evidence says otherwise. Record exact
-   exit, completion time, duration, session, and run-directory/log path. Follow
-   the footer schema, JSONL/payload framing, and atomic producer examples at
-   `$controller_root/.juno_task/wiki/watching_progress.md`.
+4. **Make execution observable.** Own new long-running commands with bounded
+   `yy watch exec -- COMMAND...`; use `--detach` only when necessary and then
+   observe the returned run ID with `yy watch status|await`. Use `yy evidence
+   await TASK_ID` for standing task evidence. Never construct PID/log/footer
+   plumbing, use `sleep; tail`, or make a model poll. The managed watcher owns
+   the process group and strict terminal truth described by
+   `$(yy wiki --path)/watching_progress.md`.
 5. **Implement narrowly.** Give the agent bounded task requirements, exclusions,
    exact paths, and proportional focused tests. Commit one logical task at a
    time. Before shared heavy real-Git suites, inspect active workloads and avoid
@@ -50,17 +45,20 @@ Use the installed Juno control plane; do not create another workflow engine.
    and one delta review group; further material findings stop as `REVIEW_FINDINGS_EXHAUSTED`,
    never an autonomous review loop.
 7. **Use managed lifecycle boundaries.** After a clean committed implementation,
-   run read-only `yy task preflight TASK_ID` and repair any reported closure
-   defect while the task is still `WORKING`. Then run separately authorized
-   `yy task finish TASK_ID`. Observe the queue with
-   `yy merge status`; integration uses `yy merge next|resolve` and expected-SHA
-   CAS. For integration-owner drift use `yy integration status`, then receipt-
-   bound `repair --dry-run/--apply`; publication planning remains child-first via
-   `push --dry-run`, and apply needs separate authority.
-8. **Keep release authority explicit.** A release dry-run/build/version/tag/global
-   link verification may run only under its exact release authority and
-   workspace contract. Push, npm/PyPI publish, deployment, production mutation,
-   cleanup, and post-deploy E2E are independent authorities and are never implied.
+   run read-only `yy task preflight TASK_ID`, repair closure defects while
+   `WORKING`, then run separately authorized `yy task finish TASK_ID`. Observe
+   delivery with `yy merge status|arbiter status`; one fenced target owner uses
+   `yy merge arbiter run` or typed `yy merge drive`, while `next|resolve` remain
+   explicit recovery mutations. Never steal on elapsed time or discard dirty
+   recovery bytes. For integration-owner drift use `yy integration status`, then
+   receipt-bound `repair --dry-run/--apply`.
+8. **Keep release authority explicit.** For a wave, inspect then explicitly seal
+   one immutable epoch containing every eligible pre-cutoff candidate. Compose a
+   private train with one merge commit per task, reuse exact complete-input
+   evidence, run aggregate validation/review once, and perform one expected-old-
+   SHA target CAS. `epoch-status` and readiness are observations; `seal`, fenced
+   `drive`, ejection, repair, CAS, RC cut, push, publication, deployment,
+   production mutation, cleanup, and post-deploy E2E are distinct authorities.
 9. **Hand off truth.** Report ordered task outcomes, exact commits and SHAs,
    sessions, costs where available, durations, tests, PID/log/footer paths,
    Kanban updates/new bugs, blockers, contention waits, canary limitations, and
@@ -68,7 +66,7 @@ Use the installed Juno control plane; do not create another workflow engine.
 
 ## Evolution
 
-This is schema `juno.life_cycle.v1`, revision 4. Change the canonical source in
+This is schema `juno.life_cycle.v1`, revision 5. Change the canonical source in
 `juno-code/src/templates/prompts/life_cycle.md`, update this revision and release
 notes when behavior changes, and validate source/dist/tarball plus managed-install
 parity. Project customizations are user-owned: managed update must preserve or

@@ -142,22 +142,22 @@ export function configureMergeQueueCommand(
   program: Command,
   invoke: MergeQueueInvoker = invokeMergeQueue,
 ): void {
-  const merge = program.command('merge').description('Inspect or advance the conflict-aware product merge queue');
-  merge.command('status').action(() => invoke('status'));
+  const merge = program.command('merge').description('Observe delivery or explicitly run one fenced target owner');
+  merge.command('status').description('Read-only queue and blocker observation').action(() => invoke('status'));
   merge
     .command('drive')
-    .description('Advance a frozen FIFO scope with the controller-owned typed merge workflow')
+    .description('Explicit mutation: run the controller-owned typed workflow for a frozen FIFO scope')
     .option('--through <task-id>', 'Stop after this FIFO-authorized task')
     .action((options: { through?: string }) => options.through
       ? invoke('drive', undefined, ['--through', options.through])
       : invoke('drive'));
   const arbiter = merge.command('arbiter')
-    .description('Observe or run the one on-demand deterministic owner for this protected target');
+    .description('Observe or explicitly run the one on-demand fenced owner for this protected target');
   arbiter.command('status')
-    .description('Read arbiter ownership, eligible work, reason code, and next action')
+    .description('Read-only arbiter ownership, eligible work, reason code, and next action')
     .action(() => invoke('arbiter-status'));
   arbiter.command('run')
-    .description('Start only when work exists; drain deterministically and exit when idle or blocked')
+    .description('Explicit mutation: start only with authority, drain deterministically, then exit')
     .option('--through <task-id>', 'Stop after this FIFO-authorized task')
     .action((options: { through?: string }) => invoke(
       'arbiter-run', undefined, [...(options.through ? ['--through', options.through] : [])],
@@ -177,7 +177,7 @@ export function configureMergeQueueCommand(
     });
   merge
     .command('next')
-    .description('Advance the queue, or continue paused evidence for TASK_ID')
+    .description('Explicit recovery mutation: advance once or continue paused evidence for TASK_ID')
     .argument('[task-id]', 'Paused task whose evidence/review processing should continue')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
     .option('--train-plan <path>', 'Require this exact current release-train/FIFO identity')
@@ -187,7 +187,7 @@ export function configureMergeQueueCommand(
       return args.length ? invoke('next', taskId, args)
         : taskId === undefined ? invoke('next') : invoke('next', taskId);
     });
-  merge.command('resolve').argument('<task-id>', 'Canonical YYLO Ledger task ID')
+  merge.command('resolve').description('Explicit recovery mutation for one preserved conflict').argument('<task-id>', 'Canonical YYLO Ledger task ID')
     .option('--plan-id <sha256>', 'Require this exact current feasibility identity')
     .option('--train-plan <path>', 'Require this exact current release-train/FIFO identity')
     .action((taskId: string, options: { planId?: string; trainPlan?: string }) => {

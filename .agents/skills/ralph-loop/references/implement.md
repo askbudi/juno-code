@@ -47,12 +47,17 @@ task's workspace.
    attempt a controller checkpoint after terminal metadata is durable; checkpoint
    failure remains a warning and must not change the task or merge outcome.
 
-Stop after queueing. The merge owner uses `yy merge status|next|resolve`, handles
-moved targets/conflicts, applies the bounded risk-based review sequence, and
-permits at most one repair candidate. A second material finding terminalizes as
-`REVIEW_FINDINGS_EXHAUSTED`; no implementation worker or queue owner launches a
-third autonomous semantic review or silently creates another repair task. The
-queue advances by expected-SHA CAS and performs deterministic readback. Never
-push, publish, deploy, mutate
-production, restart services, run post-deploy E2E, or clean worktrees without
-separate authority.
+Stop after queueing. Read-only delivery observation uses `yy merge status` or
+`yy merge arbiter status`. One fenced target owner runs `yy merge arbiter run`
+(or typed `yy merge drive`) and exits when idle or blocked; implementation agents
+do not poll, steal on timeout, discard dirty bytes, or invoke `next|resolve`
+except under explicit recovery authority. The merge owner applies the bounded
+risk-based review sequence and permits at most one repair candidate. A second
+material finding terminalizes as `REVIEW_FINDINGS_EXHAUSTED`.
+
+A release wave explicitly seals every eligible pre-cutoff candidate into one
+immutable epoch, preserves one merge commit per task, reuses exact complete-input
+closures, validates/reviews the aggregate once, and advances the target with one
+expected-old-SHA CAS (the expected-SHA CAS gate) plus readback. Release readiness is observational. Never
+push, publish, deploy, mutate production, restart services, run post-deploy E2E,
+or clean worktrees without separate authority.

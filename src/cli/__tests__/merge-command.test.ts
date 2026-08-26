@@ -157,13 +157,20 @@ describe('merge queue CLI', () => {
     expect(plainInvoke).toHaveBeenCalledWith('withdraw', 'T123');
   });
 
-  it('documents queue advance and evidence-continuation semantics', () => {
+  it('documents observation, fenced ownership, and explicit recovery semantics', () => {
     const program = new Command();
     configureMergeQueueCommand(program, async () => undefined);
-    const next = program.commands.find((command) => command.name() === 'merge')
-      ?.commands.find((command) => command.name() === 'next');
-    expect(next?.description()).toContain('continue paused evidence');
-    expect(next?.registeredArguments[0]?.description).toContain('evidence/review');
+    const merge = program.commands.find((command) => command.name() === 'merge');
+    const command = (name: string) => merge?.commands.find((entry) => entry.name() === name);
+    const arbiter = command('arbiter');
+    const arbiterCommand = (name: string) => arbiter?.commands.find((entry) => entry.name() === name);
+    expect(command('status')?.description()).toContain('Read-only');
+    expect(arbiterCommand('status')?.description()).toContain('Read-only');
+    expect(arbiterCommand('run')?.description()).toContain('Explicit mutation');
+    expect(command('next')?.description()).toContain('Explicit recovery mutation');
+    expect(command('next')?.description()).toContain('continue paused evidence');
+    expect(command('next')?.registeredArguments[0]?.description).toContain('evidence/review');
+    expect(command('resolve')?.description()).toContain('Explicit recovery mutation');
   });
 
   it('checkpoints only after successful terminal merge and Kanban finalization truth', async () => {

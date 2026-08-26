@@ -26,10 +26,19 @@ product code.
    normal at most one, and high exactly two sequential predecessor-bound v1
    reviewers on one frozen tip. It permits one repair candidate and one delta
    review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`.
-7. The merge owner uses `yy merge status|next|resolve`; feature implementation
-   remains concurrent. Never copy product code, bulky artifacts, or project-specific skill assets
-   into this controller. Root instructions and core skills here are ignored
-   local runtime files refreshed from the bound immutable Juno package.
+7. Observe delivery with `yy merge status` or `yy merge arbiter status`. The
+   target owner uses one fenced `yy merge arbiter run` (or typed `yy merge drive`)
+   instead of session polling. `next|resolve` are explicit recovery mutations.
+8. For a release wave, inspect then explicitly seal one immutable epoch, drain
+   every eligible pre-cutoff candidate into a private history-preserving train,
+   validate/review the aggregate once, and update the target with one expected-old-
+   SHA CAS. Read `$(yy wiki --path)/controller/sealed_release_epochs.md`; release
+   readiness grants no tag, publish, push, deploy, or cleanup authority.
+9. Never copy product code, bulky artifacts, or project-specific skill assets
+   into this controller. Root instructions and core skills here are ignored local
+   runtime files refreshed atomically from one bound immutable Juno package.
 
-Controller checkpoints are best-effort warnings, never lifecycle gates. Push,
-release, deploy, production mutation, and cleanup require separate authority.
+Expiry alone never grants ownership; use controller-proven successor or handoff
+recovery and preserve dirty bytes. Controller checkpoints are best-effort warnings,
+never lifecycle gates. Push, release, deploy, production mutation, and cleanup
+require separate authority.

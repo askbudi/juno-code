@@ -32,10 +32,11 @@ export async function invokeReleaseTrain(
 export function configureReleaseTrainCommand(
   program: Command, invoke: ReleaseTrainInvoker = invokeReleaseTrain,
 ): void {
-  const train = program.command('release').description('Plan and drive explicitly sealed release epochs')
-    .command('train').description('Inspect, seal, and drive a release epoch');
+  const train = program.command('release').description('Observe or explicitly mutate sealed release epochs; no command implies publish/deploy authority')
+    .command('train').description('Observe a train or explicitly seal/drive it with separate authority');
   for (const operation of ['plan', 'status', 'inspect'] as const) {
     train.command(operation)
+      .description('Read-only release-epoch observation; never seals or mutates the target')
       .argument('<declaration>', 'Versioned release-train declaration JSON')
       .option('--json', 'Emit stable versioned JSON')
       .option('--output <path>', 'Write the exact JSON projection')
@@ -45,18 +46,21 @@ export function configureReleaseTrainCommand(
       ));
   }
   train.command('seal')
+    .description('Explicitly close admission and create one immutable fenced epoch')
     .argument('<declaration>', 'Versioned release-train declaration JSON')
     .option('--json', 'Emit stable versioned JSON')
     .action((declaration: string, options: { json?: boolean }) => invoke(
       'seal', declaration, options.json ? ['--json'] : [],
     ));
   train.command('epoch-status')
+    .description('Read-only sealed-epoch state, reason code, and next action')
     .argument('<epoch-id>', 'Sealed epoch identity')
     .option('--json', 'Emit stable versioned JSON')
     .action((epochId: string, options: { json?: boolean }) => invoke(
       'epoch-status', epochId, options.json ? ['--json'] : [],
     ));
   train.command('drive')
+    .description('Fenced epoch mutation through composition, aggregate gates, and one target CAS')
     .argument('<epoch-id>', 'Sealed epoch identity')
     .requiredOption('--epoch-token <token>', 'Exact fencing token emitted once by seal')
     .option('--json', 'Emit stable versioned JSON')
@@ -64,6 +68,7 @@ export function configureReleaseTrainCommand(
       'drive', epochId, ['--epoch-token', options.epochToken, ...(options.json ? ['--json'] : [])],
     ));
   train.command('eject')
+    .description('Explicitly record an optional failure and eject its dependent subtree')
     .argument('<epoch-id>', 'Sealed epoch identity')
     .argument('<task-id>', 'Optional failed member')
     .requiredOption('--reason <reason>', 'Receipt-bound failure reason')
@@ -72,6 +77,7 @@ export function configureReleaseTrainCommand(
       'eject', epochId, [taskId, '--reason', options.reason, '--epoch-token', options.epochToken],
     ));
   train.command('repair')
+    .description('Consume one bounded managed conflict-repair receipt')
     .argument('<epoch-id>', 'Recovering epoch identity')
     .requiredOption('--receipt <path>', 'Successful canonical managed-worker receipt')
     .requiredOption('--epoch-token <token>', 'Exact epoch fencing token')
@@ -79,6 +85,7 @@ export function configureReleaseTrainCommand(
       'repair', epochId, ['--receipt', options.receipt, '--epoch-token', options.epochToken],
     ));
   train.command('shadow')
+    .description('Read-only production-shaped replay; never merges, releases, or mutates production')
     .argument('<declaration>', 'Versioned release-train declaration JSON')
     .option('--baseline <path>', 'Frozen telemetry baseline JSON')
     .option('--json', 'Emit stable versioned JSON')

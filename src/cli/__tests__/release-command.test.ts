@@ -24,6 +24,23 @@ describe('release train CLI', () => {
       ['--epoch-token', 'exact-token', '--json']);
   });
 
+  it('labels observation, epoch mutation, and external authority boundaries in help', () => {
+    const program = new Command();
+    configureReleaseTrainCommand(program, async () => undefined);
+    const release = program.commands.find((command) => command.name() === 'release');
+    const train = release?.commands.find((command) => command.name() === 'train');
+    const command = (name: string) => train?.commands.find((entry) => entry.name() === name);
+    expect(release?.description()).toContain('no command implies publish/deploy authority');
+    for (const name of ['plan', 'status', 'inspect']) {
+      expect(command(name)?.description()).toContain('Read-only');
+    }
+    expect(command('epoch-status')?.description()).toContain('Read-only');
+    expect(command('shadow')?.description()).toContain('Read-only');
+    expect(command('seal')?.description()).toContain('Explicitly close admission');
+    expect(command('drive')?.description()).toContain('one target CAS');
+    expect(command('repair')?.description()).toContain('one bounded');
+  });
+
   it('forwards optional ejection and read-only shadow projection', async () => {
     const invoke = vi.fn(async () => undefined);
     const program = new Command().exitOverride();

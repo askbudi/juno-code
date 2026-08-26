@@ -6,7 +6,9 @@ Choose one public interface by intent:
 
 - Generic ordered reporting or agent work: `workflow_runner.sh --workflow PATH`.
 - Feature implementation: `yy task start TASK_ID`; immediately and before editing/testing hydrate exact-lock dependencies for configured validation roots using [task dependency hydration](../wiki/controller/task_dependency_hydration.md), and stop before implementation on failure; implement, test, and commit; run read-only `yy task preflight TASK_ID`; then `yy task finish TASK_ID` on that exact tip.
-- Serialized delivery: `yy merge status|next|resolve`.
+- Delivery observation: `yy merge status|arbiter status` (read-only).
+- Delivery mutation: one fenced `yy merge arbiter run` or typed `yy merge drive`;
+  `next|resolve` are explicit recovery primitives, not a polling loop.
 
 Generic Workflow Runner remains available, including read-only doctor support
 for historical local-integration artifacts. It must not execute or adapt retired
@@ -24,4 +26,6 @@ most one, and high risk gets Reviewer A then Reviewer B on one frozen candidate.
 It permits at most one repair candidate; a second material finding terminalizes
 as `REVIEW_FINDINGS_EXHAUSTED`, with no third autonomous review or silently
 created repair task. Post-merge work is deterministic identity/readback, not a
-second review. Release and external publication remain separately authorized.
+second review. A release wave uses one explicit immutable epoch seal, private
+history-preserving train, aggregate gate, and expected-old-SHA CAS; release and
+external publication remain separately authorized.

@@ -13,6 +13,24 @@ wiki_contract:
 
 # Sealed release epochs
 
+## Canonical lifecycle vocabulary
+
+| Term/state | Owner and meaning | Allowed action |
+| --- | --- | --- |
+| fencing attempt / successor | controller-issued mutation credential; elapsed time never transfers it | observe lease; hand off or issue a successor only after producer-death proof |
+| target arbiter | one on-demand deterministic owner for a protected target | observe status; explicitly run once and await its terminal receipt |
+| complete input closure | tree, locks, generated/config inputs, command/selection, runtime, runner, policy, and receipt identity | reuse only on exact equality; otherwise restart the smallest invalid stage |
+| `DRAFT` / explicit seal | projected candidates / immutable pre-cutoff membership | inspect freely; `seal` is an explicit admission-closing mutation |
+| private train | dependency/FIFO composition with one merge commit per admitted task | never squash, rebase, force-push, or omit eligible finished work |
+| `PAUSED_REQUIRED` / `EJECTED_OPTIONAL` | required failure pauses / optional failure carries its dependent subtree | resume with evidence or explicit fenced disposition |
+| `NEEDS_OPERATOR` | ambiguity, scope/authority expansion, sensitive action, or exhausted bounded repair | consume one actionable packet; do not guess |
+| `READY_CAS` / `RELEASE_READY` | aggregate gate complete / target CAS and readback proven | one expected-old-SHA CAS / read-only readiness only |
+
+Command classes are strict: `plan|status|inspect|epoch-status|shadow` observe;
+`seal|drive|eject|repair` mutate epoch state with explicit authority; target CAS
+is a distinct protected-ref mutation; RC/tag/push/publish/deploy/cleanup are
+external authorities. No observation command may acquire mutation authority.
+
 ## Release barrier
 
 ```text
@@ -97,6 +115,6 @@ yy release train shadow /absolute/train.json --baseline /absolute/baseline.json 
 
 Shadow is read-only and reports seeded scenario coverage, target-move count,
 duplicate unchanged-closure execution, model lifecycle calls, and cache-read
-token deltas. Missing thresholds return reason codes and `BLOCK`. The rollback
-switch is to disable epoch drive and retain the existing per-candidate arbiter;
-immutable epoch receipts remain audit evidence.
+token deltas. Missing thresholds return reason codes and `BLOCK`. The disable/rollback switch stops epoch drive without deleting immutable epoch
+receipts. Any legacy queue path is a version-gated recovery mode, not the normal
+release workflow and not permission for per-candidate RC cuts.

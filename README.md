@@ -326,8 +326,10 @@ For a tiny fix, the process is intentionally short but still isolated:
 
 ```text
 managed path        -> yy task run ID -> QUEUED -> yy merge drive --through ID
+observation         -> yy merge status | yy merge arbiter status
 recovery primitives -> yy task start ID -> edit + focused test + commit
-                    -> yy task preflight ID -> yy task finish ID -> yy merge next
+                    -> yy task preflight ID -> yy task finish ID
+                    -> explicit yy merge next|resolve
 ```
 
 There is no size-based exception that permits product edits in the controller or
@@ -353,10 +355,12 @@ yy task runtime-bootstrap --dry-run
 yy task runtime-bootstrap --apply RECEIPT
 # source targets use a matching controller runtime, or update source identities atomically
 
-yy merge status
-yy merge drive --through TASK_ID
-yy merge plan TASK_ID --json
-yy merge next
+yy merge status                         # read-only
+yy merge arbiter status                 # read-only
+yy merge arbiter run --through TASK_ID  # explicit fenced mutation
+yy merge drive --through TASK_ID        # explicit typed mutation
+yy merge plan TASK_ID --json            # read-only
+yy merge next                           # explicit recovery mutation
 # if a queued/reopen branch intentionally merged the current protected target:
 yy merge refresh plan TASK_ID
 # apply only the exact receipt path and SHA-256 returned by that plan:
@@ -366,11 +370,19 @@ yy merge resolve TASK_ID
 ```
 
 Feature worktrees are independent, so X and Y can implement concurrently from
-recorded exact bases. The per-target queue freezes the latest target and feature
-tip, composes moved targets, preserves conflicts, runs affected validation and
-risk-based review, then advances by expected-old-SHA CAS. Post-CAS work verifies
-identity/readback only. Controller metadata never synchronizes into product
-history. The legacy Git-flow helper retains only explicit status/sync/push for
+recorded exact bases. One on-demand fenced arbiter owns target mutation and exits
+when idle or blocked; lease age alone never transfers ownership, and dirty bytes
+are preserved for bounded recovery. The queue reuses exact complete-input
+closures, applies bounded risk review, and advances by expected-old-SHA CAS.
+Post-CAS work verifies identity/readback only. Controller metadata never
+synchronizes into product history.
+
+A release wave is one explicit immutable epoch: close admission, include every
+eligible pre-cutoff candidate, compose a private train with one merge commit per
+task, run aggregate validation/review once, perform one target CAS, then emit
+read-only release readiness. `plan|status|inspect|epoch-status|shadow` observe;
+`seal|drive|eject|repair` mutate epoch state; RC/tag/push/publish/deploy/cleanup
+remain separate authorities. See the installed `sealed_release_epochs.md` wiki. The legacy Git-flow helper retains only explicit status/sync/push for
 older disabled configurations; its controller reconciliation command refuses.
 
 Rollback operations are intentionally separate:
@@ -384,7 +396,7 @@ These local commands authorize neither push/deploy nor production-board conversi
 The RC installation remains explicit and independent:
 
 ```bash
-npm install -g @yylo/cli@0.1.0-rc.27
+npm install -g @yylo/cli@0.1.0-rc.28
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -666,7 +678,7 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 
 ```bash
 # Install the RC
-npm install -g @yylo/cli@0.1.0-rc.27
+npm install -g @yylo/cli@0.1.0-rc.28
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -1821,7 +1833,7 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 
 ```bash
 # Install the RC globally
-npm install -g @yylo/cli@0.1.0-rc.27
+npm install -g @yylo/cli@0.1.0-rc.28
 
 # Initialize in your project
 cd your-project

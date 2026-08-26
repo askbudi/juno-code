@@ -63,6 +63,33 @@ describe('ManagedProjectAssets', {
     }
   });
 
+  it('keeps every active lifecycle instruction surface on the sealed fenced contract', async () => {
+    const sourceRoot = path.join(process.cwd(), 'src/templates');
+    const files = [
+      'controller-agent/AGENTS.md', 'controller-agent/CLAUDE.md',
+      'prompts/life_cycle.md', 'prompts/new_task_workflow.md',
+      'prompts/clean_worktree.md', 'prompts/run_workflow.md',
+      'skills/canonical/ralph-loop/references/implement.md',
+      'wiki/controller/git_worktree_lifecycle.md',
+      'wiki/controller/metadata_controller_boundary.md',
+      'wiki/controller/sealed_release_epochs.md',
+    ];
+    const surfaces = (await Promise.all(files.map((file) => fs.readFile(
+      path.join(sourceRoot, file), 'utf8',
+    )))).join('\n');
+    for (const obsolete of [
+      'The merge owner uses `yy merge status|next|resolve`',
+      'Advance queued work with `yy merge next`',
+      'Serialized delivery: `yy merge status|next|resolve`',
+      'Use `yy merge status` and `yy merge next`',
+    ]) expect(surfaces).not.toContain(obsolete);
+    for (const required of [
+      'yy merge arbiter status', 'yy merge arbiter run', 'fenced',
+      'complete-input', 'immutable epoch', 'history-preserving',
+      'expected-old-SHA', 'REVIEW_FINDINGS_EXHAUSTED',
+    ]) expect(surfaces).toContain(required);
+  });
+
   it('installs controller-only workflow seeds only in metadata controllers and preserves customization', async () => {
     const configPath = path.join(projectDir, '.juno_task', 'config.json');
     const config = await fs.readJson(configPath);
@@ -106,14 +133,16 @@ describe('ManagedProjectAssets', {
     await freshLoader.fromProjectConfig();
     const dictionary = getPromptMacroDictionary(freshLoader.merge());
     expect(dictionary.life_cycle).toContain('juno.life_cycle.v1');
-    expect(dictionary.life_cycle).toContain('private task-ID `mktemp -d` run directory');
-    expect(dictionary.life_cycle).toContain('controller_root=$(yy where controller)');
-    expect(dictionary.life_cycle).toContain('$controller_root/.juno_task/scripts/watch_progress.py');
+    expect(dictionary.life_cycle).toContain('yy watch exec -- COMMAND');
+    expect(dictionary.life_cycle).toContain('yy watch status|await');
+    expect(dictionary.life_cycle).toContain('Never construct PID/log/footer');
     expect(dictionary.life_cycle).toContain('yy task preflight TASK_ID');
     expect(dictionary.life_cycle).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.life_cycle).toContain('REVIEW_FINDINGS_EXHAUSTED');
     expect(dictionary.life_cycle).not.toContain('launch a fresh read-only independent `yy pi` review');
-    expect(dictionary.life_cycle).toContain('Push, npm/PyPI publish, deployment');
+    expect(dictionary.life_cycle).toContain('complete-input');
+    expect(dictionary.life_cycle).toContain('one expected-old-');
+    expect(dictionary.life_cycle).toContain('RC cut, push, publication, deployment');
     expect(dictionary.clean_worktree).toContain('# Clean Bolt task workspaces');
     expect(dictionary.clean_worktree).toContain('yy task start TASK_ID');
     expect(dictionary.clean_worktree).toContain('yy task preflight TASK_ID');
@@ -133,6 +162,8 @@ describe('ManagedProjectAssets', {
     expect(dictionary.new_task_workflow).toContain('yy task finish TASK_ID');
     expect(dictionary.new_task_workflow).toContain('sole lifecycle-semantic review owner');
     expect(dictionary.new_task_workflow).toContain('REVIEW_FINDINGS_EXHAUSTED');
+    expect(dictionary.new_task_workflow).toContain('yy merge arbiter status');
+    expect(dictionary.new_task_workflow).toContain('explicitly sealed history-preserving epoch');
     expect(dictionary.run_workflow).toContain('# Run a workflow or Bolt task');
     expect(dictionary.run_workflow).toContain('yy task preflight TASK_ID');
     expect(dictionary.run_workflow).toContain('read-only doctor support');
@@ -228,6 +259,8 @@ describe('ManagedProjectAssets', {
       expect(controllerInstruction, relative).toContain('yy task preflight TASK_ID');
       expect(controllerInstruction, relative).toContain('sole review owner');
       expect(controllerInstruction, relative).toContain('REVIEW_FINDINGS_EXHAUSTED');
+      expect(controllerInstruction, relative).toContain('yy merge arbiter status');
+      expect(controllerInstruction, relative).toContain('sealed_release_epochs.md');
     }
     const installedWatcher = await fs.readFile(
       path.join(projectDir, '.juno_task/scripts/watch_progress.py'),

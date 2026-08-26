@@ -1,7 +1,14 @@
 ---
-title: Bolt task worktrees and merge queue
-runtime_contract_enforced: "yy task owns feature worktrees; yy merge owns per-target composition and CAS."
-validation_gate: "python3 .juno_task/scripts/tests/test_task_workspace.py && python3 .juno_task/scripts/tests/test_merge_queue.py"
+wiki_contract:
+  line_limit: 260
+  purpose: "Run exact-base task worktrees and one fenced per-target delivery owner."
+  failure_mode_prevented: "Controller edits, stale-worker takeover, model polling, and unsafe target movement."
+  runtime_contract_enforced: "yy task owns feature worktrees; one yy merge arbiter owns composition and expected-old-SHA CAS."
+  validation_gate: "python3 .juno_task/scripts/tests/test_task_workspace.py && python3 .juno_task/scripts/tests/test_merge_queue.py"
+  related_sots:
+    - "controller/fenced_task_leases.md"
+    - "controller/target_arbiter.md"
+    - "controller/sealed_release_epochs.md"
 ---
 
 # Bolt task worktrees and merge queue
@@ -40,9 +47,12 @@ yy task runtime-bootstrap --dry-run
 # review the printed immutable receipt
 yy task runtime-bootstrap --apply RECEIPT
 
-yy merge status
-yy merge next
-yy merge resolve TASK_ID
+yy merge status                 # read-only queue observation
+yy merge arbiter status         # read-only owner/next-action observation
+yy merge arbiter run            # explicit fenced on-demand mutation
+yy merge drive --through TASK_ID # explicit typed mutation
+yy merge next                   # explicit single-step recovery
+yy merge resolve TASK_ID        # explicit preserved-conflict recovery
 ```
 
 Task start always admits the policy's baseline/default paths and freezes the
@@ -98,11 +108,12 @@ another commit or unrelated ref mutation. Modified or completed
 receipts, package mismatch, non-older inventory generations, and consumer target
 customization without exact managed-inventory provenance also refuse.
 
-The merge queue serializes only target mutation. It uses a per-target lock and
-expected-old-SHA update. If the target moved, it builds a candidate from the
-latest target plus the feature tip. Conflicts are explicit durable state and the
-candidate is preserved for `merge resolve`; failed validation never advances
-the target.
+One on-demand target arbiter serializes mutation with a fencing token, per-target
+kernel lock, and expected-old-SHA update, then exits when idle or blocked. Lease
+age alone never transfers ownership: successor attempts require controller proof
+of producer death or explicit handoff. Agents observe rather than poll. Dirty
+conflict bytes are preserved for one bounded managed repair. Exact complete-input
+closures may be reused; drift restarts only the smallest invalid stage.
 
 Review is queue-owned and risk-based: low zero, normal at most one, and high
 Reviewer A followed by Reviewer B against the same frozen candidate under the
@@ -111,8 +122,10 @@ candidate and one delta review group; another material
 finding stops as `REVIEW_FINDINGS_EXHAUSTED` instead of spawning an autonomous
 loop. A changed product candidate invalidates prior semantic evidence, while a
 byte-identical metadata/harness retry may reuse evidence only when all bound
-policy/runtime/closure identities remain exact. After CAS, only deterministic
-identity/readback and bounded smoke checks run.
+policy/runtime/closure identities remain exact. After CAS, only deterministic identity/readback and bounded smoke checks run.
+Release waves close admission explicitly and compose every eligible pre-cutoff
+candidate into one private history-preserving epoch; one aggregate gate and one
+protected-target CAS produce read-only release readiness.
 
 Cleanup refuses unless the delivered commit is reachable and the task worktree
 is safe to remove. Push, release, publication, deployment, production mutation,
