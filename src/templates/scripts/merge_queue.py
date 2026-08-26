@@ -1640,6 +1640,12 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                     f"recovered full-suite attempt failed ({row['id']})",
                     [verified], reference)
             references.append(reference)
+            recovered_closure = (validation_evidence_identity(
+                row, candidate, (candidate / row["cwd"]).resolve(), identity, plan, repository)
+                if repository is not None else {"input_closure_sha256": None})
+            reuse_rows.append(lifecycle_runtime.evidence_decision(
+                row["id"], "reused", closure=recovered_closure,
+                source=reference, reason="durable stage receipt prefix verified"))
             continue
         cwd = (candidate / row["cwd"]).resolve()
         try:
@@ -1665,7 +1671,9 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
             _mark_reuse(reuse_entry, controller, key_sha)
             references.append(evidence_reference(receipt_path))
             reuse_rows.append({
-                "command_id": row["id"], "decision": "reused",
+                **lifecycle_runtime.evidence_decision(
+                    row["id"], "reused", closure=evidence_identity,
+                    source=source["receipt"], reason="exact complete-input cache hit"),
                 "evidence_key_sha256": key_sha,
                 "source_receipt": source["receipt"],
                 "source_candidate_sha": source["candidate"]["candidate_sha"],
@@ -1723,6 +1731,11 @@ def full_suite_validation(commands: list[dict[str, Any]], candidate: Path,
                                   plan["evidence_limits"]["max_receipt_bytes"])
         reference = evidence_reference(receipt_path)
         references.append(reference)
+        executed_closure = (evidence_identity if controller is not None and repository is not None
+                            else {"input_closure_sha256": None})
+        reuse_rows.append(lifecycle_runtime.evidence_decision(
+            row["id"], "executed", closure=executed_closure,
+            source=reference, reason="no exact reusable stage receipt"))
         if (controller is not None and repository is not None
                 and not evidence["timed_out"] and evidence["exit_code"] == 0):
             store_cached_evidence(controller, key_sha, reference, plan, identity,
@@ -4437,8 +4450,9 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
                         task_runtime.exact_root(
                             Path(record["worktree"]), "review feature worktree"),
                         controller=controller, repository=repository)
-                if evidence_reuse:
-                    attempt["evidence_reuse"] = evidence_reuse
+                attempt["evidence_reuse"] = evidence_reuse
+                attempt["evidence_replay_trace"] = lifecycle_runtime.evidence_replay_trace(
+                    evidence_reuse, phase="queue_full_suite")
                 after_validation_identity = full_validation_identity(
                     controller, task_runtime.load_config(controller), record,
                     candidate_root, candidate_sha)

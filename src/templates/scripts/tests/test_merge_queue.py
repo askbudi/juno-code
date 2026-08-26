@@ -5137,10 +5137,15 @@ class EvidenceReuseTests(unittest.TestCase):
         self.assertEqual(verified["exit_code"], 0)
 
     def test_green_pass_is_cached_then_reused_without_reexecution(self) -> None:
-        references, _reuse, calls = self._run(self._claim(1), self._receipt_path(1),
+        references, first_trace, calls = self._run(self._claim(1), self._receipt_path(1),
                                       controller=self.controller,
                                       repository=self.repository)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(first_trace[0]["decision"], "executed")
+        replay = merge_runtime.lifecycle_runtime.evidence_replay_trace(
+            first_trace, phase="queue_full_suite")
+        self.assertEqual(replay["restart_stage"], "READY_CAS")
+        self.assertEqual(replay["counters"]["executed"], 1)
         entry_files = list((self.controller / merge_runtime.EVIDENCE_CACHE_ROOT).glob("*.json"))
         self.assertEqual(len(entry_files), 1)
 
@@ -5148,6 +5153,7 @@ class EvidenceReuseTests(unittest.TestCase):
                                         controller=self.controller,
                                         repository=self.repository)
         self.assertEqual(calls2, [], "reuse must not re-execute the suite")
+        self.assertEqual(_reuse2[0]["decision"], "reused")
         self.assertEqual(len(references2), 1)
         verified = risk_runtime.verify_full_suite_receipt_v3(
             references2[0], self.plan, self.identity, self.commands,
