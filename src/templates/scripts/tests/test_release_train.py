@@ -41,6 +41,7 @@ class ReleaseTrainTests(unittest.TestCase):
         (self.root / ".juno_task/config/risk-policy.json").write_text("{}\n")
         (self.root / "src").mkdir()
         (self.root / "yylo").mkdir()
+        (self.root / "juno-code").mkdir()
         (self.root / "juno-code/package.json").write_text('{"version":"1.0.0"}\n')
         (self.root / "juno-code/package-lock.json").write_text('{"version":"1.0.0","packages":{"":{"version":"1.0.0"}}}\n')
         (self.root / ".juno_task/state").mkdir()
@@ -162,6 +163,77 @@ raise SystemExit(2)
         self.assertEqual(report, runtime.check_plan(self.root, plan_path, "release", requested_version="1.0.1"))
         with self.assertRaisesRegex(runtime.ReleaseTrainError, "version differs"):
             runtime.check_plan(self.root, plan_path, "release", requested_version="1.0.2")
+
+    def lean_checkout(self) -> None:
+        # A lean sparse controller: tracked product files are absent from the
+        # working tree while the protected target still owns their content.
+        run(self.root, "git", "sparse-checkout", "set", "--no-cone",
+            "/.juno_task/**", "/src/**", "/yylo/**", "/train.json")
+        self.assertFalse((self.root / "juno-code/package.json").exists())
+        self.assertFalse((self.root / "juno-code/package-lock.json").exists())
+
+    def finish_board(self) -> None:
+        self.board["REQ"].update(status="done", commit_hash=self.base, blocked_by=[])
+        self.board["DEP"].update(status="done", commit_hash=self.base, blocked_by=[])
+        self.write_board(); self.state["tasks"] = {}; self.write_state()
+
+    def test_lean_sparse_controller_plans_release_from_target_tree(self) -> None:
+        # rejV9U: version identity must come from the protected target
+        # generation, so a lean controller with absent product files still
+        # reaches release_ready when package/lock identities are exact.
+        self.lean_checkout()
+        self.finish_board()
+        report = runtime.build_plan(self.root, self.declaration)
+        self.assertEqual([], report["blockers"])
+        self.assertTrue(report["release_ready"])
+        self.assertEqual("1.0.0", report["release_preconditions"]["current_version"])
+        self.assertEqual({"juno-code/package.json", "juno-code/package-lock.json"},
+                         set(report["identities"]["package_sha256"]))
+        self.assertTrue(all(report["identities"]["package_sha256"].values()))
+        plan_path = self.declaration.with_suffix(".plan.json"); plan_path.write_text(runtime.canonical(report))
+        self.assertEqual(report, runtime.check_plan(self.root, plan_path, "release", requested_version="1.0.1"))
+
+    def commit_target_drift(self, mutate) -> None:
+        run(self.root, "git", "sparse-checkout", "disable")
+        mutate()
+        run(self.root, "git", "add", "-A", "juno-code")
+        run(self.root, "git", "commit", "-m", "target drift")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        self.write_declaration(["REQ", "DEP"], [])
+        self.lean_checkout()
+
+    def test_lean_target_drift_refuses_release(self) -> None:
+        self.lean_checkout()
+        self.finish_board()
+        ready = runtime.build_plan(self.root, self.declaration)
+        self.assertTrue(ready["release_ready"])
+
+        def rebuild() -> dict:
+            # The setUp owner mock stays bound to the original planning base,
+            # so drifted generations also carry a topology blocker; the
+            # version gates below must still refuse independently of it.
+            return runtime.build_plan(self.root, self.declaration)
+
+        # Real lock drift in the target tree must refuse and rebind the plan.
+        self.commit_target_drift(lambda: (self.root / "juno-code/package-lock.json").write_text(
+            '{"version":"0.9.9","packages":{"":{"version":"1.0.0"}}}\n'))
+        mismatch = rebuild()
+        self.assertIn("release.version_identity_mismatch", [row["code"] for row in mismatch["blockers"]])
+        self.assertFalse(mismatch["release_ready"])
+        self.assertNotEqual(ready["plan_id"], mismatch["plan_id"])
+        # A target generation without the product manifest must refuse.
+        self.commit_target_drift(lambda: (self.root / "juno-code/package.json").unlink())
+        missing = rebuild()
+        self.assertIn("release.version_missing", [row["code"] for row in missing["blockers"]])
+        self.assertFalse(missing["release_ready"])
+        # A target version that does not precede the request must refuse.
+        self.commit_target_drift(lambda: (
+            (self.root / "juno-code/package.json").write_text('{"version":"1.0.1"}\n'),
+            (self.root / "juno-code/package-lock.json").write_text(
+                '{"version":"1.0.1","packages":{"":{"version":"1.0.1"}}}\n')))
+        not_greater = rebuild()
+        self.assertIn("release.version_not_greater", [row["code"] for row in not_greater["blockers"]])
+        self.assertFalse(not_greater["release_ready"])
 
 
 if __name__ == "__main__":

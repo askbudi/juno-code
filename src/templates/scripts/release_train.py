@@ -165,21 +165,33 @@ def cycle_path(nodes: set[str], edges: set[tuple[str, str]]) -> list[str]:
     return []
 
 
-def release_versions(repository: Path) -> dict[str, Optional[str]]:
-    values: dict[str, Optional[str]] = {}
-    for name, path, keys in [
-        ("package", repository / "juno-code/package.json", ["version"]),
-        ("lock", repository / "juno-code/package-lock.json", ["version"]),
-        ("lock_root", repository / "juno-code/package-lock.json", ["packages", "", "version"]),
-    ]:
+def target_blob(repository: Path, sha: str, path: str) -> Optional[bytes]:
+    """Exact blob bytes of one product path at the protected target generation."""
+    result = subprocess.run(["git", "-C", str(repository), "cat-file", "blob", f"{sha}:{path}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return result.stdout if result.returncode == 0 else None
+
+
+def release_versions(blobs: dict[str, Optional[bytes]]) -> dict[str, Optional[str]]:
+    """Version identity from exact protected-target tree bytes.
+
+    A lean sparse controller legitimately carries no product files in its
+    working tree, so the release identity is derived from the target commit
+    itself, never from checkout state (rejV9U).
+    """
+    def extract(blob: Optional[bytes], keys: list[Any]) -> Optional[str]:
         try:
-            value: Any = json.loads(path.read_text())
+            value: Any = json.loads(blob.decode("utf-8")) if blob is not None else None
             for key in keys:
                 value = value[key]
-            values[name] = value if isinstance(value, str) else None
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            values[name] = None
-    return values
+            return value if isinstance(value, str) else None
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+            return None
+
+    package, lock = blobs.get("juno-code/package.json"), blobs.get("juno-code/package-lock.json")
+    return {"package": extract(package, ["version"]),
+            "lock": extract(lock, ["version"]),
+            "lock_root": extract(lock, ["packages", "", "version"])}
 
 
 def build_plan(controller: Path, declaration_path: Path,
@@ -328,7 +340,12 @@ def build_plan(controller: Path, declaration_path: Path,
     if not owner_identity["ready"]:
         blockers.append({"code": "topology.integration_owner_not_ready",
                          "repair_command": "yy integration status"})
-    versions = release_versions(repository)
+    # Release version identity binds to the exact protected target generation:
+    # a lean sparse controller without product files in its working tree must
+    # still plan, and working-tree drift must never become release identity.
+    package_paths = ["juno-code/package.json", "juno-code/package-lock.json"]
+    target_blobs = {path: target_blob(repository, target_sha, path) for path in package_paths}
+    versions = release_versions(target_blobs)
     version = versions["package"]
     tag = "v" + declaration["requested_version"]
     tag_exists = bool(git(repository, "rev-parse", "-q", "--verify", "refs/tags/" + tag))
@@ -372,7 +389,9 @@ def build_plan(controller: Path, declaration_path: Path,
                                  for task_id, task in external_board.items()}},
                   "queue": {"head": queue_head, "records_sha256": digest(queue_rows), "rows": queue_rows},
                   "runtime_sha256": runtime_hashes,
-                  "package_sha256": {path: file_hash(repository / path) for path in ["juno-code/package.json", "juno-code/package-lock.json"]},
+                  "package_sha256": {path: (None if target_blobs[path] is None
+                                            else hashlib.sha256(target_blobs[path]).hexdigest())
+                                      for path in package_paths},
                   "policy_sha256": {path: file_hash(controller / path) for path in [".juno_task/config/task-workspace.json", ".juno_task/config/risk-policy.json"]},
                   "integration_owner": owner_identity,
                   "requested_version": declaration["requested_version"]}
