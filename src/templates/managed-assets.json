@@ -1,5 +1,9 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "instructionBundle": {
+    "schemaVersion": "juno_instruction_bundle_declaration.v1",
+    "semanticVersion": "1.0.0"
+  },
   "admissionOutputs": [
     {
       "source": "scripts/controller_workspace.py",

@@ -853,7 +853,10 @@ class IntegrationWorkspaceTests(unittest.TestCase):
             None)
         self.assertIsNotNone(declaration, "shipped template declaration is missing")
         value = json.loads(declaration.read_text())
-        self.assertEqual(value.get("schemaVersion"), 1)
+        self.assertEqual(value.get("schemaVersion"), 2)
+        self.assertEqual(value.get("instructionBundle"), {
+            "schemaVersion": "juno_instruction_bundle_declaration.v1",
+            "semanticVersion": "1.0.0"})
         allowed_keys = [{"source", "destination", "installClass", "type"},
                         {"source", "destination", "installClass", "type", "macro"}]
         for asset in value["assets"]:

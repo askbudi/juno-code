@@ -18,6 +18,13 @@ type ManagedAssetDefinition = {
   macro?: string;
 };
 
+type InstructionBundleDeclaration = {
+  schemaVersion: 'juno_instruction_bundle_declaration.v1';
+  semanticVersion: string;
+};
+
+const INSTRUCTION_BUNDLE_DECLARATION =
+  managedAssetManifest.instructionBundle as InstructionBundleDeclaration;
 const MANAGED_ASSET_DEFINITIONS = managedAssetManifest.assets as ManagedAssetDefinition[];
 
 export const MANAGED_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
@@ -55,10 +62,20 @@ interface ManagedAssetRecord {
   installedSha256: string;
 }
 
+export interface ManagedInstructionBundleIdentity {
+  schemaVersion: 'juno_instruction_bundle.v1';
+  semanticVersion: string;
+  packageVersion: string;
+  assetCount: number;
+  assetsSha256: string;
+  bundleSha256: string;
+}
+
 interface ManagedAssetManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   packageName: '@yylo/cli';
   packageVersion: string;
+  instructionBundle?: ManagedInstructionBundleIdentity;
   assets: Record<string, ManagedAssetRecord>;
 }
 
@@ -100,6 +117,7 @@ export type ManagedAssetGenerationState =
 export interface ManagedAssetGenerationReport {
   status: 'coherent' | 'mixed' | 'incomplete' | 'customized';
   coherent: boolean;
+  instructionBundle: ManagedInstructionBundleIdentity | null;
   entries: Array<{
     destination: string;
     installClass: 'project' | 'script' | 'controller';
@@ -109,6 +127,60 @@ export interface ManagedAssetGenerationReport {
 
 function sha256(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function recordsIdentity(assets: Record<string, ManagedAssetRecord>): string {
+  return sha256(JSON.stringify(Object.entries(assets).sort(([left], [right]) =>
+    left.localeCompare(right)).map(([destination, record]) => ({
+    destination,
+    type: record.type,
+    sourceSha256: record.sourceSha256,
+    installedSha256: record.installedSha256,
+  }))));
+}
+
+function instructionBundleIdentity(
+  assets: Record<string, ManagedAssetRecord>,
+): ManagedInstructionBundleIdentity {
+  const core = {
+    schemaVersion: 'juno_instruction_bundle.v1' as const,
+    semanticVersion: INSTRUCTION_BUNDLE_DECLARATION.semanticVersion,
+    packageVersion,
+    assetCount: Object.keys(assets).length,
+    assetsSha256: recordsIdentity(assets),
+  };
+  return { ...core, bundleSha256: sha256(JSON.stringify(core)) };
+}
+
+function validateManifest(manifest: unknown, manifestPath: string): ManagedAssetManifest {
+  const parsed = manifest as Partial<ManagedAssetManifest> | null;
+  if ((parsed?.schemaVersion !== 1 && parsed?.schemaVersion !== 2) ||
+      parsed.packageName !== '@yylo/cli' || typeof parsed.packageVersion !== 'string' ||
+      typeof parsed.assets !== 'object' || parsed.assets === null) {
+    throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
+  }
+  if (parsed.schemaVersion === 2) {
+    const identity = parsed.instructionBundle;
+    if (identity?.schemaVersion !== 'juno_instruction_bundle.v1' ||
+        typeof identity.semanticVersion !== 'string' ||
+        typeof identity.packageVersion !== 'string' ||
+        !Number.isInteger(identity.assetCount) ||
+        !/^[0-9a-f]{64}$/.test(identity.assetsSha256) ||
+        !/^[0-9a-f]{64}$/.test(identity.bundleSha256) ||
+        identity.assetCount !== Object.keys(parsed.assets).length ||
+        identity.assetsSha256 !== recordsIdentity(parsed.assets) ||
+        identity.packageVersion !== parsed.packageVersion ||
+        identity.bundleSha256 !== sha256(JSON.stringify({
+          schemaVersion: identity.schemaVersion,
+          semanticVersion: identity.semanticVersion,
+          packageVersion: identity.packageVersion,
+          assetCount: identity.assetCount,
+          assetsSha256: identity.assetsSha256,
+        }))) {
+      throw new Error(`Mixed or partial managed instruction bundle: ${manifestPath}`);
+    }
+  }
+  return parsed as ManagedAssetManifest;
 }
 
 function safeVersion(version: string): string {
@@ -128,11 +200,13 @@ async function writeAtomic(
 }
 
 function emptyManifest(): ManagedAssetManifest {
+  const assets: Record<string, ManagedAssetRecord> = {};
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     packageName: '@yylo/cli',
     packageVersion,
-    assets: {},
+    instructionBundle: instructionBundleIdentity(assets),
+    assets,
   };
 }
 
@@ -185,11 +259,7 @@ export class ManagedProjectAssets {
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
     let manifest = emptyManifest();
     if (await fs.pathExists(manifestPath)) {
-      const parsed = await fs.readJson(manifestPath);
-      if (parsed?.schemaVersion !== 1 || typeof parsed.assets !== 'object' || parsed.assets === null) {
-        throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
-      }
-      manifest = parsed as ManagedAssetManifest;
+      manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
 
     await assertPackageSource(templatesDir, templatesDir, 'directory');
@@ -291,15 +361,7 @@ export class ManagedProjectAssets {
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
     let manifest = emptyManifest();
     if (await fs.pathExists(manifestPath)) {
-      const parsed = await fs.readJson(manifestPath);
-      if (
-        parsed?.schemaVersion !== 1 ||
-        typeof parsed.assets !== 'object' ||
-        parsed.assets === null
-      ) {
-        throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
-      }
-      manifest = parsed as ManagedAssetManifest;
+      manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
 
     // Validate all possible install/candidate/backup parents before the first
@@ -470,7 +532,9 @@ export class ManagedProjectAssets {
     }
 
     await this.registerPromptMacros(projectDir, result, Boolean(options.force));
+    manifest.schemaVersion = 2;
     manifest.packageVersion = packageVersion;
+    manifest.instructionBundle = instructionBundleIdentity(manifest.assets);
     await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, projectDir);
 
     if (!options.silent) {
@@ -708,15 +772,7 @@ export class ManagedProjectAssets {
     const manifestPath = path.join(projectDir, '.juno_task', 'managed-assets.json');
     let manifest = emptyManifest();
     if (await fs.pathExists(manifestPath)) {
-      const parsed = await fs.readJson(manifestPath);
-      if (
-        parsed?.schemaVersion !== 1 ||
-        typeof parsed.assets !== 'object' ||
-        parsed.assets === null
-      ) {
-        throw new Error(`Unsupported managed asset manifest: ${manifestPath}`);
-      }
-      manifest = parsed as ManagedAssetManifest;
+      manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
 
     let projectConfig: Record<string, any> = {};
@@ -782,6 +838,7 @@ export class ManagedProjectAssets {
     return {
       status: coherent ? 'coherent' : mixed ? 'mixed' : anyMissing ? 'incomplete' : 'customized',
       coherent,
+      instructionBundle: manifest.schemaVersion === 2 ? manifest.instructionBundle ?? null : null,
       entries,
     };
   }

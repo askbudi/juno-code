@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -267,10 +268,23 @@ raise SystemExit(2)
         sealed = runtime.seal_epoch(self.root, self.declaration)
         paused = runtime.eject_epoch_member(self.root, "rc-1", "REQ", "seeded failure", sealed["lease_token"])
         self.assertEqual("PAUSED_REQUIRED", paused["state"])
+        # A production decision blocks until one exact installed instruction generation exists.
+        missing = runtime.shadow_epoch(self.root, self.declaration, None)
+        self.assertEqual("BLOCK", missing["decision"])
+        self.assertIn("instruction_bundle.missing_or_invalid", missing["blocking_reason_codes"])
+        assets_identity = hashlib.sha256(b"[]").hexdigest()
+        bundle = {"schemaVersion": "juno_instruction_bundle.v1",
+            "semanticVersion": "1.0.0", "packageVersion": "1.0.0",
+            "assetCount": 0, "assetsSha256": assets_identity}
+        bundle["bundleSha256"] = hashlib.sha256(
+            json.dumps(bundle, separators=(",", ":")).encode()).hexdigest()
+        (self.root / ".juno_task" / "managed-assets.json").write_text(json.dumps({
+            "schemaVersion": 2, "packageName": "@yylo/cli", "packageVersion": "1.0.0",
+            "instructionBundle": bundle, "assets": {}}, sort_keys=True) + "\n")
         before = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
-        # Use another id because the first declaration is already sealed; shadow itself is read-only.
         report = runtime.shadow_epoch(self.root, self.declaration, None)
         self.assertEqual("PASS", report["decision"])
+        self.assertEqual("juno_instruction_bundle.v1", report["instruction_bundle"]["schemaVersion"])
         self.assertEqual([], report["side_effects"])
         self.assertEqual(before, run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"))
 

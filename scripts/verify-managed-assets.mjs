@@ -8,8 +8,10 @@ import path from 'node:path';
 const manifest = JSON.parse(
   readFileSync(path.join('src', 'templates', 'managed-assets.json'), 'utf8'),
 );
-if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.assets)) {
-  throw new Error('Unsupported managed asset manifest');
+if (manifest.schemaVersion !== 2 || !Array.isArray(manifest.assets) ||
+    manifest.instructionBundle?.schemaVersion !== 'juno_instruction_bundle_declaration.v1' ||
+    !/^\d+\.\d+\.\d+$/.test(manifest.instructionBundle?.semanticVersion ?? '')) {
+  throw new Error('Unsupported managed asset/instruction-bundle manifest');
 }
 const assets = manifest.assets;
 const manifestSource = readFileSync(path.join('src', 'templates', 'managed-assets.json'));

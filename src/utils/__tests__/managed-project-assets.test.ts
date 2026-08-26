@@ -111,6 +111,44 @@ describe('ManagedProjectAssets', {
     expect(await fs.readFile(workflow, 'utf8')).toBe('{"owner":"customized"}\n');
   });
 
+  it('writes one complete semantic instruction-bundle identity on fresh install', async () => {
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const manifest = await fs.readJson(path.join(projectDir, '.juno_task/managed-assets.json'));
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.instructionBundle).toEqual(expect.objectContaining({
+      schemaVersion: 'juno_instruction_bundle.v1',
+      semanticVersion: '1.0.0',
+      packageVersion: manifest.packageVersion,
+      assetCount: Object.keys(manifest.assets).length,
+      assetsSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      bundleSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }));
+    const report = await ManagedProjectAssets.inspectGeneration(projectDir);
+    expect(report.coherent).toBe(true);
+    expect(report.instructionBundle).toEqual(manifest.instructionBundle);
+  });
+
+  it('upgrades a coherent v1 receipt and rejects tampered v2 identity before mutation', async () => {
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const manifestPath = path.join(projectDir, '.juno_task/managed-assets.json');
+    const legacy = await fs.readJson(manifestPath);
+    legacy.schemaVersion = 1;
+    delete legacy.instructionBundle;
+    await fs.writeJson(manifestPath, legacy);
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const upgraded = await fs.readJson(manifestPath);
+    expect(upgraded.schemaVersion).toBe(2);
+    expect(upgraded.instructionBundle.schemaVersion).toBe('juno_instruction_bundle.v1');
+
+    upgraded.instructionBundle.assetsSha256 = '0'.repeat(64);
+    await fs.writeJson(manifestPath, upgraded);
+    const before = await fs.readFile(manifestPath);
+    await expect(ManagedProjectAssets.update(projectDir, { silent: true })).rejects.toThrow(
+      'Mixed or partial managed instruction bundle',
+    );
+    expect(await fs.readFile(manifestPath)).toEqual(before);
+  });
+
   it('installs every managed asset and registers resolvable file-backed macros', async () => {
     const result = await ManagedProjectAssets.update(projectDir, { silent: true });
     expect(result.installed).toHaveLength(MANAGED_ASSETS.length);
@@ -637,6 +675,8 @@ describe('ManagedProjectAssets', {
     await fs.writeFile(destinationPath, oldManagedContent);
     const manifestPath = path.join(projectDir, '.juno_task', 'managed-assets.json');
     const manifest = await fs.readJson(manifestPath);
+    manifest.schemaVersion = 1;
+    delete manifest.instructionBundle;
     manifest.assets[destination].installedSha256 = sha256(oldManagedContent);
     await fs.writeJson(manifestPath, manifest);
     await fs.remove(path.join(projectDir, '.juno_task/prompts/new_task_workflow.md'));

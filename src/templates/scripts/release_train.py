@@ -898,6 +898,39 @@ def drive_epoch(controller: Path, epoch_id: str, token: str) -> dict[str, Any]:
     return state
 
 
+def installed_instruction_bundle(controller: Path) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    manifest_path = controller / ".juno_task" / "managed-assets.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, "instruction_bundle.missing_or_invalid"
+    identity = manifest.get("instructionBundle")
+    assets = manifest.get("assets")
+    if manifest.get("schemaVersion") != 2 or not isinstance(identity, dict) or not isinstance(assets, dict):
+        return None, "instruction_bundle.unsupported_generation"
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items()) if isinstance(record, dict)]
+    assets_identity = hashlib.sha256(json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
+    core = {"schemaVersion": identity.get("schemaVersion"),
+            "semanticVersion": identity.get("semanticVersion"),
+            "packageVersion": identity.get("packageVersion"),
+            "assetCount": identity.get("assetCount"),
+            "assetsSha256": identity.get("assetsSha256")}
+    bundle_identity = hashlib.sha256(json.dumps(core, separators=(",", ":")).encode()).hexdigest()
+    valid = (len(projected) == len(assets) and
+             identity.get("schemaVersion") == "juno_instruction_bundle.v1" and
+             identity.get("semanticVersion") == "1.0.0" and
+             identity.get("packageVersion") == manifest.get("packageVersion") and
+             identity.get("assetCount") == len(assets) and
+             identity.get("assetsSha256") == assets_identity and
+             identity.get("bundleSha256") == bundle_identity)
+    if not valid:
+        return None, "instruction_bundle.mixed_or_partial"
+    return identity, None
+
+
 def shadow_epoch(controller: Path, declaration_path: Path, baseline_path: Optional[Path]) -> dict[str, Any]:
     plan = build_epoch_plan(controller, declaration_path)
     baseline: dict[str, Any] = {}
@@ -915,7 +948,9 @@ def shadow_epoch(controller: Path, declaration_path: Path, baseline_path: Option
     reductions = {"duplicate_execution_pct": round((old_exec - projected["duplicate_unchanged_closure_executions"]) * 100 / old_exec, 2),
                   "model_call_pct": round((old_models - projected["model_lifecycle_calls"]) * 100 / old_models, 2),
                   "cache_read_pct": round((old_tokens - projected["cache_read_tokens"]) * 100 / old_tokens, 2)}
+    instruction_bundle, instruction_blocker = installed_instruction_bundle(controller)
     blockers = []
+    if instruction_blocker: blockers.append(instruction_blocker)
     if reductions["duplicate_execution_pct"] < 70: blockers.append("target.duplicate_execution")
     if reductions["model_call_pct"] < 60: blockers.append("target.model_calls")
     if reductions["cache_read_pct"] < 70: blockers.append("target.cache_read_tokens")
@@ -923,8 +958,9 @@ def shadow_epoch(controller: Path, declaration_path: Path, baseline_path: Option
             "candidate_count": candidates, "scenarios": ["dependencies", "optional_required_failure",
             "conflict_repair_escalation", "stale_worker", "dirty_recovery", "evidence_reuse",
             "crash_boundaries", "cas_race"], "baseline": baseline, "projected": projected,
-            "reductions": reductions, "decision": "BLOCK" if blockers else "PASS", "blocking_reason_codes": blockers,
-            "rollback_switch": "disable release-epoch drive; retain per-candidate merge arbiter",
+            "reductions": reductions, "instruction_bundle": instruction_bundle,
+            "decision": "BLOCK" if blockers else "PASS", "blocking_reason_codes": blockers,
+            "rollback_switch": "disable release-epoch drive; preserve immutable epoch receipts",
             "side_effects": []}
     return {**body, "shadow_id": digest(body)}
 
