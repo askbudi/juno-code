@@ -109,8 +109,12 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
     if has_source_manifest:
         manifest = managed_source_json(repository, commit, MANAGED_MANIFEST_PATH)
         assets = manifest.get("assets") if isinstance(manifest, dict) else None
-        if (not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1
-                or not isinstance(assets, list)):
+        schema = manifest.get("schemaVersion") if isinstance(manifest, dict) else None
+        instruction_declaration = manifest.get("instructionBundle") if isinstance(manifest, dict) else None
+        declaration_valid = (schema == 1 or (schema == 2 and instruction_declaration == {
+            "schemaVersion": "juno_instruction_bundle_declaration.v1",
+            "semanticVersion": "1.0.0"}))
+        if not declaration_valid or not isinstance(assets, list):
             raise ManagedRuntimeError("target managed asset definition is invalid")
         package = managed_source_json(repository, commit, MANAGED_PACKAGE_PATH)
         version = package.get("version") if isinstance(package, dict) else None
@@ -151,9 +155,12 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
         if not managed_source_exists(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH):
             raise ManagedRuntimeError("target managed runtime provenance is absent")
         manifest = managed_source_json(repository, commit, MANAGED_INSTALLED_MANIFEST_PATH)
-        if (not isinstance(manifest, dict)
-                or set(manifest) != {"schemaVersion", "packageName", "packageVersion", "assets"}
-                or manifest.get("schemaVersion") != 1 or manifest.get("packageName") != "@yylo/cli"
+        schema = manifest.get("schemaVersion") if isinstance(manifest, dict) else None
+        expected_keys = {"schemaVersion", "packageName", "packageVersion", "assets"}
+        if schema == 2:
+            expected_keys.add("instructionBundle")
+        if (not isinstance(manifest, dict) or set(manifest) != expected_keys
+                or schema not in {1, 2} or manifest.get("packageName") != "@yylo/cli"
                 or not managed_valid_package_version(manifest.get("packageVersion"))
                 or not isinstance(manifest.get("assets"), dict)):
             raise ManagedRuntimeError("installed managed asset manifest/package identity is invalid")
@@ -184,6 +191,28 @@ def managed_target_provenance(repository: Path, commit: str) -> dict[str, Any]:
             if managed_sha256(data) != record["installedSha256"]:
                 raise ManagedRuntimeError(f"installed managed script manifest drift: {destination}")
             result[destination] = destination
+        if schema == 2:
+            identity = manifest.get("instructionBundle")
+            projected = [{"destination": destination, "type": record.get("type"),
+                          "sourceSha256": record.get("sourceSha256"),
+                          "installedSha256": record.get("installedSha256")}
+                         for destination, record in sorted(manifest["assets"].items())]
+            assets_sha = hashlib.sha256(
+                json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
+            core = {"schemaVersion": identity.get("schemaVersion") if isinstance(identity, dict) else None,
+                    "semanticVersion": identity.get("semanticVersion") if isinstance(identity, dict) else None,
+                    "packageVersion": identity.get("packageVersion") if isinstance(identity, dict) else None,
+                    "assetCount": identity.get("assetCount") if isinstance(identity, dict) else None,
+                    "assetsSha256": identity.get("assetsSha256") if isinstance(identity, dict) else None}
+            bundle_sha = hashlib.sha256(json.dumps(core, separators=(",", ":")).encode()).hexdigest()
+            if (not isinstance(identity, dict)
+                    or identity.get("schemaVersion") != "juno_instruction_bundle.v1"
+                    or identity.get("semanticVersion") != "1.0.0"
+                    or identity.get("packageVersion") != version
+                    or identity.get("assetCount") != len(manifest["assets"])
+                    or identity.get("assetsSha256") != assets_sha
+                    or identity.get("bundleSha256") != bundle_sha):
+                raise ManagedRuntimeError("installed managed instruction bundle is mixed or partial")
         mode = "installed"
     if not result:
         raise ManagedRuntimeError("target managed script set is empty or duplicated")

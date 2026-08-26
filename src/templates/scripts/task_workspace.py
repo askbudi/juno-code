@@ -324,10 +324,8 @@ def load_package_bound_test_fixture(test_file: str, fixture_name: str) -> Any:
                 and identity.get("source") == "installed-release" and identity.get("tracked") is False
                 and is_valid_semver(version)
                 and executable_hash == identity.get("executable_sha256")
-                and isinstance(inventory, dict) and inventory.get("schemaVersion") == 1
-                and inventory.get("packageName") == "@yylo/cli"
+                and _managed_inventory_identity_valid(inventory)
                 and inventory.get("packageVersion") == version
-                and isinstance(inventory.get("assets"), dict)
                 and isinstance(package, dict) and package.get("name") == "@yylo/cli"
                 and package.get("version") == version)
             if not valid:
@@ -1312,8 +1310,12 @@ def derived_output_admission(repository: Path, target_sha: str,
 
     managed, managed_sha = target_json(repository, target_sha, MANAGED_OUTPUT_DECLARATION)
     rows = managed.get("admissionOutputs")
-    if (managed.get("schemaVersion") != 1 or not isinstance(managed.get("assets"), list)
-            or not isinstance(rows, list)):
+    schema = managed.get("schemaVersion")
+    instruction_declaration = managed.get("instructionBundle")
+    declaration_valid = (schema == 1 or (schema == 2 and instruction_declaration == {
+        "schemaVersion": "juno_instruction_bundle_declaration.v1",
+        "semanticVersion": "1.0.0"}))
+    if not declaration_valid or not isinstance(managed.get("assets"), list) or not isinstance(rows, list):
         raise TaskWorkspaceError(f"invalid generated-output declaration {MANAGED_OUTPUT_DECLARATION}")
     for row in rows:
         if (not isinstance(row, dict) or set(row) != {"source", "destination"}
@@ -1533,11 +1535,7 @@ def _consumer_runtime_provenance(repository: Path, target_sha: str,
     entry = assets.get(RUNTIME_PATH) if isinstance(assets, dict) else None
     legacy = isinstance(assets, dict) and entry is None
     valid = (
-        isinstance(inventory, dict)
-        and set(inventory) == {"schemaVersion", "packageName", "packageVersion", "assets"}
-        and inventory.get("schemaVersion") == 1
-        and inventory.get("packageName") == "@yylo/cli"
-        and is_valid_semver(inventory.get("packageVersion"))
+        _managed_inventory_identity_valid(inventory)
         and isinstance(entry, dict)
         and set(entry) == {"type", "templateVersion", "sourceSha256", "installedSha256"}
         and entry.get("type") == "script"
@@ -4871,6 +4869,57 @@ def _managed_inventory_entries_valid(assets: Any) -> bool:
         return False
 
 
+def _managed_inventory_identity_valid(inventory: Any) -> bool:
+    if not isinstance(inventory, dict) or inventory.get("schemaVersion") not in {1, 2}:
+        return False
+    expected = {"schemaVersion", "packageName", "packageVersion", "assets"}
+    if inventory["schemaVersion"] == 2:
+        expected.add("instructionBundle")
+    if (set(inventory) != expected or inventory.get("packageName") != "@yylo/cli"
+            or not is_valid_semver(inventory.get("packageVersion"))
+            or not _managed_inventory_entries_valid(inventory.get("assets"))):
+        return False
+    if inventory["schemaVersion"] == 1:
+        return True
+    identity = inventory.get("instructionBundle")
+    assets = inventory["assets"]
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items())]
+    assets_sha = hashlib.sha256(
+        json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
+    core = {"schemaVersion": identity.get("schemaVersion") if isinstance(identity, dict) else None,
+            "semanticVersion": identity.get("semanticVersion") if isinstance(identity, dict) else None,
+            "packageVersion": identity.get("packageVersion") if isinstance(identity, dict) else None,
+            "assetCount": identity.get("assetCount") if isinstance(identity, dict) else None,
+            "assetsSha256": identity.get("assetsSha256") if isinstance(identity, dict) else None}
+    bundle_sha = hashlib.sha256(json.dumps(core, separators=(",", ":")).encode()).hexdigest()
+    return bool(isinstance(identity, dict)
+                and identity.get("schemaVersion") == "juno_instruction_bundle.v1"
+                and identity.get("semanticVersion") == "1.0.0"
+                and identity.get("packageVersion") == inventory["packageVersion"]
+                and identity.get("assetCount") == len(assets)
+                and identity.get("assetsSha256") == assets_sha
+                and identity.get("bundleSha256") == bundle_sha)
+
+
+def _bind_instruction_bundle_identity(inventory: dict[str, Any]) -> None:
+    if inventory.get("schemaVersion") != 2:
+        return
+    assets = inventory["assets"]
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items())]
+    core = {"schemaVersion": "juno_instruction_bundle.v1", "semanticVersion": "1.0.0",
+            "packageVersion": inventory["packageVersion"], "assetCount": len(assets),
+            "assetsSha256": hashlib.sha256(
+                json.dumps(projected, separators=(",", ":")).encode()).hexdigest()}
+    inventory["instructionBundle"] = {**core, "bundleSha256": hashlib.sha256(
+        json.dumps(core, separators=(",", ":")).encode()).hexdigest()}
+
+
 def cli_version_output_valid(result: subprocess.CompletedProcess[str],
                              version: str, cwd: Path) -> bool:
     """Accept only the current or compatible canonical --version contracts."""
@@ -5029,10 +5078,7 @@ def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
             and is_valid_semver(runtime_version)
             and (runtime_version == recovery_package_version
                  or semver_precedes(runtime_version, recovery_package_version)))
-        if (not isinstance(inventory, dict) or set(inventory) != {
-                "schemaVersion", "packageName", "packageVersion", "assets"}
-                or inventory.get("schemaVersion") != 1
-                or inventory.get("packageName") != "@yylo/cli"
+        if (not _managed_inventory_identity_valid(inventory)
                 or not is_valid_semver(prior_version) or not all_entries_valid
                 or not entry_valid
                 or (prior_version != recovery_package_version
@@ -5070,10 +5116,7 @@ def _runtime_prior_state(controller: Path, repository: Path, target_sha: str,
     runtime_package_version = entry.get("templateVersion") if isinstance(entry, dict) else None
     all_entries_valid = _managed_inventory_entries_valid(assets)
     inventory_valid = (
-        isinstance(inventory, dict) and set(inventory) == {
-            "schemaVersion", "packageName", "packageVersion", "assets"}
-        and inventory.get("schemaVersion") == 1
-        and inventory.get("packageName") == "@yylo/cli"
+        _managed_inventory_identity_valid(inventory)
         and is_valid_semver(inventory_package_version)
         and all_entries_valid
         and isinstance(entry, dict)
@@ -5136,10 +5179,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TaskWorkspaceError("task-runtime bootstrap prior inventory is invalid") from exc
         inventory_mode = prior.get("inventory_mode")
-        if (not isinstance(inventory, dict)
-                or set(inventory) != {"schemaVersion", "packageName", "packageVersion", "assets"}
-                or inventory.get("schemaVersion") != 1
-                or inventory.get("packageName") != "@yylo/cli"
+        if (not _managed_inventory_identity_valid(inventory)
                 or not isinstance(inventory.get("assets"), dict)
                 or inventory_mode not in {"100644", "100755"}):
             raise TaskWorkspaceError("task-runtime bootstrap prior inventory binding is invalid")
@@ -5148,6 +5188,7 @@ def _proposed_inventory(prior: dict[str, Any], package_version: str,
         "type": "script", "templateVersion": package_version,
         "sourceSha256": runtime_sha256, "installedSha256": runtime_sha256,
     }
+    _bind_instruction_bundle_identity(inventory)
     inventory_bytes = (json.dumps(inventory, indent=2) + "\n").encode()
     return {"path": MANAGED_INVENTORY_PATH, "mode": inventory_mode,
             "sha256": hashlib.sha256(inventory_bytes).hexdigest(),

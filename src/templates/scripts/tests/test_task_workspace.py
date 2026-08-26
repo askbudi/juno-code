@@ -1931,6 +1931,33 @@ class TaskWorkspaceTests(TaskWorkspaceFixture):
         self.assertIn("generated-output byte parity failed", failed.stderr)
         self.assertIn(".agents/skills/ralph-loop/references/implement.md", failed.stderr)
 
+    def test_schema_two_instruction_bundle_declaration_admits_start(self) -> None:
+        self.install_declared_output_fixtures()
+        manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
+        value = json.loads(manifest.read_text())
+        value["schemaVersion"] = 2
+        value["instructionBundle"] = {
+            "schemaVersion": "juno_instruction_bundle_declaration.v1",
+            "semanticVersion": "1.0.0"}
+        manifest.write_text(json.dumps(value) + "\n")
+        git(self.repository, "add", task_runtime.MANAGED_OUTPUT_DECLARATION)
+        git(self.repository, "commit", "-m", "schema two instruction declaration")
+        started = self.payload("start", "X")
+        self.assertEqual(started["state"], "WORKING")
+
+    def test_installed_instruction_bundle_identity_rejects_mixed_hashes(self) -> None:
+        assets = {}
+        assets_sha = hashlib.sha256(b"[]").hexdigest()
+        core = {"schemaVersion": "juno_instruction_bundle.v1", "semanticVersion": "1.0.0",
+                "packageVersion": "1.2.3", "assetCount": 0, "assetsSha256": assets_sha}
+        inventory = {"schemaVersion": 2, "packageName": "@yylo/cli",
+                     "packageVersion": "1.2.3", "assets": assets,
+                     "instructionBundle": {**core, "bundleSha256": hashlib.sha256(
+                         json.dumps(core, separators=(",", ":")).encode()).hexdigest()}}
+        self.assertTrue(task_runtime._managed_inventory_identity_valid(inventory))
+        inventory["instructionBundle"]["assetsSha256"] = "0" * 64
+        self.assertFalse(task_runtime._managed_inventory_identity_valid(inventory))
+
     def test_malformed_managed_admission_pair_refuses_start(self) -> None:
         self.install_declared_output_fixtures()
         manifest = self.repository / task_runtime.MANAGED_OUTPUT_DECLARATION
