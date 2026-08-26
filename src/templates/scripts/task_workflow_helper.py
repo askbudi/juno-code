@@ -1759,6 +1759,32 @@ def parsed_test_result_integrity(argv: list[str], output: Any,
             "integrity_sha256": digest(body)}
 
 
+def _normalized_bin_delegate(package_root: str, executable: Any) -> str:
+    """Canonical repo-relative path for one package bin target (C5EC9p).
+
+    npm bin entries commonly carry a leading "./"; normalize exactly one such
+    prefix so committed delegates compare exactly against tree paths.
+    """
+    if not isinstance(executable, str):
+        return ""
+    value = executable[2:] if executable.startswith("./") else executable
+    value = value.strip()
+    return f"{package_root}/{value}" if value else ""
+
+
+def _ignored_build_output(repository: Path, relative: str) -> bool:
+    """True when an uncommitted delegate path is provably gitignored.
+
+    Build-output delegates (gitignored dist/ artifacts) are legitimate; only a
+    path that is neither committed nor ignored is a genuine finding.
+    """
+    if not relative:
+        return False
+    result = subprocess.run(["git", "-C", str(repository), "check-ignore", "-q", relative],
+                            cwd=repository, stdin=subprocess.DEVNULL, capture_output=True)
+    return result.returncode == 0
+
+
 def grouped_coherence(controller: Path, repository: Path, head: str,
                       changed_paths: list[str], *, active_doc_paths: Optional[list[str]] = None,
                       documentation_policy: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1798,10 +1824,11 @@ def grouped_coherence(controller: Path, repository: Path, head: str,
             executable_paths = ([bins] if isinstance(bins, str) else
                                 list(bins.values()) if isinstance(bins, dict) else [])
             for executable in executable_paths:
-                relative = f"{root}/{executable}" if isinstance(executable, str) else ""
-                if not relative or relative not in tree_paths:
+                normalized = _normalized_bin_delegate(root, executable)
+                if (normalized not in tree_paths
+                        and not _ignored_build_output(repository, normalized)):
                     findings.append({"code": "coherence.executable_delegate_missing",
-                                     "path": relative or manifest_path})
+                                     "path": normalized or manifest_path})
         except (UnicodeDecodeError, json.JSONDecodeError):
             findings.append({"code": "coherence.package_json_malformed", "path": root})
     for config_relative in sorted(path for path in changed_paths

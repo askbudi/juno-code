@@ -5977,6 +5977,64 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
                              "coherence.managed_output_mismatch"}.issubset(codes))
             self.assertEqual(report["outcome"], "FAILED")
 
+    def test_grouped_coherence_bin_delegate_normalization_and_build_outputs(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "product"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            base_files = {
+                ".juno_task/config/task-workspace.json": "{}\n",
+                ".gitignore": "dist/\n",
+                "juno-code/package.json": json.dumps({
+                    "name": "pkg", "version": "1.0.0",
+                    "bin": {"pkg": "./bin/tracked.sh", "built": "./dist/bin/built.js"}}) + "\n",
+                "juno-code/package-lock.json": json.dumps(
+                    {"packages": {"": {"name": "pkg", "version": "1.0.0"}}}) + "\n",
+                "juno-code/bin/tracked.sh": "#!/bin/sh\n",
+            }
+            for relative, content in base_files.items():
+                path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            # (1)+(3): changed manifest whose bin delegates are either a tracked
+            # "./"-prefixed delegate or a gitignored dist build output: no finding.
+            (root / "juno-code/package.json").write_text(json.dumps({
+                "name": "pkg", "version": "1.0.1",
+                "bin": {"pkg": "./bin/tracked.sh", "built": "./dist/bin/built.js"}}) + "\n")
+            (root / "juno-code/package-lock.json").write_text(json.dumps(
+                {"packages": {"": {"name": "pkg", "version": "1.0.1"}}}) + "\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "manifest change"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", "HEAD^..HEAD"], cwd=root, text=True).splitlines()
+            report = lifecycle.grouped_coherence(root, root, head, changed)
+            codes = {row["code"] for row in report["findings"]}
+            self.assertNotIn("coherence.executable_delegate_missing", codes)
+            self.assertNotIn("coherence.package_lock_identity", codes)
+            # (2): a delegate that is neither committed nor an ignored build
+            # output keeps its finding.
+            (root / "juno-code/package.json").write_text(json.dumps({
+                "name": "pkg", "version": "1.0.2",
+                "bin": {"pkg": "./bin/tracked.sh", "ghost": "tools/ghost.sh"}}) + "\n")
+            (root / "juno-code/package-lock.json").write_text(json.dumps(
+                {"packages": {"": {"name": "pkg", "version": "1.0.2"}}}) + "\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "ghost delegate"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", "HEAD^..HEAD"], cwd=root, text=True).splitlines()
+            report = lifecycle.grouped_coherence(root, root, head, changed)
+            ghosts = [row for row in report["findings"]
+                      if row["code"] == "coherence.executable_delegate_missing"]
+            self.assertEqual(["juno-code/tools/ghost.sh"], [row["path"] for row in ghosts])
+
     def test_compiler_binds_committed_template_prompt_and_refuses_mutation(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime
         with tempfile.TemporaryDirectory() as temporary:
