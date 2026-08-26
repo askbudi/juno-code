@@ -12,6 +12,10 @@ describe('standing evidence CLI', () => {
     const program = new Command().exitOverride();
     configureEvidenceCommand(program, invoke);
     await program.parseAsync(['node', 'yy', 'evidence', command, 'T123']);
-    expect(invoke).toHaveBeenCalledWith(operation, 'T123', []);
+    if (command === 'status') {
+      expect(invoke).toHaveBeenCalledWith(operation, 'T123', []);
+    } else {
+      expect(invoke).toHaveBeenCalledWith(operation, 'T123', [], []);
+    }
   });
 });
