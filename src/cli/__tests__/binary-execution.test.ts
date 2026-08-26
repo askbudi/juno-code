@@ -1009,7 +1009,7 @@ exit 1
       })).toBe('');
     });
 
-    it('keeps metadata-controller script updates runtime-only and Git-clean', async () => {
+    it('persists one checkpoint-admitted complete metadata-controller bundle receipt', async () => {
       const junoTaskDir = path.join(tempDir, '.juno_task');
       const policyDir = path.join(junoTaskDir, 'config');
       const configPath = path.join(junoTaskDir, 'config.json');
@@ -1037,6 +1037,7 @@ exit 1
       }
       await fs.writeFile(path.join(tempDir, '.gitignore'), [
         '.juno_task/scripts/',
+        '.juno_task/runtime/',
         '.venv_juno/',
         '.env.yylo',
         '/AGENTS.md',
@@ -1066,31 +1067,64 @@ exit 1
         expect(await fs.pathExists(path.join(tempDir, root, 'kanban-workflow/SKILL.md'))).toBe(true);
       }
       expect(await fs.readFile(configPath, 'utf8')).toBe(configBytes);
-      expect(await fs.readFile(policyPath, 'utf8')).toBe(policyBytes);
-      for (const forbidden of [
-        '.juno_task/managed-assets.json',
-        '.juno_task/managed-conflicts',
-        '.juno_task/prompts',
-        '.juno_task/wiki',
-        'scripts/git-flow.sh',
-        '.codex',
-      ]) {
-        expect(await fs.pathExists(path.join(tempDir, forbidden))).toBe(false);
-      }
-      expect(execFileSync(
-        'git',
-        ['status', '--porcelain=v2', '--untracked-files=all'],
+      const updatedPolicy = await fs.readJson(policyPath);
+      expect(updatedPolicy.controller_branch).toBe('refs/heads/customer/controller');
+      expect(updatedPolicy.product_ref).toBe('refs/heads/customer/release');
+      const manifest = await fs.readJson(path.join(junoTaskDir, 'managed-assets.json'));
+      expect(manifest).toMatchObject({
+        schemaVersion: 2,
+        packageName: '@yylo/cli',
+        instructionBundle: {
+          schemaVersion: 'juno_instruction_bundle.v1',
+          assetCount: Object.keys(manifest.assets).length,
+        },
+      });
+      for (const destination of [
+        'AGENTS.md', 'CLAUDE.md',
+        '.agents/skills/kanban-workflow/SKILL.md',
+        '.claude/skills/ralph-loop/references/implement.md',
+        '.pi/skills/understand-project/SKILL.md',
+        '.juno_task/prompts/lifecycle/task-implementation.md',
+        '.juno_task/wiki/controller/sealed_release_epochs.md',
+        '.juno_task/workflows/yy-task-run.yaml',
+        '.juno_task/scripts/release_train.py',
+      ]) expect(manifest.assets[destination], destination).toBeDefined();
+      const dirtyPaths = execFileSync(
+        'git', ['status', '--porcelain=v1', '--untracked-files=all'],
         { cwd: tempDir, encoding: 'utf8' },
-      )).toBe('');
+      ).split('\n').filter(Boolean).map((line) => line.slice(3));
+      expect(updatedPolicy.tracked_exact).toContain('.juno_task/managed-assets.json');
+      expect(updatedPolicy.generated_metadata).toContain('.juno_task/managed-assets.json');
+      for (const dirty of dirtyPaths) {
+        expect(
+          updatedPolicy.tracked_exact.includes(dirty) ||
+          updatedPolicy.tracked_recursive.some(
+            (root: string) => dirty === root || dirty.startsWith(`${root}/`),
+          ),
+          `checkpoint policy must admit ${dirty}`,
+        ).toBe(true);
+      }
+      expect(await fs.pathExists(path.join(tempDir, 'scripts/git-flow.sh'))).toBe(false);
+      expect(await fs.pathExists(path.join(tempDir, '.codex'))).toBe(false);
 
+      const statusBeforeDoctor = execFileSync(
+        'git', ['status', '--porcelain=v2', '--untracked-files=all'],
+        { cwd: tempDir, encoding: 'utf8' },
+      );
       const doctor = await executeCLI(['scripts', 'doctor']);
       expect(doctor.exitCode).toBe(0);
-      expect(doctor.stdout).toContain('Bootstrap controller scripts and agent surface are coherent');
+      expect(doctor.stdout).toContain('Schema-2 instruction bundle');
       expect(execFileSync(
-        'git',
-        ['status', '--porcelain=v2', '--untracked-files=all'],
+        'git', ['status', '--porcelain=v2', '--untracked-files=all'],
         { cwd: tempDir, encoding: 'utf8' },
-      )).toBe('');
+      )).toBe(statusBeforeDoctor);
+      execFileSync('git', ['add', '.juno_task/config/metadata-controller.json',
+        '.juno_task/managed-assets.json', '.juno_task/prompts', '.juno_task/wiki',
+        '.juno_task/workflows'], { cwd: tempDir });
+      execFileSync('git', [
+        '-c', 'user.name=Juno Test', '-c', 'user.email=juno-test@example.invalid',
+        'commit', '-qm', 'checkpoint managed controller bundle',
+      ], { cwd: tempDir });
 
       const ownerInstructions = 'committed owner controller instructions\n';
       await fs.writeFile(path.join(tempDir, 'AGENTS.md'), ownerInstructions);

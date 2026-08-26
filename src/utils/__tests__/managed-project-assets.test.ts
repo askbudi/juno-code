@@ -13,6 +13,7 @@ import {
   ManagedProjectAssets,
 } from '../managed-project-assets.js';
 import { runBoundedTestProcess } from '../../test-utils/bounded-process.js';
+import { withManagedUpdateRollback } from '../managed-update-transaction.js';
 import {
   MANAGED_INSTALL_OPERATION_TIMEOUT_MS,
   useSharedHeavyWorkloadLock,
@@ -90,7 +91,7 @@ describe('ManagedProjectAssets', {
     ]) expect(surfaces).toContain(required);
   });
 
-  it('installs controller-only workflow seeds only in metadata controllers and preserves customization', async () => {
+  it('installs and receipts the complete metadata-controller bundle while preserving customization', async () => {
     const configPath = path.join(projectDir, '.juno_task', 'config.json');
     const config = await fs.readJson(configPath);
     config.controllerWorkspace = {
@@ -102,6 +103,39 @@ describe('ManagedProjectAssets', {
       expect(installed.installed).toContain(asset.destination);
       expect(await fs.pathExists(path.join(projectDir, asset.destination))).toBe(true);
     }
+    const manifestPath = path.join(projectDir, '.juno_task/managed-assets.json');
+    const manifest = await fs.readJson(manifestPath);
+    for (const destination of [
+      'AGENTS.md',
+      'CLAUDE.md',
+      '.agents/skills/ralph-loop/references/implement.md',
+      '.claude/skills/kanban-workflow/SKILL.md',
+      '.pi/skills/understand-project/SKILL.md',
+      '.juno_task/prompts/lifecycle/task-implementation.md',
+      '.juno_task/wiki/controller/sealed_release_epochs.md',
+      '.juno_task/workflows/yy-task-run.yaml',
+      '.juno_task/scripts/release_train.py',
+    ]) {
+      expect(manifest.assets[destination], destination).toBeDefined();
+      expect(manifest.assets[destination].installedSha256).toBe(
+        sha256(await fs.readFile(path.join(projectDir, destination), 'utf8')),
+      );
+    }
+    expect(manifest.instructionBundle.assetCount).toBe(Object.keys(manifest.assets).length);
+    expect((await ManagedProjectAssets.inspectGeneration(projectDir)).coherent).toBe(true);
+
+    const legacy = structuredClone(manifest);
+    legacy.schemaVersion = 1;
+    legacy.packageName = 'juno-code';
+    legacy.packageVersion = '2.1.1';
+    delete legacy.instructionBundle;
+    await fs.writeJson(manifestPath, legacy);
+    await ManagedProjectAssets.update(projectDir, { silent: true });
+    const upgraded = await fs.readJson(manifestPath);
+    expect(upgraded.schemaVersion).toBe(2);
+    expect(upgraded.packageName).toBe('@yylo/cli');
+    expect(upgraded.instructionBundle.assetCount).toBe(Object.keys(upgraded.assets).length);
+
     const workflow = path.join(projectDir, '.juno_task/workflows/yy-task-run.yaml');
     await fs.writeFile(workflow, '{"owner":"customized"}\n');
     const preserved = await ManagedProjectAssets.update(projectDir, { silent: true });
@@ -109,6 +143,39 @@ describe('ManagedProjectAssets', {
       destination: '.juno_task/workflows/yy-task-run.yaml',
     }));
     expect(await fs.readFile(workflow, 'utf8')).toBe('{"owner":"customized"}\n');
+  });
+
+  it('rolls back an interrupted metadata-controller bundle and converges on retry', async () => {
+    const configPath = path.join(projectDir, '.juno_task/config.json');
+    const config = await fs.readJson(configPath);
+    config.controllerWorkspace = {
+      mode: 'metadata-only', policy: '.juno_task/config/metadata-controller.json',
+    };
+    await fs.writeJson(configPath, config);
+    const manifestPath = path.join(projectDir, '.juno_task/managed-assets.json');
+    const legacy = `${JSON.stringify({
+      schemaVersion: 1,
+      packageName: 'juno-code',
+      packageVersion: '2.1.1',
+      assets: {},
+    }, null, 2)}\n`;
+    await fs.writeFile(manifestPath, legacy);
+
+    await expect(withManagedUpdateRollback(projectDir, async () => {
+      await ManagedProjectAssets.update(projectDir, { force: true, silent: true });
+      throw new Error('injected interruption after receipt persistence');
+    })).rejects.toThrow('injected interruption');
+    expect(await fs.readFile(manifestPath, 'utf8')).toBe(legacy);
+    expect(await fs.pathExists(path.join(projectDir, 'AGENTS.md'))).toBe(false);
+    expect(await fs.pathExists(
+      path.join(projectDir, '.juno_task/workflows/yy-task-run.yaml'),
+    )).toBe(false);
+
+    await withManagedUpdateRollback(projectDir, () =>
+      ManagedProjectAssets.update(projectDir, { force: true, silent: true }));
+    const report = await ManagedProjectAssets.inspectGeneration(projectDir);
+    expect(report.coherent).toBe(true);
+    expect(report.instructionBundle?.schemaVersion).toBe('juno_instruction_bundle.v1');
   });
 
   it('writes one complete semantic instruction-bundle identity on fresh install', async () => {

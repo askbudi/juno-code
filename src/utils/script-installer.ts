@@ -41,6 +41,12 @@ const CONTROLLER_POLICY_PATHS = [
   '.juno_task/config/integration-workspace.json',
   '.juno_task/config/risk-policy.json',
 ] as const;
+const CONTROLLER_BUNDLE_TRACKED_PATHS = [
+  '.juno_task/managed-assets.json',
+  ...managedAssetManifest.assets
+    .map((asset) => asset.destination)
+    .filter((destination) => /^\.juno_task\/(prompts|wiki|workflows)\//.test(destination)),
+].sort();
 
 type ManagedControllerGeneration = {
   schema_version: 'juno_managed_controller_runtime.v1';
@@ -176,6 +182,7 @@ export class ScriptInstaller {
   static async updateMetadataControllerPolicies(
     projectDir: string,
     force = false,
+    apply = false,
   ): Promise<{ installed: string[]; updated: string[]; backups: string[] }> {
     if (!(await this.isMetadataOnlyController(projectDir))) {
       return { installed: [], updated: [], backups: [] };
@@ -238,7 +245,44 @@ export class ScriptInstaller {
         'Generic scripts update will not recreate tracked controller policy.',
       );
     }
-    return { installed: [], updated: [], backups: [] };
+
+    const missingBundleClassifications = CONTROLLER_BUNDLE_TRACKED_PATHS.filter((relative) =>
+      !generatedMetadata.includes(relative) || !trackedExact.includes(relative),
+    );
+    if (missingBundleClassifications.length === 0 || !apply) {
+      return { installed: [], updated: [], backups: [] };
+    }
+
+    // This narrowly versioned migration admits only package-declared controller
+    // outputs. It does not broaden ownership to arbitrary prompt/wiki trees and
+    // does not alter controller/product refs or any other policy field.
+    metadataPolicy.generated_metadata = [...new Set([
+      ...generatedMetadata, ...missingBundleClassifications,
+    ])].sort();
+    metadataPolicy.tracked_exact = [...new Set([
+      ...trackedExact, ...missingBundleClassifications,
+    ])].sort();
+    const backupRoot = path.join(
+      projectDir, '.juno_task/runtime/managed-controller/policy-backups',
+    );
+    const originalHash = createHash('sha256').update(originalMetadata).digest('hex');
+    const backupPath = path.join(backupRoot, `metadata-controller.${originalHash}.json`);
+    await assertSafeManagedWritePath(projectDir, backupPath);
+    await fs.ensureDir(backupRoot);
+    if (!(await fs.pathExists(backupPath))) {
+      await fs.writeFile(backupPath, originalMetadata, { flag: 'wx' });
+    } else if (!(await fs.readFile(backupPath)).equals(originalMetadata)) {
+      throw new Error(`Metadata-controller policy backup collision: ${backupPath}`);
+    }
+    const replacement = `${JSON.stringify(metadataPolicy, null, 2)}\n`;
+    const temporary = `${metadataPath}.tmp-${process.pid}-${Date.now()}`;
+    await fs.writeFile(temporary, replacement);
+    await fs.rename(temporary, metadataPath);
+    return {
+      installed: [],
+      updated: [metadataRelative],
+      backups: [path.relative(projectDir, backupPath)],
+    };
   }
 
   /** Refuse a success message until sparse policy and routed runtime parity are proven. */
@@ -262,6 +306,21 @@ export class ScriptInstaller {
       await fs.readJson(destination).catch((error) => {
         throw new Error(`Required metadata-controller managed asset is invalid: ${relative}: ${String(error)}`);
       });
+    }
+    for (const relative of CONTROLLER_BUNDLE_TRACKED_PATHS) {
+      if (!generatedMetadata.includes(relative) || !trackedExact.includes(relative)) {
+        throw new Error(
+          `Updated metadata-controller policy still omits managed bundle output: ${relative}`,
+        );
+      }
+    }
+    const { ManagedProjectAssets } = await import('./managed-project-assets.js');
+    const bundle = await ManagedProjectAssets.inspectGeneration(projectDir);
+    if (!bundle.coherent || !bundle.instructionBundle) {
+      throw new Error(
+        `Metadata-controller instruction bundle readback is ${bundle.status}; ` +
+        'the complete schema-2 receipt was not persisted',
+      );
     }
     const generation = await this.inspectManagedControllerGeneration(projectDir);
     if (generation.present) {
