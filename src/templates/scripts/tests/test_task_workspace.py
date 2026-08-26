@@ -6011,6 +6011,7 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "manifest change"], cwd=root, check=True,
                            stdout=subprocess.DEVNULL)
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            manifest_head = head
             changed = subprocess.check_output(
                 ["git", "diff", "--name-only", "HEAD^..HEAD"], cwd=root, text=True).splitlines()
             report = lifecycle.grouped_coherence(root, root, head, changed)
@@ -6034,6 +6035,21 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
             ghosts = [row for row in report["findings"]
                       if row["code"] == "coherence.executable_delegate_missing"]
             self.assertEqual(["juno-code/tools/ghost.sh"], [row["path"] for row in ghosts])
+            # A lean controller worktree whose own branch carries no dist/
+            # ignore rule must not flip the verdict: the proof is commit-bound
+            # and reads the .gitignore blobs from the task tip (01EUMc).
+            lean = root / "lean-controller"
+            subprocess.run(["git", "worktree", "add", "--detach", str(lean), manifest_head], cwd=root,
+                           check=True, stdout=subprocess.DEVNULL)
+            try:
+                (lean / ".gitignore").write_text(".venv/\n")
+                manifest_changed = ["juno-code/package.json", "juno-code/package-lock.json"]
+                lean_report = lifecycle.grouped_coherence(lean, root, manifest_head, manifest_changed)
+                lean_codes = {row["code"] for row in lean_report["findings"]}
+                self.assertNotIn("coherence.executable_delegate_missing", lean_codes)
+            finally:
+                subprocess.run(["git", "worktree", "remove", "--force", str(lean)], cwd=root,
+                               check=True, stdout=subprocess.DEVNULL)
 
     def test_compiler_binds_committed_template_prompt_and_refuses_mutation(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime

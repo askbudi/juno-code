@@ -1772,17 +1772,53 @@ def _normalized_bin_delegate(package_root: str, executable: Any) -> str:
     return f"{package_root}/{value}" if value else ""
 
 
-def _ignored_build_output(repository: Path, relative: str) -> bool:
-    """True when an uncommitted delegate path is provably gitignored.
+def _gitignore_proves_ignored(lines: list[str], relative: str) -> bool:
+    """Strict gitignore subset evaluated against one exact commit (01EUMc).
 
-    Build-output delegates (gitignored dist/ artifacts) are legitimate; only a
-    path that is neither committed nor ignored is a genuine finding.
+    Negations fail closed and only the shapes that provably build outputs use
+    (blank/comment lines skipped, trailing-slash directory patterns, anchored
+    root patterns, unanchored name patterns at any depth) may prove ignoring.
+    """
+    parts = relative.split("/")
+    directory_prefixes = ["/".join(parts[:index]) for index in range(1, len(parts))]
+    for raw in lines:
+        pattern = raw.strip()
+        if not pattern or pattern.startswith("#") or pattern.startswith("!"):
+            continue
+        directory_only = pattern.endswith("/")
+        pattern = pattern.rstrip("/").lstrip("/")
+        if not pattern:
+            continue
+        anchored = "/" in pattern
+        if anchored:
+            candidates = directory_prefixes if directory_only else directory_prefixes + [relative]
+            if any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates):
+                return True
+        else:
+            names = parts[:-1] if directory_only else parts
+            if any(fnmatch.fnmatch(name, pattern) for name in names):
+                return True
+    return False
+
+
+def _commit_ignored_delegate(repository: Path, head: str, relative: str) -> bool:
+    """True when .gitignore bytes at the exact commit prove a build output.
+
+    The proof reads blobs from the task tip commit, never mutable worktree
+    state, so a lean sparse controller cannot flip the verdict (01EUMc).
     """
     if not relative:
         return False
-    result = subprocess.run(["git", "-C", str(repository), "check-ignore", "-q", relative],
-                            cwd=repository, stdin=subprocess.DEVNULL, capture_output=True)
-    return result.returncode == 0
+    parts = relative.split("/")
+    for depth in range(len(parts)):
+        prefix = "/".join(parts[:depth])
+        ignore_path = f"{prefix}/.gitignore" if prefix else ".gitignore"
+        raw = _git_file(repository, head, ignore_path)
+        if raw is None:
+            continue
+        if _gitignore_proves_ignored(raw.decode("utf-8", errors="replace").splitlines(), relative):
+            return True
+    return False
 
 
 def grouped_coherence(controller: Path, repository: Path, head: str,
@@ -1826,7 +1862,7 @@ def grouped_coherence(controller: Path, repository: Path, head: str,
             for executable in executable_paths:
                 normalized = _normalized_bin_delegate(root, executable)
                 if (normalized not in tree_paths
-                        and not _ignored_build_output(repository, normalized)):
+                        and not _commit_ignored_delegate(repository, head, normalized)):
                     findings.append({"code": "coherence.executable_delegate_missing",
                                      "path": normalized or manifest_path})
         except (UnicodeDecodeError, json.JSONDecodeError):
