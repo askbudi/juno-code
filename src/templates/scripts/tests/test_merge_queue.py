@@ -3142,6 +3142,49 @@ steps:
         self.assertEqual((complete["state"], complete["attempt_number"]), ("COMPLETE", 1))
         self.assertEqual(self.full_counter.read_text().splitlines(), ["run"])
 
+    def test_unverifiable_complete_admission_supersedes_with_fresh_attempt(self) -> None:
+        """Regression (t2d0U0): a CLAIMED attempt whose complete receipts fail
+        admission verification while refusing FAILED classification (successful
+        bytes with poisoned provenance, e.g. pre-fix rich candidate bindings)
+        must supersede to a fresh attempt and let the review proceed instead of
+        dead-ending merge_review with only withdrawal as recovery."""
+        self.commit_feature("X", "src/security/auth.py", "auth\n")
+        self.queue_payload("next")
+        original = merge_runtime.persist_attempt
+        failed = False
+        def fail_complete(*args: object, **kwargs: object) -> None:
+            nonlocal failed
+            attempt = args[1]
+            admission = ((attempt.get("risk") or {}).get("review_progress") or {}).get(
+                "full_suite_admission")
+            if not failed and isinstance(admission, dict) and admission.get("state") == "COMPLETE":
+                failed = True
+                raise OSError("complete state crash")
+            original(*args, **kwargs)
+        with mock.patch.object(merge_runtime, "persist_attempt", side_effect=fail_complete):
+            with self.assertRaisesRegex(OSError, "complete state crash"):
+                merge_runtime.merge_review(self.controller.resolve(), "X")
+        status = self.task("status", "X")["queue_attempt"]
+        claimed = status["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((claimed["state"], claimed["attempt_number"]), ("CLAIMED", 1))
+        root = merge_runtime.full_suite_attempt_root(
+            self.controller.resolve(), "X", status["candidate_sha"], 1)
+        receipts = sorted(root.glob("receipt-*.json"))
+        self.assertTrue(receipts)
+        poisoned = []
+        for path in receipts:
+            receipt = json.loads(path.read_text())
+            receipt["candidate"] = {**receipt["candidate"], "base_sha": "0" * 40}
+            path.write_text(json.dumps(receipt, indent=2) + "\n")
+            poisoned.append(path.read_bytes())
+        with mock.patch.object(merge_runtime, "dispatch_reviewer", side_effect=self.fake_review):
+            ready = merge_runtime.merge_review(self.controller.resolve(), "X")
+        self.assertEqual(ready["outcome"], "RISK_EVIDENCE_READY")
+        self.assertEqual(self.full_counter.read_text().splitlines(), ["run", "run"])
+        admission = ready["risk"]["review_progress"]["full_suite_admission"]
+        self.assertEqual((admission["state"], admission["attempt_number"]), ("COMPLETE", 2))
+        self.assertEqual([path.read_bytes() for path in receipts], poisoned)
+
     def test_resume_preserves_stored_full_suite_admission_state(self) -> None:
         """Regression: an explicit `next` resume of an awaiting-risk decision
         must not drop the stored full-suite admission reference while the

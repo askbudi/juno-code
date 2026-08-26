@@ -3411,6 +3411,21 @@ def verify_queue_failed_admission_legacy(controller: Path, task_id: str, plan: d
     return rebuilt
 
 
+def _terminal_receipt_claims_success(receipt_path: Path) -> bool:
+    """True when one written terminal suite receipt is well-formed and claims
+    a successful (exit 0, not timed out) result. Used to separate an
+    unverifiable-but-successful complete attempt, which supersedes with a fresh
+    attempt, from malformed or failing bytes that must keep failing closed."""
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, ValueError):
+        return False
+    result = receipt.get("result") if isinstance(receipt, dict) else None
+    return (isinstance(result, dict)
+            and result.get("exit_code") == 0
+            and result.get("timed_out") is False)
+
+
 def recover_claimed_full_suite_legacy(controller: Path, task_id: str, plan: dict[str, Any],
                                identity: dict[str, str], command: dict[str, Any],
                                admission: Any) -> Optional[dict[str, Any]]:
@@ -3437,7 +3452,17 @@ def recover_claimed_full_suite_legacy(controller: Path, task_id: str, plan: dict
                 controller, task_id, plan, identity, command, admission,
                 complete["receipt"])
         except MergeQueueError:
-            raise success_error
+            # Mirrors the v3 recovery contract: unverifiable-but-successful
+            # complete receipts supersede with a fresh attempt; malformed or
+            # failing bytes keep failing closed without a paid retry.
+            if not _terminal_receipt_claims_success(receipt_path):
+                raise success_error
+            return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_SCHEMA,
+                    "state": "UNVERIFIED", "attempt_number": attempt_number,
+                    "token": admission.get("token"),
+                    "claim": admission.get("claim"),
+                    "receipt": complete["receipt"],
+                    "reason": str(success_error)}
 
 
 def full_suite_attempt_root(controller: Path, task_id: str, candidate_sha: str,
@@ -3756,7 +3781,23 @@ def recover_claimed_full_suite(controller: Path, task_id: str, plan: dict[str, A
                     controller, task_id, plan, identity, commands, routing,
                     admission, terminal_reference)
             except MergeQueueError:
-                raise success_error
+                # Complete immutable receipts that neither verify as a COMPLETE
+                # admission nor classify as FAILED supersede only when the
+                # terminal receipt is well-formed and successful (e.g. poisoned
+                # pre-fix provenance on green bytes): the receipts stay
+                # untouched as evidence and merge_review admits a fresh attempt
+                # under the next attempt number. Malformed or failing bytes keep
+                # failing closed without a paid retry.
+                if not _terminal_receipt_claims_success(written[-1]):
+                    raise success_error
+                return {"schema_version": risk_runtime.FULL_SUITE_ADMISSION_V2_SCHEMA,
+                        "state": "UNVERIFIED",
+                        "attempt_number": admission["attempt_number"],
+                        "token": admission.get("token"),
+                        "claim": admission.get("claim"),
+                        "receipts": [evidence_reference(path)
+                                     for path in receipt_paths],
+                        "reason": str(success_error)}
     terminal_receipt = json.loads(written[-1].read_text())
     result = terminal_receipt["result"]
     if result["timed_out"] or result["exit_code"]:
@@ -4323,6 +4364,15 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
                         raise MergeValidationError(
                             f"recovered full-suite attempt failed: {detail}", [failure],
                             terminal)
+                    elif recovered["state"] == "UNVERIFIED":
+                        # Complete receipts whose admission cannot be verified and
+                        # cannot classify as FAILED supersede: consume the
+                        # attempt number durably, keep the poisoned receipts as
+                        # immutable evidence, and fall through to a fresh claim.
+                        progress = {**progress, "attempt_counter": prior_attempt}
+                        stored = {**stored, "review_progress": progress}
+                        attempt = {**attempt, "risk": stored, "review": stored}
+                        persist_attempt(controller, attempt, state_name="AWAITING_RISK")
                     else:
                         claimed = recovered
             if plan["full_suite_required"] and suite_admission is None and claimed is None:
