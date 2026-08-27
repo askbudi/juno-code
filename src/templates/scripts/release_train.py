@@ -689,6 +689,21 @@ def composition_paths(controller: Path, state: dict[str, Any]) -> tuple[Path, Pa
     return repository, root, ref
 
 
+def ensure_full_train_checkout(checkout: Path) -> None:
+    """Materialize a private train independently of controller sparse state."""
+    sparse = git(checkout, "config", "--bool", "core.sparseCheckout").lower() == "true"
+    if sparse:
+        task_runtime.run(["git", "-C", str(checkout), "sparse-checkout", "disable"], checkout)
+    if git(checkout, "config", "--bool", "core.sparseCheckout").lower() == "true":
+        raise ReleaseTrainError("private release train remained sparse after materialization")
+    skipped = [line[2:] for line in git(checkout, "ls-files", "-t").splitlines()
+               if line.startswith("S ")]
+    if skipped:
+        raise ReleaseTrainError("private release train contains skip-worktree paths: " + ", ".join(skipped[:10]))
+    if git(checkout, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ReleaseTrainError("private release train is dirty before composition or validation")
+
+
 def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
     repository, checkout, ref = composition_paths(controller, state)
     composition = state["composition"]
@@ -698,6 +713,7 @@ def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
                           state["seal"]["base_sha"]], repository)
         task_runtime.run(["git", "-C", str(repository), "update-ref", ref, state["seal"]["base_sha"]], repository)
         composition.update({"worktree": str(checkout), "ref": ref})
+    ensure_full_train_checkout(checkout)
     completed = {row["task_id"] for row in composition["commits"]}
     for member in active_members(state):
         if member["task_id"] in completed:
@@ -750,19 +766,76 @@ def verify_member_evidence(state: dict[str, Any]) -> list[dict[str, Any]]:
     return decisions
 
 
+def hydrate_aggregate_inputs(controller: Path, state: dict[str, Any], checkout: Path,
+                             command: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+    """Hydrate the selected aggregate root from its exact Node lock when present."""
+    cwd = command["cwd"]
+    lock = checkout / cwd / "package-lock.json"
+    if not lock.is_file():
+        return {"schema_version": "juno_release_epoch_hydration.v1", "decision": "not_applicable",
+                "cwd": cwd, "reason": "selected_root_has_no_node_lock"}, None
+    helper = controller / ".juno_task/scripts/worktree_hydration.py"
+    if not helper.is_file():
+        return {"schema_version": "juno_release_epoch_hydration.v1", "decision": "failed",
+                "cwd": cwd, "lock_sha256": file_hash(lock), "reason": "hydration_helper_missing"}, \
+               "exact-lock hydration helper is missing"
+    base = [sys.executable, str(helper), "--project-root", str(checkout)]
+    probe = subprocess.run([*base, "verify-node-lock", "--cwd", cwd], text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    decision = "reused"
+    output = probe.stdout
+    if probe.returncode:
+        hydrated = subprocess.run([*base, "hydrate-node", "--cwd", cwd], text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  timeout=command.get("timeout_seconds", 3600))
+        output += hydrated.stdout
+        if hydrated.returncode:
+            return {"schema_version": "juno_release_epoch_hydration.v1", "decision": "failed",
+                    "cwd": cwd, "lock_sha256": file_hash(lock), "exit_code": hydrated.returncode,
+                    "output_sha256": hashlib.sha256(output.encode()).hexdigest()}, \
+                   "exact-lock aggregate hydration failed"
+        decision = "executed"
+    clean = subprocess.run([*base, "verify-clean"], text=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=30)
+    output += clean.stdout
+    if clean.returncode:
+        return {"schema_version": "juno_release_epoch_hydration.v1", "decision": "failed",
+                "cwd": cwd, "lock_sha256": file_hash(lock), "exit_code": clean.returncode,
+                "output_sha256": hashlib.sha256(output.encode()).hexdigest()}, \
+               "aggregate hydration left worktree drift"
+    return {"schema_version": "juno_release_epoch_hydration.v1", "decision": decision,
+            "cwd": cwd, "lock_sha256": file_hash(lock),
+            "output_sha256": hashlib.sha256(output.encode()).hexdigest()}, None
+
+
 def validate_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("aggregate") and state["aggregate"].get("train_tip") == state["composition"]["tip_sha"]:
-        return save_epoch(controller, state, "READY_CAS", "AGGREGATE_REUSED", {"receipt": state["aggregate"]["receipt_id"]})
+    aggregate = state.get("aggregate")
+    if (isinstance(aggregate, dict)
+            and aggregate.get("schema_version") == "juno_release_epoch_aggregate.v1"
+            and aggregate.get("train_tip") == state["composition"]["tip_sha"]):
+        return save_epoch(controller, state, "READY_CAS", "AGGREGATE_REUSED", {"receipt": aggregate["receipt_id"]})
     config = task_runtime.load_config(controller); checkout = Path(state["composition"]["worktree"])
+    ensure_full_train_checkout(checkout)
     command = config["full_suite_validation"]
+    hydration, hydration_error = hydrate_aggregate_inputs(controller, state, checkout, command)
+    state["aggregate_hydration"] = hydration
+    if hydration_error:
+        state["aggregate"] = {"status": "failed", "stage": "hydration", "reason": hydration_error,
+                              "hydration": hydration, "train_tip": state["composition"]["tip_sha"]}
+        state.setdefault("aggregate_failures", []).append(state["aggregate"])
+        return save_epoch(controller, state, "RECOVERING", "AGGREGATE_HYDRATION_FAILED", state["aggregate"])
+    attempts = int(state.get("aggregate_attempts", 0)) + 1
+    state["aggregate_attempts"] = attempts
     result = subprocess.run(command["argv"], cwd=checkout / command["cwd"], text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             timeout=command.get("timeout_seconds", 3600))
-    log_path = epoch_root(controller) / state["epoch_id"] / "aggregate.log"
+    log_path = epoch_root(controller) / state["epoch_id"] / f"aggregate-{attempts:04d}.log"
     log_path.write_text(result.stdout[-int(command.get("max_output_bytes", 65536)):])
     if result.returncode:
-        state["aggregate"] = {"status": "failed", "exit_code": result.returncode,
-                              "log_sha256": file_hash(log_path), "train_tip": state["composition"]["tip_sha"]}
+        state["aggregate"] = {"status": "failed", "stage": "command", "attempt": attempts,
+                              "exit_code": result.returncode, "log_sha256": file_hash(log_path),
+                              "train_tip": state["composition"]["tip_sha"]}
+        state.setdefault("aggregate_failures", []).append(state["aggregate"])
         return save_epoch(controller, state, "RECOVERING", "AGGREGATE_FAILED", state["aggregate"])
     decisions = verify_member_evidence(state)
     if any(row["decision"] == "invalidated" for row in decisions):
@@ -771,10 +844,32 @@ def validate_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
         return save_epoch(controller, state, "NEEDS_OPERATOR", "EVIDENCE_INVALID", state["aggregate"])
     receipt = {"schema_version": "juno_release_epoch_aggregate.v1", "train_tip": state["composition"]["tip_sha"],
                "command": command, "command_sha256": digest(command), "exit_code": 0,
-               "log_sha256": file_hash(log_path), "reuse": decisions,
-               "semantic_reviews": "retained_from_frozen_candidates", "aggregate_runs": 1}
+               "log_sha256": file_hash(log_path), "hydration": hydration, "reuse": decisions,
+               "semantic_reviews": "retained_from_frozen_candidates", "aggregate_runs": attempts}
     receipt["receipt_id"] = digest(receipt); state["aggregate"] = receipt
     return save_epoch(controller, state, "READY_CAS", "AGGREGATE_PASS", receipt)
+
+
+def retry_epoch_aggregate(controller: Path, epoch_id: str, token: str) -> dict[str, Any]:
+    """Authorize one exact-tip retry after a receipt-backed aggregate failure."""
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    aggregate = state.get("aggregate")
+    if (state.get("state") != "RECOVERING" or not isinstance(aggregate, dict)
+            or aggregate.get("status") != "failed" or aggregate.get("stage") not in {"hydration", "command"}):
+        raise ReleaseTrainError("epoch has no failed aggregate gate eligible for retry")
+    checkout = Path(state["composition"]["worktree"])
+    ensure_full_train_checkout(checkout)
+    if git(checkout, "rev-parse", "HEAD") != state["composition"]["tip_sha"]:
+        raise ReleaseTrainError("private train tip drifted after aggregate failure")
+    failure_receipt = state.get("receipts", [])[-1] if state.get("receipts") else None
+    if not isinstance(failure_receipt, dict) or failure_receipt.get("transition") not in {
+            "AGGREGATE_FAILED", "AGGREGATE_HYDRATION_FAILED"}:
+        raise ReleaseTrainError("aggregate failure is not bound to its terminal receipt")
+    state["aggregate"] = None
+    detail = {"failed_receipt_id": failure_receipt["receipt_id"],
+              "train_tip": state["composition"]["tip_sha"],
+              "retry_sequence": len(state.get("aggregate_failures", []))}
+    return save_epoch(controller, state, "VALIDATING", "AGGREGATE_RETRY_AUTHORIZED", detail)
 
 
 def pre_cas_findings(controller: Path, state: dict[str, Any]) -> list[str]:
@@ -1033,6 +1128,8 @@ def parser() -> argparse.ArgumentParser:
     repair = subs.add_parser("repair"); repair.add_argument("epoch_id")
     repair.add_argument("--receipt", type=Path, required=True); repair.add_argument("--epoch-token", required=True)
     repair.add_argument("--json", action="store_true")
+    retry = subs.add_parser("retry"); retry.add_argument("epoch_id")
+    retry.add_argument("--epoch-token", required=True); retry.add_argument("--json", action="store_true")
     shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
     shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
     shadow.add_argument("--output", type=Path)
@@ -1061,6 +1158,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = eject_epoch_member(controller, args.epoch_id, args.task_id, args.reason, args.epoch_token)
         elif args.operation == "repair":
             result = apply_conflict_repair(controller, args.epoch_id, args.receipt, args.epoch_token)
+        elif args.operation == "retry":
+            result = retry_epoch_aggregate(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "shadow":
             result = shadow_epoch(controller, args.declaration, args.baseline)
         else:

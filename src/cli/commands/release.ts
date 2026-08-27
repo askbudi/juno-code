@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'shadow';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'retry' | 'shadow';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -83,6 +83,14 @@ export function configureReleaseTrainCommand(
     .requiredOption('--epoch-token <token>', 'Exact epoch fencing token')
     .action((epochId: string, options: { receipt: string; epochToken: string }) => invoke(
       'repair', epochId, ['--receipt', options.receipt, '--epoch-token', options.epochToken],
+    ));
+  train.command('retry')
+    .description('Receipt-backed fenced retry of one failed aggregate gate on the exact train tip')
+    .argument('<epoch-id>', 'Recovering epoch identity')
+    .requiredOption('--epoch-token <token>', 'Exact epoch fencing token')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: { epochToken: string; json?: boolean }) => invoke(
+      'retry', epochId, ['--epoch-token', options.epochToken, ...(options.json ? ['--json'] : [])],
     ));
   train.command('shadow')
     .description('Read-only production-shaped replay; never merges, releases, or mutates production')

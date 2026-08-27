@@ -74,10 +74,11 @@ yy release train eject EPOCH TASK --reason REASON --epoch-token TOKEN
 
 ## Composition and conflict recovery
 
-Composition uses an isolated controller-managed worktree/ref rooted at the
-sealed base. Dependency topology wins, then frozen FIFO order. Every admitted
-task gets a both-parent merge commit; task commits are never squashed, rebased,
-or rewritten. Ejected tips must be absent.
+Composition uses an isolated controller-managed **full** worktree/ref rooted at
+the sealed base. It disables and verifies absence of inherited sparse/skip-worktree
+state before composition or validation. Dependency topology wins, then frozen
+FIFO order. Every admitted task gets a both-parent merge commit; task commits
+are never squashed, rebased, or rewritten. Ejected tips must be absent.
 
 A conflict preserves the dirty checkout and writes one bounded repair packet
 with base/ours/theirs, conflict paths, task contract identity, dependencies, and
@@ -95,10 +96,21 @@ Material repair remains subject to scoped delta review.
 
 ## Evidence, CAS, and recovery
 
-Candidate evidence is reusable only with its complete-input identity. The train
-runs one aggregate suite per exact train tip. Retries reuse its exact receipt.
-Before CAS, drive rechecks queue records, ancestry/dispositions, runtime/policy,
-aggregate evidence, and the target base. Target movement preserves the epoch as
+Candidate evidence is reusable only with its complete-input identity. Before the
+aggregate gate, the train hydrates the selected validation root from its exact
+lock using the canonical hydration helper and proves ignored outputs left no Git
+drift. The train runs one aggregate suite per exact train tip. A failed aggregate
+moves to `RECOVERING`; authorize an exact-tip retry without state-file edits:
+
+```bash
+yy release train retry EPOCH --epoch-token TOKEN --json
+yy release train drive EPOCH --epoch-token TOKEN --json
+```
+
+The retry is fenced and binds the failure receipt; it never recomposes members or
+performs a duplicate CAS. A passing exact aggregate receipt is reused. Before CAS,
+drive rechecks queue records, ancestry/dispositions, runtime/policy, aggregate
+evidence, and the target base. Target movement preserves the epoch as
 `STALE`; create a successor seal on the new base and reuse only exact closures.
 
 A successful CAS advances the protected ref once, advances/readbacks the

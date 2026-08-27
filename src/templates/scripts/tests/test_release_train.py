@@ -27,7 +27,7 @@ class ReleaseTrainTests(unittest.TestCase):
         run(self.root, "git", "config", "user.email", "test@example.invalid")
         run(self.root, "git", "config", "user.name", "Test")
         (self.root / ".juno_task/scripts").mkdir(parents=True)
-        for name in ("release_train.py", "merge_queue.py"):
+        for name in ("release_train.py", "merge_queue.py", "worktree_hydration.py"):
             (self.root / ".juno_task/scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
         (self.root / ".juno_task/config").mkdir(parents=True)
         (self.root / ".juno_task/config/task-workspace.json").write_text(json.dumps({
@@ -246,6 +246,7 @@ raise SystemExit(2)
 
     def test_epoch_composes_history_validates_once_and_cas_once(self) -> None:
         old, req = self.prepare_epoch()
+        self.lean_checkout()
         sealed = runtime.seal_epoch(self.root, self.declaration)
         def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
             run(repository, "git", "update-ref", target_ref, tip, expected)
@@ -256,12 +257,80 @@ raise SystemExit(2)
         self.assertEqual(2, len(state["composition"]["commits"]))
         self.assertEqual(1, state["aggregate"]["aggregate_runs"])
         self.assertEqual(1, state["cas"]["target_move_count"])
+        train_checkout = Path(state["composition"]["worktree"])
+        self.assertTrue((train_checkout / "juno-code/package.json").is_file())
+        self.assertNotEqual("true", run(train_checkout, "git", "config", "--bool", "core.sparseCheckout"))
         self.assertEqual(state["composition"]["tip_sha"], run(self.root, "git", "rev-parse", "refs/heads/product"))
         for tip in (old, req):
             subprocess.run(["git", "merge-base", "--is-ancestor", tip,
                             state["composition"]["tip_sha"]], cwd=self.root, check=True)
         # Retry is observation-only and cannot duplicate commits, validation, or CAS.
         self.assertEqual(state, runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"]))
+
+    def test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate(self) -> None:
+        package = {"name": "fixture", "version": "1.0.0", "private": True}
+        lock = {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+                "requires": True, "packages": {"": package}}
+        (self.root / "juno-code/package.json").write_text(json.dumps(package) + "\n")
+        (self.root / "juno-code/package-lock.json").write_text(json.dumps(lock) + "\n")
+        (self.root / ".gitignore").write_text("juno-code/node_modules/\n")
+        config_path = self.root / ".juno_task/config/task-workspace.json"
+        config = json.loads(config_path.read_text())
+        config["full_suite_validation"] = {"id": "full", "cwd": "juno-code",
+            "argv": ["node", "-e", "process.exit(0)"], "timeout_seconds": 30,
+            "max_output_bytes": 1024}
+        config_path.write_text(json.dumps(config) + "\n")
+        run(self.root, "git", "add", "juno-code", ".gitignore", ".juno_task/config/task-workspace.json")
+        run(self.root, "git", "commit", "-m", "exact-lock aggregate fixture")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        self.prepare_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas):
+            state = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("RELEASE_READY", state["state"], state.get("aggregate"))
+        self.assertEqual("executed", state["aggregate"]["hydration"]["decision"])
+        stamp = Path(state["composition"]["worktree"]) / "juno-code/node_modules/.yylo-package-lock.sha256"
+        self.assertTrue(stamp.is_file())
+        self.assertEqual(hashlib.sha256((self.root / "juno-code/package-lock.json").read_bytes()).hexdigest(),
+                         stamp.read_text().strip())
+
+    def test_failed_aggregate_has_fenced_receipt_retry_without_duplicate_merge_or_cas(self) -> None:
+        self.prepare_epoch()
+        marker = self.root / "aggregate-ready"
+        config_path = self.root / ".juno_task/config/task-workspace.json"
+        config = json.loads(config_path.read_text())
+        config["full_suite_validation"]["argv"] = [
+            sys.executable, "-c",
+            f"import pathlib,sys; sys.exit(0 if pathlib.Path({str(marker)!r}).exists() else 7)",
+        ]
+        config_path.write_text(json.dumps(config) + "\n")
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        failed = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("RECOVERING", failed["state"])
+        self.assertEqual("command", failed["aggregate"]["stage"])
+        merge_commits = list(failed["composition"]["commits"])
+        marker.touch()
+        validating = runtime.retry_epoch_aggregate(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("VALIDATING", validating["state"])
+        self.assertEqual("AGGREGATE_RETRY_AUTHORIZED", validating["receipts"][-1]["transition"])
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "no failed aggregate"):
+            runtime.retry_epoch_aggregate(self.root, "rc-1", sealed["lease_token"])
+        cas_calls = 0
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            nonlocal cas_calls
+            cas_calls += 1
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas):
+            complete = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("RELEASE_READY", complete["state"])
+        self.assertEqual(2, complete["aggregate"]["aggregate_runs"])
+        self.assertEqual(merge_commits, complete["composition"]["commits"])
+        self.assertEqual(1, cas_calls)
+        self.assertEqual(1, complete["cas"]["target_move_count"])
 
     def test_required_failure_pauses_and_shadow_is_read_only(self) -> None:
         self.prepare_epoch()

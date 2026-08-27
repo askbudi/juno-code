@@ -39,6 +39,17 @@ describe('release train CLI', () => {
     expect(command('seal')?.description()).toContain('Explicitly close admission');
     expect(command('drive')?.description()).toContain('one target CAS');
     expect(command('repair')?.description()).toContain('one bounded');
+    expect(command('retry')?.description()).toContain('Receipt-backed fenced retry');
+  });
+
+  it('forwards fenced aggregate retry without weakening token identity', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureReleaseTrainCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'retry', 'epoch-1',
+      '--epoch-token', 'exact-token', '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('retry', 'epoch-1',
+      ['--epoch-token', 'exact-token', '--json']);
   });
 
   it('forwards optional ejection and read-only shadow projection', async () => {
