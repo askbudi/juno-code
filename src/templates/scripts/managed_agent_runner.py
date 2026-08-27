@@ -890,6 +890,164 @@ def finalize_managed_capture(capture: Path, stdout_path: Path, metadata: Path,
     return "managed_stdout_finalizer"
 
 
+def verified_artifact(mark: Any, label: str, *, limit: int = CAPTURE_LIMIT) -> tuple[Path, bytes]:
+    if (not isinstance(mark, dict) or not isinstance(mark.get("path"), str)
+            or not isinstance(mark.get("sha256"), str)
+            or not __import__("re").fullmatch(r"[0-9a-f]{64}", mark["sha256"])):
+        raise RunnerError(f"{label} evidence is malformed")
+    path = Path(mark["path"]).resolve()
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("not a regular file")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RunnerError(f"{label} artifact is missing") from exc
+    if not data or len(data) > limit or sha(data) != mark["sha256"]:
+        raise RunnerError(f"{label} artifact identity mismatch")
+    if "bytes" in mark and mark.get("bytes") != len(data):
+        raise RunnerError(f"{label} artifact size mismatch")
+    return path, data
+
+
+def continuity_session(path: Path) -> str:
+    continuity = load_object(path, "session continuity")
+    scopes = continuity.get("scopes")
+    if continuity.get("version") != 2 or not isinstance(scopes, dict) or len(scopes) != 1:
+        raise RunnerError("session continuity identity is malformed")
+    scope = next(iter(scopes.values()))
+    active = scope.get("active") if isinstance(scope, dict) else None
+    branches = scope.get("branches") if isinstance(scope, dict) else None
+    branch = branches.get(active) if isinstance(branches, dict) and isinstance(active, str) else None
+    session = branch.get("session_id") if isinstance(branch, dict) else None
+    if not isinstance(session, str) or not session.strip():
+        raise RunnerError("session continuity identity is malformed")
+    return session.strip()
+
+
+def recover_worker_capture(args: argparse.Namespace) -> int:
+    """Finalize one successful worker whose immutable provider capture was absent.
+
+    This path never invokes a model. It binds the original failed receipt, its
+    launch/log evidence, continuity record, and the already-clean both-parent
+    result into a distinct canonical receipt.
+    """
+    source_receipt = Path(args.failed_receipt).resolve()
+    source_root = source_receipt.parent
+    failed_bytes = source_receipt.read_bytes()
+    failed = load_object(source_receipt, "failed managed-worker receipt")
+    if failed_bytes != canonical(failed):
+        raise RunnerError("failed managed-worker receipt must have canonical immutable bytes")
+    if (source_receipt.name != "receipt.json"
+            or failed.get("schema_version") != SCHEMA or failed.get("mode") != "worker"
+            or failed.get("state") != "failed" or failed.get("semantic_outcome") != "failed"
+            or failed.get("failure") != "capture is missing or stale"
+            or failed.get("exit_code") != 0 or failed.get("timed_out") is not False
+            or failed.get("exit_signal") is not None or failed.get("interrupted_signal") is not None
+            or failed.get("termination_events") != []):
+        raise RunnerError("failed receipt is not an eligible capture-only worker failure")
+    launch_path, launch_bytes = verified_artifact(failed.get("launch"), "failed launch")
+    if launch_path != (source_root / "launch.json").resolve():
+        raise RunnerError("failed launch is not colocated with its immutable receipt")
+    launch = load_object(launch_path, "failed launch")
+    if launch_bytes != canonical(launch):
+        raise RunnerError("failed launch bytes are not canonical")
+    identity = launch.get("identity")
+    if (launch.get("schema_version") != SCHEMA or launch.get("mode") != "worker"
+            or launch.get("effective_hook_policy") != failed.get("effective_hook_policy")
+            or identity != failed.get("identity")
+            or not isinstance(identity, dict)
+            or identity.get("admission_kind") != "sealed_release_epoch_conflict"):
+        raise RunnerError("failed launch/receipt identity mismatch")
+    argv = launch.get("argv")
+    if (not isinstance(argv, list) or not argv or not all(isinstance(value, str) for value in argv)
+            or launch.get("argv_sha256") != sha(shlex.join(argv).encode())):
+        raise RunnerError("failed launch argv identity mismatch")
+    for label, mark in (("prompt", launch.get("prompt")),
+                        ("derived config", (launch.get("compatible_config") or {}).get("derived")),
+                        ("launcher config", launch.get("launcher_config"))):
+        verified_artifact(mark, label)
+
+    terminal_path = source_root / "terminal.json"
+    terminal = load_object(terminal_path, "failed terminal")
+    if terminal_path.read_bytes() != canonical(terminal):
+        raise RunnerError("failed terminal bytes are not canonical")
+    for key, value in terminal.items():
+        if failed.get(key) != value:
+            raise RunnerError("failed terminal/receipt identity mismatch")
+
+    stdout_path = source_root / "stdout.log"
+    stdout = stdout_path.read_bytes()
+    if not stdout or len(stdout) > CAPTURE_LIMIT or not stdout.decode("utf-8").strip():
+        raise RunnerError("bounded worker stdout response is missing or malformed")
+    live_path, live = verified_artifact(failed.get("live_log"), "failed live log",
+                                        limit=64 * CAPTURE_LIMIT)
+    if stdout not in live:
+        raise RunnerError("worker stdout is not bound by the immutable live log")
+    continuity_path = source_root / "session_metadata/session_continuity.v2.json"
+    session = continuity_session(continuity_path)
+    if session.encode() not in live:
+        raise RunnerError("session continuity is not bound by the immutable live log")
+
+    agent_root = Path(str(launch.get("agent_root"))).resolve()
+    before = identity.get("before")
+    if not isinstance(before, dict) or Path(str(before.get("root"))).resolve() != agent_root:
+        raise RunnerError("failed worker root identity mismatch")
+    after = fingerprint(agent_root)
+    if after["status"] or after["branch_ref"] != before.get("branch_ref") \
+            or after["git_common_dir"] != before.get("git_common_dir"):
+        raise RunnerError("recovered worker checkout is not clean or identity-bound")
+    ours, theirs = identity.get("ours_sha"), identity.get("theirs_sha")
+    if not SHA_RE.fullmatch(str(ours)) or not SHA_RE.fullmatch(str(theirs)):
+        raise RunnerError("failed conflict parent identity is malformed")
+    parents = git(agent_root, "show", "-s", "--format=%P", after["head"]).split()
+    if len(parents) != 2 or ours not in parents or theirs not in parents:
+        raise RunnerError("recovered worker did not preserve the required both-parent commit")
+    changed = sorted(filter(None, git(agent_root, "diff", "--name-only", f"{ours}..{after['head']}").splitlines()))
+    allowed = identity.get("expected_paths")
+    if not isinstance(allowed, list) or any(not isinstance(path, str) for path in allowed):
+        raise RunnerError("failed conflict path admission is malformed")
+    unexpected = [path for path in changed if not any(
+        path == admitted or path.startswith(admitted.rstrip("/") + "/") for admitted in allowed)]
+    if unexpected:
+        raise RunnerError("recovered worker changed paths outside conflict admission")
+
+    out = safe_out_dir(Path(args.out_dir))
+    response_path = out / "response.txt"; atomic_bytes(response_path, stdout)
+    recovery = {
+        "schema_version": "juno_managed_agent_recovery.v1",
+        "kind": "capture_only_no_model_rerun",
+        "failed_receipt": evidence(source_receipt),
+        "failed_terminal": evidence(terminal_path),
+        "launch": evidence(launch_path),
+        "live_log": {"path": str(live_path), "bytes": len(live), "sha256": sha(live)},
+        "stdout": evidence(stdout_path),
+        "continuity": evidence(continuity_path),
+        "validated_exit_code": 0,
+    }
+    completed = now()
+    receipt = {
+        "schema_version": SCHEMA, "state": "succeeded", "mode": "worker",
+        "semantic_outcome": "completed", "completed_at": completed, "exit_code": 0,
+        "timed_out": False, "exit_signal": None, "interrupted_signal": None,
+        "termination_events": [], "session_id": session,
+        "capture_source": "receipt_bound_worker_recovery", "safe_next_action": "consume_receipt",
+        "tool_id": failed.get("tool_id"), "effective_hook_policy": failed.get("effective_hook_policy"),
+        "identity": {**identity, "changed_paths": changed, "unexpected_paths": []},
+        "subject_after": after, "argv": argv, "argv_sha256": launch["argv_sha256"],
+        "command_sha256": launch["argv_sha256"], "review_binding": None,
+        "artifacts": {"response": evidence(response_path)}, "recovery": recovery,
+    }
+    terminal_out = {key: receipt[key] for key in (
+        "schema_version", "state", "semantic_outcome", "completed_at", "exit_code",
+        "timed_out", "exit_signal", "interrupted_signal", "termination_events", "session_id",
+        "capture_source", "safe_next_action")}
+    atomic_json(out / "terminal.json", terminal_out)
+    atomic_json(out / "receipt.json", receipt)
+    print(json.dumps({"receipt": str((out / "receipt.json").resolve()),
+                      "session_id": session, "recovered_without_model_rerun": True}))
+    return 0
+
+
 def group_active(pgid: int) -> bool:
     try: os.killpg(pgid, 0); return True
     except ProcessLookupError: return False
@@ -1246,12 +1404,18 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--external-side-effects", choices=("forbidden",), default="forbidden")
     p.add_argument("--lifecycle-hooks", choices=("disabled",), default="disabled")
     p.add_argument("--timeout-seconds", type=float, default=7200.0)
+    recover = sub.add_parser("recover-worker-capture", allow_abbrev=False)
+    recover.add_argument("--failed-receipt", required=True)
+    recover.add_argument("--out-dir", required=True)
     return top
 
 
 def main() -> int:
     args = parser().parse_args()
-    try: return run(args)
+    try:
+        if args.command == "recover-worker-capture":
+            return recover_worker_capture(args)
+        return run(args)
     except RunnerError as exc:
         print(f"managed_agent_runner.py: {exc}", file=sys.stderr); return 1
     except (OSError, ValueError) as exc:
