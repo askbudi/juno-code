@@ -276,6 +276,7 @@ raise SystemExit(2)
                                        env=environment, text=True, input=message + "\n").strip()
 
     def prepare_serial_conflict_epoch(self) -> tuple[str, str, list[str]]:
+        """Build the portable six-member rc7/rc8 order and two-conflict topology."""
         conflict_paths = [".juno_task/managed-assets.json", ".juno_task/scripts/release_train.py",
             "juno-code/src/cli/__tests__/release-command.test.ts",
             "juno-code/src/cli/commands/release.ts",
@@ -321,8 +322,15 @@ raise SystemExit(2)
                  "task_id": "pA6M9l", "pre_sha": self.base, "candidate_tip": first,
                  "merge_commit": proven, "post_tree": proven_tree}]}}
         (epoch_root / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        later_ids = ["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"]
+        later = []
+        for task_id in later_ids:
+            path = f"src/{task_id}.txt"
+            later.append((task_id, self.commit_files_tree(
+                candidate_base, [path], task_id + "\n", task_id + " candidate"), [path]))
+        members = [("pA6M9l", first, conflict_paths), ("0y4ljs", second, conflict_paths), *later]
         self.state["tasks"] = {}
-        for sequence, (task_id, tip) in enumerate((("pA6M9l", first), ("0y4ljs", second)), 1):
+        for sequence, (task_id, tip, changed_paths) in enumerate(members, 1):
             task_path = self.root / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
             task_path.parent.mkdir(parents=True, exist_ok=True)
             task_path.write_text(f"---\nid: {task_id}\nstatus: in_progress\n---\n")
@@ -331,7 +339,7 @@ raise SystemExit(2)
             tree = run(self.root, "git", "rev-parse", f"{tip}^{{tree}}")
             self.state["tasks"][task_id] = {"task_id": task_id, "state": "QUEUED",
                 "target_ref": "refs/heads/product", "enqueue_sequence": sequence,
-                "changed_paths": conflict_paths, "tip_sha": tip,
+                "changed_paths": changed_paths, "tip_sha": tip,
                 "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
                     "closure_sha256": hashlib.sha256(task_id.encode()).hexdigest(),
                     "tip_sha": tip, "tree_sha": tree},
@@ -339,7 +347,9 @@ raise SystemExit(2)
         self.write_board(); self.write_state()
         self.assertIsNotNone(runtime._proven_forecast_composition(
             self.root, self.root, "pA6M9l", self.base, first, "rc-1"))
-        self.write_declaration(["pA6M9l", "0y4ljs"], [{"before": "pA6M9l", "after": "0y4ljs"}])
+        order = [task_id for task_id, _, _ in members]
+        self.write_declaration(order, [{"before": order[index], "after": order[index + 1]}
+                                       for index in range(len(order) - 1)])
         return first, second, conflict_paths
 
     def test_epoch_seal_is_complete_immutable_and_idempotent(self) -> None:
@@ -382,11 +392,15 @@ raise SystemExit(2)
                          [row["conflict_paths"] for row in manifest["conflicts"]])
         self.assertEqual([first, second], [row["candidate_tip"] for row in manifest["conflicts"]])
         self.assertEqual(2, manifest["required_conflict_count"])
-        self.assertTrue(manifest["forecast_complete"])
+        self.assertTrue(manifest["member_accounting_complete"])
+        self.assertFalse(manifest["forecast_complete"])
         self.assertFalse(manifest["exact_composition_complete"])
         self.assertFalse(manifest["policy_repair_budget_feasible"])
         self.assertFalse(manifest["repair_budget_feasible"])
-        self.assertEqual([], manifest["indeterminate_members"])
+        self.assertEqual(["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
+                         [row["task_id"] for row in manifest["indeterminate_members"]])
+        self.assertEqual(["pA6M9l", "0y4ljs", "U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
+                         [row["task_id"] for row in manifest["compositions"]])
         self.assertEqual("0y4ljs", manifest["unresolved_boundary"]["task_id"])
         self.assertEqual("required_conflicting_candidate.v1",
                          manifest["identity"]["forecast_policy"]["repair_unit"])
@@ -440,7 +454,8 @@ raise SystemExit(2)
         self.assertEqual(["pA6M9l", "0y4ljs"], [row["task_id"] for row in manifest["conflicts"]])
         self.assertEqual(["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
                          [row["task_id"] for row in manifest["indeterminate_members"]])
-        self.assertTrue(manifest["forecast_complete"])
+        self.assertTrue(manifest["member_accounting_complete"])
+        self.assertFalse(manifest["forecast_complete"])
         self.assertFalse(manifest["exact_composition_complete"])
         self.assertFalse(manifest["repair_budget_feasible"])
         self.assertEqual(expected["sot-ledger-wave1-rc7"]["repair"],

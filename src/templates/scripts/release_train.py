@@ -1048,8 +1048,8 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                 conflicts.append({**row, "conflict_paths": conflict_paths,
                                   "required": member["required"],
                                   "forecast_resolution": "immutable_receipt_bound_composition"})
-    member_coverage_complete = len(compositions) == len(plan["order"])
-    exact_composition_complete = member_coverage_complete and unresolved_boundary is None
+    member_accounting_complete = len(compositions) == len(plan["order"])
+    exact_composition_complete = member_accounting_complete and unresolved_boundary is None
     policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
               "repair_budget": 1,
               "repair_unit": "required_conflicting_candidate.v1",
@@ -1072,7 +1072,11 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
             "identity_sha256": digest(identity), "compositions": compositions,
             "conflicts": conflicts, "indeterminate_members": indeterminate_members,
             "unresolved_boundary": unresolved_boundary,
-            "forecast_complete": member_coverage_complete,
+            "member_accounting_complete": member_accounting_complete,
+            # Accounting for every member is not an exact ordered forecast. Once a
+            # material repair result is unknowable, later independent-base probes
+            # remain conservative diagnostics and the forecast is incomplete.
+            "forecast_complete": exact_composition_complete,
             "exact_composition_complete": exact_composition_complete,
             "required_conflict_count": required_conflicts,
             "policy_repair_budget_feasible": policy_feasible,
