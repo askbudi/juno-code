@@ -10,6 +10,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,8 @@ EPOCH_PLAN_SCHEMA = "juno_release_epoch_plan.v1"
 EPOCH_SEAL_SCHEMA = "juno_release_epoch_seal.v1"
 EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
 EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
+CONFLICT_MANIFEST_SCHEMA = "juno_release_epoch_conflict_manifest.v1"
+CONFLICT_FORECAST_POLICY_SCHEMA = "juno_release_epoch_conflict_forecast_policy.v1"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
 BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
@@ -867,6 +870,114 @@ def epoch_dependency_order(members: list[dict[str, Any]], declaration: dict[str,
     return order, [list(edge) for edge in sorted(edges)]
 
 
+def _forecast_git(repository: Path, *args: str, env: Optional[dict[str, str]] = None,
+                  check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(["git", "-C", str(repository), *args], text=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, env=env)
+    if check and result.returncode:
+        raise ReleaseTrainError("conflict forecast Git operation failed: " + result.stdout.strip()[:1000])
+    return result
+
+
+def _resolve_forecast_conflicts(checkout: Path) -> list[str]:
+    unmerged = _forecast_git(checkout, "ls-files", "-u", "-z").stdout
+    stages: dict[str, set[int]] = {}
+    for entry in unmerged.split("\0"):
+        if not entry:
+            continue
+        metadata, separator, path = entry.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or not fields[2].isdigit():
+            raise ReleaseTrainError("conflict forecast produced an unreadable unmerged index")
+        stages.setdefault(path, set()).add(int(fields[2]))
+    if not stages:
+        raise ReleaseTrainError("conflict forecast merge failed without exact conflict paths")
+    for path, present in sorted(stages.items()):
+        if 3 in present:
+            _forecast_git(checkout, "checkout", "--theirs", "--", path)
+        else:
+            _forecast_git(checkout, "rm", "-f", "--", path)
+    _forecast_git(checkout, "add", "-A")
+    return sorted(stages)
+
+
+def forecast_epoch_conflicts(repository: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    """Precompose every frozen member in an isolated clone without canonical mutation.
+
+    A conflicting member is resolved to its incoming tree only inside the disposable
+    forecast clone. This authorization-neutral rule lets later serial conflicts be
+    discovered while granting no repair or composition authority.
+    """
+    by_id = {row["task_id"]: row for row in plan["members"]}
+    conflicts: list[dict[str, Any]] = []
+    compositions: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="yylo-epoch-forecast-") as temporary:
+        checkout = Path(temporary) / "checkout"
+        _forecast_git(repository, "clone", "--quiet", "--shared", "--no-checkout",
+                      str(repository), str(checkout))
+        _forecast_git(checkout, "checkout", "--quiet", "--detach", plan["base_sha"])
+        for index, task_id in enumerate(plan["order"]):
+            member = by_id[task_id]
+            before = git(checkout, "rev-parse", "HEAD")
+            before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
+            if subprocess.run(["git", "-C", str(checkout), "merge-base", "--is-ancestor",
+                               member["tip_sha"], before], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode == 0:
+                compositions.append({"task_id": task_id, "pre_sha": before,
+                                     "pre_tree": before_tree, "post_sha": before,
+                                     "post_tree": before_tree, "decision": "already_present"})
+                continue
+            merged = _forecast_git(checkout, "merge", "--no-ff", "--no-commit",
+                                   member["tip_sha"], check=False)
+            conflict_paths: list[str] = []
+            if merged.returncode:
+                conflict_paths = _resolve_forecast_conflicts(checkout)
+            tree = _forecast_git(checkout, "write-tree").stdout.strip()
+            if not SHA_RE.fullmatch(tree):
+                raise ReleaseTrainError("conflict forecast did not produce an exact tree")
+            fixed_time = f"2000-01-01T00:00:{index % 60:02d}Z"
+            environment = {**os.environ, "GIT_AUTHOR_NAME": "YYLO Conflict Forecast",
+                           "GIT_AUTHOR_EMAIL": "forecast@invalid.local",
+                           "GIT_COMMITTER_NAME": "YYLO Conflict Forecast",
+                           "GIT_COMMITTER_EMAIL": "forecast@invalid.local",
+                           "GIT_AUTHOR_DATE": fixed_time, "GIT_COMMITTER_DATE": fixed_time}
+            commit = _forecast_git(checkout, "commit-tree", tree, "-p", before, "-p",
+                                   member["tip_sha"], env=environment).stdout.strip()
+            if not SHA_RE.fullmatch(commit):
+                raise ReleaseTrainError("conflict forecast did not produce an exact composition commit")
+            _forecast_git(checkout, "reset", "--quiet", "--hard", commit)
+            row = {"task_id": task_id, "pre_sha": before, "pre_tree": before_tree,
+                   "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                   "post_sha": commit, "post_tree": tree,
+                   "decision": "conflict" if conflict_paths else "clean"}
+            compositions.append(row)
+            if conflict_paths:
+                conflicts.append({**row, "conflict_paths": conflict_paths,
+                                  "required": member["required"],
+                                  "forecast_resolution": "incoming_candidate_observation_only"})
+    policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
+              "repair_budget": 1, "repair_unit": "required_conflicting_candidate",
+              "serial_forecast_resolution": "incoming_candidate_observation_only"}
+    required_conflicts = sum(1 for row in conflicts if row["required"])
+    identity = {"declaration": plan["declaration"], "base_sha": plan["base_sha"],
+                "order": plan["order"], "members": [{"task_id": row["task_id"],
+                    "tip_sha": row["tip_sha"], "tree_sha": row["tree_sha"],
+                    "task_revision": row["task_revision"],
+                    "task_sha256": row["task_sha256"],
+                    "queue_record_sha256": row["queue_record_sha256"],
+                    "complete_input_identity_sha256": digest(row["complete_input_identity"]),
+                    "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
+                    for row in plan["members"]],
+                "runtime_sha256": plan["runtime_sha256"],
+                "policy_sha256": plan["policy_sha256"], "forecast_policy": policy}
+    body = {"schema_version": CONFLICT_MANIFEST_SCHEMA, "identity": identity,
+            "identity_sha256": digest(identity), "compositions": compositions,
+            "conflicts": conflicts, "required_conflict_count": required_conflicts,
+            "repair_budget_feasible": required_conflicts <= policy["repair_budget"]}
+    return {**body, "manifest_sha256": digest(body)}
+
+
 def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
     declaration, resolved = load_declaration(declaration_path)
     config = task_runtime.load_config(controller)
@@ -895,6 +1006,8 @@ def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]
             "requested_version": declaration["requested_version"],
             "exclusions": declaration["exclusions"],
             "mutation_authority": "explicit_seal_required"}
+    manifest = forecast_epoch_conflicts(repository, body)
+    body["conflict_manifest"] = manifest
     return {**body, "plan_id": digest(body)}
 
 
@@ -911,6 +1024,13 @@ def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
     if invalid:
         raise ReleaseTrainError("candidate.complete_input_missing:" + ",".join(sorted(invalid))
                                 + "; next=regenerate exact review-ready closure before seal")
+    manifest = plan["conflict_manifest"]
+    if not manifest["repair_budget_feasible"]:
+        raise ReleaseTrainError(
+            "conflict_manifest.repair_budget_infeasible:required_conflicts="
+            f"{manifest['required_conflict_count']},budget="
+            f"{manifest['identity']['forecast_policy']['repair_budget']}; "
+            "next=revise the declared repair policy or candidate set before seal")
     path = epoch_state_path(controller, plan["epoch_id"])
     if path.exists():
         current = read_epoch(controller, plan["epoch_id"])
@@ -1443,7 +1563,8 @@ def shadow_source(controller: Path, source_path: Path) -> tuple[dict[str, Any], 
         raise ReleaseTrainError("historical epoch lacks an immutable sealed plan")
     plan_fields = {key: seal[key] for key in ("schema_version", "epoch_id", "declaration",
         "target_ref", "base_sha", "members", "order", "dependency_edges", "runtime_sha256",
-        "policy_sha256", "requested_version", "exclusions", "mutation_authority") if key in seal}
+        "policy_sha256", "requested_version", "exclusions", "mutation_authority",
+        "conflict_manifest") if key in seal}
     if digest(plan_fields) != seal["plan_id"]:
         raise ReleaseTrainError("historical epoch sealed plan identity is invalid")
     receipts = value.get("receipts")

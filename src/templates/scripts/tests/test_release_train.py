@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -255,6 +256,63 @@ raise SystemExit(2)
         self.declaration.write_text(json.dumps(declaration, sort_keys=True) + "\n")
         return old, req
 
+    def commit_files_tree(self, parent: str, paths: list[str], content: str, message: str) -> str:
+        with tempfile.NamedTemporaryFile() as stream:
+            index = stream.name
+        environment = {**os.environ, "GIT_INDEX_FILE": index,
+                       "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+                       "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+                       "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z",
+                       "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z"}
+        subprocess.run(["git", "read-tree", parent], cwd=self.root, env=environment, check=True)
+        for path in paths:
+            blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"], cwd=self.root,
+                                           env=environment, text=True, input=content).strip()
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo", "100644", blob, path],
+                           cwd=self.root, env=environment, check=True)
+        tree = subprocess.check_output(["git", "write-tree"], cwd=self.root,
+                                       env=environment, text=True).strip()
+        return subprocess.check_output(["git", "commit-tree", tree, "-p", parent], cwd=self.root,
+                                       env=environment, text=True, input=message + "\n").strip()
+
+    def prepare_serial_conflict_epoch(self) -> tuple[str, str, list[str]]:
+        conflict_paths = [".juno_task/managed-assets.json", ".juno_task/scripts/release_train.py",
+            "juno-code/src/cli/__tests__/release-command.test.ts",
+            "juno-code/src/cli/commands/release.ts",
+            "juno-code/src/templates/scripts/release_train.py"]
+        for path in conflict_paths:
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("rc7-rc8 base\n")
+        run(self.root, "git", "add", *conflict_paths)
+        run(self.root, "git", "commit", "-m", "rc7 rc8 conflict base")
+        candidate_base = run(self.root, "git", "rev-parse", "HEAD")
+        first = self.commit_files_tree(candidate_base, conflict_paths, "pA6M9l\n", "pA6M9l candidate")
+        second = self.commit_files_tree(candidate_base, conflict_paths, "0y4ljs\n", "0y4ljs candidate")
+        for path in conflict_paths:
+            (self.root / path).write_text("protected target\n")
+        run(self.root, "git", "add", *conflict_paths)
+        run(self.root, "git", "commit", "-m", "protected target conflict")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        self.state["tasks"] = {}
+        for sequence, (task_id, tip) in enumerate((("pA6M9l", first), ("0y4ljs", second)), 1):
+            task_path = self.root / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
+            task_path.parent.mkdir(parents=True, exist_ok=True)
+            task_path.write_text(f"---\nid: {task_id}\nstatus: in_progress\n---\n")
+            self.board[task_id] = {"id": task_id, "status": "in_progress", "blocked_by": [],
+                                   "last_modified": "rc7-rc8-fixture"}
+            tree = run(self.root, "git", "rev-parse", f"{tip}^{{tree}}")
+            self.state["tasks"][task_id] = {"task_id": task_id, "state": "QUEUED",
+                "target_ref": "refs/heads/product", "enqueue_sequence": sequence,
+                "changed_paths": conflict_paths, "tip_sha": tip,
+                "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
+                    "closure_sha256": hashlib.sha256(task_id.encode()).hexdigest(),
+                    "tip_sha": tip, "tree_sha": tree},
+                "validation": [{"status": "passed", "receipt_id": task_id}]}
+        self.write_board(); self.write_state()
+        self.write_declaration(["pA6M9l", "0y4ljs"], [{"before": "pA6M9l", "after": "0y4ljs"}])
+        return first, second, conflict_paths
+
     def test_epoch_seal_is_complete_immutable_and_idempotent(self) -> None:
         self.prepare_epoch()
         plan = runtime.build_epoch_plan(self.root, self.declaration)
@@ -280,6 +338,35 @@ raise SystemExit(2)
         with self.assertRaisesRegex(runtime.ReleaseTrainError, "candidate.complete_input_missing:REQ"):
             runtime.seal_epoch(self.root, self.declaration)
         self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
+
+    def test_rc7_rc8_serial_conflicts_are_forecast_and_infeasible_seal_is_read_only(self) -> None:
+        first, second, conflict_paths = self.prepare_serial_conflict_epoch()
+        before_status = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
+        before_refs = run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)")
+        before_objects = run(self.root, "git", "count-objects", "-v")
+        plan = runtime.build_epoch_plan(self.root, self.declaration)
+        repeated = runtime.build_epoch_plan(self.root, self.declaration)
+        manifest = plan["conflict_manifest"]
+        self.assertEqual(plan, repeated)
+        self.assertEqual(["pA6M9l", "0y4ljs"], [row["task_id"] for row in manifest["conflicts"]])
+        self.assertEqual([sorted(conflict_paths), sorted(conflict_paths)],
+                         [row["conflict_paths"] for row in manifest["conflicts"]])
+        self.assertEqual([first, second], [row["candidate_tip"] for row in manifest["conflicts"]])
+        self.assertEqual(2, manifest["required_conflict_count"])
+        self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertEqual(runtime.digest({key: value for key, value in manifest.items()
+                                         if key != "manifest_sha256"}), manifest["manifest_sha256"])
+        self.assertEqual(before_status, run(self.root, "git", "status", "--porcelain=v1",
+                                            "--untracked-files=all"))
+        self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
+                                          "--format=%(refname) %(objectname)"))
+        self.assertEqual(before_objects, run(self.root, "git", "count-objects", "-v"))
+        with self.assertRaisesRegex(runtime.ReleaseTrainError,
+                                    "conflict_manifest.repair_budget_infeasible"):
+            runtime.seal_epoch(self.root, self.declaration)
+        self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
+        self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
+                                          "--format=%(refname) %(objectname)"))
 
     def test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once(self) -> None:
         old, req = self.prepare_epoch()
