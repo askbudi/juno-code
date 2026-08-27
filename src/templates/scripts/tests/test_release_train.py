@@ -294,6 +294,33 @@ raise SystemExit(2)
         run(self.root, "git", "add", *conflict_paths)
         run(self.root, "git", "commit", "-m", "protected target conflict")
         self.base = run(self.root, "git", "rev-parse", "HEAD")
+        # Model the immutable rc7 receipt-bound pA6M9l both-parent composition.
+        with tempfile.TemporaryDirectory() as temporary:
+            clone = Path(temporary) / "composition"
+            run(Path(temporary), "git", "clone", "--quiet", str(self.root), str(clone))
+            run(clone, "git", "checkout", "--quiet", "--detach", self.base)
+            merge = subprocess.run(["git", "merge", "--no-ff", "--no-commit", first], cwd=clone,
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertNotEqual(0, merge.returncode)
+            run(clone, "git", "checkout", "--theirs", "--", *conflict_paths)
+            run(clone, "git", "add", "-A")
+            run(clone, "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "--quiet", "-m", "receipt-bound pA6M9l repair")
+            proven = run(clone, "git", "rev-parse", "HEAD")
+            run(self.root, "git", "fetch", "--quiet", str(clone), proven)
+        proven_tree = run(self.root, "git", "rev-parse", f"{proven}^{{tree}}")
+        epoch_root = self.root / ".juno_task/runtime/release-epochs/rc-0"
+        receipt_path = epoch_root / "receipts/0003-repair_consumed.json"
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt = {"schema_version": runtime.EPOCH_RECEIPT_SCHEMA, "epoch_id": "rc-0",
+                   "transition": "REPAIR_CONSUMED", "detail": {"repair_commit": proven}}
+        receipt_path.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+        receipt_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        state = {"epoch_id": "rc-0", "receipts": [{"transition": "REPAIR_CONSUMED",
+                 "path": str(receipt_path), "sha256": receipt_sha}], "composition": {"commits": [{
+                 "task_id": "pA6M9l", "pre_sha": self.base, "candidate_tip": first,
+                 "merge_commit": proven, "post_tree": proven_tree}]}}
+        (epoch_root / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
         self.state["tasks"] = {}
         for sequence, (task_id, tip) in enumerate((("pA6M9l", first), ("0y4ljs", second)), 1):
             task_path = self.root / ".juno_task/tasks" / task_id[:2].lower() / f"{task_id}.md"
@@ -310,6 +337,8 @@ raise SystemExit(2)
                     "tip_sha": tip, "tree_sha": tree},
                 "validation": [{"status": "passed", "receipt_id": task_id}]}
         self.write_board(); self.write_state()
+        self.assertIsNotNone(runtime._proven_forecast_composition(
+            self.root, self.root, "pA6M9l", self.base, first, "rc-1"))
         self.write_declaration(["pA6M9l", "0y4ljs"], [{"before": "pA6M9l", "after": "0y4ljs"}])
         return first, second, conflict_paths
 
@@ -353,7 +382,14 @@ raise SystemExit(2)
                          [row["conflict_paths"] for row in manifest["conflicts"]])
         self.assertEqual([first, second], [row["candidate_tip"] for row in manifest["conflicts"]])
         self.assertEqual(2, manifest["required_conflict_count"])
+        self.assertEqual(1, manifest["required_conflict_set_count"])
+        self.assertTrue(manifest["forecast_complete"])
+        self.assertTrue(manifest["policy_repair_budget_feasible"])
+        # Phase 1 forecasts one logical set, but seal remains closed until Phase 3
+        # supplies the grouped-repair runtime capability.
         self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertEqual("immutable_receipt_bound_composition",
+                         manifest["conflicts"][0]["forecast_resolution"])
         self.assertEqual(runtime.digest({key: value for key, value in manifest.items()
                                          if key != "manifest_sha256"}), manifest["manifest_sha256"])
         self.assertEqual(before_status, run(self.root, "git", "status", "--porcelain=v1",
