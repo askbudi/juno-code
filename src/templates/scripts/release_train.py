@@ -926,6 +926,36 @@ def installed_instruction_bundle(controller: Path) -> tuple[Optional[dict[str, A
              identity.get("assetCount") == len(assets) and
              identity.get("assetsSha256") == assets_identity and
              identity.get("bundleSha256") == bundle_identity)
+    required_exact = {"AGENTS.md", "CLAUDE.md"}
+    required_roots = (".agents/skills/", ".claude/skills/", ".pi/skills/",
+                      ".juno_task/prompts/", ".juno_task/wiki/",
+                      ".juno_task/workflows/", ".juno_task/scripts/")
+    destinations = set(assets)
+    valid = valid and required_exact.issubset(destinations) and all(
+        any(destination.startswith(root) for destination in destinations)
+        for root in required_roots)
+    controller_root = controller.resolve()
+    if valid:
+        for destination, record in assets.items():
+            relative = Path(destination)
+            if (relative.is_absolute() or ".." in relative.parts or not isinstance(record, dict)
+                    or not all(isinstance(record.get(key), str) for key in
+                               ("type", "sourceSha256", "installedSha256"))):
+                valid = False
+                break
+            target = controller_root / relative
+            try:
+                content = target.read_bytes()
+                actual = hashlib.sha256(content).hexdigest()
+                resolved = target.resolve(strict=True)
+            except OSError:
+                valid = False
+                break
+            if (resolved != target.absolute() or not target.is_file()
+                    or record["sourceSha256"] != actual
+                    or record["installedSha256"] != actual):
+                valid = False
+                break
     if not valid:
         return None, "instruction_bundle.mixed_or_partial"
     return identity, None

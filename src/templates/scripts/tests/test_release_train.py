@@ -272,15 +272,34 @@ raise SystemExit(2)
         missing = runtime.shadow_epoch(self.root, self.declaration, None)
         self.assertEqual("BLOCK", missing["decision"])
         self.assertIn("instruction_bundle.missing_or_invalid", missing["blocking_reason_codes"])
-        assets_identity = hashlib.sha256(b"[]").hexdigest()
+        destinations = ["AGENTS.md", "CLAUDE.md",
+            ".agents/skills/example/SKILL.md", ".claude/skills/example/SKILL.md",
+            ".pi/skills/example/SKILL.md", ".juno_task/prompts/example.md",
+            ".juno_task/wiki/example.md", ".juno_task/workflows/example.yaml",
+            ".juno_task/scripts/example.py"]
+        assets = {}
+        for destination in destinations:
+            target = self.root / destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            content = (destination + "\n").encode()
+            target.write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            assets[destination] = {"type": "fixture", "templateVersion": "1.0.0",
+                "sourceSha256": digest, "installedSha256": digest}
+        projected = [{"destination": destination, "type": record["type"],
+                      "sourceSha256": record["sourceSha256"],
+                      "installedSha256": record["installedSha256"]}
+                     for destination, record in sorted(assets.items())]
+        assets_identity = hashlib.sha256(
+            json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
         bundle = {"schemaVersion": "juno_instruction_bundle.v1",
             "semanticVersion": "1.0.0", "packageVersion": "1.0.0",
-            "assetCount": 0, "assetsSha256": assets_identity}
+            "assetCount": len(assets), "assetsSha256": assets_identity}
         bundle["bundleSha256"] = hashlib.sha256(
             json.dumps(bundle, separators=(",", ":")).encode()).hexdigest()
         (self.root / ".juno_task" / "managed-assets.json").write_text(json.dumps({
             "schemaVersion": 2, "packageName": "@yylo/cli", "packageVersion": "1.0.0",
-            "instructionBundle": bundle, "assets": {}}, sort_keys=True) + "\n")
+            "instructionBundle": bundle, "assets": assets}, sort_keys=True) + "\n")
         before = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
         report = runtime.shadow_epoch(self.root, self.declaration, None)
         self.assertEqual("PASS", report["decision"])

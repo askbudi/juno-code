@@ -8,6 +8,7 @@ export const MANAGED_UPDATE_ROOTS = [
   '.juno_task/scripts',
   '.juno_task/prompts',
   '.juno_task/wiki',
+  '.juno_task/workflows',
   '.juno_task/config',
   '.juno_task/config.json',
   '.juno_task/managed-assets.json',

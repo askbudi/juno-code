@@ -1306,9 +1306,13 @@ function setupScriptManagementCommands(program: Command): void {
         ? '🔄 Force updating ignored metadata-controller runtime scripts, agent surface, and Python dependencies...'
         : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
       const outcome = await withManagedUpdateRollback(workingDirectory, async () => {
-        const assets = metadataOnlyController
-          ? await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory, true)
-          : await ManagedProjectAssets.update(workingDirectory, { force: true, silent: true });
+        if (metadataOnlyController) {
+          await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory, true, true);
+        }
+        const assets = await ManagedProjectAssets.update(
+          workingDirectory,
+          { force: true, silent: true },
+        );
         const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, true);
         const skillsUpdated = await SkillInstaller.install(workingDirectory, true, true, true);
         if (metadataOnlyController) {
@@ -1331,9 +1335,10 @@ function setupScriptManagementCommands(program: Command): void {
       ? '🔄 Updating ignored metadata-controller runtime scripts and agent surface...'
       : '🔄 Updating project scripts and checksum-managed prompts/wiki/macros...'));
     const update = async () => {
-      const assets = metadataOnlyController
-        ? { ...await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory), conflicts: [] }
-        : await ManagedProjectAssets.update(workingDirectory, { silent: false });
+      if (metadataOnlyController) {
+        await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory, false, true);
+      }
+      const assets = await ManagedProjectAssets.update(workingDirectory, { silent: false });
       const scriptsUpdated = await ScriptInstaller.autoUpdate(workingDirectory, false);
       const skillsUpdated = await SkillInstaller.install(workingDirectory, true);
       if (metadataOnlyController) {
@@ -1392,14 +1397,16 @@ ${chalk.gray('This updates scripts from the currently installed yylo package/tem
       if (await ScriptInstaller.isMetadataOnlyController(workingDirectory)) {
         await SkillInstaller.assertInstallAllowed(workingDirectory);
         await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
-        const [generation, agentSurfaceStale] = await Promise.all([
+        const [generation, agentSurfaceStale, bundle] = await Promise.all([
           ScriptInstaller.inspectManagedControllerGeneration(workingDirectory),
           SkillInstaller.needsUpdate(workingDirectory),
+          ManagedProjectAssets.inspectGeneration(workingDirectory),
         ]);
         if (generation.present) {
           if (generation.healthy && !agentSurfaceStale) {
             console.log(chalk.green(
-              `✓ Receipt-bound controller scripts are coherent at ${generation.targetSha} ` +
+              `✓ Receipt-bound controller scripts and instruction bundle ` +
+              `${bundle.instructionBundle?.bundleSha256} are coherent at ${generation.targetSha} ` +
               `(package ${generation.packageVersion})`,
             ));
             return;
@@ -1419,7 +1426,10 @@ ${chalk.gray('This updates scripts from the currently installed yylo package/tem
           ScriptInstaller.getOutdatedScripts(workingDirectory),
         ]);
         if (missing.length === 0 && outdated.length === 0 && !agentSurfaceStale) {
-          console.log(chalk.green('✓ Bootstrap controller scripts and agent surface are coherent (no integration generation receipt)'));
+          console.log(chalk.green(
+            `✓ Schema-2 instruction bundle ${bundle.instructionBundle?.bundleSha256} and ` +
+            'bootstrap controller scripts are coherent (no integration generation receipt)',
+          ));
           return;
         }
         console.error(chalk.red('✗ Bootstrap controller scripts are incomplete or stale'));

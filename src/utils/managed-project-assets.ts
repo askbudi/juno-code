@@ -23,9 +23,18 @@ type InstructionBundleDeclaration = {
   semanticVersion: string;
 };
 
+type ManagedControllerOutputDefinition = {
+  source: string;
+  destination: string;
+  type: string;
+};
+
 const INSTRUCTION_BUNDLE_DECLARATION =
   managedAssetManifest.instructionBundle as InstructionBundleDeclaration;
 const MANAGED_ASSET_DEFINITIONS = managedAssetManifest.assets as ManagedAssetDefinition[];
+const MANAGED_CONTROLLER_OUTPUTS = (
+  managedAssetManifest.controllerOutputs as ManagedControllerOutputDefinition[]
+).map((asset): ManagedAssetDefinition => ({ ...asset, installClass: 'controller' }));
 
 export const MANAGED_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
   (asset) => asset.installClass !== 'controller',
@@ -38,14 +47,24 @@ export const MANAGED_PROJECT_ASSETS = MANAGED_ASSET_DEFINITIONS.filter(
   (asset) => asset.installClass === 'project',
 );
 
-function managedAssetsForProject(projectConfig: Record<string, any>): ManagedAssetDefinition[] {
+function isMetadataOnlyController(projectConfig: Record<string, any>): boolean {
   const controllerWorkspace = projectConfig?.controllerWorkspace;
-  const metadataOnlyController =
-    controllerWorkspace?.mode === 'metadata-only' &&
+  return controllerWorkspace?.mode === 'metadata-only' &&
     controllerWorkspace?.policy === '.juno_task/config/metadata-controller.json';
-  return MANAGED_ASSET_DEFINITIONS.filter(
-    (asset) => asset.installClass !== 'controller' || metadataOnlyController,
-  );
+}
+
+function managedAssetsForProject(projectConfig: Record<string, any>): ManagedAssetDefinition[] {
+  if (!isMetadataOnlyController(projectConfig)) {
+    return MANAGED_ASSET_DEFINITIONS.filter((asset) => asset.installClass !== 'controller');
+  }
+  // Reviewed controller policy/config is owner-owned. Package updates manage
+  // only declared runtime/instruction outputs and bind those exact bytes in the
+  // tracked receipt; they never replace controller/product refs or policy.
+  const declared = [
+    ...MANAGED_ASSET_DEFINITIONS.filter((asset) => asset.type !== 'config'),
+    ...MANAGED_CONTROLLER_OUTPUTS,
+  ];
+  return [...new Map(declared.map((asset) => [asset.destination, asset])).values()];
 }
 
 export const MANAGED_PROMPT_MACROS = Object.fromEntries(
@@ -496,7 +515,9 @@ export class ManagedProjectAssets {
           continue;
         }
         await writeAtomic(destinationPath, sourceContent, projectDir);
-        if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
+        if (asset.installClass === 'script' || asset.type === 'script') {
+          await fs.chmod(destinationPath, 0o755);
+        }
         result.installed.push(asset.destination);
       } else {
         const currentContent = await fs.readFile(destinationPath);
@@ -510,7 +531,9 @@ export class ManagedProjectAssets {
             await this.archiveRetired(projectDir, asset.destination, currentContent, result);
           }
           await writeAtomic(destinationPath, sourceContent, projectDir);
-          if (asset.installClass === 'script') await fs.chmod(destinationPath, 0o755);
+          if (asset.installClass === 'script' || asset.type === 'script') {
+            await fs.chmod(destinationPath, 0o755);
+          }
           result.updated.push(asset.destination);
         } else {
           const candidateRelative = path.join(
@@ -533,7 +556,14 @@ export class ManagedProjectAssets {
       };
     }
 
-    await this.registerPromptMacros(projectDir, result, Boolean(options.force));
+    if (!isMetadataOnlyController(projectConfig)) {
+      await this.registerPromptMacros(projectDir, result, Boolean(options.force));
+    }
+    const applicableDestinations = new Set(applicableAssets.map((asset) => asset.destination));
+    manifest.assets = Object.fromEntries(
+      Object.entries(manifest.assets).filter(([destination]) =>
+        applicableDestinations.has(destination)),
+    );
     manifest.schemaVersion = 2;
     manifest.packageName = '@yylo/cli';
     manifest.packageVersion = packageVersion;
