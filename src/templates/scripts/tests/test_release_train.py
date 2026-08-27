@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SCRIPTS.parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import release_train as runtime  # noqa: E402
 
@@ -378,7 +379,7 @@ raise SystemExit(2)
             runtime.seal_epoch(self.root, self.declaration)
         self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
 
-    def test_rc7_rc8_serial_conflicts_are_forecast_and_infeasible_seal_is_read_only(self) -> None:
+    def test_rc7_rc8_serial_conflicts_fit_one_conservative_repair_set(self) -> None:
         first, second, conflict_paths = self.prepare_serial_conflict_epoch()
         before_status = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
         before_refs = run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)")
@@ -393,18 +394,23 @@ raise SystemExit(2)
         self.assertEqual([first, second], [row["candidate_tip"] for row in manifest["conflicts"]])
         self.assertEqual(2, manifest["required_conflict_count"])
         self.assertTrue(manifest["member_accounting_complete"])
-        self.assertFalse(manifest["forecast_complete"])
+        self.assertTrue(manifest["forecast_complete"])
         self.assertFalse(manifest["exact_composition_complete"])
-        self.assertFalse(manifest["policy_repair_budget_feasible"])
-        self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertTrue(manifest["policy_repair_budget_feasible"])
+        self.assertTrue(manifest["repair_budget_feasible"])
+        self.assertEqual(1, manifest["required_logical_repair_set_count"])
         self.assertEqual(["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
                          [row["task_id"] for row in manifest["indeterminate_members"]])
         self.assertEqual(["pA6M9l", "0y4ljs", "U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
                          [row["task_id"] for row in manifest["compositions"]])
         self.assertEqual("0y4ljs", manifest["unresolved_boundary"]["task_id"])
-        self.assertEqual("required_conflicting_candidate.v1",
+        envelope = manifest["conservative_envelope"]
+        self.assertEqual(["0y4ljs", "U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
+                         [row["task_id"] for row in envelope["ordered_members"]])
+        self.assertTrue(envelope["complete"])
+        self.assertEqual("authorization_neutral_logical_conflict_set.v1",
                          manifest["identity"]["forecast_policy"]["repair_unit"])
-        self.assertEqual("deferred_to_grouped_repair_runtime",
+        self.assertEqual("frozen_unknown_suffix.v1",
                          manifest["identity"]["forecast_policy"]["logical_conflict_set_grouping"])
         self.assertEqual("immutable_receipt_bound_composition",
                          manifest["conflicts"][0]["forecast_resolution"])
@@ -415,12 +421,53 @@ raise SystemExit(2)
         self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
                                           "--format=%(refname) %(objectname)"))
         self.assertEqual(before_objects, run(self.root, "git", "count-objects", "-v"))
-        with self.assertRaisesRegex(runtime.ReleaseTrainError,
-                                    "conflict_manifest.repair_budget_infeasible"):
-            runtime.seal_epoch(self.root, self.declaration)
-        self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        self.assertEqual("sealed", sealed["outcome"])
+        self.assertTrue(runtime.epoch_state_path(self.root, "rc-1").is_file())
         self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
                                           "--format=%(refname) %(objectname)"))
+
+    def test_phase1_acceptance_predicate_emits_durable_pass_receipt(self) -> None:
+        self.prepare_serial_conflict_epoch()
+        before_status = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
+        before_refs = run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)")
+        before_objects = run(self.root, "git", "count-objects", "-v")
+        manifest = runtime.build_epoch_plan(self.root, self.declaration)["conflict_manifest"]
+        evidence = {"portable_topology": {"order": manifest["identity"]["order"],
+            "serial_conflicts": [row["task_id"] for row in manifest["conflicts"]],
+            "exact_parent_tree_receipts": bool(
+                manifest["conflicts"][0].get("proven_composition")
+                and manifest["conflicts"][0]["post_tree"]
+                and manifest["conflicts"][1]["candidate_tree"])},
+            "non_mutation": {
+                "status": before_status == run(self.root, "git", "status", "--porcelain=v1",
+                                                "--untracked-files=all"),
+                "refs": before_refs == run(self.root, "git", "for-each-ref",
+                                            "--format=%(refname) %(objectname)"),
+                "objects": before_objects == run(self.root, "git", "count-objects", "-v")},
+            "parity": {
+                "runtime_template": ((PROJECT_ROOT / ".juno_task/scripts/release_train.py").read_bytes()
+                    == (PROJECT_ROOT / "juno-code/src/templates/scripts/release_train.py").read_bytes()),
+                "paired_tests": ((PROJECT_ROOT / ".juno_task/scripts/tests/test_release_train.py").read_bytes()
+                    == (PROJECT_ROOT / "juno-code/src/templates/scripts/tests/test_release_train.py").read_bytes())}}
+        receipt = runtime.phase1_acceptance_receipt(manifest, evidence)
+        self.assertEqual("PASS", receipt["decision"])
+        self.assertEqual([], receipt["blocking_reason_codes"])
+        tampered = json.loads(json.dumps(manifest))
+        tampered["conservative_envelope"]["ordered_members"].pop()
+        envelope_body = {key: value for key, value in tampered["conservative_envelope"].items()
+                         if key != "envelope_sha256"}
+        tampered["conservative_envelope"]["envelope_sha256"] = runtime.digest(envelope_body)
+        tampered["identity"]["conservative_envelope_sha256"] = tampered["conservative_envelope"]["envelope_sha256"]
+        tampered["identity_sha256"] = runtime.digest(tampered["identity"])
+        tampered["manifest_sha256"] = runtime.digest({key: value for key, value in tampered.items()
+                                                       if key != "manifest_sha256"})
+        refused = runtime.phase1_acceptance_receipt(tampered, evidence)
+        self.assertEqual("FAIL", refused["decision"])
+        self.assertIn("manifest.envelope_incomplete", refused["blocking_reason_codes"])
+        output = os.environ.get("YYLO_PHASE1_ACCEPTANCE_RECEIPT")
+        if output:
+            Path(output).write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
 
     def test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair(self) -> None:
         configured = os.environ.get("YYLO_RC_EVIDENCE_CONTROLLER")
@@ -455,9 +502,10 @@ raise SystemExit(2)
         self.assertEqual(["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
                          [row["task_id"] for row in manifest["indeterminate_members"]])
         self.assertTrue(manifest["member_accounting_complete"])
-        self.assertFalse(manifest["forecast_complete"])
+        self.assertTrue(manifest["forecast_complete"])
         self.assertFalse(manifest["exact_composition_complete"])
-        self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertTrue(manifest["repair_budget_feasible"])
+        self.assertEqual(1, manifest["required_logical_repair_set_count"])
         self.assertEqual(expected["sot-ledger-wave1-rc7"]["repair"],
                          manifest["conflicts"][0]["proven_composition"]["receipt_sha256"])
         self.assertEqual(before_status, run(controller, "git", "status", "--porcelain=v1",

@@ -26,6 +26,7 @@ EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
 EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
 CONFLICT_MANIFEST_SCHEMA = "juno_release_epoch_conflict_manifest.v1"
 CONFLICT_FORECAST_POLICY_SCHEMA = "juno_release_epoch_conflict_forecast_policy.v1"
+PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v1"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
 BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
@@ -1052,11 +1053,47 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
     exact_composition_complete = member_accounting_complete and unresolved_boundary is None
     policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
               "repair_budget": 1,
-              "repair_unit": "required_conflicting_candidate.v1",
-              "logical_conflict_set_grouping": "deferred_to_grouped_repair_runtime",
-              "serial_forecast_resolution": "proven_both_parent_composition_only"}
+              "repair_unit": "authorization_neutral_logical_conflict_set.v1",
+              "logical_conflict_set_grouping": "frozen_unknown_suffix.v1",
+              "grouped_worker_authorized": True,
+              "serial_forecast_resolution": "exact_prefix_then_conservative_envelope.v1"}
+    conservative_envelope = None
+    if unresolved_boundary is not None:
+        boundary_index = plan["order"].index(unresolved_boundary["task_id"])
+        suffix = plan["order"][boundary_index:]
+        composition_by_id = {row["task_id"]: row for row in compositions}
+        conflict_by_id = {row["task_id"]: row for row in conflicts}
+        envelope_members = []
+        for task_id in suffix:
+            member = by_id[task_id]
+            composition = composition_by_id[task_id]
+            exact_conflict = conflict_by_id.get(task_id)
+            possible_paths = (exact_conflict["conflict_paths"] if exact_conflict
+                              else sorted(member["changed_paths"]))
+            envelope_members.append({"task_id": task_id,
+                "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                "required": member["required"], "changed_paths": sorted(member["changed_paths"]),
+                "classification": ("exact_unresolved_conflict" if exact_conflict
+                                   else "conservative_possible_conflict"),
+                "possible_conflict_paths": possible_paths,
+                "independent_base_probe": composition.get("independent_base_probe")})
+        envelope_core = {"schema_version": "juno_release_epoch_conservative_envelope.v1",
+            "strategy": "frozen_unknown_suffix.v1", "boundary": unresolved_boundary,
+            "ordered_members": envelope_members,
+            "logical_repair_sets": [{"set_index": 1,
+                "authority": "authorization_neutral_grouped_repair_only",
+                "task_ids": suffix,
+                "possible_conflict_paths": sorted({path for row in envelope_members
+                                                    for path in row["possible_conflict_paths"]})}],
+            "complete": len(envelope_members) == len(suffix)}
+        conservative_envelope = {**envelope_core, "envelope_sha256": digest(envelope_core)}
+    envelope_complete = bool(conservative_envelope and conservative_envelope["complete"])
+    forecast_complete = member_accounting_complete and (exact_composition_complete or envelope_complete)
     required_conflicts = sum(1 for row in conflicts if row["required"])
-    policy_feasible = exact_composition_complete and required_conflicts <= policy["repair_budget"]
+    required_repair_sets = (len(conservative_envelope["logical_repair_sets"])
+                            if conservative_envelope else 0)
+    policy_feasible = (forecast_complete and required_repair_sets <= policy["repair_budget"]
+                       and (required_repair_sets == 0 or policy["grouped_worker_authorized"]))
     identity = {"declaration": plan["declaration"], "base_sha": plan["base_sha"],
                 "order": plan["order"], "members": [{"task_id": row["task_id"],
                     "tip_sha": row["tip_sha"], "tree_sha": row["tree_sha"],
@@ -1067,21 +1104,80 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                     "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
                     for row in plan["members"]],
                 "runtime_sha256": plan["runtime_sha256"],
-                "policy_sha256": plan["policy_sha256"], "forecast_policy": policy}
+                "policy_sha256": plan["policy_sha256"], "forecast_policy": policy,
+                "conservative_envelope_sha256": (conservative_envelope or {}).get("envelope_sha256")}
     body = {"schema_version": CONFLICT_MANIFEST_SCHEMA, "identity": identity,
             "identity_sha256": digest(identity), "compositions": compositions,
             "conflicts": conflicts, "indeterminate_members": indeterminate_members,
             "unresolved_boundary": unresolved_boundary,
+            "conservative_envelope": conservative_envelope,
             "member_accounting_complete": member_accounting_complete,
-            # Accounting for every member is not an exact ordered forecast. Once a
-            # material repair result is unknowable, later independent-base probes
-            # remain conservative diagnostics and the forecast is incomplete.
-            "forecast_complete": exact_composition_complete,
+            "forecast_complete": forecast_complete,
             "exact_composition_complete": exact_composition_complete,
             "required_conflict_count": required_conflicts,
+            "required_logical_repair_set_count": required_repair_sets,
             "policy_repair_budget_feasible": policy_feasible,
             "repair_budget_feasible": policy_feasible}
     return {**body, "manifest_sha256": digest(body)}
+
+
+def phase1_acceptance_receipt(manifest: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    """Execute the sole Phase-1 acceptance predicate over exact bound evidence."""
+    blockers = []
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    if manifest.get("schema_version") != CONFLICT_MANIFEST_SCHEMA:
+        blockers.append("manifest.schema")
+    if manifest.get("manifest_sha256") != digest(body):
+        blockers.append("manifest.identity")
+    identity = manifest.get("identity") or {}
+    if manifest.get("identity_sha256") != digest(identity):
+        blockers.append("manifest.input_identity")
+    order = identity.get("order") or []
+    if [row.get("task_id") for row in manifest.get("compositions", [])] != order:
+        blockers.append("manifest.member_classification")
+    if not manifest.get("member_accounting_complete") or not manifest.get("forecast_complete"):
+        blockers.append("manifest.forecast_incomplete")
+    envelope = manifest.get("conservative_envelope")
+    if not manifest.get("exact_composition_complete"):
+        boundary = manifest.get("unresolved_boundary") or {}
+        suffix = order[order.index(boundary.get("task_id")):] if boundary.get("task_id") in order else []
+        envelope_members = envelope.get("ordered_members", []) if isinstance(envelope, dict) else []
+        repair_sets = envelope.get("logical_repair_sets", []) if isinstance(envelope, dict) else []
+        envelope_valid = (isinstance(envelope, dict) and envelope.get("complete") is True
+            and envelope.get("envelope_sha256") == digest({key: value for key, value in envelope.items()
+                                                           if key != "envelope_sha256"})
+            and identity.get("conservative_envelope_sha256") == envelope.get("envelope_sha256")
+            and [row.get("task_id") for row in envelope_members] == suffix
+            and all(row.get("classification") in {"exact_unresolved_conflict",
+                    "conservative_possible_conflict"} for row in envelope_members)
+            and len(repair_sets) == 1 and repair_sets[0].get("task_ids") == suffix
+            and manifest.get("required_logical_repair_set_count") == 1)
+        if not envelope_valid:
+            blockers.append("manifest.envelope_incomplete")
+    elif envelope is not None or manifest.get("required_logical_repair_set_count") != 0:
+        blockers.append("manifest.unexpected_envelope")
+    policy = identity.get("forecast_policy") or {}
+    if (not manifest.get("policy_repair_budget_feasible")
+            or not manifest.get("repair_budget_feasible")
+            or manifest.get("required_logical_repair_set_count", 0) > policy.get("repair_budget", -1)
+            or (manifest.get("required_logical_repair_set_count", 0)
+                and policy.get("grouped_worker_authorized") is not True)):
+        blockers.append("manifest.policy_infeasible")
+    topology = evidence.get("portable_topology") or {}
+    if (topology.get("order") != order
+            or topology.get("serial_conflicts") != [row.get("task_id") for row in manifest.get("conflicts", [])]
+            or topology.get("exact_parent_tree_receipts") is not True):
+        blockers.append("evidence.portable_topology")
+    non_mutation = evidence.get("non_mutation") or {}
+    if not all(non_mutation.get(key) is True for key in ("status", "refs", "objects")):
+        blockers.append("evidence.non_mutation")
+    parity = evidence.get("parity") or {}
+    if not all(parity.get(key) is True for key in ("runtime_template", "paired_tests")):
+        blockers.append("evidence.parity")
+    receipt = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
+        "decision": "PASS" if not blockers else "FAIL", "manifest_sha256": manifest.get("manifest_sha256"),
+        "evidence_sha256": digest(evidence), "blocking_reason_codes": sorted(blockers)}
+    return {**receipt, "receipt_sha256": digest(receipt)}
 
 
 def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
@@ -1133,8 +1229,8 @@ def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
     manifest = plan["conflict_manifest"]
     if not manifest["repair_budget_feasible"]:
         raise ReleaseTrainError(
-            "conflict_manifest.repair_budget_infeasible:required_conflicts="
-            f"{manifest['required_conflict_count']},exact_complete={manifest['exact_composition_complete']},budget="
+            "conflict_manifest.repair_budget_infeasible:required_repair_sets="
+            f"{manifest['required_logical_repair_set_count']},exact_complete={manifest['exact_composition_complete']},budget="
             f"{manifest['identity']['forecast_policy']['repair_budget']}; "
             "next=revise the declared repair policy or candidate set before seal")
     path = epoch_state_path(controller, plan["epoch_id"])
@@ -1810,6 +1906,8 @@ def parser() -> argparse.ArgumentParser:
     bootstrap_drive = subs.add_parser("bootstrap-drive")
     bootstrap_drive.add_argument("operation_id"); bootstrap_drive.add_argument("--bootstrap-token", required=True)
     bootstrap_drive.add_argument("--json", action="store_true")
+    phase1 = subs.add_parser("phase1-accept"); phase1.add_argument("--manifest", type=Path, required=True)
+    phase1.add_argument("--evidence", type=Path, required=True); phase1.add_argument("--output", type=Path, required=True)
     shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
     shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
     shadow.add_argument("--output", type=Path)
@@ -1848,6 +1946,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = read_bootstrap(controller, args.operation_id)
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
+        elif args.operation == "phase1-accept":
+            result = phase1_acceptance_receipt(json.loads(args.manifest.read_text()),
+                                               json.loads(args.evidence.read_text()))
+            if result["decision"] != "PASS":
+                raise ReleaseTrainError("phase1 acceptance failed: " + ",".join(result["blocking_reason_codes"]))
         elif args.operation == "shadow":
             result = shadow_epoch(controller, args.declaration, args.baseline)
         else:
