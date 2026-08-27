@@ -700,10 +700,52 @@ def verify_compatible_config(contract: dict[str, Any]) -> None:
             raise RunnerError(f"configured source file identity drifted: {expected['setting']}")
 
 
+def release_conflict_admission(args: argparse.Namespace, controller: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    root = Path(args.agent_root).resolve()
+    if not args.candidate_sha or not SHA_RE.fullmatch(args.candidate_sha):
+        raise RunnerError("conflict worker requires the sealed candidate SHA")
+    states = []
+    epoch_root = Path(controller["root"]) / ".juno_task/runtime/release-epochs"
+    for path in sorted(epoch_root.glob("*/state.json")):
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        composition = state.get("composition") if isinstance(state, dict) else None
+        conflict = state.get("conflict") if isinstance(state, dict) else None
+        if (state.get("state") == "RECOVERING" and isinstance(composition, dict)
+                and isinstance(conflict, dict)
+                and Path(str(composition.get("worktree", ""))).resolve() == root
+                and conflict.get("task_id") == args.task_id
+                and conflict.get("theirs_sha") == args.candidate_sha):
+            states.append((path, state, conflict))
+    if len(states) != 1:
+        raise RunnerError("conflict worker requires one exact frozen release-epoch packet")
+    state_path, state, conflict = states[0]
+    mark = fingerprint(root)
+    merge_head = git(root, "rev-parse", "MERGE_HEAD", check=False)
+    unresolved = sorted(filter(None, git(
+        root, "diff", "--name-only", "--diff-filter=U").splitlines()))
+    admitted = sorted(conflict.get("admitted_paths") or [])
+    changed = sorted(filter(None, git(root, "diff", "--name-only").splitlines()))
+    if (mark["head"] != conflict.get("ours_sha") or merge_head != args.candidate_sha
+            or not unresolved or unresolved != sorted(conflict.get("conflict_paths") or [])
+            or not set(changed).issubset(set(admitted))):
+        raise RunnerError("conflict worker checkout does not match the frozen repair packet")
+    admission = {"task_id": args.task_id, "expected_paths": admitted,
+                 "admission_kind": "sealed_release_epoch_conflict",
+                 "epoch_id": state.get("epoch_id"), "epoch_state": evidence(state_path),
+                 "conflict_sha256": sha(canonical(conflict)), "before": mark,
+                 "ours_sha": conflict["ours_sha"], "theirs_sha": conflict["theirs_sha"]}
+    return admission, mark
+
+
 def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     if not args.task_id or not TASK_RE.fullmatch(args.task_id):
         raise RunnerError("worker mode requires a safe task ID")
     paths = [Path(x).resolve() if x else None for x in (args.create_receipt, args.verify_receipt, args.edit_preflight_receipt)]
+    if all(x is None for x in paths) and args.candidate_sha:
+        return release_conflict_admission(args, controller)
     if any(x is None for x in paths):
         raise RunnerError("worker mode requires create, verify, and edit-preflight receipts")
     create, verify, edit = (load_object(x, name) for x, name in zip(paths, ("create receipt", "verify receipt", "edit-preflight receipt")))
@@ -1158,7 +1200,15 @@ def run(args: argparse.Namespace) -> int:
             allowed = identity["expected_paths"]
             changed = sorted(set(git(Path(args.agent_root), "diff", "--name-only", identity["before"]["head"], subject_after["head"]).splitlines()))
             unexpected = [p for p in changed if not any(p == a or p.startswith(a.rstrip("/") + "/") for a in allowed)]
-            if subject_after["branch_ref"] != subject_before["branch_ref"] or subject_after["git_common_dir"] != subject_before["git_common_dir"] or subject_after["status"] or unexpected:
+            conflict_worker = identity.get("admission_kind") == "sealed_release_epoch_conflict"
+            parents = git(Path(args.agent_root), "show", "-s", "--format=%P", subject_after["head"]).split()
+            conflict_identity_failed = (conflict_worker and
+                (identity["ours_sha"] not in parents or identity["theirs_sha"] not in parents))
+            branch_failed = (not conflict_worker and
+                             subject_after["branch_ref"] != subject_before["branch_ref"])
+            if (branch_failed or conflict_identity_failed
+                    or subject_after["git_common_dir"] != subject_before["git_common_dir"]
+                    or subject_after["status"] or unexpected):
                 raise RunnerError("worker post-launch changed-path or identity authority failed")
             identity["changed_paths"] = changed; identity["unexpected_paths"] = unexpected
         terminal = {"schema_version": SCHEMA, "state": "succeeded", "completed_at": now(), "exit_code": 0,
