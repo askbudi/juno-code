@@ -937,6 +937,67 @@ def cas_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
     return save_epoch(controller, state, "RELEASE_READY", "RELEASE_READY", readiness)
 
 
+def validate_recovered_worker_receipt(receipt: dict[str, Any]) -> None:
+    if receipt.get("capture_source") != "receipt_bound_worker_recovery":
+        return
+    recovery = receipt.get("recovery")
+    if (not isinstance(recovery, dict)
+            or recovery.get("schema_version") != "juno_managed_agent_recovery.v1"
+            or recovery.get("kind") != "capture_only_no_model_rerun"
+            or recovery.get("validated_exit_code") != 0):
+        raise ReleaseTrainError("managed recovery receipt provenance is malformed")
+
+    def bound(mark: Any, label: str, limit: int = 4 * 1024 * 1024) -> tuple[Path, bytes]:
+        if (not isinstance(mark, dict) or not isinstance(mark.get("path"), str)
+                or not isinstance(mark.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", mark["sha256"])):
+            raise ReleaseTrainError(f"managed recovery {label} evidence is malformed")
+        path = Path(mark["path"]).resolve()
+        try: data = path.read_bytes()
+        except OSError as exc:
+            raise ReleaseTrainError(f"managed recovery {label} artifact is missing") from exc
+        if (not data or len(data) > limit
+                or hashlib.sha256(data).hexdigest() != mark["sha256"]
+                or ("bytes" in mark and mark.get("bytes") != len(data))):
+            raise ReleaseTrainError(f"managed recovery {label} identity mismatch")
+        return path, data
+
+    failed_path, failed_bytes = bound(recovery.get("failed_receipt"), "failed receipt")
+    terminal_path, _ = bound(recovery.get("failed_terminal"), "failed terminal")
+    launch_path, _ = bound(recovery.get("launch"), "launch")
+    _live_path, live = bound(recovery.get("live_log"), "live log", 64 * 4 * 1024 * 1024)
+    _stdout_path, stdout = bound(recovery.get("stdout"), "stdout")
+    _continuity_path, continuity_bytes = bound(recovery.get("continuity"), "continuity")
+    artifacts = receipt.get("artifacts")
+    response_mark = artifacts.get("response") if isinstance(artifacts, dict) else None
+    _response_path, response = bound(response_mark, "response")
+    try:
+        failed = json.loads(failed_bytes); terminal = json.loads(terminal_path.read_text())
+        launch = json.loads(launch_path.read_text()); continuity = json.loads(continuity_bytes)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("managed recovery source artifacts are malformed") from exc
+    if (failed_path.name != "receipt.json" or launch_path != failed_path.with_name("launch.json")
+            or terminal_path != failed_path.with_name("terminal.json")
+            or failed.get("schema_version") != "juno_managed_agent_runner.v1"
+            or failed.get("mode") != "worker" or failed.get("state") != "failed"
+            or failed.get("failure") != "capture is missing or stale"
+            or failed.get("exit_code") != 0 or failed.get("timed_out") is not False
+            or failed.get("termination_events") != [] or launch.get("identity") != failed.get("identity")
+            or receipt.get("session_id") not in live.decode("utf-8", errors="replace")
+            or stdout != response):
+        raise ReleaseTrainError("managed recovery failed-run binding is invalid")
+    scopes = continuity.get("scopes") if isinstance(continuity, dict) else None
+    sessions = []
+    if isinstance(continuity, dict) and continuity.get("version") == 2 and isinstance(scopes, dict):
+        for scope in scopes.values():
+            active = scope.get("active") if isinstance(scope, dict) else None
+            branches = scope.get("branches") if isinstance(scope, dict) else None
+            branch = branches.get(active) if isinstance(branches, dict) else None
+            if isinstance(branch, dict): sessions.append(branch.get("session_id"))
+    if sessions != [receipt.get("session_id")]:
+        raise ReleaseTrainError("managed recovery continuity binding is invalid")
+
+
 def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
                           token: str) -> dict[str, Any]:
     state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
@@ -951,6 +1012,7 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
     if (not isinstance(receipt, dict) or receipt.get("schema_version") != "juno_managed_agent_runner.v1"
             or receipt.get("mode") != "worker" or receipt.get("state") != "succeeded"):
         raise ReleaseTrainError("conflict repair requires one successful canonical managed-worker receipt")
+    validate_recovered_worker_receipt(receipt)
     checkout = Path(state["composition"]["worktree"])
     if git(checkout, "diff", "--name-only", "--diff-filter=U"):
         raise ReleaseTrainError("managed repair left unresolved conflicts")

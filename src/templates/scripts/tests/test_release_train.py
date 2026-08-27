@@ -407,6 +407,43 @@ raise SystemExit(2)
         with self.assertRaisesRegex(runtime.ReleaseTrainError, "receipt identity"):
             runtime.shadow_epoch(self.root, state_path, baseline)
 
+    def test_recovered_worker_receipt_requires_exact_failed_artifacts(self) -> None:
+        source = self.root / "recovery-source"; source.mkdir()
+        output = self.root / "recovery-output"; output.mkdir()
+        session = "session-recovery"
+        stdout = source / "stdout.log"; stdout.write_text("completed\n")
+        live = source / "live.log"; live.write_text(f"completed\n{session}\n")
+        continuity = source / "continuity.json"
+        continuity.write_text(json.dumps({"version": 2, "scopes": {"S": {
+            "active": "main", "branches": {"main": {"session_id": session}}}}}) + "\n")
+        response = output / "response.txt"; response.write_bytes(stdout.read_bytes())
+        identity = {"admission_kind": "sealed_release_epoch_conflict", "task_id": "REQ"}
+        launch = {"identity": identity}; launch_path = source / "launch.json"
+        launch_path.write_text(json.dumps(launch) + "\n")
+        terminal = {"state": "failed", "exit_code": 0}; terminal_path = source / "terminal.json"
+        terminal_path.write_text(json.dumps(terminal) + "\n")
+        failed = {"schema_version": "juno_managed_agent_runner.v1", "mode": "worker",
+                  "state": "failed", "failure": "capture is missing or stale", "exit_code": 0,
+                  "timed_out": False, "termination_events": [], "identity": identity}
+        failed_path = source / "receipt.json"; failed_path.write_text(json.dumps(failed) + "\n")
+
+        def mark(path: Path) -> dict:
+            data = path.read_bytes()
+            return {"path": str(path), "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest()}
+
+        receipt = {"capture_source": "receipt_bound_worker_recovery", "session_id": session,
+                   "artifacts": {"response": mark(response)},
+                   "recovery": {"schema_version": "juno_managed_agent_recovery.v1",
+                       "kind": "capture_only_no_model_rerun", "validated_exit_code": 0,
+                       "failed_receipt": mark(failed_path), "failed_terminal": mark(terminal_path),
+                       "launch": mark(launch_path), "live_log": mark(live), "stdout": mark(stdout),
+                       "continuity": mark(continuity)}}
+        runtime.validate_recovered_worker_receipt(receipt)
+        stdout.write_text("tampered\n")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "stdout identity mismatch"):
+            runtime.validate_recovered_worker_receipt(receipt)
+
     def test_lean_target_drift_refuses_release(self) -> None:
         self.lean_checkout()
         self.finish_board()

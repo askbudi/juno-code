@@ -649,6 +649,79 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         with self.assertRaisesRegex(runner.RunnerError, "capture is missing"):
             runner.finalize_managed_capture(capture, stdout, metadata, None, started_ns)
 
+    def test_worker_capture_recovery_binds_failed_run_without_model_rerun(self):
+        ours = git(self.candidate, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "-b", "recovery-theirs", "target"],
+                       check=True, stdout=subprocess.DEVNULL)
+        (self.candidate / "allowed.txt").write_text("theirs\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", "allowed.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T", "-c", "user.email=t@t",
+                        "commit", "-m", "theirs"], check=True, stdout=subprocess.DEVNULL)
+        theirs = git(self.candidate, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "task"],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T", "-c", "user.email=t@t",
+                        "merge", "--no-ff", "recovery-theirs", "-m", "recovered merge"],
+                       check=True, stdout=subprocess.DEVNULL)
+
+        source = self.tmp / "failed-worker"; source.mkdir()
+        prompt = source / "prompt.md"; prompt.write_text("repair\n")
+        compatible = source / "compatible-config.json"; compatible.write_text("{}\n")
+        launcher = source / "launcher-root/.juno_task/config.json"
+        launcher.parent.mkdir(parents=True); launcher.write_text("{}\n")
+        stdout = source / "stdout.log"; stdout.write_text("worker completed\n")
+        (source / "stderr.log").write_text("")
+        (source / "combined.log").write_text("worker completed\n")
+        metadata = source / "session_metadata"; metadata.mkdir()
+        continuity = metadata / "session_continuity.v2.json"
+        continuity.write_text(json.dumps({"version": 2, "scopes": {"S": {
+            "active": "main", "branches": {"main": {"session_id": "session-recovery"}}}}}) + "\n")
+        live = self.tmp / "immutable-live.log"
+        live.write_text("worker completed\nsession-recovery\n")
+        before = {"root": str(self.candidate.resolve()), "head": ours,
+                  "branch_ref": "refs/heads/task",
+                  "git_common_dir": str((self.candidate / git(self.candidate, "rev-parse", "--git-common-dir")).resolve()),
+                  "status": "conflicted", "index_sha256": "1" * 64}
+        identity = {"admission_kind": "sealed_release_epoch_conflict", "before": before,
+                    "ours_sha": ours, "theirs_sha": theirs, "task_id": "T1",
+                    "expected_paths": ["allowed.txt"]}
+        argv = ["yy", "pi", "--no-hooks"]
+        policy = {"schema_version": "juno_managed_hook_policy.v1",
+                  "external_side_effects": "forbidden", "lifecycle_hooks": "disabled",
+                  "enforcement": "yy_pi_no_hooks"}
+        launch = {"schema_version": runner.SCHEMA, "mode": "worker", "identity": identity,
+                  "agent_root": str(self.candidate.resolve()), "argv": argv,
+                  "argv_sha256": runner.sha(runner.shlex.join(argv).encode()),
+                  "prompt": runner.evidence(prompt),
+                  "compatible_config": {"derived": runner.evidence(compatible)},
+                  "launcher_config": runner.evidence(launcher), "effective_hook_policy": policy}
+        runner.atomic_json(source / "launch.json", launch)
+        terminal = {"schema_version": runner.SCHEMA, "state": "failed",
+                    "semantic_outcome": "failed", "failure": "capture is missing or stale",
+                    "exit_code": 0, "timed_out": False, "exit_signal": None,
+                    "interrupted_signal": None, "termination_events": []}
+        runner.atomic_json(source / "terminal.json", terminal)
+        failed = {**terminal, "mode": "worker", "identity": identity,
+                  "tool_id": "managed_agent_runner", "effective_hook_policy": policy,
+                  "launch": runner.evidence(source / "launch.json"),
+                  "live_log": runner.evidence(live)}
+        runner.atomic_json(source / "receipt.json", failed)
+        out = self.tmp / "recovered-worker"
+        args = type("Args", (), {"failed_receipt": str(source / "receipt.json"),
+                                  "out_dir": str(out)})()
+        self.assertEqual(0, runner.recover_worker_capture(args))
+        receipt = json.loads((out / "receipt.json").read_text())
+        self.assertEqual(("succeeded", "receipt_bound_worker_recovery", "session-recovery"),
+                         (receipt["state"], receipt["capture_source"], receipt["session_id"]))
+        self.assertEqual("capture_only_no_model_rerun", receipt["recovery"]["kind"])
+        self.assertEqual([ours, theirs], git(self.candidate, "show", "-s", "--format=%P").split())
+
+        live.write_text("tampered\n")
+        with self.assertRaisesRegex(runner.RunnerError, "live log artifact identity mismatch"):
+            runner.recover_worker_capture(type("Args", (), {
+                "failed_receipt": str(source / "receipt.json"),
+                "out_dir": str(self.tmp / "tampered-recovery")})())
+
     def test_bound_review_canonicalizes_accepted_crlf_response_artifact(self):
         candidate_sha = git(self.candidate, "rev-parse", "HEAD")
         policy = risk.load_policy(RUNNER.parents[1] / "config/risk-policy.json")
