@@ -1413,7 +1413,9 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
     """Produce verifier-owned semantic evidence; caller attestations have no decision weight."""
     controller = controller.resolve(); worktree = worktree.resolve(); output = output.resolve()
     blockers: list[str] = []
-    expected_output = controller / ".juno_task/runtime/phase-evidence" / task_id / "phase1-proof.json"
+    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f"phase1-proof-{tip_sha}.json")
     if output != expected_output or not task_runtime.TASK_RE.fullmatch(task_id):
         blockers.append("proof.routing")
     declaration_path = declaration_path.resolve(); fixture_path = fixture_path.resolve()
@@ -1431,7 +1433,6 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
     after = _phase1_repository_snapshot(repository)
     if before != after:
         blockers.append("non_mutation.drift")
-    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
     body = {"schema_version": PHASE1_PROOF_SCHEMA,
             "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
             "worktree": str(worktree), "tip_sha": tip_sha, "tree_sha": tree_sha,
