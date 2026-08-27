@@ -1489,7 +1489,7 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
     except (OSError, json.JSONDecodeError):
         run_record, footer, combined = {}, "", ""
     argv = proof.get("producer_argv")
-    expected_argv = [sys.executable, str(Path(__file__).resolve()), "--controller", str(controller.resolve()),
+    expected_argv = ["python3", str(Path(__file__).resolve()), "--controller", str(controller.resolve()),
         "phase1-prove", "--declaration", proof.get("declaration", {}).get("path"),
         "--fixture", proof.get("fixture", {}).get("path"), "--task-id", task_id,
         "--worktree", str(worktree), "--output", proof.get("proof_output",
@@ -2292,7 +2292,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
         elif args.operation == "phase1-prove":
-            actual_argv = [sys.executable, str(Path(__file__).resolve()), *(argv if argv is not None else sys.argv[1:])]
+            actual_argv = ["python3", str(Path(__file__).resolve()), *(argv if argv is not None else sys.argv[1:])]
             result = phase1_proof(controller, args.declaration, args.fixture, args.task_id,
                                   args.worktree, args.output, actual_argv)
             if result["decision"] != "PASS":

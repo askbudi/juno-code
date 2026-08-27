@@ -505,7 +505,7 @@ raise SystemExit(2)
         fixture_path = evidence_root / "portable.json"
         fixture_path.write_text(runtime.canonical(fixture) + "\n")
         proof_path = evidence_root / f'phase1-proof-{run(self.root, "git", "rev-parse", "HEAD")}.json'
-        command = [sys.executable, str(SCRIPTS / "release_train.py"), "--controller", str(self.root),
+        command = ["python3", str(SCRIPTS / "release_train.py"), "--controller", str(self.root),
             "phase1-prove", "--declaration", str(self.declaration), "--fixture", str(fixture_path),
             "--task-id", "V9vE0X", "--worktree", str(self.root), "--output", str(proof_path)]
         produced = subprocess.run(command, cwd=self.root, text=True,
