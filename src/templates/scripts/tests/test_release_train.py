@@ -214,7 +214,8 @@ raise SystemExit(2)
         for sequence, (task_id, tip) in enumerate((("OLD", old), ("REQ", req)), 1):
             self.state["tasks"][task_id].update({
                 "tip_sha": tip, "enqueue_sequence": sequence,
-                "complete_input_identity": "c" * 64,
+                "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
+                                         "closure_sha256": "c" * 64},
                 "validation": [{"status": "passed", "receipt_id": task_id}],
             })
         self.write_state()
@@ -231,6 +232,7 @@ raise SystemExit(2)
         self.prepare_epoch()
         plan = runtime.build_epoch_plan(self.root, self.declaration)
         self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in plan["members"]])
+        self.assertEqual("c" * 64, plan["members"][0]["complete_input_identity"]["closure_sha256"])
         sealed = runtime.seal_epoch(self.root, self.declaration)
         self.assertEqual("sealed", sealed["outcome"])
         self.assertEqual("SEALED", sealed["epoch"]["state"])

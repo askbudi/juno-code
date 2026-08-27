@@ -536,7 +536,8 @@ def queue_epoch_members(controller: Path, declaration: dict[str, Any], target_sh
         if not SHA_RE.fullmatch(tree):
             raise ReleaseTrainError(f"eligible candidate {task_id} tip is unavailable")
         attempt = record.get("queue_attempt") if isinstance(record.get("queue_attempt"), dict) else {}
-        closure = record.get("complete_input_identity") or attempt.get("complete_input_identity")
+        closure = (record.get("review_ready_closure") or record.get("complete_input_identity")
+                   or attempt.get("review_ready_closure") or attempt.get("complete_input_identity"))
         evidence = record.get("validation") or attempt.get("command_evidence") or attempt.get("validation") or []
         admission = ("required" if task_id in declared_required else
                      "optional" if task_id in declared_optional else "ambient_pre_cutoff")
