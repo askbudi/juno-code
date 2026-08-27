@@ -110,6 +110,17 @@ raise SystemExit(2)
                  "exclusions": ["push", "publish", "deploy"]}
         self.declaration.write_text(json.dumps(value, sort_keys=True) + "\n")
 
+    def write_bootstrap_declaration(self) -> Path:
+        path = self.root / "bootstrap-repair.json"
+        path.write_text(json.dumps({
+            "schema_version": runtime.BOOTSTRAP_DECLARATION_SCHEMA,
+            "operation_id": "bootstrap-1", "revision": 1,
+            "target_ref": "refs/heads/product", "planning_base_sha": self.base,
+            "authority_task": "OLD", "repair_task": "REQ", "affected_tasks": ["DEP"],
+            "exclusions": ["release", "tag", "push", "publish", "deploy", "cleanup"],
+        }, sort_keys=True) + "\n")
+        return path
+
     def write_shadow_baseline(self) -> Path:
         path = self.root / "shadow-baseline.json"
         path.write_text(json.dumps({
@@ -229,7 +240,9 @@ raise SystemExit(2)
             self.state["tasks"][task_id].update({
                 "tip_sha": tip, "enqueue_sequence": sequence,
                 "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
-                                         "closure_sha256": "c" * 64},
+                                         "closure_sha256": "c" * 64,
+                                         "tip_sha": tip,
+                                         "tree_sha": tree},
                 "validation": [{"status": "passed", "receipt_id": task_id}],
             })
         self.write_state()
@@ -259,6 +272,57 @@ raise SystemExit(2)
         self.write_state()
         current = runtime.read_epoch(self.root, "rc-1")
         self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in current["seal"]["members"]])
+
+    def test_epoch_seal_refuses_required_missing_closure_without_state(self) -> None:
+        self.prepare_epoch()
+        self.state["tasks"]["REQ"].pop("review_ready_closure")
+        self.write_state()
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "candidate.complete_input_missing:REQ"):
+            runtime.seal_epoch(self.root, self.declaration)
+        self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
+
+    def test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once(self) -> None:
+        old, req = self.prepare_epoch()
+        self.board["REQ"]["blocked_by"] = ["OLD"]
+        self.board["DEP"]["blocked_by"] = ["REQ"]
+        self.write_board()
+        declaration = self.write_bootstrap_declaration()
+        plan = runtime.build_bootstrap_plan(self.root, declaration)
+        self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in plan["members"]])
+        self.assertEqual([], plan["preserved_members"])
+        sealed = runtime.seal_bootstrap(self.root, declaration)
+        token = sealed["bootstrap_token"]
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "exact bootstrap-repair fencing token"):
+            runtime.drive_bootstrap(self.root, "bootstrap-1", "wrong")
+        cas_calls = 0
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            nonlocal cas_calls
+            cas_calls += 1
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas), \
+             mock.patch("merge_queue.refresh_managed_controller", return_value={"status": "complete"}):
+            complete = runtime.drive_bootstrap(self.root, "bootstrap-1", token)
+            repeated = runtime.drive_bootstrap(self.root, "bootstrap-1", token)
+        self.assertEqual("COMPLETE", complete["state"])
+        self.assertEqual(complete, repeated)
+        self.assertEqual(1, cas_calls)
+        self.assertEqual(1, complete["cas"]["target_move_count"])
+        for candidate in (old, req):
+            subprocess.run(["git", "merge-base", "--is-ancestor", candidate,
+                            complete["cas"]["tip"]], cwd=self.root, check=True)
+        self.assertEqual("QUEUED", self.state["tasks"]["OLD"]["state"])
+        self.assertEqual("QUEUED", self.state["tasks"]["REQ"]["state"])
+        receipt = json.loads(Path(complete["receipt"]["path"]).read_text())
+        self.assertEqual("bootstrap_repair_integrated", receipt["reason_code"])
+        self.assertTrue(set(runtime.EXTERNAL_ACTIONS).issubset(receipt["excluded_actions"]))
+
+    def test_bootstrap_repair_refuses_missing_causal_dependency(self) -> None:
+        self.prepare_epoch()
+        self.board["DEP"]["blocked_by"] = ["REQ"]
+        self.write_board()
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "causal chain"):
+            runtime.build_bootstrap_plan(self.root, self.write_bootstrap_declaration())
 
     def test_epoch_composes_history_validates_once_and_cas_once(self) -> None:
         old, req = self.prepare_epoch()

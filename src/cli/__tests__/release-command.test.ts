@@ -40,6 +40,26 @@ describe('release train CLI', () => {
     expect(command('drive')?.description()).toContain('one target CAS');
     expect(command('repair')?.description()).toContain('one bounded');
     expect(command('retry')?.description()).toContain('Receipt-backed fenced retry');
+    expect(command('bootstrap-inspect')?.description()).toContain('Read-only');
+    expect(command('bootstrap-status')?.description()).toContain('Read-only');
+    expect(command('bootstrap-seal')?.description()).toContain('Explicitly seal');
+    expect(command('bootstrap-drive')?.description()).toContain('one expected-old-SHA');
+  });
+
+  it('forwards bootstrap inspection, seal, status, and fenced drive', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureReleaseTrainCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'bootstrap-inspect', '/bootstrap.json', '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('bootstrap-inspect', '/bootstrap.json', ['--json']);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'bootstrap-seal', '/bootstrap.json']);
+    expect(invoke).toHaveBeenLastCalledWith('bootstrap-seal', '/bootstrap.json', []);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'bootstrap-status', 'bootstrap-1', '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('bootstrap-status', 'bootstrap-1', ['--json']);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'bootstrap-drive', 'bootstrap-1',
+      '--bootstrap-token', 'exact-token', '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('bootstrap-drive', 'bootstrap-1',
+      ['--bootstrap-token', 'exact-token', '--json']);
   });
 
   it('forwards fenced aggregate retry without weakening token identity', async () => {

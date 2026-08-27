@@ -24,6 +24,11 @@ EPOCH_SEAL_SCHEMA = "juno_release_epoch_seal.v1"
 EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
 EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
+BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
+BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
+BOOTSTRAP_STATE_SCHEMA = "juno_bootstrap_repair_state.v1"
+BOOTSTRAP_RECEIPT_SCHEMA = "juno_bootstrap_repair_receipt.v1"
+EXTERNAL_ACTIONS = {"release", "tag", "push", "publish", "deploy", "cleanup"}
 EPOCH_TERMINAL_STATES = {"RELEASE_READY", "CLOSED", "PAUSED_REQUIRED", "NEEDS_OPERATOR", "STALE"}
 ACTIVE_QUEUE_STATES = {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED", "AWAITING_RISK",
                        "AWAITING_RELEASE", "REVIEW_FINDINGS", "REVIEW_FINDINGS_EXHAUSTED",
@@ -518,6 +523,244 @@ def epoch_receipt(controller: Path, state: dict[str, Any], transition: str,
     return reference
 
 
+def exact_candidate(controller: Path, task_id: str, target_ref: str) -> dict[str, Any]:
+    """Freeze one queued candidate and its exact review-ready closure."""
+    state = task_runtime.read_state(controller)
+    record = state.get("tasks", {}).get(task_id)
+    if (not isinstance(record, dict) or record.get("target_ref") != target_ref
+            or record.get("state") != "QUEUED"):
+        raise ReleaseTrainError(f"bootstrap candidate is not exactly QUEUED: {task_id}")
+    tip = record.get("tip_sha")
+    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+    tree = git(repository, "rev-parse", f"{tip}^{{tree}}") if isinstance(tip, str) else ""
+    attempt = record.get("queue_attempt") if isinstance(record.get("queue_attempt"), dict) else {}
+    closure = (record.get("review_ready_closure") or record.get("complete_input_identity")
+               or attempt.get("review_ready_closure") or attempt.get("complete_input_identity"))
+    evidence = record.get("validation") or attempt.get("command_evidence") or attempt.get("validation") or []
+    if (not isinstance(tip, str) or not SHA_RE.fullmatch(tip) or not SHA_RE.fullmatch(tree)
+            or not isinstance(closure, dict)
+            or closure.get("schema_version") != "juno_task_review_ready_closure.v1"
+            or not isinstance(closure.get("closure_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", closure["closure_sha256"])
+            or closure.get("tip_sha") != tip or closure.get("tree_sha") != tree
+            or not isinstance(evidence, list) or not evidence):
+        raise ReleaseTrainError(f"candidate.complete_input_invalid:{task_id}")
+    task = kanban_task(controller, task_id)
+    return {"task_id": task_id, "tip_sha": tip, "tree_sha": tree,
+            "queue_record_sha256": digest(record), "task_sha256": digest(task),
+            "closure_sha256": closure["closure_sha256"], "evidence_sha256": digest(evidence),
+            "enqueue_sequence": record.get("enqueue_sequence"),
+            "changed_paths": sorted(record.get("changed_paths", [])),
+            "blocked_by": sorted(task.get("blocked_by", []) or [])}
+
+
+def load_bootstrap_declaration(path: Path) -> tuple[dict[str, Any], Path]:
+    resolved = path.expanduser().resolve()
+    try:
+        value = json.loads(resolved.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"invalid bootstrap-repair declaration: {exc}") from exc
+    keys = {"schema_version", "operation_id", "revision", "target_ref", "planning_base_sha",
+            "authority_task", "repair_task", "affected_tasks", "exclusions"}
+    if not isinstance(value, dict) or set(value) != keys or value.get("schema_version") != BOOTSTRAP_DECLARATION_SCHEMA:
+        raise ReleaseTrainError("bootstrap-repair declaration has an unsupported or non-exact schema")
+    if not isinstance(value["operation_id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value["operation_id"]):
+        raise ReleaseTrainError("bootstrap-repair operation_id is unsafe")
+    if not isinstance(value["revision"], int) or isinstance(value["revision"], bool) or value["revision"] < 1:
+        raise ReleaseTrainError("bootstrap-repair revision must be positive")
+    if not isinstance(value["target_ref"], str) or not value["target_ref"].startswith("refs/"):
+        raise ReleaseTrainError("bootstrap-repair target_ref must be a full ref")
+    if not isinstance(value["planning_base_sha"], str) or not SHA_RE.fullmatch(value["planning_base_sha"]):
+        raise ReleaseTrainError("bootstrap-repair planning base must be exact")
+    task_ids = [value["authority_task"], value["repair_task"]]
+    if any(not isinstance(item, str) or not task_runtime.TASK_RE.fullmatch(item) for item in task_ids):
+        raise ReleaseTrainError("bootstrap-repair task identity is unsafe")
+    if len(set(task_ids)) != 2:
+        raise ReleaseTrainError("bootstrap authority and repair tasks must be distinct")
+    affected = value["affected_tasks"]
+    if (not isinstance(affected, list) or not affected or len(affected) != len(set(affected))
+            or any(not isinstance(item, str) or not task_runtime.TASK_RE.fullmatch(item) for item in affected)):
+        raise ReleaseTrainError("bootstrap affected_tasks must be unique task IDs")
+    exclusions = value["exclusions"]
+    if (not isinstance(exclusions, list) or len(exclusions) != len(set(exclusions))
+            or any(not isinstance(item, str) or not item for item in exclusions)
+            or not EXTERNAL_ACTIONS.issubset(set(exclusions))):
+        raise ReleaseTrainError("bootstrap-repair must exclude release/tag/push/publish/deploy/cleanup")
+    return value, resolved
+
+
+def bootstrap_root(controller: Path) -> Path:
+    return controller / ".juno_task/runtime/bootstrap-repairs"
+
+
+def bootstrap_state_path(controller: Path, operation_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", operation_id):
+        raise ReleaseTrainError("bootstrap-repair operation_id is unsafe")
+    return bootstrap_root(controller) / operation_id / "state.json"
+
+
+def read_bootstrap(controller: Path, operation_id: str) -> dict[str, Any]:
+    try:
+        value = json.loads(bootstrap_state_path(controller, operation_id).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"bootstrap-repair state is missing or malformed: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != BOOTSTRAP_STATE_SCHEMA:
+        raise ReleaseTrainError("bootstrap-repair state has an unsupported schema")
+    return value
+
+
+def build_bootstrap_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
+    declaration, resolved = load_bootstrap_declaration(declaration_path)
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    current = git(repository, "rev-parse", "--verify", declaration["target_ref"])
+    if current != declaration["planning_base_sha"]:
+        raise ReleaseTrainError("bootstrap-repair target moved since planning")
+    authority = exact_candidate(controller, declaration["authority_task"], declaration["target_ref"])
+    repair = exact_candidate(controller, declaration["repair_task"], declaration["target_ref"])
+    if authority["task_id"] not in repair["blocked_by"]:
+        raise ReleaseTrainError("bootstrap-repair causal chain is missing authority -> repair dependency")
+    for task_id in declaration["affected_tasks"]:
+        task = kanban_task(controller, task_id)
+        if repair["task_id"] not in (task.get("blocked_by") or []):
+            raise ReleaseTrainError(f"bootstrap-repair affected task lacks repair dependency: {task_id}")
+    queue = task_runtime.read_state(controller).get("tasks", {})
+    preserved = []
+    for task_id, record in queue.items():
+        if (task_id not in {authority["task_id"], repair["task_id"]}
+                and isinstance(record, dict) and record.get("target_ref") == declaration["target_ref"]
+                and record.get("state") in ACTIVE_QUEUE_STATES):
+            preserved.append({"task_id": task_id, "state": record.get("state"),
+                              "tip_sha": record.get("tip_sha"), "queue_record_sha256": digest(record),
+                              "enqueue_sequence": record.get("enqueue_sequence")})
+    preserved.sort(key=lambda row: (row["enqueue_sequence"] if isinstance(row["enqueue_sequence"], int) else 2**63,
+                                    row["task_id"]))
+    body = {"schema_version": BOOTSTRAP_SEAL_SCHEMA, "operation_id": declaration["operation_id"],
+            "declaration": {"path": str(resolved), "sha256": file_hash(resolved),
+                            "revision": declaration["revision"]},
+            "target_ref": declaration["target_ref"], "base_sha": current,
+            "members": [authority, repair], "affected_tasks": sorted(declaration["affected_tasks"]),
+            "preserved_members": preserved, "exclusions": sorted(declaration["exclusions"]),
+            "runtime_sha256": {path: file_hash(controller / path) for path in
+                [".juno_task/scripts/release_train.py", ".juno_task/scripts/merge_queue.py",
+                 ".juno_task/scripts/task_workspace.py"]},
+            "authority": "bootstrap_repair_only_one_expected_old_sha_cas"}
+    return {**body, "plan_id": digest(body)}
+
+
+def seal_bootstrap(controller: Path, declaration_path: Path) -> dict[str, Any]:
+    plan = build_bootstrap_plan(controller, declaration_path)
+    path = bootstrap_state_path(controller, plan["operation_id"])
+    if path.exists():
+        state = read_bootstrap(controller, plan["operation_id"])
+        if state.get("seal", {}).get("plan_id") != plan["plan_id"]:
+            raise ReleaseTrainError("bootstrap-repair operation is already sealed differently")
+        return {"outcome": "already_sealed", "state": state}
+    token = f"{plan['operation_id']}:{secrets.token_hex(24)}"
+    seal = {**plan, "sealed_utc": utc_now(),
+            "fencing_token_sha256": hashlib.sha256(token.encode()).hexdigest()}
+    state = {"schema_version": BOOTSTRAP_STATE_SCHEMA, "operation_id": plan["operation_id"],
+             "state": "SEALED", "seal": seal, "composition": None, "cas": None,
+             "receipt": None, "updated_utc": utc_now()}
+    try:
+        atomic_json(path, state, exclusive=True)
+    except FileExistsError:
+        return seal_bootstrap(controller, declaration_path)
+    return {"outcome": "sealed", "bootstrap_token": token, "state": state}
+
+
+def require_bootstrap_token(state: dict[str, Any], token: str) -> None:
+    if (not token or hashlib.sha256(token.encode()).hexdigest()
+            != state["seal"]["fencing_token_sha256"]):
+        raise ReleaseTrainError("exact bootstrap-repair fencing token is required")
+
+
+def drive_bootstrap(controller: Path, operation_id: str, token: str) -> dict[str, Any]:
+    state = read_bootstrap(controller, operation_id); require_bootstrap_token(state, token)
+    if state.get("state") == "COMPLETE":
+        return state
+    seal = state["seal"]
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    current = git(repository, "rev-parse", seal["target_ref"])
+    for member in seal["members"]:
+        exact = exact_candidate(controller, member["task_id"], seal["target_ref"])
+        if any(exact[key] != member[key] for key in ("tip_sha", "tree_sha", "queue_record_sha256",
+                                                     "task_sha256", "closure_sha256", "evidence_sha256")):
+            raise ReleaseTrainError(f"bootstrap-repair sealed candidate drifted: {member['task_id']}")
+    queue = task_runtime.read_state(controller).get("tasks", {})
+    for preserved in seal["preserved_members"]:
+        record = queue.get(preserved["task_id"])
+        if not isinstance(record, dict) or digest(record) != preserved["queue_record_sha256"]:
+            raise ReleaseTrainError(f"bootstrap-repair preserved queue member drifted: {preserved['task_id']}")
+    checkout = Path(config["workspace_root"]).expanduser().resolve() / ".bootstrap-repairs" / operation_id
+    ref = f"refs/juno/bootstrap-repairs/{operation_id}"
+    if not checkout.exists():
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        task_runtime.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(checkout), seal["base_sha"]], repository)
+        task_runtime.run(["git", "-C", str(repository), "update-ref", ref, seal["base_sha"]], repository)
+    ensure_full_train_checkout(checkout)
+    composed = []
+    for member in seal["members"]:
+        if not subprocess.run(["git", "-C", str(checkout), "merge-base", "--is-ancestor",
+                               member["tip_sha"], "HEAD"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode:
+            composed.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
+                             "merge_commit": git(checkout, "rev-parse", "HEAD"), "reused": True})
+            continue
+        before = git(checkout, "rev-parse", "HEAD")
+        merged = subprocess.run(["git", "-C", str(checkout), "merge", "--no-ff", "--no-edit", member["tip_sha"]],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if merged.returncode:
+            state.update({"state": "NEEDS_OPERATOR", "composition": {"worktree": str(checkout),
+                "ref": ref, "conflict_task": member["task_id"], "conflict_paths": sorted(
+                    git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines())},
+                "updated_utc": utc_now()})
+            atomic_json(bootstrap_state_path(controller, operation_id), state)
+            return state
+        commit = git(checkout, "rev-parse", "HEAD")
+        composed.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
+                         "pre_sha": before, "merge_commit": commit,
+                         "parents": git(checkout, "show", "-s", "--format=%P", commit).split()})
+        task_runtime.run(["git", "-C", str(repository), "update-ref", ref, commit], repository)
+    tip = git(checkout, "rev-parse", "HEAD")
+    if current == seal["base_sha"]:
+        import merge_queue
+        owner = merge_queue.cas_target(repository, seal["target_ref"], tip, seal["base_sha"])
+    elif current == tip:
+        owner = {"status": "reused_exact_target_readback"}
+    else:
+        raise ReleaseTrainError("bootstrap-repair expected-old-SHA target moved")
+    readback = git(repository, "rev-parse", seal["target_ref"])
+    if readback != tip:
+        raise ReleaseTrainError("bootstrap-repair target readback mismatch")
+    import merge_queue
+    runtime_refresh = merge_queue.refresh_managed_controller(
+        controller, repository, seal["base_sha"], tip, seal["members"][-1]["task_id"])
+    receipt = {"schema_version": BOOTSTRAP_RECEIPT_SCHEMA, "operation_id": operation_id,
+        "plan_id": seal["plan_id"], "expected_target_sha": seal["base_sha"],
+        "integrated_sha": tip, "target_readback_sha": readback, "target_move_count": 1,
+        "members": composed, "affected_tasks": seal["affected_tasks"],
+        "preserved_members": seal["preserved_members"], "integration_owner": owner,
+        "managed_runtime_refresh": runtime_refresh, "runtime_sha256": seal["runtime_sha256"],
+        "reason_code": "bootstrap_repair_integrated",
+        "next_action": "reconcile merged repair tasks, regenerate affected closures, then inspect and seal one fresh all-eligible epoch",
+        "excluded_actions": seal["exclusions"], "completed_utc": utc_now()}
+    receipt["receipt_id"] = digest(receipt)
+    receipt_path = bootstrap_root(controller) / operation_id / "receipt.json"
+    if receipt_path.exists() and file_hash(receipt_path) != hashlib.sha256((canonical(receipt) + "\n").encode()).hexdigest():
+        raise ReleaseTrainError("bootstrap-repair receipt identity drift")
+    if not receipt_path.exists():
+        atomic_json(receipt_path, receipt, exclusive=True)
+    state.update({"state": "COMPLETE", "composition": {"worktree": str(checkout), "ref": ref,
+        "tip_sha": tip, "members": composed}, "cas": {"expected": seal["base_sha"],
+        "tip": tip, "readback": readback, "target_move_count": 1},
+        "receipt": {"path": str(receipt_path.resolve()), "sha256": file_hash(receipt_path),
+                    "receipt_id": receipt["receipt_id"]}, "updated_utc": utc_now()})
+    atomic_json(bootstrap_state_path(controller, operation_id), state)
+    return state
+
+
 def queue_epoch_members(controller: Path, declaration: dict[str, Any], target_sha: str) -> list[dict[str, Any]]:
     state = task_runtime.read_state(controller)
     declared_required = set(declaration["required_tasks"])
@@ -615,6 +858,17 @@ def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]
 
 def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
     plan = build_epoch_plan(controller, declaration_path)
+    invalid = [row["task_id"] for row in plan["members"] if row["required"] and (
+        not isinstance(row.get("complete_input_identity"), dict)
+        or row["complete_input_identity"].get("schema_version") != "juno_task_review_ready_closure.v1"
+        or not isinstance(row["complete_input_identity"].get("closure_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", row["complete_input_identity"]["closure_sha256"])
+        or row["complete_input_identity"].get("tip_sha") != row["tip_sha"]
+        or row["complete_input_identity"].get("tree_sha") != row["tree_sha"]
+        or row["evidence_sha256"] == digest([]))]
+    if invalid:
+        raise ReleaseTrainError("candidate.complete_input_missing:" + ",".join(sorted(invalid))
+                                + "; next=regenerate exact review-ready closure before seal")
     path = epoch_state_path(controller, plan["epoch_id"])
     if path.exists():
         current = read_epoch(controller, plan["epoch_id"])
@@ -1278,6 +1532,15 @@ def parser() -> argparse.ArgumentParser:
     repair.add_argument("--json", action="store_true")
     retry = subs.add_parser("retry"); retry.add_argument("epoch_id")
     retry.add_argument("--epoch-token", required=True); retry.add_argument("--json", action="store_true")
+    bootstrap_inspect = subs.add_parser("bootstrap-inspect")
+    bootstrap_inspect.add_argument("declaration", type=Path); bootstrap_inspect.add_argument("--json", action="store_true")
+    bootstrap_seal = subs.add_parser("bootstrap-seal")
+    bootstrap_seal.add_argument("declaration", type=Path); bootstrap_seal.add_argument("--json", action="store_true")
+    bootstrap_status = subs.add_parser("bootstrap-status")
+    bootstrap_status.add_argument("operation_id"); bootstrap_status.add_argument("--json", action="store_true")
+    bootstrap_drive = subs.add_parser("bootstrap-drive")
+    bootstrap_drive.add_argument("operation_id"); bootstrap_drive.add_argument("--bootstrap-token", required=True)
+    bootstrap_drive.add_argument("--json", action="store_true")
     shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
     shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
     shadow.add_argument("--output", type=Path)
@@ -1308,6 +1571,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = apply_conflict_repair(controller, args.epoch_id, args.receipt, args.epoch_token)
         elif args.operation == "retry":
             result = retry_epoch_aggregate(controller, args.epoch_id, args.epoch_token)
+        elif args.operation == "bootstrap-inspect":
+            result = build_bootstrap_plan(controller, args.declaration)
+        elif args.operation == "bootstrap-seal":
+            result = seal_bootstrap(controller, args.declaration)
+        elif args.operation == "bootstrap-status":
+            result = read_bootstrap(controller, args.operation_id)
+        elif args.operation == "bootstrap-drive":
+            result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
         elif args.operation == "shadow":
             result = shadow_epoch(controller, args.declaration, args.baseline)
         else:

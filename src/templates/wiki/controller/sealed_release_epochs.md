@@ -65,12 +65,41 @@ All eligible pre-cutoff candidates are members, including unrelated finished
 candidates. New candidates enter the next epoch. Retrying an identical seal is
 idempotent; changing an existing epoch ID is refused.
 
+Seal refuses before creating epoch state when any required member lacks an exact
+review-ready closure bound to its frozen tip/tree and non-empty evidence. The
+stable refusal begins `candidate.complete_input_missing` and requires closure
+regeneration; operators must not knowingly seal a mixed/null snapshot.
+
 Required failure transitions to `PAUSED_REQUIRED`. An optional ejection carries
 its dependent subtree and leaves independent members admitted:
 
 ```bash
 yy release train eject EPOCH TASK --reason REASON --epoch-token TOKEN
 ```
+
+## Bootstrap-repair deadlock recovery
+
+When the runtime repair needed to restore exact closures is itself queued behind
+the affected blocked candidates, use the separate bootstrap-only transaction.
+Its exact declaration names one self-hosting authority task, one repair task, the
+affected blocked tasks, the expected target SHA, and all external exclusions:
+
+```bash
+yy release train bootstrap-inspect /absolute/bootstrap-repair.json --json
+yy release train bootstrap-seal /absolute/bootstrap-repair.json --json
+# retain bootstrap_token from the seal result
+yy release train bootstrap-drive OPERATION_ID --bootstrap-token TOKEN --json
+yy release train bootstrap-status OPERATION_ID --json
+```
+
+Seal proves both candidates are exactly queued with valid closures, the repair is
+blocked by the authority task, each affected task is blocked by the repair, and
+all unrelated active queue rows are frozen as preserved members. Drive composes
+only authority then repair with both-parent history, permits no conflict worker,
+performs one expected-old-SHA CAS/readback, refreshes the managed runtime, and
+emits the exact next action: reconcile the integrated repair tasks, regenerate
+affected closures, then seal a fresh all-eligible epoch. It cannot seal that
+epoch, complete affected tasks, release, tag, push, publish, deploy, or clean.
 
 ## Composition and conflict recovery
 

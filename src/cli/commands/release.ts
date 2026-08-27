@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'retry' | 'shadow';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -91,6 +91,36 @@ export function configureReleaseTrainCommand(
     .option('--json', 'Emit stable versioned JSON')
     .action((epochId: string, options: { epochToken: string; json?: boolean }) => invoke(
       'retry', epochId, ['--epoch-token', options.epochToken, ...(options.json ? ['--json'] : [])],
+    ));
+  train.command('bootstrap-inspect')
+    .description('Read-only validation of one causally bound bootstrap-repair declaration')
+    .argument('<declaration>', 'Versioned bootstrap-repair declaration JSON')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((declaration: string, options: { json?: boolean }) => invoke(
+      'bootstrap-inspect', declaration, options.json ? ['--json'] : [],
+    ));
+  train.command('bootstrap-seal')
+    .description('Explicitly seal one immutable bootstrap-repair transaction')
+    .argument('<declaration>', 'Versioned bootstrap-repair declaration JSON')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((declaration: string, options: { json?: boolean }) => invoke(
+      'bootstrap-seal', declaration, options.json ? ['--json'] : [],
+    ));
+  train.command('bootstrap-status')
+    .description('Read-only bootstrap-repair state and receipt projection')
+    .argument('<operation-id>', 'Sealed bootstrap-repair operation identity')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((operationId: string, options: { json?: boolean }) => invoke(
+      'bootstrap-status', operationId, options.json ? ['--json'] : [],
+    ));
+  train.command('bootstrap-drive')
+    .description('Fenced bootstrap-only composition and one expected-old-SHA target CAS')
+    .argument('<operation-id>', 'Sealed bootstrap-repair operation identity')
+    .requiredOption('--bootstrap-token <token>', 'Exact fencing token emitted once by bootstrap-seal')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((operationId: string, options: { bootstrapToken: string; json?: boolean }) => invoke(
+      'bootstrap-drive', operationId,
+      ['--bootstrap-token', options.bootstrapToken, ...(options.json ? ['--json'] : [])],
     ));
   train.command('shadow')
     .description('Read-only production-shaped replay; never merges, releases, or mutates production')
