@@ -4931,6 +4931,80 @@ def _cleanup_refreshed_candidate(controller: Path, repository: Path,
         marker.unlink()
 
 
+def _target_refresh_review_ready_closure(
+        controller: Path, repository: Path, record: dict[str, Any], plan: dict[str, Any],
+        receipt_sha256: str, validations: list[dict[str, Any]],
+        command_evidence: dict[str, Any]) -> dict[str, Any]:
+    """Bind refreshed-tip validation without relabelling old-tip standing receipts."""
+    source = record.get("review_ready_closure")
+    if not isinstance(source, dict):
+        raise MergeQueueError("target refresh source review-ready closure is missing")
+    source_body = {key: value for key, value in source.items() if key != "closure_sha256"}
+    if (source.get("schema_version") != "juno_task_review_ready_closure.v1"
+            or source.get("closure_sha256") != task_runtime.stable_sha256(source_body)
+            or source.get("task_id") != plan.get("task_id")
+            or source.get("tip_sha") != plan.get("source_tip")
+            or source.get("changed_paths") != record.get("changed_paths")):
+        raise MergeQueueError("target refresh source review-ready closure is forged or stale")
+    if not isinstance(command_evidence, dict):
+        raise MergeQueueError("target refresh command evidence is missing")
+    counters = command_evidence.get("counters")
+    decisions = command_evidence.get("decisions")
+    if not isinstance(counters, dict) or not isinstance(decisions, list):
+        raise MergeQueueError("target refresh command evidence is malformed")
+    for result in validations:
+        identity = result.get("identity") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("exit_code") != 0
+                or result.get("timed_out")
+                or result.get("result_integrity", {}).get("eligible_pass") is False
+                or (isinstance(identity, dict)
+                    and identity.get("candidate_sha") != plan.get("refreshed_tip"))):
+            raise MergeQueueError("target refresh validation is failed or stale")
+    if not validations and not (counters.get("not_applicable", 0) or counters.get("skipped", 0)):
+        raise MergeQueueError("target refresh has no exact validation proof")
+    policy_path = controller / ".juno_task/config/risk-policy.json"
+    try:
+        risk_policy_sha256 = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise MergeQueueError("risk policy is missing during target refresh") from exc
+    runtime = task_runtime.runtime_generation(repository, plan["target_sha"])
+    body = {
+        "schema_version": "juno_task_review_ready_closure.v1",
+        "task_id": plan["task_id"],
+        "base_sha": source.get("base_sha"),
+        "tip_sha": plan["refreshed_tip"],
+        "tree_sha": task_runtime.git(repository, "rev-parse", f"{plan['refreshed_tip']}^{{tree}}"),
+        "changed_paths": plan["authored_paths"],
+        "changed_paths_sha256": task_runtime.stable_sha256(plan["authored_paths"]),
+        "allowed_paths_sha256": source.get("allowed_paths_sha256"),
+        "creation_receipt_sha256": source.get("creation_receipt_sha256"),
+        "generated_output_admission_sha256": source.get("generated_output_admission_sha256"),
+        "risk_policy_sha256": risk_policy_sha256,
+        "runtime_sha256": runtime["running_sha256"],
+        "unresolved_findings_candidate_sha": source.get("unresolved_findings_candidate_sha"),
+        "target_refresh": {
+            "plan_id": plan["plan_id"],
+            "receipt_sha256": receipt_sha256,
+            "target_sha": plan["target_sha"],
+            "source_tip": plan["source_tip"],
+            "source_closure_sha256": source["closure_sha256"],
+        },
+        "authoritative_validation": {
+            "results_sha256": task_runtime.stable_sha256(validations),
+            "command_evidence_sha256": task_runtime.stable_sha256(command_evidence),
+            "counters": counters,
+        },
+    }
+    required = ("base_sha", "allowed_paths_sha256", "creation_receipt_sha256",
+                "generated_output_admission_sha256")
+    if any(not isinstance(body[key], str) for key in required):
+        raise MergeQueueError("target refresh source review-ready closure is incomplete")
+    closure = {**body, "closure_sha256": task_runtime.stable_sha256(body)}
+    if not closure["closure_sha256"]:
+        raise MergeQueueError("target refresh review-ready closure could not be produced")
+    return closure
+
+
 def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
                          receipt_sha256: str) -> dict[str, Any]:
     """Apply only an exact canonical refresh receipt; retries are read-only."""
@@ -4984,17 +5058,19 @@ def apply_target_refresh(controller: Path, task_id: str, receipt_path: str,
                     != plan["refreshed_tip"]
                 or task_runtime.git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
             raise MergeQueueError("target refresh identity drifted during validation")
+        refreshed_closure = _target_refresh_review_ready_closure(
+            controller, repository, record, plan, receipt_sha256, validations, command_evidence)
         reference = {"schema_version": "juno_merge_target_refresh_reference.v1",
                      "plan_id": plan["plan_id"], "receipt_path": str(path),
                      "receipt_sha256": receipt_sha256, "source_tip": plan["source_tip"],
                      "target_sha": plan["target_sha"], "refreshed_tip": plan["refreshed_tip"],
                      "feasibility_plan_id": static["plan_id"]}
         updated = {key: value for key, value in record.items()
-                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt",
-                                  "review_ready_closure"}}
+                   if key not in {"queue_attempt", "last_queue_outcome", "reopen_attempt"}}
         updated.update({"state": "QUEUED", "tip_sha": plan["refreshed_tip"],
                         "changed_paths": plan["authored_paths"], "validation": validations,
                         "command_evidence": command_evidence,
+                        "review_ready_closure": refreshed_closure,
                         "last_validation_outcome": "PASSED",
                         "target_refreshes": [*references, reference]})
         with task_runtime.state_lock(controller):
