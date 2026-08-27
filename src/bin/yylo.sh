@@ -261,10 +261,10 @@ route_registered_product_control() {
     local effective_operation resolution fields controller invocation role branch source runtime
     case "$operation:$PREBOOTSTRAP_SUBCOMMAND" in
         ledger:*|kanban:*) effective_operation=kanban ;;
-        task:status|task:preflight|task:recovery-plan|task:doctor|task:|task:-h|task:--help) effective_operation=kanban ;;
-        task:start|task:run|task:hydrate|task:finish|task:checkpoint|task:child-checkpoint|task:sync|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap) effective_operation=orchestration ;;
+        task:status|task:preflight|task:recovery-plan|task:doctor|task:lease-status|task:|task:-h|task:--help) effective_operation=kanban ;;
+        task:start|task:run|task:hydrate|task:finish|task:checkpoint|task:child-checkpoint|task:sync|task:recovery-authorize|task:recovery-apply|task:runtime-bootstrap|task:lease-heartbeat|task:lease-handoff|task:lease-successor|task:lease-revoke|task:lease-release) effective_operation=orchestration ;;
         merge:status|merge:plan|merge:|merge:-h|merge:--help) effective_operation=kanban ;;
-        merge:next|merge:resolve|merge:review|merge:reopen|merge:reconcile|merge:refresh|merge:drive|merge:withdraw) effective_operation=orchestration ;;
+        merge:next|merge:resolve|merge:review|merge:reopen|merge:reconcile|merge:refresh|merge:drive|merge:withdraw|merge:arbiter) effective_operation=orchestration ;;
         evidence:status|evidence:|evidence:-h|evidence:--help) effective_operation=kanban ;;
         evidence:run|evidence:await) effective_operation=orchestration ;;
         integration:status|integration:|integration:-h|integration:--help) effective_operation=kanban ;;
