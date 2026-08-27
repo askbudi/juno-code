@@ -819,7 +819,8 @@ def managed_node_contract() -> tuple[dict[str, str], str]:
 
 def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                       binding: dict[str, Any] | None = None,
-                      controller_mark: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
+                      controller_mark: dict[str, Any] | None = None,
+                      identity: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, Any]]:
     node_contract, normalized_path = managed_node_contract()
     removed = sorted(k for k in os.environ if k.startswith(("PI_", "JUNO_")) or k == "TASK_ROOT")
     env = {k: v for k, v in os.environ.items() if k not in removed}
@@ -832,9 +833,17 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "YYLO_NODE_EXECUTABLE": node_contract["executable"],
                 "PATH": normalized_path}
     explicit["YYLO_PROJECT_BOOTSTRAP_WRITES"] = "0"
+    worker_admission_kind = None
     if args.mode == "worker":
+        if not isinstance(identity, dict):
+            raise RunnerError("worker environment requires a validated admission identity")
+        worker_admission_kind = identity.get("admission_kind")
+        if worker_admission_kind not in (None, "sealed_release_epoch_conflict"):
+            raise RunnerError("worker environment has an unsupported admission kind")
+        workspace_role = ("controller" if worker_admission_kind == "sealed_release_epoch_conflict"
+                          else "task")
         explicit.update({"TASK_ROOT": str(Path(args.agent_root).resolve()), "JUNO_AGENT_TASK_ID": args.task_id,
-                         "JUNO_WORKSPACE_ROLE": "task"})
+                         "JUNO_WORKSPACE_ROLE": workspace_role})
         if args.authority_map:
             explicit["JUNO_LIFECYCLE_AUTHORITY_MAP"] = str(Path(args.authority_map).resolve())
     if binding is not None:
@@ -850,6 +859,8 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
     )
     contract = {"schema_version": "juno_managed_environment.v1", "removed_key_names": removed,
                 "explicit_key_names": sorted(explicit), "configured_defaults": True,
+                "workspace_role": explicit["JUNO_WORKSPACE_ROLE"],
+                "worker_admission_kind": worker_admission_kind,
                 "node_runtime": node_contract}
     contract["sha256"] = sha(canonical(contract))
     return env, contract
@@ -1058,7 +1069,7 @@ def run(args: argparse.Namespace) -> int:
     # Their environment, prompt, and output contract are already closed by this
     # process owner, and sparse controllers may intentionally omit hook targets.
     env, env_contract = clean_environment(
-        args, capture, metadata, binding, controller_before)
+        args, capture, metadata, binding, controller_before, identity)
     argv = [env_contract["node_runtime"]["yy_executable"], "pi", "--no-hooks", "--config",
             compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     prompt_evidence = evidence(prompt)

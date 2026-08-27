@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib, importlib.util, json, os
 from pathlib import Path
 import shutil, signal, subprocess, sys, tempfile, time, unittest
+from unittest import mock
 
 RUNNER = Path(__file__).resolve().parents[1] / "managed_agent_runner.py"
 RUNNER_SPEC = importlib.util.spec_from_file_location("managed_agent_runner_for_test", RUNNER)
@@ -917,6 +918,34 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
              "--create-receipt",str(paths[0]),"--verify-receipt",str(paths[1]),"--edit-preflight-receipt",str(paths[2])]
         result=subprocess.run(cmd,env=self.env(),capture_output=True,text=True); self.assertEqual(result.returncode,0,result.stderr)
         receipt=json.loads((out/"receipt.json").read_text()); self.assertEqual(receipt["identity"]["unexpected_paths"],[])
+        environment = receipt["environment_contract"]
+        self.assertEqual(environment["workspace_role"], "task")
+        self.assertIsNone(environment["worker_admission_kind"])
+
+    def test_conflict_worker_role_is_bound_to_validated_admission(self):
+        args = runner.argparse.Namespace(
+            mode="worker", controller_root=str(self.controller), controller_branch="controller",
+            agent_root=str(self.candidate), task_id="T1", tool_id="managed_agent_runner",
+            authority_map=None)
+        node = {"executable": "/managed/node", "version": "22.0.0"}
+        with mock.patch.object(runner, "managed_node_contract", return_value=(node, "/managed/bin")):
+            ordinary_env, ordinary_contract = runner.clean_environment(
+                args, self.tmp / "ordinary-capture", self.tmp / "ordinary-metadata",
+                identity={"task_id": "T1"})
+            conflict_env, conflict_contract = runner.clean_environment(
+                args, self.tmp / "conflict-capture", self.tmp / "conflict-metadata",
+                identity={"task_id": "T1", "admission_kind": "sealed_release_epoch_conflict"})
+            with self.assertRaisesRegex(runner.RunnerError, "unsupported admission kind"):
+                runner.clean_environment(
+                    args, self.tmp / "bad-capture", self.tmp / "bad-metadata",
+                    identity={"task_id": "T1", "admission_kind": "unfenced_conflict"})
+        self.assertEqual(ordinary_env["JUNO_WORKSPACE_ROLE"], "task")
+        self.assertEqual(ordinary_contract["workspace_role"], "task")
+        self.assertIsNone(ordinary_contract["worker_admission_kind"])
+        self.assertEqual(conflict_env["JUNO_WORKSPACE_ROLE"], "controller")
+        self.assertEqual(conflict_contract["workspace_role"], "controller")
+        self.assertEqual(conflict_contract["worker_admission_kind"],
+                         "sealed_release_epoch_conflict")
 
     def test_missing_traversal_and_configured_file_drift_are_refused(self):
         config_path = self.controller / ".juno_task/config.json"
