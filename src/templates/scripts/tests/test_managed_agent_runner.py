@@ -186,8 +186,13 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         other = subprocess.CompletedProcess([], 2, "", "controller-resolver: another failure\n")
         self.assertFalse(runner.resolver_policy_passes(other, resolved, workspace, True))
 
-    def test_canonical_metadata_controller_launches_with_null_sparse_evidence(self):
+    def test_pretty_metadata_controller_launches_with_null_sparse_evidence(self):
         _, policy_path = self.install_metadata_controller_contract()
+        policy_path.write_text(json.dumps(json.loads(policy_path.read_text()), indent=2) + "\n")
+        subprocess.run(["git", "-C", str(self.controller), "add", str(policy_path)], check=True)
+        subprocess.run(["git", "-C", str(self.controller), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "pretty policy"],
+                       check=True, stdout=subprocess.DEVNULL)
         (self.controller / runner.QUEUE_STATE_PATH).write_text('{"state":"reviewing"}\n')
         queue_receipt = (self.controller / runner.QUEUE_RECEIPT_ROOT
                          / "T1/candidate/attempt-1/receipt.json")

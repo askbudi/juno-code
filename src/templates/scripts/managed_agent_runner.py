@@ -497,9 +497,10 @@ def metadata_controller_policy_identity(root: Path, branch_ref: str) -> dict[str
             if type(exc).__name__ != "BoundaryError":
                 raise
             policy = legacy_metadata_controller_policy(policy_bytes)
-        else:
-            if policy_bytes != canonical(policy):
-                raise ValueError("policy bytes are not canonical")
+        # The metadata-controller validator owns semantic canonicality. Policy
+        # files are tracked operator-readable configuration and may use either
+        # pretty or compact JSON; bind the exact validated bytes in the launch
+        # identity instead of imposing receipt-style serialization on them.
     except (ImportError, OSError, UnicodeError, ValueError) as exc:
         raise RunnerError("canonical metadata controller policy is missing or malformed") from exc
     except Exception as exc:
