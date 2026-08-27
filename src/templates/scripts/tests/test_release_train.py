@@ -31,6 +31,13 @@ class ReleaseTrainTests(unittest.TestCase):
         (self.root / ".juno_task/scripts").mkdir(parents=True)
         for name in ("release_train.py", "merge_queue.py", "worktree_hydration.py"):
             (self.root / ".juno_task/scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
+        template_scripts = self.root / "juno-code/src/templates/scripts"
+        (template_scripts / "tests").mkdir(parents=True)
+        (template_scripts / "release_train.py").write_bytes((SCRIPTS / "release_train.py").read_bytes())
+        (self.root / ".juno_task/scripts/tests").mkdir(parents=True)
+        test_bytes = Path(__file__).read_bytes()
+        (self.root / ".juno_task/scripts/tests/test_release_train.py").write_bytes(test_bytes)
+        (template_scripts / "tests/test_release_train.py").write_bytes(test_bytes)
         (self.root / ".juno_task/config").mkdir(parents=True)
         (self.root / ".juno_task/config/task-workspace.json").write_text(json.dumps({
             "schema_version": "juno_task_workspace_config.v1", "repository": ".",
@@ -45,7 +52,7 @@ class ReleaseTrainTests(unittest.TestCase):
         (self.root / "src").mkdir()
         (self.root / "src/.keep").write_text("fixture\n")
         (self.root / "yylo").mkdir()
-        (self.root / "juno-code").mkdir()
+        (self.root / "juno-code").mkdir(exist_ok=True)
         (self.root / "juno-code/package.json").write_text('{"version":"1.0.0"}\n')
         (self.root / "juno-code/package-lock.json").write_text('{"version":"1.0.0","packages":{"":{"version":"1.0.0"}}}\n')
         (self.root / ".juno_task/state").mkdir()
@@ -351,7 +358,30 @@ raise SystemExit(2)
         order = [task_id for task_id, _, _ in members]
         self.write_declaration(order, [{"before": order[index], "after": order[index + 1]}
                                        for index in range(len(order) - 1)])
+        self.authorize_conflict_envelope()
         return first, second, conflict_paths
+
+    def authorize_conflict_envelope(self) -> tuple[dict, Path]:
+        initial = runtime.build_epoch_plan(self.root, self.declaration)
+        envelope = initial["conflict_manifest"]["conservative_envelope"]
+        authority_path = self.root / "conflict-authority.json"
+        authority = {"schema_version": runtime.CONFLICT_AUTHORITY_SCHEMA, "revision": 1,
+            "train_id": initial["epoch_id"],
+            "input_identity_sha256": runtime.digest(runtime._forecast_input_identity(initial)),
+            "logical_sets": [{"set_id": "rc7-rc8-serial", "ordered_task_ids":
+                [row["task_id"] for row in envelope["ordered_members"]],
+                "permitted_paths": sorted({path for row in envelope["ordered_members"]
+                                           for path in row["possible_conflict_paths"]}),
+                "classification": "authorization_neutral"}],
+            "repair_budget": 1, "grouped_worker": True,
+            "risk": {"ambiguous": False, "sensitive": False, "destructive": False,
+                     "scope_expansion": False}}
+        authority_path.write_text(json.dumps(authority, sort_keys=True) + "\n")
+        declaration = json.loads(self.declaration.read_text())
+        declaration["conflict_authority"] = {"path": str(authority_path),
+            "sha256": hashlib.sha256(authority_path.read_bytes()).hexdigest()}
+        self.declaration.write_text(json.dumps(declaration, sort_keys=True) + "\n")
+        return authority, authority_path
 
     def test_epoch_seal_is_complete_immutable_and_idempotent(self) -> None:
         self.prepare_epoch()
@@ -427,47 +457,108 @@ raise SystemExit(2)
         self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
                                           "--format=%(refname) %(objectname)"))
 
-    def test_phase1_acceptance_predicate_emits_durable_pass_receipt(self) -> None:
+    def test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity(self) -> None:
         self.prepare_serial_conflict_epoch()
-        before_status = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
-        before_refs = run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)")
-        before_objects = run(self.root, "git", "count-objects", "-v")
-        manifest = runtime.build_epoch_plan(self.root, self.declaration)["conflict_manifest"]
-        evidence = {"portable_topology": {"order": manifest["identity"]["order"],
+        plan = runtime.build_epoch_plan(self.root, self.declaration)
+        envelope = plan["conflict_manifest"]["conservative_envelope"]
+        authority_path = Path(plan["conflict_authority"]["path"])
+        original = json.loads(authority_path.read_text())
+        missing_plan = {**plan, "conflict_authority": None}
+        self.assertEqual(["authority.missing"], runtime._conflict_authority(missing_plan, envelope)[1])
+        variants = {
+            "authority.logical_sets": {**original, "logical_sets": original["logical_sets"] * 2},
+            "authority.risk": {**original, "risk": {**original["risk"], "sensitive": True}},
+            "authority.scope": {**original, "logical_sets": [{**original["logical_sets"][0],
+                "permitted_paths": []}]},
+            "authority.input_identity": {**original, "input_identity_sha256": "0" * 64},
+        }
+        for expected, value in variants.items():
+            with self.subTest(expected=expected):
+                authority_path.write_text(json.dumps(value, sort_keys=True) + "\n")
+                candidate = {**plan, "conflict_authority": {"path": str(authority_path),
+                    "sha256": hashlib.sha256(authority_path.read_bytes()).hexdigest()}}
+                binding, reasons = runtime._conflict_authority(candidate, envelope)
+                self.assertIsNone(binding)
+                self.assertIn(expected, reasons)
+        authority_path.write_text(json.dumps(original, sort_keys=True) + "\n")
+
+    def test_phase1_acceptance_cli_resolves_evidence_and_is_atomic(self) -> None:
+        self.prepare_serial_conflict_epoch()
+        snapshot = {"status": run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"),
+            "refs": run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)"),
+            "objects": run(self.root, "git", "count-objects", "-v")}
+        plan = runtime.build_epoch_plan(self.root, self.declaration)
+        manifest = plan["conflict_manifest"]
+        evidence_root = self.root / ".juno_task/runtime/phase-fixtures/phase1"
+        evidence_root.mkdir(parents=True)
+        manifest_path = evidence_root / "manifest.json"
+        manifest_path.write_text(runtime.canonical(manifest) + "\n")
+        declaration = json.loads(self.declaration.read_text())
+        authority_path = Path(declaration["conflict_authority"]["path"])
+        fixture = {"schema_version": "juno_release_epoch_portable_topology.v1",
+            "order": manifest["identity"]["order"],
             "serial_conflicts": [row["task_id"] for row in manifest["conflicts"]],
-            "exact_parent_tree_receipts": bool(
-                manifest["conflicts"][0].get("proven_composition")
-                and manifest["conflicts"][0]["post_tree"]
-                and manifest["conflicts"][1]["candidate_tree"])},
-            "non_mutation": {
-                "status": before_status == run(self.root, "git", "status", "--porcelain=v1",
-                                                "--untracked-files=all"),
-                "refs": before_refs == run(self.root, "git", "for-each-ref",
-                                            "--format=%(refname) %(objectname)"),
-                "objects": before_objects == run(self.root, "git", "count-objects", "-v")},
-            "parity": {
-                "runtime_template": ((PROJECT_ROOT / ".juno_task/scripts/release_train.py").read_bytes()
-                    == (PROJECT_ROOT / "juno-code/src/templates/scripts/release_train.py").read_bytes()),
-                "paired_tests": ((PROJECT_ROOT / ".juno_task/scripts/tests/test_release_train.py").read_bytes()
-                    == (PROJECT_ROOT / "juno-code/src/templates/scripts/tests/test_release_train.py").read_bytes())}}
-        receipt = runtime.phase1_acceptance_receipt(manifest, evidence)
+            "receipt_identities": [{"commit": manifest["conflicts"][0]["post_sha"],
+                "tree": manifest["conflicts"][0]["post_tree"],
+                "receipt_sha256": manifest["conflicts"][0]["proven_composition"]["receipt_sha256"]}]}
+        fixture_path = evidence_root / "portable.json"
+        fixture_path.write_text(runtime.canonical(fixture) + "\n")
+        before_path = evidence_root / "before.json"; after_path = evidence_root / "after.json"
+        before_path.write_text(runtime.canonical(snapshot) + "\n")
+        after_path.write_text(runtime.canonical(snapshot) + "\n")
+        run_id = "20000101T000000Z-phase1fixture"
+        watch_root = self.root / ".juno_task/runtime/watch-runs" / run_id
+        watch_root.mkdir(parents=True)
+        footer = "schema_version=juno.watch-footer.v1\nexit_code=0\ncompleted_utc=2000-01-01T00:00:00Z\n"
+        (watch_root / "footer").write_text(footer)
+        (watch_root / "run.json").write_text(json.dumps({"schema_version": "juno.watch-run.v1",
+            "run_id": run_id, "state": "COMPLETED", "exit_code": 0}) + "\n")
+        def ref(path: Path) -> dict[str, str]:
+            return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        runtime_pair = (self.root / ".juno_task/scripts/release_train.py",
+                        self.root / "juno-code/src/templates/scripts/release_train.py")
+        test_pair = (self.root / ".juno_task/scripts/tests/test_release_train.py",
+                     self.root / "juno-code/src/templates/scripts/tests/test_release_train.py")
+        closure = {"schema_version": runtime.PHASE1_CLOSURE_SCHEMA, "task_id": "V9vE0X",
+            "worktree": str(self.root), "tip_sha": run(self.root, "git", "rev-parse", "HEAD"),
+            "tree_sha": run(self.root, "git", "rev-parse", "HEAD^{tree}"),
+            "manifest": ref(manifest_path), "authority": ref(authority_path),
+            "portable_fixture": ref(fixture_path),
+            "non_mutation": {"before": ref(before_path), "after": ref(after_path)},
+            "parity": {"pairs": [{"left": str(left), "right": str(right),
+                "sha256": hashlib.sha256(left.read_bytes()).hexdigest()}
+                for left, right in (runtime_pair, test_pair)]},
+            "watch": {"run_id": run_id, "footer_sha256": hashlib.sha256(footer.encode()).hexdigest()}}
+        closure_path = evidence_root / "closure.json"
+        closure_path.write_text(runtime.canonical(closure) + "\n")
+        output = self.root / ".juno_task/runtime/phase-evidence/V9vE0X/phase1-acceptance.json"
+        receipt = runtime.phase1_acceptance_receipt(self.root, closure_path, output)
         self.assertEqual("PASS", receipt["decision"])
-        self.assertEqual([], receipt["blocking_reason_codes"])
-        tampered = json.loads(json.dumps(manifest))
-        tampered["conservative_envelope"]["ordered_members"].pop()
-        envelope_body = {key: value for key, value in tampered["conservative_envelope"].items()
-                         if key != "envelope_sha256"}
-        tampered["conservative_envelope"]["envelope_sha256"] = runtime.digest(envelope_body)
-        tampered["identity"]["conservative_envelope_sha256"] = tampered["conservative_envelope"]["envelope_sha256"]
-        tampered["identity_sha256"] = runtime.digest(tampered["identity"])
-        tampered["manifest_sha256"] = runtime.digest({key: value for key, value in tampered.items()
-                                                       if key != "manifest_sha256"})
-        refused = runtime.phase1_acceptance_receipt(tampered, evidence)
-        self.assertEqual("FAIL", refused["decision"])
-        self.assertIn("manifest.envelope_incomplete", refused["blocking_reason_codes"])
-        output = os.environ.get("YYLO_PHASE1_ACCEPTANCE_RECEIPT")
-        if output:
-            Path(output).write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
+        self.assertEqual(receipt, runtime.phase1_acceptance_receipt(self.root, closure_path, output))
+        command = [sys.executable, str(SCRIPTS / "release_train.py"),
+            "--controller", str(self.root), "phase1-accept", "--closure", str(closure_path),
+            "--output", str(output)]
+        passed = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(0, passed.returncode, passed.stderr)
+        wrong_command = list(command); wrong_command[-1] = str(self.root / "wrong.json")
+        wrong_route = subprocess.run(wrong_command, cwd=self.root, text=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(2, wrong_route.returncode)
+        original_fixture = fixture_path.read_bytes(); fixture_path.write_bytes(original_fixture + b"tamper\n")
+        failed = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(2, failed.returncode)
+        fixture_path.write_bytes(original_fixture)
+        output.write_text("{}\n")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "collision"):
+            runtime.phase1_acceptance_receipt(self.root, closure_path, output)
+        export = os.environ.get("YYLO_PHASE1_EXPORT_DIR")
+        if export:
+            destination = Path(export).expanduser().resolve(); destination.mkdir(parents=True, exist_ok=True)
+            (destination / "manifest.json").write_text(runtime.canonical(manifest) + "\n")
+            (destination / "authority.json").write_text(runtime.canonical(json.loads(authority_path.read_text())) + "\n")
+            (destination / "portable.json").write_text(runtime.canonical(fixture) + "\n")
+            (destination / "non-mutation-before.json").write_text(runtime.canonical(snapshot) + "\n")
+            (destination / "non-mutation-after.json").write_text(runtime.canonical(snapshot) + "\n")
 
     def test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair(self) -> None:
         configured = os.environ.get("YYLO_RC_EVIDENCE_CONTROLLER")

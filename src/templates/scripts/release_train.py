@@ -26,6 +26,8 @@ EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
 EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
 CONFLICT_MANIFEST_SCHEMA = "juno_release_epoch_conflict_manifest.v1"
 CONFLICT_FORECAST_POLICY_SCHEMA = "juno_release_epoch_conflict_forecast_policy.v1"
+CONFLICT_AUTHORITY_SCHEMA = "juno_release_epoch_conflict_authority.v1"
+PHASE1_CLOSURE_SCHEMA = "juno_release_epoch_phase1_closure.v1"
 PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v1"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
@@ -74,7 +76,9 @@ def load_declaration(path: Path) -> tuple[dict[str, Any], Path]:
     required_keys = {"schema_version", "train_id", "revision", "requested_version", "target_ref",
                      "planning_base_sha", "required_tasks", "optional_tasks", "dependencies",
                      "gates", "authority", "exclusions"}
-    if not isinstance(value, dict) or set(value) != required_keys or value.get("schema_version") != DECLARATION_SCHEMA:
+    allowed_keys = required_keys | {"conflict_authority"}
+    if (not isinstance(value, dict) or not required_keys.issubset(value)
+            or not set(value).issubset(allowed_keys) or value.get("schema_version") != DECLARATION_SCHEMA):
         raise ReleaseTrainError("release-train declaration has an unsupported or non-exact schema")
     train_id = value["train_id"]
     if not isinstance(train_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", train_id):
@@ -116,6 +120,12 @@ def load_declaration(path: Path) -> tuple[dict[str, Any], Path]:
         raise ReleaseTrainError("authority requires controller_common_dir and release_command")
     if not all(isinstance(item, str) and item for item in authority.values()):
         raise ReleaseTrainError("authority values must be non-empty strings")
+    conflict_authority = value.get("conflict_authority")
+    if (conflict_authority is not None and (not isinstance(conflict_authority, dict)
+            or set(conflict_authority) != {"path", "sha256"}
+            or not isinstance(conflict_authority.get("path"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", conflict_authority.get("sha256", "")))):
+        raise ReleaseTrainError("conflict_authority requires exact path and sha256")
     return value, resolved
 
 
@@ -953,6 +963,71 @@ def _proven_forecast_composition(controller: Path, repository: Path, task_id: st
     return matches[0] if matches else None
 
 
+def _forecast_input_identity(plan: dict[str, Any]) -> dict[str, Any]:
+    declaration = plan["declaration"]
+    return {"base_sha": plan["base_sha"], "order": plan["order"],
+        "members": [{"task_id": row["task_id"], "tip_sha": row["tip_sha"],
+            "tree_sha": row["tree_sha"], "task_revision": row["task_revision"],
+            "task_sha256": row["task_sha256"],
+            "queue_record_sha256": row["queue_record_sha256"],
+            "complete_input_identity_sha256": digest(row["complete_input_identity"]),
+            "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
+            for row in plan["members"]],
+        "runtime_sha256": plan["runtime_sha256"], "policy_sha256": plan["policy_sha256"],
+        "declaration_identity_sha256": declaration["identity_sha256"]}
+
+
+def _conflict_authority(plan: dict[str, Any], envelope: Optional[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], list[str]]:
+    """Resolve frozen grouped-repair authority; malformed or drifted input is observation-only refusal."""
+    reference = plan.get("conflict_authority")
+    if not envelope:
+        return None, []
+    reasons: list[str] = []
+    if not isinstance(reference, dict):
+        return None, ["authority.missing"]
+    path = Path(reference.get("path", "")).expanduser().resolve()
+    if not path.is_file() or file_hash(path) != reference.get("sha256"):
+        return None, ["authority.identity"]
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, ["authority.unreadable"]
+    required = {"schema_version", "revision", "train_id", "input_identity_sha256",
+                "logical_sets", "repair_budget", "grouped_worker", "risk"}
+    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != CONFLICT_AUTHORITY_SCHEMA:
+        return None, ["authority.schema"]
+    if not isinstance(value.get("revision"), int) or isinstance(value.get("revision"), bool) or value["revision"] < 1:
+        reasons.append("authority.revision")
+    if value.get("train_id") != plan.get("epoch_id"):
+        reasons.append("authority.train")
+    input_identity = _forecast_input_identity(plan)
+    if value.get("input_identity_sha256") != digest(input_identity):
+        reasons.append("authority.input_identity")
+    sets = value.get("logical_sets")
+    if not isinstance(sets, list) or len(sets) != 1:
+        reasons.append("authority.logical_sets")
+    else:
+        logical_set = sets[0]
+        expected_tasks = [row["task_id"] for row in envelope["ordered_members"]]
+        expected_paths = sorted({path for row in envelope["ordered_members"]
+                                 for path in row["possible_conflict_paths"]})
+        if (not isinstance(logical_set, dict)
+                or set(logical_set) != {"set_id", "ordered_task_ids", "permitted_paths", "classification"}
+                or logical_set.get("ordered_task_ids") != expected_tasks
+                or logical_set.get("permitted_paths") != expected_paths
+                or logical_set.get("classification") != "authorization_neutral"):
+            reasons.append("authority.scope")
+    risk = value.get("risk")
+    if (not isinstance(risk, dict) or set(risk) != {"ambiguous", "sensitive", "destructive", "scope_expansion"}
+            or any(risk.get(key) is not False for key in risk)):
+        reasons.append("authority.risk")
+    if value.get("repair_budget") != 1 or value.get("grouped_worker") is not True:
+        reasons.append("authority.policy")
+    binding = {"path": str(path), "sha256": reference["sha256"], "document": value,
+               "input_identity": input_identity}
+    return (binding if not reasons else None), sorted(set(reasons))
+
+
 def forecast_epoch_conflicts(controller: Path, repository: Path,
                              plan: dict[str, Any]) -> dict[str, Any]:
     """Exactly precompose frozen members; never invent a material conflict repair."""
@@ -1051,12 +1126,6 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                                   "forecast_resolution": "immutable_receipt_bound_composition"})
     member_accounting_complete = len(compositions) == len(plan["order"])
     exact_composition_complete = member_accounting_complete and unresolved_boundary is None
-    policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
-              "repair_budget": 1,
-              "repair_unit": "authorization_neutral_logical_conflict_set.v1",
-              "logical_conflict_set_grouping": "frozen_unknown_suffix.v1",
-              "grouped_worker_authorized": True,
-              "serial_forecast_resolution": "exact_prefix_then_conservative_envelope.v1"}
     conservative_envelope = None
     if unresolved_boundary is not None:
         boundary_index = plan["order"].index(unresolved_boundary["task_id"])
@@ -1092,19 +1161,20 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
     required_conflicts = sum(1 for row in conflicts if row["required"])
     required_repair_sets = (len(conservative_envelope["logical_repair_sets"])
                             if conservative_envelope else 0)
+    authority, authority_reasons = _conflict_authority(plan, conservative_envelope)
+    policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
+              "repair_budget": 1,
+              "repair_unit": "authorization_neutral_logical_conflict_set.v1",
+              "logical_conflict_set_grouping": "frozen_unknown_suffix.v1",
+              "grouped_worker_authorized": authority is not None,
+              "authority_sha256": (authority or {}).get("sha256"),
+              "serial_forecast_resolution": "exact_prefix_then_conservative_envelope.v1"}
     policy_feasible = (forecast_complete and required_repair_sets <= policy["repair_budget"]
-                       and (required_repair_sets == 0 or policy["grouped_worker_authorized"]))
-    identity = {"declaration": plan["declaration"], "base_sha": plan["base_sha"],
-                "order": plan["order"], "members": [{"task_id": row["task_id"],
-                    "tip_sha": row["tip_sha"], "tree_sha": row["tree_sha"],
-                    "task_revision": row["task_revision"],
-                    "task_sha256": row["task_sha256"],
-                    "queue_record_sha256": row["queue_record_sha256"],
-                    "complete_input_identity_sha256": digest(row["complete_input_identity"]),
-                    "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
-                    for row in plan["members"]],
-                "runtime_sha256": plan["runtime_sha256"],
-                "policy_sha256": plan["policy_sha256"], "forecast_policy": policy,
+                       and (required_repair_sets == 0 or authority is not None))
+    input_identity = _forecast_input_identity(plan)
+    identity = {"declaration": plan["declaration"], **input_identity,
+                "forecast_policy": policy,
+                "conflict_authority_sha256": (authority or {}).get("sha256"),
                 "conservative_envelope_sha256": (conservative_envelope or {}).get("envelope_sha256")}
     body = {"schema_version": CONFLICT_MANIFEST_SCHEMA, "identity": identity,
             "identity_sha256": digest(identity), "compositions": compositions,
@@ -1116,68 +1186,150 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
             "exact_composition_complete": exact_composition_complete,
             "required_conflict_count": required_conflicts,
             "required_logical_repair_set_count": required_repair_sets,
+            "authority_binding": authority,
+            "authority_reason_codes": authority_reasons,
+            "operator_state": "FEASIBLE" if policy_feasible else "NEEDS_OPERATOR",
             "policy_repair_budget_feasible": policy_feasible,
             "repair_budget_feasible": policy_feasible}
     return {**body, "manifest_sha256": digest(body)}
 
 
-def phase1_acceptance_receipt(manifest: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
-    """Execute the sole Phase-1 acceptance predicate over exact bound evidence."""
-    blockers = []
-    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    if manifest.get("schema_version") != CONFLICT_MANIFEST_SCHEMA:
-        blockers.append("manifest.schema")
-    if manifest.get("manifest_sha256") != digest(body):
-        blockers.append("manifest.identity")
+def _immutable_json(reference: Any, code: str, blockers: list[str]) -> Optional[dict[str, Any]]:
+    if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
+            or not re.fullmatch(r"[0-9a-f]{64}", reference.get("sha256", ""))):
+        blockers.append(code + ".reference"); return None
+    path = Path(reference["path"]).expanduser().resolve()
+    if not path.is_file() or file_hash(path) != reference["sha256"]:
+        blockers.append(code + ".identity"); return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        blockers.append(code + ".json"); return None
+    return value if isinstance(value, dict) else None
+
+
+def _publish_exclusive_receipt(path: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    rendered = canonical(receipt) + "\n"
+    if path.exists():
+        try:
+            current = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReleaseTrainError("phase1 acceptance receipt collision") from exc
+        if current != receipt:
+            raise ReleaseTrainError("phase1 acceptance receipt collision")
+        return current
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(rendered); stream.flush(); os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            current = json.loads(path.read_text())
+            if current != receipt:
+                raise ReleaseTrainError("phase1 acceptance receipt collision")
+        return json.loads(path.read_text())
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path) -> dict[str, Any]:
+    """Resolve immutable Phase-1 evidence and publish one canonical atomic receipt."""
+    blockers: list[str] = []
+    closure_reference = {"path": str(closure_path.expanduser().resolve()),
+                         "sha256": file_hash(closure_path.expanduser().resolve())}
+    closure = _immutable_json(closure_reference, "closure", blockers)
+    required = {"schema_version", "task_id", "worktree", "tip_sha", "tree_sha", "manifest",
+                "authority", "portable_fixture", "non_mutation", "parity", "watch"}
+    if not closure or set(closure) != required or closure.get("schema_version") != PHASE1_CLOSURE_SCHEMA:
+        blockers.append("closure.schema"); closure = closure or {}
+    task_id = closure.get("task_id", "")
+    worktree = Path(closure.get("worktree", ".")).expanduser().resolve()
+    if (not task_runtime.TASK_RE.fullmatch(task_id) or git(worktree, "rev-parse", "HEAD") != closure.get("tip_sha")
+            or git(worktree, "rev-parse", "HEAD^{tree}") != closure.get("tree_sha")):
+        blockers.append("task.commit_tree")
+    registry = (controller / ".juno_task/runtime/phase-evidence" / task_id).resolve()
+    if output.expanduser().resolve() != registry / "phase1-acceptance.json":
+        blockers.append("receipt.routing")
+    manifest = _immutable_json(closure.get("manifest"), "manifest", blockers) or {}
+    authority = _immutable_json(closure.get("authority"), "authority", blockers) or {}
+    fixture = _immutable_json(closure.get("portable_fixture"), "fixture", blockers) or {}
+    before = _immutable_json((closure.get("non_mutation") or {}).get("before"), "non_mutation.before", blockers)
+    after = _immutable_json((closure.get("non_mutation") or {}).get("after"), "non_mutation.after", blockers)
+    manifest_body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
     identity = manifest.get("identity") or {}
-    if manifest.get("identity_sha256") != digest(identity):
-        blockers.append("manifest.input_identity")
+    if (manifest.get("schema_version") != CONFLICT_MANIFEST_SCHEMA
+            or manifest.get("manifest_sha256") != digest(manifest_body)
+            or manifest.get("identity_sha256") != digest(identity)
+            or not manifest.get("member_accounting_complete") or not manifest.get("forecast_complete")):
+        blockers.append("manifest.invalid")
     order = identity.get("order") or []
-    if [row.get("task_id") for row in manifest.get("compositions", [])] != order:
-        blockers.append("manifest.member_classification")
-    if not manifest.get("member_accounting_complete") or not manifest.get("forecast_complete"):
-        blockers.append("manifest.forecast_incomplete")
-    envelope = manifest.get("conservative_envelope")
-    if not manifest.get("exact_composition_complete"):
-        boundary = manifest.get("unresolved_boundary") or {}
-        suffix = order[order.index(boundary.get("task_id")):] if boundary.get("task_id") in order else []
-        envelope_members = envelope.get("ordered_members", []) if isinstance(envelope, dict) else []
-        repair_sets = envelope.get("logical_repair_sets", []) if isinstance(envelope, dict) else []
-        envelope_valid = (isinstance(envelope, dict) and envelope.get("complete") is True
-            and envelope.get("envelope_sha256") == digest({key: value for key, value in envelope.items()
-                                                           if key != "envelope_sha256"})
-            and identity.get("conservative_envelope_sha256") == envelope.get("envelope_sha256")
-            and [row.get("task_id") for row in envelope_members] == suffix
-            and all(row.get("classification") in {"exact_unresolved_conflict",
-                    "conservative_possible_conflict"} for row in envelope_members)
-            and len(repair_sets) == 1 and repair_sets[0].get("task_ids") == suffix
-            and manifest.get("required_logical_repair_set_count") == 1)
-        if not envelope_valid:
-            blockers.append("manifest.envelope_incomplete")
-    elif envelope is not None or manifest.get("required_logical_repair_set_count") != 0:
-        blockers.append("manifest.unexpected_envelope")
-    policy = identity.get("forecast_policy") or {}
-    if (not manifest.get("policy_repair_budget_feasible")
-            or not manifest.get("repair_budget_feasible")
-            or manifest.get("required_logical_repair_set_count", 0) > policy.get("repair_budget", -1)
-            or (manifest.get("required_logical_repair_set_count", 0)
-                and policy.get("grouped_worker_authorized") is not True)):
-        blockers.append("manifest.policy_infeasible")
-    topology = evidence.get("portable_topology") or {}
-    if (topology.get("order") != order
-            or topology.get("serial_conflicts") != [row.get("task_id") for row in manifest.get("conflicts", [])]
-            or topology.get("exact_parent_tree_receipts") is not True):
-        blockers.append("evidence.portable_topology")
-    non_mutation = evidence.get("non_mutation") or {}
-    if not all(non_mutation.get(key) is True for key in ("status", "refs", "objects")):
-        blockers.append("evidence.non_mutation")
-    parity = evidence.get("parity") or {}
-    if not all(parity.get(key) is True for key in ("runtime_template", "paired_tests")):
-        blockers.append("evidence.parity")
-    receipt = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
-        "decision": "PASS" if not blockers else "FAIL", "manifest_sha256": manifest.get("manifest_sha256"),
-        "evidence_sha256": digest(evidence), "blocking_reason_codes": sorted(blockers)}
-    return {**receipt, "receipt_sha256": digest(receipt)}
+    if ([row.get("task_id") for row in manifest.get("compositions", [])] != order
+            or manifest.get("operator_state") != "FEASIBLE"
+            or not manifest.get("repair_budget_feasible")):
+        blockers.append("manifest.incomplete")
+    if (authority.get("schema_version") != CONFLICT_AUTHORITY_SCHEMA
+            or file_hash(Path((closure.get("authority") or {}).get("path", ""))) != identity.get("conflict_authority_sha256")
+            or (manifest.get("authority_binding") or {}).get("sha256") != identity.get("conflict_authority_sha256")):
+        blockers.append("authority.unbound")
+    fixture_receipts = fixture.get("receipt_identities") or []
+    if (fixture.get("schema_version") != "juno_release_epoch_portable_topology.v1"
+            or fixture.get("order") != order
+            or fixture.get("serial_conflicts") != [row.get("task_id") for row in manifest.get("conflicts", [])]
+            or not fixture_receipts
+            or any(not isinstance(row, dict) or not all(re.fullmatch(r"[0-9a-f]{40,64}", row.get(key, ""))
+                                                       for key in ("commit", "tree", "receipt_sha256"))
+                   for row in fixture_receipts)):
+        blockers.append("fixture.topology")
+    if before is None or after is None or before != after:
+        blockers.append("non_mutation.drift")
+    pairs = (closure.get("parity") or {}).get("pairs", [])
+    expected_pairs = {(str(worktree / ".juno_task/scripts/release_train.py"),
+                       str(worktree / "juno-code/src/templates/scripts/release_train.py")),
+                      (str(worktree / ".juno_task/scripts/tests/test_release_train.py"),
+                       str(worktree / "juno-code/src/templates/scripts/tests/test_release_train.py"))}
+    observed_pairs = {(str(Path(row.get("left", "")).expanduser().resolve()),
+                       str(Path(row.get("right", "")).expanduser().resolve()))
+                      for row in pairs if isinstance(row, dict)} if isinstance(pairs, list) else set()
+    if not isinstance(pairs, list) or observed_pairs != expected_pairs:
+        blockers.append("parity.missing")
+    else:
+        for row in pairs:
+            try:
+                left = Path(row["left"]).resolve(); right = Path(row["right"]).resolve()
+                expected = row["sha256"]
+            except (KeyError, TypeError):
+                blockers.append("parity.schema"); continue
+            if file_hash(left) != expected or file_hash(right) != expected:
+                blockers.append("parity.drift")
+    watch = closure.get("watch") or {}
+    run_id = watch.get("run_id", "")
+    run_root = controller / ".juno_task/runtime/watch-runs" / run_id
+    footer = run_root / "footer"; run_path = run_root / "run.json"
+    try:
+        run_record = json.loads(run_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        run_record = {}
+    footer_text = footer.read_text() if footer.is_file() else ""
+    if (not re.fullmatch(r"schema_version=juno\.watch-footer\.v1\nexit_code=0\ncompleted_utc=[^\n]+\n", footer_text)
+            or file_hash(footer) != watch.get("footer_sha256")
+            or run_record.get("run_id") != run_id or run_record.get("state") != "COMPLETED"
+            or run_record.get("exit_code") != 0):
+        blockers.append("watch.terminal")
+    body = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
+        "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
+        "tip_sha": closure.get("tip_sha"), "tree_sha": closure.get("tree_sha"),
+        "closure_sha256": closure_reference["sha256"],
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "authority_sha256": identity.get("conflict_authority_sha256"),
+        "fixture_sha256": (closure.get("portable_fixture") or {}).get("sha256"),
+        "watch_run_id": run_id, "footer_sha256": watch.get("footer_sha256"),
+        "blocking_reason_codes": sorted(set(blockers))}
+    receipt = {**body, "receipt_sha256": digest(body)}
+    if blockers:
+        return receipt
+    return _publish_exclusive_receipt(output.expanduser().resolve(), receipt)
 
 
 def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
@@ -1197,9 +1349,19 @@ def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]
     order, edges = epoch_dependency_order(members, declaration)
     runtime_paths = [".juno_task/scripts/release_train.py", ".juno_task/scripts/merge_queue.py",
                      ".juno_task/scripts/task_workspace.py"]
+    declaration_identity = digest({key: value for key, value in declaration.items()
+                                   if key != "conflict_authority"})
+    conflict_authority = declaration.get("conflict_authority")
+    if conflict_authority:
+        authority_path = Path(conflict_authority["path"]).expanduser()
+        if not authority_path.is_absolute():
+            authority_path = resolved.parent / authority_path
+        conflict_authority = {**conflict_authority, "path": str(authority_path.resolve())}
     body = {"schema_version": EPOCH_PLAN_SCHEMA, "epoch_id": declaration["train_id"],
             "declaration": {"path": str(resolved), "sha256": file_hash(resolved),
-                            "revision": declaration["revision"]},
+                            "revision": declaration["revision"],
+                            "identity_sha256": declaration_identity},
+            "conflict_authority": conflict_authority,
             "target_ref": declaration["target_ref"], "base_sha": target_sha,
             "members": members, "order": order, "dependency_edges": edges,
             "runtime_sha256": {path: file_hash(controller / path) for path in runtime_paths},
@@ -1766,7 +1928,7 @@ def shadow_source(controller: Path, source_path: Path) -> tuple[dict[str, Any], 
     plan_fields = {key: seal[key] for key in ("schema_version", "epoch_id", "declaration",
         "target_ref", "base_sha", "members", "order", "dependency_edges", "runtime_sha256",
         "policy_sha256", "requested_version", "exclusions", "mutation_authority",
-        "conflict_manifest") if key in seal}
+        "conflict_authority", "conflict_manifest") if key in seal}
     if digest(plan_fields) != seal["plan_id"]:
         raise ReleaseTrainError("historical epoch sealed plan identity is invalid")
     receipts = value.get("receipts")
@@ -1906,8 +2068,8 @@ def parser() -> argparse.ArgumentParser:
     bootstrap_drive = subs.add_parser("bootstrap-drive")
     bootstrap_drive.add_argument("operation_id"); bootstrap_drive.add_argument("--bootstrap-token", required=True)
     bootstrap_drive.add_argument("--json", action="store_true")
-    phase1 = subs.add_parser("phase1-accept"); phase1.add_argument("--manifest", type=Path, required=True)
-    phase1.add_argument("--evidence", type=Path, required=True); phase1.add_argument("--output", type=Path, required=True)
+    phase1 = subs.add_parser("phase1-accept"); phase1.add_argument("--closure", type=Path, required=True)
+    phase1.add_argument("--output", type=Path, required=True)
     shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
     shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
     shadow.add_argument("--output", type=Path)
@@ -1947,8 +2109,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
         elif args.operation == "phase1-accept":
-            result = phase1_acceptance_receipt(json.loads(args.manifest.read_text()),
-                                               json.loads(args.evidence.read_text()))
+            result = phase1_acceptance_receipt(controller, args.closure, args.output)
             if result["decision"] != "PASS":
                 raise ReleaseTrainError("phase1 acceptance failed: " + ",".join(result["blocking_reason_codes"]))
         elif args.operation == "shadow":
@@ -1957,7 +2118,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = build_plan(controller, args.declaration, args.output)
         rendered = canonical(result) + "\n"
         output = getattr(args, "output", None)
-        if output:
+        if output and args.operation != "phase1-accept":
             output.expanduser().resolve().write_text(rendered)
         if args.operation not in {"plan", "status"} or getattr(args, "json", False):
             print(canonical(result))
