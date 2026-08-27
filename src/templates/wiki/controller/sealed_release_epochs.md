@@ -127,6 +127,13 @@ yy release train shadow /absolute/train.json --baseline /absolute/baseline.json 
 
 Shadow is read-only and reports seeded scenario coverage, target-move count,
 duplicate unchanged-closure execution, model lifecycle calls, and cache-read
-token deltas. Missing thresholds return reason codes and `BLOCK`. The disable/rollback switch stops epoch drive without deleting immutable epoch
-receipts. Any legacy queue path is a version-gated recovery mode, not the normal
-release workflow and not permission for per-candidate RC cuts.
+token deltas. The baseline is required and may be a lifecycle aggregate scorecard.
+When the live queue has already drained, the positional source may instead be an
+immutable sealed epoch `state.json`; shadow verifies the frozen plan identity and
+every referenced receipt hash without consulting or mutating current queue state.
+This historical replay is observation only, not authority to resume the old epoch.
+Missing baseline fields, receipt drift, or missed thresholds fail closed with reason
+codes and `BLOCK` (identity drift is an error). The disable/rollback switch stops
+epoch drive without deleting immutable epoch receipts. Any legacy queue path is a
+version-gated recovery mode, not the normal release workflow and not permission for
+per-candidate RC cuts.

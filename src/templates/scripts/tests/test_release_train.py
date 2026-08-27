@@ -110,6 +110,20 @@ raise SystemExit(2)
                  "exclusions": ["push", "publish", "deploy"]}
         self.declaration.write_text(json.dumps(value, sort_keys=True) + "\n")
 
+    def write_shadow_baseline(self) -> Path:
+        path = self.root / "shadow-baseline.json"
+        path.write_text(json.dumps({
+            "schema_version": "juno_agent_session_telemetry_collection.v1", "session_count": 21,
+            "scorecard": {"schema_version": "juno_agent_session_scorecard.v1",
+                "session_count": 21, "duplicate_command_executions": 12,
+                "model_lifecycle_calls": {"assistant_turns": 100, "model_changes": 2,
+                                          "compactions": 3, "provider_errors": 4},
+                "cas_count": 9, "cache_read_tokens": 362700000,
+                "phase_seconds": {"implementation": 1000, "merge": 200},
+                "wait_seconds_by_cause": {"polling": 500}},
+        }, sort_keys=True) + "\n")
+        return path
+
     def test_deterministic_non_mutating_json_and_human_projection(self) -> None:
         before = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
         first = runtime.build_plan(self.root, self.declaration)
@@ -345,7 +359,8 @@ raise SystemExit(2)
             ".agents/skills/example/SKILL.md", ".claude/skills/example/SKILL.md",
             ".pi/skills/example/SKILL.md", ".juno_task/prompts/example.md",
             ".juno_task/wiki/example.md", ".juno_task/workflows/example.yaml",
-            ".juno_task/scripts/example.py"]
+            ".juno_task/scripts/example.py", ".juno_task/scripts/task_workspace.py",
+            ".juno_task/scripts/task_workspace_decisions.py"]
         assets = {}
         for destination in destinations:
             target = self.root / destination
@@ -358,7 +373,9 @@ raise SystemExit(2)
         projected = [{"destination": destination, "type": record["type"],
                       "sourceSha256": record["sourceSha256"],
                       "installedSha256": record["installedSha256"]}
-                     for destination, record in sorted(assets.items())]
+                     for destination, record in sorted(assets.items(), key=lambda item: (
+                         0 if item[0].startswith(".") else 1,
+                         "".join(char for char in item[0].lower() if char.isalnum()), item[0]))]
         assets_identity = hashlib.sha256(
             json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
         bundle = {"schemaVersion": "juno_instruction_bundle.v1",
@@ -369,12 +386,24 @@ raise SystemExit(2)
         (self.root / ".juno_task" / "managed-assets.json").write_text(json.dumps({
             "schemaVersion": 2, "packageName": "@yylo/cli", "packageVersion": "1.0.0",
             "instructionBundle": bundle, "assets": assets}, sort_keys=True) + "\n")
+        baseline = self.write_shadow_baseline()
         before = run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all")
-        report = runtime.shadow_epoch(self.root, self.declaration, None)
+        report = runtime.shadow_epoch(self.root, self.declaration, baseline)
         self.assertEqual("PASS", report["decision"])
+        self.assertEqual(105, report["baseline"]["model_lifecycle_calls"])
         self.assertEqual("juno_instruction_bundle.v1", report["instruction_bundle"]["schemaVersion"])
         self.assertEqual([], report["side_effects"])
         self.assertEqual(before, run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"))
+
+        state_path = self.root / ".juno_task/runtime/release-epochs/rc-1/state.json"
+        historical = runtime.shadow_epoch(self.root, state_path, baseline)
+        self.assertEqual("PASS", historical["decision"])
+        self.assertEqual("historical_sealed_epoch", historical["replay_source"]["kind"])
+        self.assertEqual("PAUSED_REQUIRED", historical["replay_source"]["state"])
+        first_receipt = Path(paused["receipts"][0]["path"])
+        first_receipt.write_text(first_receipt.read_text() + "tamper\n")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "receipt identity"):
+            runtime.shadow_epoch(self.root, state_path, baseline)
 
     def test_lean_target_drift_refuses_release(self) -> None:
         self.lean_checkout()

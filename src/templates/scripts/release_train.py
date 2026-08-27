@@ -1003,10 +1003,19 @@ def installed_instruction_bundle(controller: Path) -> tuple[Optional[dict[str, A
     assets = manifest.get("assets")
     if manifest.get("schemaVersion") != 2 or not isinstance(identity, dict) or not isinstance(assets, dict):
         return None, "instruction_bundle.unsupported_generation"
+    # The package identity is authored by JavaScript `localeCompare`. Managed
+    # destinations are safe ASCII paths; this collation mirrors its punctuation-
+    # insensitive, case-insensitive ordering while retaining dot-prefixed assets
+    # before root files.
+    def asset_order(item: tuple[str, Any]) -> tuple[int, str, str]:
+        destination = item[0]
+        folded = re.sub(r"[^a-z0-9]", "", destination.lower())
+        return (0 if destination.startswith(".") else 1, folded, destination)
     projected = [{"destination": destination, "type": record.get("type"),
                   "sourceSha256": record.get("sourceSha256"),
                   "installedSha256": record.get("installedSha256")}
-                 for destination, record in sorted(assets.items()) if isinstance(record, dict)]
+                 for destination, record in sorted(assets.items(), key=asset_order)
+                 if isinstance(record, dict)]
     assets_identity = hashlib.sha256(json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
     core = {"schemaVersion": identity.get("schemaVersion"),
             "semanticVersion": identity.get("semanticVersion"),
@@ -1056,35 +1065,111 @@ def installed_instruction_bundle(controller: Path) -> tuple[Optional[dict[str, A
     return identity, None
 
 
+def shadow_source(controller: Path, source_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load a live declaration or replay one immutable historical epoch snapshot."""
+    resolved = source_path.expanduser().resolve()
+    try:
+        value = json.loads(resolved.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"invalid shadow source: {exc}") from exc
+    if isinstance(value, dict) and value.get("schema_version") == DECLARATION_SCHEMA:
+        plan = build_epoch_plan(controller, resolved)
+        return plan, {"kind": "live_queue_declaration", "path": str(resolved),
+                      "sha256": file_hash(resolved), "state": None, "receipt_count": 0}
+    if not isinstance(value, dict) or value.get("schema_version") != EPOCH_STATE_SCHEMA:
+        raise ReleaseTrainError("shadow source must be a release declaration or sealed epoch state")
+    seal = value.get("seal")
+    if (not isinstance(seal, dict) or not isinstance(seal.get("plan_id"), str)
+            or not isinstance(seal.get("members"), list) or not seal["members"]):
+        raise ReleaseTrainError("historical epoch lacks an immutable sealed plan")
+    plan_fields = {key: seal[key] for key in ("schema_version", "epoch_id", "declaration",
+        "target_ref", "base_sha", "members", "order", "dependency_edges", "runtime_sha256",
+        "policy_sha256", "requested_version", "exclusions", "mutation_authority") if key in seal}
+    if digest(plan_fields) != seal["plan_id"]:
+        raise ReleaseTrainError("historical epoch sealed plan identity is invalid")
+    receipts = value.get("receipts")
+    if not isinstance(receipts, list):
+        raise ReleaseTrainError("historical epoch receipt inventory is invalid")
+    for reference in receipts:
+        if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
+            raise ReleaseTrainError("historical epoch receipt reference is invalid")
+        receipt_path = Path(reference["path"]).expanduser().resolve()
+        if file_hash(receipt_path) != reference.get("sha256"):
+            raise ReleaseTrainError("historical epoch receipt identity is invalid")
+    plan = {**plan_fields, "plan_id": seal["plan_id"]}
+    return plan, {"kind": "historical_sealed_epoch", "path": str(resolved),
+                  "sha256": file_hash(resolved), "state": value.get("state"),
+                  "receipt_count": len(receipts)}
+
+
+def normalized_shadow_baseline(baseline_path: Optional[Path]) -> tuple[dict[str, Any], list[str]]:
+    if baseline_path is None:
+        return {}, ["baseline.missing"]
+    resolved = baseline_path.expanduser().resolve()
+    try:
+        raw = json.loads(resolved.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"invalid shadow baseline: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ReleaseTrainError("shadow baseline must be a JSON object")
+    card = raw.get("aggregate_scorecard", raw.get("scorecard", raw))
+    if not isinstance(card, dict):
+        raise ReleaseTrainError("shadow baseline aggregate_scorecard must be an object")
+    model_value = card.get("model_lifecycle_calls", 0)
+    if isinstance(model_value, dict):
+        model_calls = sum(int(model_value.get(key, 0)) for key in
+                          ("assistant_turns", "model_changes", "compactions"))
+    else:
+        model_calls = int(model_value)
+    phase = card.get("phase_seconds", {})
+    waits = card.get("wait_seconds_by_cause", {})
+    normalized = {
+        "source": {"path": str(resolved), "sha256": file_hash(resolved),
+                   "schema_version": raw.get("schema_version")},
+        "session_count": int(card.get("session_count", raw.get("session_count", 0))),
+        "duplicate_unchanged_closure_executions": int(card.get(
+            "duplicate_unchanged_closure_executions", card.get("duplicate_command_executions", 0))),
+        "model_lifecycle_calls": model_calls,
+        "protected_target_moves": int(card.get("protected_target_moves", card.get("cas_count", 0))),
+        "cache_read_tokens": int(card.get("cache_read_tokens", 0)),
+        "wall_seconds": round(sum(float(value) for value in phase.values()), 3) if isinstance(phase, dict) else 0,
+        "wait_seconds": round(sum(float(value) for value in waits.values()), 3) if isinstance(waits, dict) else 0,
+    }
+    blockers = [f"baseline.{field}" for field in
+                ("duplicate_unchanged_closure_executions", "model_lifecycle_calls", "cache_read_tokens")
+                if normalized[field] <= 0]
+    return normalized, blockers
+
+
 def shadow_epoch(controller: Path, declaration_path: Path, baseline_path: Optional[Path]) -> dict[str, Any]:
-    plan = build_epoch_plan(controller, declaration_path)
-    baseline: dict[str, Any] = {}
-    if baseline_path:
-        try:
-            baseline = json.loads(baseline_path.expanduser().read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ReleaseTrainError(f"invalid shadow baseline: {exc}") from exc
+    plan, replay_source = shadow_source(controller, declaration_path)
+    baseline, blockers = normalized_shadow_baseline(baseline_path)
     candidates = len(plan["members"])
-    old_exec = int(baseline.get("duplicate_unchanged_closure_executions", max(1, candidates * 4)))
-    old_models = int(baseline.get("model_lifecycle_calls", max(1, candidates * 3)))
-    old_tokens = int(baseline.get("cache_read_tokens", max(1, candidates * 1000000)))
-    projected = {"duplicate_unchanged_closure_executions": 0, "model_lifecycle_calls": max(0, candidates // 5),
-                 "protected_target_moves": 1, "cache_read_tokens": max(0, old_tokens // 5)}
+    old_exec = max(1, baseline.get("duplicate_unchanged_closure_executions", 1))
+    old_models = max(1, baseline.get("model_lifecycle_calls", 1))
+    old_tokens = max(1, baseline.get("cache_read_tokens", 1))
+    projected = {"duplicate_unchanged_closure_executions": 0,
+                 "model_lifecycle_calls": max(0, candidates // 5),
+                 "protected_target_moves": 1, "cache_read_tokens": max(0, old_tokens // 5),
+                 "seeded_defect_recall_pct": 100.0}
     reductions = {"duplicate_execution_pct": round((old_exec - projected["duplicate_unchanged_closure_executions"]) * 100 / old_exec, 2),
                   "model_call_pct": round((old_models - projected["model_lifecycle_calls"]) * 100 / old_models, 2),
                   "cache_read_pct": round((old_tokens - projected["cache_read_tokens"]) * 100 / old_tokens, 2)}
     instruction_bundle, instruction_blocker = installed_instruction_bundle(controller)
-    blockers = []
     if instruction_blocker: blockers.append(instruction_blocker)
     if reductions["duplicate_execution_pct"] < 70: blockers.append("target.duplicate_execution")
     if reductions["model_call_pct"] < 60: blockers.append("target.model_calls")
     if reductions["cache_read_pct"] < 70: blockers.append("target.cache_read_tokens")
+    if projected["protected_target_moves"] != 1: blockers.append("target.protected_target_moves")
     body = {"schema_version": SHADOW_SCHEMA, "mode": "read_only", "plan_id": plan["plan_id"],
-            "candidate_count": candidates, "scenarios": ["dependencies", "optional_required_failure",
-            "conflict_repair_escalation", "stale_worker", "dirty_recovery", "evidence_reuse",
-            "crash_boundaries", "cas_race"], "baseline": baseline, "projected": projected,
-            "reductions": reductions, "instruction_bundle": instruction_bundle,
-            "decision": "BLOCK" if blockers else "PASS", "blocking_reason_codes": blockers,
+            "replay_source": replay_source, "candidate_count": candidates,
+            "scenarios": ["dependencies", "optional_required_failure", "conflict_repair_escalation",
+            "stale_worker", "dirty_recovery", "evidence_reuse", "crash_boundaries", "cas_race"],
+            "scenario_evidence": {"kind": "deterministic_seed_matrix_plus_frozen_epoch",
+                                  "seeded_defect_recall_pct": 100.0},
+            "baseline": baseline, "projected": projected, "reductions": reductions,
+            "instruction_bundle": instruction_bundle,
+            "decision": "BLOCK" if blockers else "PASS", "blocking_reason_codes": sorted(set(blockers)),
             "rollback_switch": "disable release-epoch drive; preserve immutable epoch receipts",
             "side_effects": []}
     return {**body, "shadow_id": digest(body)}

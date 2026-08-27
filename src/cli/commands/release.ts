@@ -94,8 +94,8 @@ export function configureReleaseTrainCommand(
     ));
   train.command('shadow')
     .description('Read-only production-shaped replay; never merges, releases, or mutates production')
-    .argument('<declaration>', 'Versioned release-train declaration JSON')
-    .option('--baseline <path>', 'Frozen telemetry baseline JSON')
+    .argument('<source>', 'Versioned release-train declaration or immutable sealed-epoch state JSON')
+    .option('--baseline <path>', 'Required frozen telemetry baseline or aggregate scorecard JSON')
     .option('--json', 'Emit stable versioned JSON')
     .option('--output <path>', 'Write the canary decision receipt')
     .action((declaration: string, options: { baseline?: string; json?: boolean; output?: string }) => invoke(
