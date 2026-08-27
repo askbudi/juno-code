@@ -382,12 +382,16 @@ raise SystemExit(2)
                          [row["conflict_paths"] for row in manifest["conflicts"]])
         self.assertEqual([first, second], [row["candidate_tip"] for row in manifest["conflicts"]])
         self.assertEqual(2, manifest["required_conflict_count"])
-        self.assertEqual(1, manifest["required_conflict_set_count"])
         self.assertTrue(manifest["forecast_complete"])
-        self.assertTrue(manifest["policy_repair_budget_feasible"])
-        # Phase 1 forecasts one logical set, but seal remains closed until Phase 3
-        # supplies the grouped-repair runtime capability.
+        self.assertFalse(manifest["exact_composition_complete"])
+        self.assertFalse(manifest["policy_repair_budget_feasible"])
         self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertEqual([], manifest["indeterminate_members"])
+        self.assertEqual("0y4ljs", manifest["unresolved_boundary"]["task_id"])
+        self.assertEqual("required_conflicting_candidate.v1",
+                         manifest["identity"]["forecast_policy"]["repair_unit"])
+        self.assertEqual("deferred_to_grouped_repair_runtime",
+                         manifest["identity"]["forecast_policy"]["logical_conflict_set_grouping"])
         self.assertEqual("immutable_receipt_bound_composition",
                          manifest["conflicts"][0]["forecast_resolution"])
         self.assertEqual(runtime.digest({key: value for key, value in manifest.items()
@@ -403,6 +407,69 @@ raise SystemExit(2)
         self.assertFalse(runtime.epoch_state_path(self.root, "rc-1").exists())
         self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
                                           "--format=%(refname) %(objectname)"))
+
+    def test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair(self) -> None:
+        configured = os.environ.get("YYLO_RC_EVIDENCE_CONTROLLER")
+        if not configured:
+            self.skipTest("set YYLO_RC_EVIDENCE_CONTROLLER for the immutable rc7/rc8 canary")
+        controller = Path(configured).expanduser().resolve()
+        expected = {
+            "sot-ledger-wave1-rc7": {
+                "repair": "35e932529096d421d4c084fb63b1a4929fed2868de91a33fd8ddda53b17587cf",
+                "conflict": "23b6ac9383c494de1a0ccf02457eb055d282e2df7abda31f88e65af164190a6b",
+                "worker": "8c33108b5750d690a422fe447234fecd6000bf738f6ca7f72f4855e3df9d8ee0"},
+            "sot-ledger-wave1-rc8": {
+                "repair": "5d81ec668d92c31a7fe79d13be5bfb84c4d7c950f01be50305ca49c98aee48c4",
+                "conflict": "71c4e636cd10697e72dde8ecfed5abb99dec07233be36cee039199ca0bdb2204",
+                "worker": "45b02566b7e6ef08595785819e85fe23504b1f74bba0421fac6fd7ce6706f2e5"}}
+        states = {}
+        for epoch_id, identities in expected.items():
+            state_path = controller / ".juno_task/runtime/release-epochs" / epoch_id / "state.json"
+            state = json.loads(state_path.read_text())
+            states[epoch_id] = state
+            receipts = {row["transition"]: row for row in state["receipts"]}
+            self.assertEqual(identities["repair"], receipts["REPAIR_CONSUMED"]["sha256"])
+            self.assertEqual(identities["conflict"], state["receipts"][-1]["sha256"])
+            worker = Path(state["conflict_repair"]["path"])
+            self.assertEqual(identities["worker"], hashlib.sha256(worker.read_bytes()).hexdigest())
+        rc8 = states["sot-ledger-wave1-rc8"]
+        before_status = run(controller, "git", "status", "--porcelain=v1", "--untracked-files=all")
+        before_refs = run(controller, "git", "for-each-ref", "--format=%(refname) %(objectname)")
+        manifest = runtime.forecast_epoch_conflicts(controller, controller, rc8["seal"])
+        self.assertEqual(rc8["seal"]["order"], [row["task_id"] for row in manifest["compositions"]])
+        self.assertEqual(["pA6M9l", "0y4ljs"], [row["task_id"] for row in manifest["conflicts"]])
+        self.assertEqual(["U2rjMN", "znI3LO", "e99k0C", "GsKDx6"],
+                         [row["task_id"] for row in manifest["indeterminate_members"]])
+        self.assertTrue(manifest["forecast_complete"])
+        self.assertFalse(manifest["exact_composition_complete"])
+        self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertEqual(expected["sot-ledger-wave1-rc7"]["repair"],
+                         manifest["conflicts"][0]["proven_composition"]["receipt_sha256"])
+        self.assertEqual(before_status, run(controller, "git", "status", "--porcelain=v1",
+                                            "--untracked-files=all"))
+        self.assertEqual(before_refs, run(controller, "git", "for-each-ref",
+                                          "--format=%(refname) %(objectname)"))
+
+        # Receipt drift fails closed without touching the exhausted source epoch.
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            copied_root = evidence / ".juno_task/runtime/release-epochs/sot-ledger-wave1-rc7"
+            copied_receipt = copied_root / "receipts/0003-repair_consumed.json"
+            copied_receipt.parent.mkdir(parents=True)
+            source_receipt = Path(states["sot-ledger-wave1-rc7"]["receipts"][2]["path"])
+            copied_receipt.write_bytes(source_receipt.read_bytes())
+            copied_state = json.loads(json.dumps(states["sot-ledger-wave1-rc7"]))
+            copied_state["receipts"] = [{**states["sot-ledger-wave1-rc7"]["receipts"][2],
+                "path": str(copied_receipt)}]
+            (copied_root / "state.json").write_text(json.dumps(copied_state, sort_keys=True) + "\n")
+            row = rc8["seal"]["members"][0]
+            self.assertIsNotNone(runtime._proven_forecast_composition(
+                evidence, controller, "pA6M9l", rc8["seal"]["base_sha"], row["tip_sha"],
+                "sot-ledger-wave1-rc8"))
+            copied_receipt.write_text(copied_receipt.read_text() + "tamper\n")
+            self.assertIsNone(runtime._proven_forecast_composition(
+                evidence, controller, "pA6M9l", rc8["seal"]["base_sha"], row["tip_sha"],
+                "sot-ledger-wave1-rc8"))
 
     def test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once(self) -> None:
         old, req = self.prepare_epoch()

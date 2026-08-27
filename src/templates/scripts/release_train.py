@@ -963,8 +963,33 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
         _forecast_git(repository, "clone", "--quiet", "--shared", "--no-checkout",
                       str(repository), str(checkout))
         _forecast_git(checkout, "checkout", "--quiet", "--detach", plan["base_sha"])
+        unresolved_boundary: Optional[dict[str, Any]] = None
+        indeterminate_members: list[dict[str, Any]] = []
         for index, task_id in enumerate(plan["order"]):
             member = by_id[task_id]
+            if unresolved_boundary is not None:
+                # Material repair output is unknowable without spending repair authority.
+                # Account for every later member, but probe it only against the frozen base
+                # and never pretend that probe is the ordered composition result.
+                _forecast_git(checkout, "reset", "--quiet", "--hard", plan["base_sha"])
+                anchor_merge = _forecast_git(checkout, "merge", "--no-ff", "--no-commit",
+                                             member["tip_sha"], check=False)
+                anchor_paths = _forecast_conflict_paths(checkout) if anchor_merge.returncode else []
+                if anchor_merge.returncode:
+                    _forecast_git(checkout, "merge", "--abort")
+                else:
+                    _forecast_git(checkout, "reset", "--quiet", "--hard", plan["base_sha"])
+                row = {"task_id": task_id, "pre_sha": None, "pre_tree": None,
+                       "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                       "post_sha": None, "post_tree": None,
+                       "decision": "composition_indeterminate",
+                       "indeterminate_due_to": unresolved_boundary,
+                       "independent_base_probe": {"anchor_sha": plan["base_sha"],
+                           "decision": "conflict" if anchor_paths else "clean",
+                           "conflict_paths": anchor_paths}}
+                compositions.append(row)
+                indeterminate_members.append(row)
+                continue
             before = git(checkout, "rev-parse", "HEAD")
             before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
             if subprocess.run(["git", "-C", str(checkout), "merge-base", "--is-ancestor",
@@ -987,11 +1012,14 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                     row = {"task_id": task_id, "pre_sha": before, "pre_tree": before_tree,
                            "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
                            "post_sha": None, "post_tree": None, "decision": "conflict_unresolved"}
+                    unresolved_boundary = {"task_id": task_id, "pre_sha": before,
+                                           "candidate_tip": member["tip_sha"],
+                                           "conflict_paths": conflict_paths}
                     compositions.append(row)
                     conflicts.append({**row, "conflict_paths": conflict_paths,
                                       "required": member["required"],
                                       "forecast_resolution": "requires_proven_both_parent_composition"})
-                    break
+                    continue
                 _forecast_git(checkout, "reset", "--quiet", "--hard", replay["commit"])
                 commit, tree = replay["commit"], replay["tree"]
             else:
@@ -1020,29 +1048,15 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                 conflicts.append({**row, "conflict_paths": conflict_paths,
                                   "required": member["required"],
                                   "forecast_resolution": "immutable_receipt_bound_composition"})
-    # A final unresolved conflict is still a complete conflict forecast: no later
-    # member depends on choosing its material repair. An earlier one is not.
-    complete = len(compositions) == len(plan["order"])
+    member_coverage_complete = len(compositions) == len(plan["order"])
+    exact_composition_complete = member_coverage_complete and unresolved_boundary is None
     policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
               "repair_budget": 1,
-              "repair_unit": "authorization_neutral_logical_conflict_set.v1",
-              "grouping": "overlapping_paths_causal_component.v1",
-              "grouped_repair_runtime_available": False,
+              "repair_unit": "required_conflicting_candidate.v1",
+              "logical_conflict_set_grouping": "deferred_to_grouped_repair_runtime",
               "serial_forecast_resolution": "proven_both_parent_composition_only"}
-    sets: list[dict[str, Any]] = []
-    for conflict in conflicts:
-        overlapping = [item for item in sets if set(item["conflict_paths"]) & set(conflict["conflict_paths"])]
-        if not overlapping:
-            sets.append({"tasks": [conflict["task_id"]], "conflict_paths": conflict["conflict_paths"],
-                         "required": conflict["required"]})
-        else:
-            target = overlapping[0]
-            target["tasks"].append(conflict["task_id"])
-            target["conflict_paths"] = sorted(set(target["conflict_paths"]) | set(conflict["conflict_paths"]))
-            target["required"] = target["required"] or conflict["required"]
     required_conflicts = sum(1 for row in conflicts if row["required"])
-    required_sets = sum(1 for row in sets if row["required"])
-    policy_feasible = complete and required_sets <= policy["repair_budget"]
+    policy_feasible = exact_composition_complete and required_conflicts <= policy["repair_budget"]
     identity = {"declaration": plan["declaration"], "base_sha": plan["base_sha"],
                 "order": plan["order"], "members": [{"task_id": row["task_id"],
                     "tip_sha": row["tip_sha"], "tree_sha": row["tree_sha"],
@@ -1056,12 +1070,13 @@ def forecast_epoch_conflicts(controller: Path, repository: Path,
                 "policy_sha256": plan["policy_sha256"], "forecast_policy": policy}
     body = {"schema_version": CONFLICT_MANIFEST_SCHEMA, "identity": identity,
             "identity_sha256": digest(identity), "compositions": compositions,
-            "conflicts": conflicts, "conflict_sets": sets, "forecast_complete": complete,
+            "conflicts": conflicts, "indeterminate_members": indeterminate_members,
+            "unresolved_boundary": unresolved_boundary,
+            "forecast_complete": member_coverage_complete,
+            "exact_composition_complete": exact_composition_complete,
             "required_conflict_count": required_conflicts,
-            "required_conflict_set_count": required_sets,
             "policy_repair_budget_feasible": policy_feasible,
-            "repair_budget_feasible": (policy_feasible and
-                (policy["grouped_repair_runtime_available"] or all(len(row["tasks"]) == 1 for row in sets)))}
+            "repair_budget_feasible": policy_feasible}
     return {**body, "manifest_sha256": digest(body)}
 
 
@@ -1114,8 +1129,8 @@ def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
     manifest = plan["conflict_manifest"]
     if not manifest["repair_budget_feasible"]:
         raise ReleaseTrainError(
-            "conflict_manifest.repair_budget_infeasible:required_conflict_sets="
-            f"{manifest['required_conflict_set_count']},complete={manifest['forecast_complete']},budget="
+            "conflict_manifest.repair_budget_infeasible:required_conflicts="
+            f"{manifest['required_conflict_count']},exact_complete={manifest['exact_composition_complete']},budget="
             f"{manifest['identity']['forecast_policy']['repair_budget']}; "
             "next=revise the declared repair policy or candidate set before seal")
     path = epoch_state_path(controller, plan["epoch_id"])
