@@ -682,8 +682,12 @@ def reconcile_bootstrap_members(controller: Path, state: dict[str, Any]) -> dict
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     target = git(repository, "rev-parse", seal["target_ref"])
-    if target != state.get("cas", {}).get("readback"):
-        raise ReleaseTrainError("bootstrap-repair reconciliation target readback moved")
+    sealed_readback = state.get("cas", {}).get("readback")
+    if (not isinstance(sealed_readback, str) or not SHA_RE.fullmatch(sealed_readback)
+            or subprocess.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                               sealed_readback, target], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode):
+        raise ReleaseTrainError("bootstrap-repair sealed target is not an ancestor of current readback")
     reconciled = []
     for member in seal["members"]:
         if subprocess.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
@@ -706,7 +710,8 @@ def reconcile_bootstrap_members(controller: Path, state: dict[str, Any]) -> dict
         reconciled.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
                            "finalization": finalization})
     state["reconciliation"] = {"schema_version": "juno_bootstrap_repair_reconciliation.v1",
-        "target_sha": target, "members": reconciled, "completed_utc": utc_now(),
+        "sealed_target_sha": sealed_readback, "observed_target_sha": target,
+        "members": reconciled, "completed_utc": utc_now(),
         "next_action": "regenerate affected closures, then inspect and seal one fresh all-eligible epoch"}
     atomic_json(bootstrap_state_path(controller, state["operation_id"]), state)
     return state

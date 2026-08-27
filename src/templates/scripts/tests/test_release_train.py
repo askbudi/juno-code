@@ -328,13 +328,15 @@ raise SystemExit(2)
         for member in state["seal"]["members"]:
             run(self.root, "git", "merge", "--no-ff", "--no-edit", member["tip_sha"])
         target = run(self.root, "git", "rev-parse", "HEAD")
-        state.update({"state": "COMPLETE", "cas": {"readback": target},
+        state.update({"state": "COMPLETE", "cas": {"readback": self.base},
                       "receipt": {"receipt_id": "r" * 64}})
         persisted = []
         with mock.patch("merge_queue.finalize_kanban_task", return_value={"outcome": "completed"}) as finalize, \
              mock.patch("merge_queue.persist_attempt", side_effect=lambda _c, attempt, **_k: persisted.append(attempt)):
             reconciled = runtime.reconcile_bootstrap_members(self.root, state)
         self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in reconciled["reconciliation"]["members"]])
+        self.assertEqual(self.base, reconciled["reconciliation"]["sealed_target_sha"])
+        self.assertEqual(target, reconciled["reconciliation"]["observed_target_sha"])
         self.assertEqual(2, finalize.call_count)
         self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in persisted])
         self.assertTrue(all(row["candidate_sha"] == target for row in persisted))
