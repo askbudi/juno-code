@@ -301,7 +301,8 @@ raise SystemExit(2)
             run(repository, "git", "update-ref", target_ref, tip, expected)
             return {"fixture": "exact-owner-readback"}
         with mock.patch("merge_queue.cas_target", side_effect=fixture_cas), \
-             mock.patch("merge_queue.refresh_managed_controller", return_value={"status": "complete"}):
+             mock.patch("merge_queue.refresh_managed_controller", return_value={"status": "complete"}), \
+             mock.patch.object(runtime, "reconcile_bootstrap_members", side_effect=lambda _controller, state: state):
             complete = runtime.drive_bootstrap(self.root, "bootstrap-1", token)
             repeated = runtime.drive_bootstrap(self.root, "bootstrap-1", token)
         self.assertEqual("COMPLETE", complete["state"])
@@ -316,6 +317,27 @@ raise SystemExit(2)
         receipt = json.loads(Path(complete["receipt"]["path"]).read_text())
         self.assertEqual("bootstrap_repair_integrated", receipt["reason_code"])
         self.assertTrue(set(runtime.EXTERNAL_ACTIONS).issubset(receipt["excluded_actions"]))
+
+    def test_bootstrap_reconciliation_finalizes_only_exact_ancestry_members(self) -> None:
+        self.prepare_epoch()
+        self.board["REQ"]["blocked_by"] = ["OLD"]
+        self.board["DEP"]["blocked_by"] = ["REQ"]
+        self.write_board()
+        sealed = runtime.seal_bootstrap(self.root, self.write_bootstrap_declaration())
+        state = sealed["state"]
+        for member in state["seal"]["members"]:
+            run(self.root, "git", "merge", "--no-ff", "--no-edit", member["tip_sha"])
+        target = run(self.root, "git", "rev-parse", "HEAD")
+        state.update({"state": "COMPLETE", "cas": {"readback": target},
+                      "receipt": {"receipt_id": "r" * 64}})
+        persisted = []
+        with mock.patch("merge_queue.finalize_kanban_task", return_value={"outcome": "completed"}) as finalize, \
+             mock.patch("merge_queue.persist_attempt", side_effect=lambda _c, attempt, **_k: persisted.append(attempt)):
+            reconciled = runtime.reconcile_bootstrap_members(self.root, state)
+        self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in reconciled["reconciliation"]["members"]])
+        self.assertEqual(2, finalize.call_count)
+        self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in persisted])
+        self.assertTrue(all(row["candidate_sha"] == target for row in persisted))
 
     def test_bootstrap_repair_refuses_missing_causal_dependency(self) -> None:
         self.prepare_epoch()

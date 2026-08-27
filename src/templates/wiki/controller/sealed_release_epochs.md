@@ -97,8 +97,10 @@ blocked by the authority task, each affected task is blocked by the repair, and
 all unrelated active queue rows are frozen as preserved members. Drive composes
 only authority then repair with both-parent history, permits no conflict worker,
 performs one expected-old-SHA CAS/readback, refreshes the managed runtime, and
-emits the exact next action: reconcile the integrated repair tasks, regenerate
-affected closures, then seal a fresh all-eligible epoch. It cannot seal that
+idempotently finalizes only its exact ancestry-bound members through canonical
+Ledger/lifecycle readback. Its next action is to regenerate affected closures,
+then seal a fresh all-eligible epoch. A retry completes missing reconciliation
+without another CAS. It cannot seal that
 epoch, complete affected tasks, release, tag, push, publish, deploy, or clean.
 
 ## Composition and conflict recovery

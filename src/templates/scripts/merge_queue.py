@@ -4937,15 +4937,32 @@ def _target_refresh_review_ready_closure(
         command_evidence: dict[str, Any]) -> dict[str, Any]:
     """Bind refreshed-tip validation without relabelling old-tip standing receipts."""
     source = record.get("review_ready_closure")
-    if not isinstance(source, dict):
-        raise MergeQueueError("target refresh source review-ready closure is missing")
-    source_body = {key: value for key, value in source.items() if key != "closure_sha256"}
-    if (source.get("schema_version") != "juno_task_review_ready_closure.v1"
-            or source.get("closure_sha256") != task_runtime.stable_sha256(source_body)
-            or source.get("task_id") != plan.get("task_id")
-            or source.get("tip_sha") != plan.get("source_tip")
-            or source.get("changed_paths") != record.get("changed_paths")):
-        raise MergeQueueError("target refresh source review-ready closure is forged or stale")
+    source_kind = "review_ready_closure"
+    if isinstance(source, dict):
+        source_body = {key: value for key, value in source.items() if key != "closure_sha256"}
+        if (source.get("schema_version") != "juno_task_review_ready_closure.v1"
+                or source.get("closure_sha256") != task_runtime.stable_sha256(source_body)
+                or source.get("task_id") != plan.get("task_id")
+                or source.get("tip_sha") != plan.get("source_tip")
+                or source.get("changed_paths") != record.get("changed_paths")):
+            raise MergeQueueError("target refresh source review-ready closure is forged or stale")
+    else:
+        creation = record.get("creation_receipt")
+        identity = record.get("workspace_identity")
+        if (not isinstance(creation, dict) or not isinstance(identity, dict)
+                or identity.get("create_receipt_sha256") != task_runtime.stable_sha256(creation)
+                or identity.get("expected_paths_sha256") != creation.get("expected_paths_sha256")
+                or not isinstance(creation.get("generated_output_admission"), dict)):
+            raise MergeQueueError("target refresh immutable creation identity is missing or forged")
+        source_kind = "immutable_creation_identity_regeneration"
+        source = {
+            "base_sha": record.get("base_sha"),
+            "allowed_paths_sha256": identity["expected_paths_sha256"],
+            "creation_receipt_sha256": identity["create_receipt_sha256"],
+            "generated_output_admission_sha256": task_runtime.stable_sha256(
+                creation["generated_output_admission"]),
+            "unresolved_findings_candidate_sha": None,
+        }
     if not isinstance(command_evidence, dict):
         raise MergeQueueError("target refresh command evidence is missing")
     counters = command_evidence.get("counters")
@@ -4987,7 +5004,11 @@ def _target_refresh_review_ready_closure(
             "receipt_sha256": receipt_sha256,
             "target_sha": plan["target_sha"],
             "source_tip": plan["source_tip"],
-            "source_closure_sha256": source["closure_sha256"],
+            "source_kind": source_kind,
+            "source_identity_sha256": (source.get("closure_sha256")
+                                       or task_runtime.stable_sha256(source)),
+            "standing_evidence_decision": ("reused_lineage" if source_kind == "review_ready_closure"
+                                             else "invalidated_missing_source_closure"),
         },
         "authoritative_validation": {
             "results_sha256": task_runtime.stable_sha256(validations),

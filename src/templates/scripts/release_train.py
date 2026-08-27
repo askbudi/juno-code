@@ -675,10 +675,47 @@ def require_bootstrap_token(state: dict[str, Any], token: str) -> None:
         raise ReleaseTrainError("exact bootstrap-repair fencing token is required")
 
 
+def reconcile_bootstrap_members(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Finalize only receipt-bound members whose exact tips are in the target."""
+    import merge_queue
+    seal = state["seal"]
+    config = task_runtime.load_config(controller)
+    repository = task_runtime.product_repository(controller, config)
+    target = git(repository, "rev-parse", seal["target_ref"])
+    if target != state.get("cas", {}).get("readback"):
+        raise ReleaseTrainError("bootstrap-repair reconciliation target readback moved")
+    reconciled = []
+    for member in seal["members"]:
+        if subprocess.run(["git", "-C", str(repository), "merge-base", "--is-ancestor",
+                           member["tip_sha"], target], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode:
+            raise ReleaseTrainError(f"bootstrap-repair member ancestry is missing: {member['task_id']}")
+        current = task_runtime.read_state(controller).get("tasks", {}).get(member["task_id"])
+        if not isinstance(current, dict) or current.get("tip_sha") != member["tip_sha"]:
+            raise ReleaseTrainError(f"bootstrap-repair member queue identity drifted: {member['task_id']}")
+        attempt = {"schema_version": "juno_merge_attempt.v1", "task_id": member["task_id"],
+            "target_ref": seal["target_ref"], "expected_target_sha": target,
+            "feature_sha": member["tip_sha"], "strategy": "bootstrap_repair_exact_ancestry",
+            "candidate_sha": target, "candidate_tree": git(repository, "rev-parse", f"{target}^{{tree}}"),
+            "candidate_checkout": None, "candidate_token": None, "validation": [], "review": None,
+            "outcome": "MERGED", "readback_sha": target,
+            "bootstrap_repair_receipt_id": state.get("receipt", {}).get("receipt_id")}
+        finalization = merge_queue.finalize_kanban_task(
+            controller, {**attempt, "candidate_sha": member["tip_sha"]})
+        merge_queue.persist_attempt(controller, attempt, state_name="MERGED", remove_conflict=True)
+        reconciled.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
+                           "finalization": finalization})
+    state["reconciliation"] = {"schema_version": "juno_bootstrap_repair_reconciliation.v1",
+        "target_sha": target, "members": reconciled, "completed_utc": utc_now(),
+        "next_action": "regenerate affected closures, then inspect and seal one fresh all-eligible epoch"}
+    atomic_json(bootstrap_state_path(controller, state["operation_id"]), state)
+    return state
+
+
 def drive_bootstrap(controller: Path, operation_id: str, token: str) -> dict[str, Any]:
     state = read_bootstrap(controller, operation_id); require_bootstrap_token(state, token)
     if state.get("state") == "COMPLETE":
-        return state
+        return state if state.get("reconciliation") else reconcile_bootstrap_members(controller, state)
     seal = state["seal"]
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
@@ -758,7 +795,7 @@ def drive_bootstrap(controller: Path, operation_id: str, token: str) -> dict[str
         "receipt": {"path": str(receipt_path.resolve()), "sha256": file_hash(receipt_path),
                     "receipt_id": receipt["receipt_id"]}, "updated_utc": utc_now()})
     atomic_json(bootstrap_state_path(controller, operation_id), state)
-    return state
+    return reconcile_bootstrap_members(controller, state)
 
 
 def queue_epoch_members(controller: Path, declaration: dict[str, Any], target_sha: str) -> list[dict[str, Any]]:

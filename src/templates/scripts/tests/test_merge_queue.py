@@ -855,10 +855,47 @@ class MergeQueueTests(unittest.TestCase):
         self.assertEqual(closure["closure_sha256"], task_runtime.stable_sha256(closure_body))
         self.assertEqual((closure["task_id"], closure["tip_sha"]), ("X", refreshed))
         self.assertEqual(closure["tree_sha"], git(self.repository, "rev-parse", f"{refreshed}^{{tree}}"))
-        self.assertEqual(closure["target_refresh"]["source_closure_sha256"],
+        self.assertEqual(closure["target_refresh"]["source_identity_sha256"],
                          before["review_ready_closure"]["closure_sha256"])
+        self.assertEqual("reused_lineage", closure["target_refresh"]["standing_evidence_decision"])
         self.assertNotIn("standing_validation", closure)
         self.assertTrue(closure["authoritative_validation"]["results_sha256"])
+
+    def test_target_refresh_regenerates_missing_source_closure_from_immutable_creation_identity(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        self.advance_target()
+        refreshed = self.merge_target_into("X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"].pop("review_ready_closure")
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        planned = merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        applied = merge_runtime.apply_target_refresh(
+            self.controller.resolve(), "X", planned["receipt"]["path"],
+            planned["receipt"]["sha256"])
+        closure = applied["review_ready_closure"]
+        self.assertEqual(refreshed, closure["tip_sha"])
+        self.assertEqual("immutable_creation_identity_regeneration",
+                         closure["target_refresh"]["source_kind"])
+        self.assertEqual("invalidated_missing_source_closure",
+                         closure["target_refresh"]["standing_evidence_decision"])
+        self.assertEqual(applied["workspace_identity"]["create_receipt_sha256"],
+                         closure["creation_receipt_sha256"])
+
+    def test_target_refresh_missing_source_closure_refuses_forged_creation_identity(self) -> None:
+        self.install_merge_planner_runtime()
+        self.commit_feature("X", "docs/feature.txt", "feature\n")
+        self.advance_target(); self.merge_target_into("X")
+        state_path = self.controller / ".juno_task/state/tasks.json"
+        state = json.loads(state_path.read_text())
+        state["tasks"]["X"].pop("review_ready_closure")
+        state["tasks"]["X"]["workspace_identity"]["create_receipt_sha256"] = "0" * 64
+        state_path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+        before = state_path.read_bytes()
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "immutable creation admission"):
+            merge_runtime.persist_target_refresh_plan(self.controller.resolve(), "X")
+        self.assertEqual(before, state_path.read_bytes())
 
     def test_target_refresh_refuses_forged_source_closure_without_queue_mutation(self) -> None:
         self.install_merge_planner_runtime()
