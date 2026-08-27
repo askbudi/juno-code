@@ -555,7 +555,7 @@ raise SystemExit(2)
         if export:
             destination = Path(export).expanduser().resolve(); destination.mkdir(parents=True, exist_ok=True)
             (destination / "manifest.json").write_text(runtime.canonical(manifest) + "\n")
-            (destination / "authority.json").write_text(runtime.canonical(json.loads(authority_path.read_text())) + "\n")
+            (destination / "authority.json").write_bytes(authority_path.read_bytes())
             (destination / "portable.json").write_text(runtime.canonical(fixture) + "\n")
             (destination / "non-mutation-before.json").write_text(runtime.canonical(snapshot) + "\n")
             (destination / "non-mutation-after.json").write_text(runtime.canonical(snapshot) + "\n")
