@@ -527,7 +527,7 @@ raise SystemExit(2)
         closure = {"schema_version": runtime.PHASE1_CLOSURE_SCHEMA, "proof": ref(proof_path),
             "watch": {"run_id": run_id, "footer_sha256": hashlib.sha256(footer.encode()).hexdigest()}}
         closure_path = evidence_root / "closure.json"; closure_path.write_text(runtime.canonical(closure) + "\n")
-        output = evidence_root / "phase1-acceptance.json"
+        output = evidence_root / f'phase1-acceptance-{proof["proof_sha256"]}.json'
         receipt_result = runtime.phase1_acceptance_receipt(self.root, closure_path, output)
         self.assertEqual("PASS", receipt_result["decision"], receipt_result)
         self.assertEqual(receipt_result, runtime.phase1_acceptance_receipt(self.root, closure_path, output))

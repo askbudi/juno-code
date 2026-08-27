@@ -1462,7 +1462,8 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
             blockers.append("task.commit_tree")
     except (ReleaseTrainError, subprocess.CalledProcessError):
         blockers.append("task.commit_tree")
-    expected_output = controller / ".juno_task/runtime/phase-evidence" / task_id / "phase1-acceptance.json"
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f'phase1-acceptance-{proof.get("proof_sha256", "invalid")}.json')
     if output.resolve() != expected_output.resolve(): blockers.append("receipt.routing")
     declaration = _immutable_json(proof.get("declaration"), "declaration", blockers)
     fixture = _immutable_json(proof.get("fixture"), "fixture", blockers)
