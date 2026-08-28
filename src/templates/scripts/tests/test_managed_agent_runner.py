@@ -1000,6 +1000,74 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         self.assertEqual(environment["workspace_role"], "task")
         self.assertIsNone(environment["worker_admission_kind"])
 
+    def test_historical_creation_worker_requires_exact_receipt_and_workspace_identity(self):
+        subprocess.run(["git", "-C", str(self.candidate), "config", "extensions.worktreeConfig", "true"], check=True)
+        workspace = {"role": "task", "taskId": "T1", "manifestIdentity": "manifest-1",
+                     "createReceiptSha256": "1" * 64}
+        expected = ["allowed.txt"]
+        paths_sha = hashlib.sha256(json.dumps(expected, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        workspace["expectedPathsSha256"] = paths_sha
+        for key, value in workspace.items():
+            subprocess.run(["git", "-C", str(self.candidate), "config", "--worktree",
+                            f"juno.workspace.{key}", value], check=True)
+        common = str((self.candidate / git(self.candidate, "rev-parse", "--git-common-dir")).resolve())
+        tip = git(self.candidate, "rev-parse", "HEAD")
+        receipt_dir = self.tmp / "historical-receipts"; receipt_dir.mkdir()
+        create = {"schema_version": "juno_managed_task_run_create.v1", "task_id": "T1",
+                  "worktree": str(self.candidate.resolve()), "branch_ref": "refs/heads/task",
+                  "git_common_dir": common, "expected_paths": expected,
+                  "expected_paths_sha256": paths_sha, "admission_kind": "historical_creation",
+                  "workspace_role": "task", "clean_tip_sha": tip,
+                  "creation_receipt_sha256": "1" * 64,
+                  "workspace_manifest_identity": "manifest-1"}
+        create_path = receipt_dir / "create-receipt.json"; runner.atomic_json(create_path, create)
+        verify = {"schema_version": "juno_managed_task_run_verify.v1", "task_id": "T1",
+                  "passed": True, "workspace_role": "task", "tip_sha": tip,
+                  "create_receipt_sha256": hashlib.sha256(create_path.read_bytes()).hexdigest(),
+                  "hydration_manifest_sha256": "2" * 64, "dependency_evidence": []}
+        verify_path = receipt_dir / "verify-receipt.json"; runner.atomic_json(verify_path, verify)
+        edit = {"schema_version": "juno_managed_task_run_edit_preflight.v1", "task_id": "T1",
+                "passed": True, "workspace_role": "task", "tip_sha": tip,
+                "create_receipt_sha256": hashlib.sha256(create_path.read_bytes()).hexdigest(),
+                "verify_receipt_sha256": hashlib.sha256(verify_path.read_bytes()).hexdigest(),
+                "allowed_paths_sha256": paths_sha}
+        edit_path = receipt_dir / "edit-preflight-receipt.json"; runner.atomic_json(edit_path, edit)
+        args = runner.argparse.Namespace(task_id="T1", create_receipt=str(create_path),
+            verify_receipt=str(verify_path), edit_preflight_receipt=str(edit_path),
+            candidate_sha=None, agent_root=str(self.candidate))
+        identity, _mark = runner.validate_worker(args, runner.controller_identity(self.controller))
+        self.assertEqual(identity["admission_kind"], "historical_creation")
+        out = self.tmp / "historical-worker"
+        command = [sys.executable, str(RUNNER), "run", "--mode", "worker",
+                   "--controller-root", str(self.controller), "--controller-branch", "controller",
+                   "--agent-root", str(self.candidate), "--prompt-file", str(self.prompt),
+                   "--out-dir", str(out), "--task-id", "T1", "--create-receipt", str(create_path),
+                   "--verify-receipt", str(verify_path), "--edit-preflight-receipt", str(edit_path),
+                   "--external-side-effects", "forbidden", "--lifecycle-hooks", "disabled"]
+        launched = subprocess.run(command, env=self.env(), capture_output=True, text=True)
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        launch = json.loads((out / "launch.json").read_text())
+        self.assertEqual(launch["environment_contract"]["workspace_role"], "task")
+        self.assertEqual(launch["identity"]["admission_kind"], "historical_creation")
+
+        original = create_path.read_bytes()
+        for field, value, message in (
+                ("task_id", "WRONG", "identity mismatch"),
+                ("worktree", str(self.tmp / "wrong"), "identity mismatch"),
+                ("branch_ref", "refs/heads/wrong", "branch/common"),
+                ("git_common_dir", str(self.tmp), "branch/common"),
+                ("admission_kind", "arbitrary", "unsupported"),
+                ("expected_paths_sha256", "3" * 64, "creation authority"),
+                ("workspace_role", "controller", "creation authority")):
+            changed = dict(create); changed[field] = value; runner.atomic_json(create_path, changed)
+            with self.assertRaisesRegex(runner.RunnerError, message):
+                runner.validate_worker(args, runner.controller_identity(self.controller))
+            create_path.write_bytes(original)
+        verify_path.write_text(json.dumps(verify, indent=2) + "\n")
+        with self.assertRaisesRegex(runner.RunnerError, "bytes are not canonical"):
+            runner.validate_worker(args, runner.controller_identity(self.controller))
+
     def test_conflict_worker_role_is_bound_to_validated_admission(self):
         args = runner.argparse.Namespace(
             mode="worker", controller_root=str(self.controller), controller_branch="controller",

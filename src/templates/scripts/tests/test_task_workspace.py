@@ -4450,6 +4450,54 @@ finished = time.monotonic()
         self.assertEqual(git(Path(record["worktree"]), "rev-list", "--count",
                              f"{record['base_sha']}..{record['tip_sha']}"), "1")
 
+    def test_task_run_predispatch_failure_releases_model_budget_and_retries_exactly(self) -> None:
+        self.install_task_run_assets()
+        task_runtime.task_file(self.controller, "X").write_text(
+            "---\nid: X\nstatus: todo\n---\n## Goal\nShip once.\n"
+            "## Acceptance\n- The committed file is validated.\n")
+        git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+            ".juno_task/prompts/lifecycle")
+        git(self.controller, "commit", "-m", "pre-dispatch managed task")
+        calls = 0
+
+        def worker(_controller: Path, _task_id: str, record: dict,
+                   run_dir: Path, _prompt: Path, **_kwargs: object) -> dict:
+            nonlocal calls; calls += 1
+            if calls == 1:
+                receipt_path = run_dir / "controller-predispatch-receipt.json"
+                receipt_path.parent.mkdir(parents=True)
+                payload = {"schema_version": task_runtime.TASK_PREDISPATCH_RECOVERY_SCHEMA,
+                           "classification": "controller_pre_dispatch", "task_id": "X",
+                           "before_sha": git(Path(record["worktree"]), "rev-parse", "HEAD"),
+                           "provider_launch_observed": False, "model_budget_consumed": False,
+                           "admission_receipts": []}
+                receipt_path.write_bytes(task_runtime.lifecycle_runtime.canonical_bytes(payload))
+                ref = {"path": str(receipt_path.resolve()),
+                       "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+                raise task_runtime.ManagedAgentPreDispatchError("refused before launch", ref)
+            worktree = Path(record["worktree"]); before = git(worktree, "rev-parse", "HEAD")
+            (worktree / "src/managed.txt").write_text("managed\n")
+            git(worktree, "add", "src/managed.txt"); git(worktree, "commit", "-m", "managed")
+            return {"terminal_state": "completed", "before_sha": before,
+                    "after_sha": git(worktree, "rev-parse", "HEAD"),
+                    "receipt": {"path": "fixture", "sha256": "0" * 64},
+                    "session_id": "fixture"}
+
+        with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=worker):
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "refused before launch"):
+                task_runtime.managed_task_run(self.controller.resolve(), "X")
+            journal_path = next((self.controller / task_runtime.TASK_RUN_ROOT / "X").glob("*/journal.json"))
+            first = json.loads(journal_path.read_text())
+            self.assertEqual(first["attempts"]["implementation"], 0)
+            self.assertEqual(first["attempts"]["worker_launches"], 1)
+            self.assertFalse(first["workers"][0]["model_budget_consumed"])
+            queued = task_runtime.managed_task_run(self.controller.resolve(), "X")
+        self.assertEqual(queued["state"], "QUEUED")
+        final = json.loads(journal_path.read_text())
+        self.assertEqual(final["attempts"]["implementation"], 1)
+        self.assertEqual(final["attempts"]["worker_launches"], 2)
+        self.assertEqual([item["index"] for item in final["workers"]], [1, 2])
+
     def test_task_run_serializes_concurrent_callers_and_dispatches_one_worker(self) -> None:
         self.install_task_run_assets()
         task_runtime.task_file(self.controller, "X").write_text(
@@ -4789,6 +4837,76 @@ steps:
         self.assertEqual(journal["attempts"]["implementation"], 0)
         self.assertEqual(list((journals[0].parent / "workers").glob("*")), [])
 
+    def test_exact_historical_predispatch_runs_recover_idempotently_and_refuse_drift(self) -> None:
+        fixtures = (("Vhc90c", 1787888756340564000, "bcc587c7f20f6f21"),
+                    ("0IttWR", 1787889795351197000, "f1998918bd8a759c"))
+        seed_fake_kanban(self.controller, {task_id: "todo" for task_id, _, _ in fixtures})
+        for task_id, timestamp, token in fixtures:
+            self.install_task_run_assets()
+            task_runtime.task_file(self.controller, task_id).parent.mkdir(parents=True, exist_ok=True)
+            task_runtime.task_file(self.controller, task_id).write_text(
+                f"---\nid: {task_id}\nstatus: todo\n---\n## Goal\nShip once.\n"
+                "## Acceptance\n- The committed file is validated.\n")
+            git(self.controller, "add", ".juno_task/tasks", ".juno_task/workflows",
+                ".juno_task/prompts/lifecycle")
+            git(self.controller, "commit", "-m", f"historical {task_id}")
+
+            def legacy_refusal(_controller: Path, _task_id: str, record: dict,
+                               run_dir: Path, _prompt: Path, **kwargs: object) -> dict:
+                gate = kwargs["hydration_gate"]
+                worktree = Path(record["worktree"])
+                admitted, _generated, kind = task_runtime.effective_admission(record)
+                common = str(Path(git(worktree, "rev-parse", "--path-format=absolute",
+                                      "--git-common-dir")).resolve())
+                values = ({"schema_version": "juno_managed_task_run_create.v1",
+                           "task_id": task_id, "worktree": str(worktree.resolve()),
+                           "branch_ref": record["branch_ref"], "git_common_dir": common,
+                           "expected_paths": admitted, "admission_kind": kind,
+                           "workspace_manifest_identity": record["creation_receipt"]["manifest_identity"]},
+                          {"schema_version": "juno_managed_task_run_verify.v1",
+                           "task_id": task_id, "passed": True,
+                           "tip_sha": git(worktree, "rev-parse", "HEAD"),
+                           "hydration_manifest_sha256": gate["hydration_manifest_sha256"],
+                           "dependency_evidence": gate["dependency_evidence"]},
+                          {"schema_version": "juno_managed_task_run_edit_preflight.v1",
+                           "task_id": task_id, "passed": True,
+                           "allowed_paths_sha256": task_runtime.stable_sha256(admitted)})
+                for name, value in zip(("create-receipt.json", "verify-receipt.json",
+                                        "edit-preflight-receipt.json"), values):
+                    task_runtime.lifecycle_runtime.atomic_json(run_dir / name, value, exclusive=True)
+                raise task_runtime.TaskWorkspaceError("managed task worker has no immutable receipt")
+
+            with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=legacy_refusal), \
+                    mock.patch.object(task_runtime.time, "time_ns", return_value=timestamp), \
+                    mock.patch.object(task_runtime.secrets, "token_hex", return_value=token):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "no immutable receipt"):
+                    task_runtime.managed_task_run(self.controller.resolve(), task_id)
+            run_id = f"{timestamp}-{token}"
+            run_dir = self.controller / task_runtime.TASK_RUN_ROOT / task_id / run_id
+            edit = run_dir / "workers/implementation-0001/edit-preflight-receipt.json"
+            original = edit.read_bytes()
+            if task_id == "Vhc90c":
+                edit.write_text("{}\n")
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "identity drifted"):
+                    task_runtime.recover_task_predispatch(self.controller.resolve(), task_id, run_id)
+                edit.write_bytes(original)
+                managed = run_dir / "workers/implementation-0001/managed-agent"
+                managed.mkdir()
+                (managed / "receipt.json").write_text("{}\n")
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, "ambiguous launch evidence"):
+                    task_runtime.recover_task_predispatch(self.controller.resolve(), task_id, run_id)
+                shutil.rmtree(managed)
+            recovered = task_runtime.recover_task_predispatch(
+                self.controller.resolve(), task_id, run_id)
+            self.assertEqual(recovered["outcome"], "recovered")
+            self.assertEqual(task_runtime.recover_task_predispatch(
+                self.controller.resolve(), task_id, run_id)["outcome"], "already_recovered")
+            journal = json.loads((run_dir / "journal.json").read_text())
+            self.assertEqual(journal["attempts"]["implementation"], 0)
+            self.assertEqual(journal["attempts"]["worker_launches"], 1)
+            self.assertFalse(journal["workers"][0]["model_budget_consumed"])
+
     def test_task_run_incomplete_terminal_blocks_and_replays_idempotently(self) -> None:
         self.install_task_run_assets()
         task_runtime.task_file(self.controller, "X").write_text(
@@ -4850,7 +4968,7 @@ steps:
         gate = {"dependency_evidence": [], "hydration_manifest_sha256": None}
         _create, verify, edit = task_runtime._managed_worker_receipts(run_dir, record, gate)
         create = json.loads((run_dir / "create-receipt.json").read_text())
-        self.assertEqual(create["expected_paths"], supersession["umbrella_admission"]["union_paths"])
+        self.assertEqual(create["expected_paths"], sorted(supersession["umbrella_admission"]["union_paths"]))
         self.assertEqual(create["admission_kind"], "superseding")
         self.assertEqual(create["admission_supersession_sha256"],
                          record["admission_supersession_sha256"])
@@ -4860,8 +4978,8 @@ steps:
         self.assertIn("hydration_manifest_sha256", verify_value)
         edit_value = json.loads(edit.read_text())
         self.assertEqual(edit_value["allowed_paths_sha256"],
-                         task_runtime.stable_sha256(
-                             supersession["umbrella_admission"]["union_paths"]))
+                         task_runtime.stable_sha256(sorted(
+                             supersession["umbrella_admission"]["union_paths"])))
         # Without a supersession the historical creation admission remains
         # the effective worker authority.
         plain = task_runtime.read_state(self.controller)["tasks"]["X"]

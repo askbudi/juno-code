@@ -740,6 +740,16 @@ def release_conflict_admission(args: argparse.Namespace, controller: dict[str, A
     return admission, mark
 
 
+def _canonical_receipt(path: Path, label: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if path.is_symlink() or not path.is_file():
+        raise RunnerError(f"{label} must be an immutable regular file")
+    data = path.read_bytes()
+    value = load_object(path, label)
+    if data != canonical(value):
+        raise RunnerError(f"{label} bytes are not canonical")
+    return value, {"path": str(path), "sha256": sha(data)}
+
+
 def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     if not args.task_id or not TASK_RE.fullmatch(args.task_id):
         raise RunnerError("worker mode requires a safe task ID")
@@ -748,20 +758,69 @@ def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tup
         return release_conflict_admission(args, controller)
     if any(x is None for x in paths):
         raise RunnerError("worker mode requires create, verify, and edit-preflight receipts")
-    create, verify, edit = (load_object(x, name) for x, name in zip(paths, ("create receipt", "verify receipt", "edit-preflight receipt")))
+    assert all(path is not None for path in paths)
+    create_path, verify_path, edit_path = paths
+    create = load_object(create_path, "create receipt")
+    verify = load_object(verify_path, "verify receipt")
+    edit = load_object(edit_path, "edit-preflight receipt")
+    admission_kind = create.get("admission_kind")
+    if admission_kind == "historical_creation":
+        create, create_ref = _canonical_receipt(create_path, "create receipt")
+        verify, verify_ref = _canonical_receipt(verify_path, "verify receipt")
+        edit, edit_ref = _canonical_receipt(edit_path, "edit-preflight receipt")
+        if ([path.name for path in paths] != ["create-receipt.json", "verify-receipt.json", "edit-preflight-receipt.json"]
+                or len({path.parent for path in paths}) != 1):
+            raise RunnerError("worker receipts must be exact colocated lifecycle receipts")
+    else:
+        create_ref, verify_ref, edit_ref = (evidence(path) for path in paths)
     root = Path(args.agent_root).resolve()
     mark = fingerprint(root)
     if mark["status"] or create.get("task_id") != args.task_id or Path(str(create.get("worktree"))).resolve() != root:
         raise RunnerError("worker admission identity mismatch")
     if create.get("branch_ref") != mark["branch_ref"] or create.get("git_common_dir") != mark["git_common_dir"]:
         raise RunnerError("worker branch/common-directory authority mismatch")
+    if admission_kind not in (None, "historical_creation"):
+        raise RunnerError("worker admission kind is unsupported")
     if verify.get("passed") is not True or edit.get("passed") is not True:
         raise RunnerError("worker verify/edit-preflight authority did not pass")
     for receipt in (verify, edit):
         if receipt.get("task_id") not in (None, args.task_id):
             raise RunnerError("worker receipt task identity mismatch")
-    admission = {"task_id": args.task_id, "expected_paths": sorted(create.get("expected_paths") or []),
-                 "create": evidence(paths[0]), "verify": evidence(paths[1]), "edit_preflight": evidence(paths[2]),
+    expected_paths = create.get("expected_paths")
+    if (not isinstance(expected_paths, list) or not expected_paths
+            or any(not isinstance(value, str) or not value for value in expected_paths)
+            or expected_paths != sorted(set(expected_paths))):
+        raise RunnerError("worker path admission is malformed")
+    if admission_kind == "historical_creation":
+        role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
+        task = git(root, "config", "--worktree", "--get", "juno.workspace.taskId", check=False)
+        manifest = git(root, "config", "--worktree", "--get", "juno.workspace.manifestIdentity", check=False)
+        creation_sha = git(root, "config", "--worktree", "--get", "juno.workspace.createReceiptSha256", check=False)
+        paths_sha = git(root, "config", "--worktree", "--get", "juno.workspace.expectedPathsSha256", check=False)
+        expected_sha = sha(json.dumps(expected_paths, sort_keys=True, separators=(",", ":")).encode())
+        if (create.get("schema_version") != "juno_managed_task_run_create.v1"
+                or create.get("workspace_role") != "task" or role != "task" or task != args.task_id
+                or create.get("workspace_manifest_identity") != manifest
+                or create.get("creation_receipt_sha256") != creation_sha
+                or create.get("expected_paths_sha256") != paths_sha or expected_sha != paths_sha
+                or create.get("clean_tip_sha") != mark["head"]):
+            raise RunnerError("historical task creation authority mismatch")
+        if (verify.get("schema_version") != "juno_managed_task_run_verify.v1"
+                or verify.get("workspace_role") != "task" or verify.get("tip_sha") != mark["head"]
+                or verify.get("create_receipt_sha256") != create_ref["sha256"]
+                or not isinstance(verify.get("dependency_evidence"), list)
+                or not isinstance(verify.get("hydration_manifest_sha256"), str)
+                or not __import__("re").fullmatch(r"[0-9a-f]{64}", verify["hydration_manifest_sha256"])):
+            raise RunnerError("historical task verify/hydration authority mismatch")
+        if (edit.get("schema_version") != "juno_managed_task_run_edit_preflight.v1"
+                or edit.get("workspace_role") != "task" or edit.get("tip_sha") != mark["head"]
+                or edit.get("create_receipt_sha256") != create_ref["sha256"]
+                or edit.get("verify_receipt_sha256") != verify_ref["sha256"]
+                or edit.get("allowed_paths_sha256") != expected_sha):
+            raise RunnerError("historical task edit-preflight authority mismatch")
+    admission = {"task_id": args.task_id, "expected_paths": expected_paths,
+                 "admission_kind": admission_kind,
+                 "create": create_ref, "verify": verify_ref, "edit_preflight": edit_ref,
                  "manifest_identity": create.get("workspace_manifest_identity"), "before": mark}
     return admission, mark
 
@@ -881,7 +940,7 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
         if not isinstance(identity, dict):
             raise RunnerError("worker environment requires a validated admission identity")
         worker_admission_kind = identity.get("admission_kind")
-        if worker_admission_kind not in (None, "sealed_release_epoch_conflict"):
+        if worker_admission_kind not in (None, "historical_creation", "sealed_release_epoch_conflict"):
             raise RunnerError("worker environment has an unsupported admission kind")
         workspace_role = ("controller" if worker_admission_kind == "sealed_release_epoch_conflict"
                           else "task")

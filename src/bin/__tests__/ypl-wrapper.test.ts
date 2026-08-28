@@ -447,6 +447,7 @@ describe('ypl wrapper', () => {
     { args: ['merge', 'plan', 'T1'], operation: 'kanban' },
     { args: ['task', 'start', 'T1'], operation: 'orchestration' },
     { args: ['task', 'run', 'T1'], operation: 'orchestration' },
+    { args: ['task', 'recover-predispatch', 'T1', '--run-id', 'run-12345678'], operation: 'orchestration' },
     { args: ['task', 'hydrate', 'T1'], operation: 'orchestration' },
     { args: ['task', 'finish', 'T1'], operation: 'orchestration' },
     { args: ['task', 'checkpoint', 'T1'], operation: 'orchestration' },

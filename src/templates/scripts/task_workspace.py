@@ -65,6 +65,8 @@ TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"
 # Stable package-router capability. Parser command ordering may evolve without
 # invalidating hydrate recovery selection.
 TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True
+TASK_PREDISPATCH_RECOVERY_SCHEMA = "juno_task_predispatch_recovery.v1"
+TASK_RUNTIME_CAPABILITY_PREDISPATCH_RECOVERY_V1 = True
 RUNTIME_BOOTSTRAP_SCHEMA = "juno_target_task_runtime_bootstrap.v1"
 RUNTIME_BOOTSTRAP_ROOT = ".juno_task/runtime/task-runtime-bootstrap"
 MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"
@@ -143,6 +145,14 @@ class KanbanSyncError(TaskWorkspaceError):
         super().__init__(message)
         self.evidence = {"schema_version": KANBAN_SYNC_SCHEMA,
                          "status": "required", "error": message[:1024], **evidence}
+
+
+class ManagedAgentPreDispatchError(TaskWorkspaceError):
+    """Controller-bound failure proven to precede provider/model launch."""
+
+    def __init__(self, message: str, receipt: dict[str, str]):
+        super().__init__(message)
+        self.receipt = receipt
 
 
 class HydrationFailure(TaskWorkspaceError):
@@ -2208,7 +2218,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status", "doctor", "lease-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+            "start", "run", "recover-predispatch", "status", "hydrate", "preflight", "finish", "contract", "handoff",
             "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor",
             "lease-status", "lease-heartbeat", "lease-handoff", "lease-successor",
@@ -5932,27 +5942,65 @@ def _managed_worker_receipts(run_dir: Path, record: dict[str, Any],
     create = {"schema_version": "juno_managed_task_run_create.v1",
               "task_id": record["task_id"], "worktree": str(worktree.resolve()),
               "branch_ref": record["branch_ref"], "git_common_dir": common,
-              "expected_paths": admitted_paths,
-              "admission_kind": admission_kind,
+              "expected_paths": sorted(admitted_paths),
+              "expected_paths_sha256": stable_sha256(sorted(admitted_paths)),
+              "admission_kind": admission_kind, "workspace_role": "task",
+              "clean_tip_sha": git(worktree, "rev-parse", "HEAD"),
+              "creation_receipt_sha256": record["workspace_identity"]["create_receipt_sha256"],
               "workspace_manifest_identity": record["creation_receipt"]["manifest_identity"]}
     supersession_sha256 = record.get("admission_supersession_sha256")
     if supersession_sha256:
         create["admission_supersession_sha256"] = supersession_sha256
     # The verify receipt reports the hydration gate that actually ran before
     # this launch; passed=True is truthful because the gate raised otherwise.
-    verify = {"schema_version": "juno_managed_task_run_verify.v1",
-              "task_id": record["task_id"], "passed": True,
-              "tip_sha": git(worktree, "rev-parse", "HEAD"),
-              "hydration_manifest_sha256": hydration_gate.get("hydration_manifest_sha256"),
-              "dependency_evidence": hydration_gate.get("dependency_evidence", [])}
-    edit = {"schema_version": "juno_managed_task_run_edit_preflight.v1",
-            "task_id": record["task_id"], "passed": True,
-            "allowed_paths_sha256": stable_sha256(admitted_paths)}
     paths = (run_dir / "create-receipt.json", run_dir / "verify-receipt.json",
              run_dir / "edit-preflight-receipt.json")
-    for path, value in zip(paths, (create, verify, edit)):
-        lifecycle_runtime.atomic_json(path, value, exclusive=True)
+    create_ref = lifecycle_runtime.atomic_json(paths[0], create, exclusive=True)
+    verify = {"schema_version": "juno_managed_task_run_verify.v1",
+              "task_id": record["task_id"], "passed": True, "workspace_role": "task",
+              "tip_sha": git(worktree, "rev-parse", "HEAD"),
+              "create_receipt_sha256": create_ref["sha256"],
+              "hydration_manifest_sha256": hydration_gate.get("hydration_manifest_sha256"),
+              "dependency_evidence": hydration_gate.get("dependency_evidence", [])}
+    verify_ref = lifecycle_runtime.atomic_json(paths[1], verify, exclusive=True)
+    edit = {"schema_version": "juno_managed_task_run_edit_preflight.v1",
+            "task_id": record["task_id"], "passed": True, "workspace_role": "task",
+            "tip_sha": git(worktree, "rev-parse", "HEAD"),
+            "create_receipt_sha256": create_ref["sha256"],
+            "verify_receipt_sha256": verify_ref["sha256"],
+            "allowed_paths_sha256": stable_sha256(sorted(admitted_paths))}
+    lifecycle_runtime.atomic_json(paths[2], edit, exclusive=True)
     return paths
+
+
+def _predispatch_receipt(attempt_dir: Path, task_id: str, before_sha: str,
+                         completed: subprocess.CompletedProcess[str],
+                         receipt_paths: tuple[Path, Path, Path]) -> dict[str, str]:
+    """Seal proof that the canonical runner refused before provider dispatch."""
+    managed = attempt_dir / "managed-agent"
+    forbidden = [managed / name for name in
+                 ("launch.json", "receipt.json", "terminal.json", "active.json")]
+    if any(path.exists() for path in forbidden):
+        raise TaskWorkspaceError(
+            "managed task worker lacks a receipt but has ambiguous launch evidence; model budget is consumed")
+    inputs = []
+    for path in receipt_paths:
+        data = path.read_bytes()
+        inputs.append({"path": str(path.resolve()),
+                       "sha256": hashlib.sha256(data).hexdigest()})
+    payload = {
+        "schema_version": TASK_PREDISPATCH_RECOVERY_SCHEMA,
+        "classification": "controller_pre_dispatch",
+        "task_id": task_id, "before_sha": before_sha,
+        "provider_launch_observed": False, "model_budget_consumed": False,
+        "runner_exit_code": completed.returncode,
+        "stdout_sha256": hashlib.sha256(completed.stdout.encode()).hexdigest(),
+        "stderr_sha256": hashlib.sha256(completed.stderr.encode()).hexdigest(),
+        "stderr_tail": completed.stderr[-512:], "admission_receipts": inputs,
+        "safe_next_action": f"yy task run {task_id}",
+    }
+    return lifecycle_runtime.atomic_json(
+        attempt_dir / "controller-predispatch-receipt.json", payload, exclusive=True)
 
 
 def _launch_task_worker(controller: Path, task_id: str, record: dict[str, Any],
@@ -5992,7 +6040,10 @@ def _launch_task_worker(controller: Path, task_id: str, record: dict[str, Any],
     try:
         receipt = json.loads(receipt_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise TaskWorkspaceError("managed task worker has no immutable receipt") from exc
+        recovery = _predispatch_receipt(
+            run_dir, task_id, before, completed, (create, verify, edit))
+        raise ManagedAgentPreDispatchError(
+            "managed task worker was refused before provider dispatch", recovery) from exc
     reference = {"path": str(receipt_path.resolve()),
                  "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
     if completed.returncode:
@@ -6140,6 +6191,189 @@ def _ensure_run_fence(controller: Path, task_id: str) -> Optional[str]:
         raise TaskWorkspaceError(f"task run refused ({authority.code}): {authority.message}")
     successor = lease_successor(controller, task_id)
     return successor["lease_token"]
+
+
+def _verify_receipt_reference(reference: Any, label: str) -> dict[str, Any]:
+    if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(reference.get("sha256", "")))):
+        raise TaskWorkspaceError(f"{label} reference is malformed")
+    path = Path(str(reference["path"])).resolve()
+    try:
+        data = path.read_bytes()
+        value = json.loads(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskWorkspaceError(f"{label} is unavailable or malformed") from exc
+    if hashlib.sha256(data).hexdigest() != reference["sha256"]:
+        raise TaskWorkspaceError(f"{label} digest drifted")
+    return value
+
+
+def _release_predispatch_budget(journal: dict[str, Any], attempt: dict[str, Any],
+                                receipt: dict[str, str]) -> None:
+    if attempt.get("terminal_state") == "controller_pre_dispatch":
+        if attempt.get("predispatch_receipt") != receipt:
+            raise TaskWorkspaceError("pre-dispatch recovery receipt identity drifted")
+        return
+    if attempt.get("terminal_state") is not None:
+        raise TaskWorkspaceError("only a pending worker can release pre-dispatch budget")
+    if attempt.get("kind") not in {"implementation", "attributable_test_repair"}:
+        raise TaskWorkspaceError("pre-dispatch recovery worker kind is unsupported")
+    counter = ("implementation" if attempt["kind"] == "implementation"
+               else "attributable_test_repair")
+    if journal["attempts"].get(counter, 0) < 1 or journal["attempts"].get("worker_launches", 0) < 1:
+        raise TaskWorkspaceError("pre-dispatch recovery counters are inconsistent")
+    # worker_launches is the monotonic output-directory serial, not model
+    # budget. Keep it consumed so immutable attempt directories are never reused.
+    journal["attempts"][counter] -= 1
+    attempt.update({"terminal_state": "controller_pre_dispatch",
+                    "predispatch_receipt": receipt, "model_budget_consumed": False})
+
+
+def _pending_predispatch_receipt(record: dict[str, Any], attempt: dict[str, Any]) \
+        -> Optional[dict[str, str]]:
+    path = Path(str(attempt.get("attempt_dir", ""))) / "controller-predispatch-receipt.json"
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    try:
+        receipt = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise TaskWorkspaceError("controller pre-dispatch receipt is malformed") from exc
+    if (data != lifecycle_runtime.canonical_bytes(receipt)
+            or receipt.get("schema_version") != TASK_PREDISPATCH_RECOVERY_SCHEMA
+            or receipt.get("classification") != "controller_pre_dispatch"
+            or receipt.get("task_id") != record.get("task_id")
+            or receipt.get("before_sha") != attempt.get("before_sha")
+            or receipt.get("provider_launch_observed") is not False
+            or receipt.get("model_budget_consumed") is not False):
+        raise TaskWorkspaceError("controller pre-dispatch receipt identity mismatch")
+    worktree = Path(record["worktree"])
+    if (git(worktree, "rev-parse", "HEAD") != attempt.get("before_sha")
+            or git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+        raise TaskWorkspaceError("pre-dispatch recovery requires the exact clean unchanged worktree")
+    managed = path.parent / "managed-agent"
+    if any((managed / name).exists() for name in
+           ("launch.json", "receipt.json", "terminal.json", "active.json")):
+        raise TaskWorkspaceError("pre-dispatch recovery found ambiguous provider launch evidence")
+    references = receipt.get("admission_receipts")
+    if not isinstance(references, list) or len(references) != 3:
+        raise TaskWorkspaceError("pre-dispatch admission receipt binding is malformed")
+    for index, reference in enumerate(references):
+        _verify_receipt_reference(reference, f"pre-dispatch admission receipt {index + 1}")
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def recover_task_predispatch(controller: Path, task_id: str, run_id: str) -> dict[str, Any]:
+    """Release only the exact no-provider budget consumed by the historical defect."""
+    if not TASK_RE.fullmatch(task_id) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", run_id):
+        raise TaskWorkspaceError("unsafe task/run identity")
+    root = controller / TASK_RUN_ROOT / task_id
+    with lifecycle_runtime.lifecycle_claim(root / ".claim.lock"):
+        run_dir = root / run_id; journal_path = run_dir / "journal.json"
+        try:
+            journal = json.loads(journal_path.read_text())
+            latest = json.loads((root / "latest.json").read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError("pre-dispatch recovery run is unavailable") from exc
+        if (latest.get("run_id") != run_id or journal.get("run_id") != run_id
+                or journal.get("task_id") != task_id or journal.get("terminal") is not False):
+            raise TaskWorkspaceError("pre-dispatch recovery requires the exact active run")
+        with state_lock(controller):
+            record = read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("pre-dispatch recovery requires an exact WORKING task")
+        workers = journal.get("workers")
+        if not isinstance(workers, list) or len(workers) != 1:
+            raise TaskWorkspaceError("pre-dispatch recovery requires one exact worker attempt")
+        attempt = workers[0]
+        existing = attempt.get("predispatch_receipt")
+        if attempt.get("terminal_state") == "controller_pre_dispatch":
+            value = _verify_receipt_reference(existing, "pre-dispatch recovery receipt")
+            expected_path = Path(attempt["attempt_dir"]) / "controller-predispatch-receipt.json"
+            if (Path(str(existing["path"])).resolve() != expected_path.resolve()
+                    or value.get("schema_version") != TASK_PREDISPATCH_RECOVERY_SCHEMA
+                    or value.get("task_id") != task_id
+                    or value.get("provider_launch_observed") is not False
+                    or value.get("model_budget_consumed") is not False):
+                raise TaskWorkspaceError("pre-dispatch recovery receipt identity drifted")
+            return {"schema_version": TASK_PREDISPATCH_RECOVERY_SCHEMA,
+                    "task_id": task_id, "run_id": run_id, "outcome": "already_recovered",
+                    "receipt": existing, "next_command": f"yy task run {task_id}"}
+        receipt = _pending_predispatch_receipt(record, attempt)
+        if receipt is None:
+            # Compatibility seam for only the two preserved defect runs. Their
+            # historical bytes remain untouched; this command appends evidence.
+            exact_runs = {
+                "Vhc90c": "1787888756340564000-bcc587c7f20f6f21",
+                "0IttWR": "1787889795351197000-f1998918bd8a759c",
+            }
+            if exact_runs.get(task_id) != run_id:
+                raise TaskWorkspaceError("run has no receipt-bound controller pre-dispatch classification")
+            errors = [(event.get("boundary"), event.get("phase"), event.get("detail", {}).get("error"))
+                      for event in journal.get("events", []) if event.get("boundary") == "ERROR"]
+            if (not errors or errors[0] != ("ERROR", "task-run", "managed task worker has no immutable receipt")
+                    or any(error not in {"managed task worker has no immutable receipt",
+                        "implementation child was interrupted without terminal receipt; model budget is consumed"}
+                           for _boundary, _phase, error in errors)
+                    or attempt.get("kind") != "implementation" or attempt.get("index") != 1
+                    or journal.get("attempts") != {"implementation": 1, "decision_resumes": 0,
+                        "attributable_test_repair": 0, "worker_launches": 1}):
+                raise TaskWorkspaceError("historical pre-dispatch journal shape drifted")
+            worktree = Path(record["worktree"]); before = attempt.get("before_sha")
+            create_path = Path(attempt["attempt_dir"]) / "create-receipt.json"
+            verify_path = create_path.with_name("verify-receipt.json")
+            edit_path = create_path.with_name("edit-preflight-receipt.json")
+            values = []
+            refs = []
+            for path in (create_path, verify_path, edit_path):
+                data = path.read_bytes(); value = json.loads(data)
+                if data != lifecycle_runtime.canonical_bytes(value):
+                    raise TaskWorkspaceError("historical admission receipt bytes drifted")
+                values.append(value); refs.append({"path": str(path.resolve()),
+                    "sha256": hashlib.sha256(data).hexdigest()})
+            create, verify, edit = values
+            common = str(Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve())
+            admitted, _generated, kind = effective_admission(record)
+            if (kind != "historical_creation" or create.get("admission_kind") != kind
+                    or create.get("task_id") != task_id or Path(create.get("worktree", "")).resolve() != worktree.resolve()
+                    or create.get("branch_ref") != record.get("branch_ref")
+                    or create.get("git_common_dir") != common
+                    or create.get("expected_paths") != admitted
+                    or create.get("workspace_manifest_identity") != record["creation_receipt"].get("manifest_identity")
+                    or verify.get("schema_version") != "juno_managed_task_run_verify.v1"
+                    or verify.get("task_id") != task_id or verify.get("passed") is not True
+                    or verify.get("tip_sha") != before
+                    or verify.get("hydration_manifest_sha256") != record.get("hydration", {}).get("manifest_sha256")
+                    or edit != {"schema_version": "juno_managed_task_run_edit_preflight.v1",
+                                "task_id": task_id, "passed": True,
+                                "allowed_paths_sha256": stable_sha256(admitted)}
+                    or git(worktree, "config", "--worktree", "--get", "juno.workspace.role", check=False) != "task"
+                    or git(worktree, "config", "--worktree", "--get", "juno.workspace.taskId", check=False) != task_id
+                    or git(worktree, "symbolic-ref", "-q", "HEAD") != record.get("branch_ref")
+                    or git(worktree, "rev-parse", "HEAD") != before
+                    or git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+                raise TaskWorkspaceError("historical pre-dispatch task/receipt/worktree identity drifted")
+            managed = Path(attempt["attempt_dir"]) / "managed-agent"
+            if any((managed / name).exists() for name in
+                   ("launch.json", "receipt.json", "terminal.json", "active.json")):
+                raise TaskWorkspaceError("historical pre-dispatch run has ambiguous launch evidence")
+            payload = {"schema_version": TASK_PREDISPATCH_RECOVERY_SCHEMA,
+                       "classification": "controller_pre_dispatch", "legacy_shape": "historical_creation_refusal_v1",
+                       "task_id": task_id, "run_id": run_id, "before_sha": before,
+                       "source_journal_sha256": hashlib.sha256(journal_path.read_bytes()).hexdigest(),
+                       "provider_launch_observed": False, "model_budget_consumed": False,
+                       "admission_receipts": refs, "safe_next_action": f"yy task run {task_id}"}
+            receipt = lifecycle_runtime.atomic_json(
+                Path(attempt["attempt_dir"]) / "controller-predispatch-receipt.json",
+                payload, exclusive=True)
+        _release_predispatch_budget(journal, attempt, receipt)
+        lifecycle_runtime.lifecycle_checkpoint(
+            journal_path, journal, phase=f"implementation-{attempt['index']}", boundary="RECOVERED",
+            detail={"classification": "controller_pre_dispatch", "receipt": receipt,
+                    "model_budget_consumed": False})
+        return {"schema_version": TASK_PREDISPATCH_RECOVERY_SCHEMA,
+                "task_id": task_id, "run_id": run_id, "outcome": "recovered",
+                "receipt": receipt, "next_command": f"yy task run {task_id}"}
 
 
 def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
@@ -6364,6 +6598,14 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 pending = next((item for item in reversed(journal["workers"])
                                 if item.get("kind") == "implementation"
                                 and item.get("terminal_state") is None), None)
+                predispatch = _pending_predispatch_receipt(state_record, pending) if pending else None
+                if pending and predispatch is not None:
+                    _release_predispatch_budget(journal, pending, predispatch)
+                    lifecycle_runtime.lifecycle_checkpoint(
+                        journal_path, journal, phase=f"implementation-{pending['index']}",
+                        boundary="RECOVERED", detail={"classification": "controller_pre_dispatch",
+                            "receipt": predispatch, "model_budget_consumed": False})
+                    pending = None
                 worker = _recover_task_worker(state_record, pending) if pending else None
                 if pending and worker is None:
                     raise TaskWorkspaceError(
@@ -6396,11 +6638,19 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         journal_path, journal, phase=f"implementation-{index}", boundary="PRE",
                         detail={key: attempt[key] for key in
                                 ("attempt_dir", "task_revision_sha256", "before_sha")})
-                    worker = _launch_task_worker(
-                        controller, task_id, state_record, attempt_dir,
-                        Path(journal["frozen_prompts"][0]["path"]), repair=False,
-                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
-                        hydration_gate=hydration_gate)
+                    try:
+                        worker = _launch_task_worker(
+                            controller, task_id, state_record, attempt_dir,
+                            Path(journal["frozen_prompts"][0]["path"]), repair=False,
+                            timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                            hydration_gate=hydration_gate)
+                    except ManagedAgentPreDispatchError as exc:
+                        _release_predispatch_budget(journal, attempt, exc.receipt)
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase=f"implementation-{index}", boundary="RECOVERED",
+                            detail={"classification": "controller_pre_dispatch",
+                                    "receipt": exc.receipt, "model_budget_consumed": False})
+                        raise
                 target = pending if pending else journal["workers"][-1]
                 target.update(worker)
                 lifecycle_runtime.lifecycle_checkpoint(
@@ -6440,8 +6690,19 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         journal_path, journal, phase="finish-initial", boundary="POST",
                         detail={"outcome": "queued", "tip_sha": queued.get("tip_sha")})
             if initial_error is not None:
-                repair = next((item for item in journal["workers"]
+                repair = next((item for item in reversed(journal["workers"])
                                if item.get("kind") == "attributable_test_repair"), None)
+                if repair and repair.get("terminal_state") == "controller_pre_dispatch":
+                    repair = None
+                if repair and not repair.get("terminal_state"):
+                    repair_predispatch = _pending_predispatch_receipt(state_record, repair)
+                    if repair_predispatch is not None:
+                        _release_predispatch_budget(journal, repair, repair_predispatch)
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase=f"attributable-repair-{repair['index']}",
+                            boundary="RECOVERED", detail={"classification": "controller_pre_dispatch",
+                                "receipt": repair_predispatch, "model_budget_consumed": False})
+                        repair = None
                 repaired = _recover_task_worker(state_record, repair) if repair and not repair.get("terminal_state") else repair
                 if repaired is None:
                     if journal["attempts"]["attributable_test_repair"] >= int(
@@ -6469,12 +6730,20 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                     lifecycle_runtime.lifecycle_checkpoint(
                         journal_path, journal, phase=f"attributable-repair-{index}", boundary="PRE",
                         detail={"attempt_dir": repair["attempt_dir"], "before_sha": repair["before_sha"]})
-                    repaired = _launch_task_worker(
-                        controller, task_id, state_record, attempt_dir,
-                        Path(journal["frozen_prompts"][1]["path"]), repair=True,
-                        timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
-                        context_bytes=initial_error.encode("utf-8", errors="replace"),
-                        hydration_gate=repair_gate)
+                    try:
+                        repaired = _launch_task_worker(
+                            controller, task_id, state_record, attempt_dir,
+                            Path(journal["frozen_prompts"][1]["path"]), repair=True,
+                            timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                            context_bytes=initial_error.encode("utf-8", errors="replace"),
+                            hydration_gate=repair_gate)
+                    except ManagedAgentPreDispatchError as exc:
+                        _release_predispatch_budget(journal, repair, exc.receipt)
+                        lifecycle_runtime.lifecycle_checkpoint(
+                            journal_path, journal, phase=f"attributable-repair-{index}", boundary="RECOVERED",
+                            detail={"classification": "controller_pre_dispatch",
+                                    "receipt": exc.receipt, "model_budget_consumed": False})
+                        raise
                 assert repair is not None
                 if isinstance(repaired, dict) and "terminal_state" in repaired:
                     repair.update(repaired)
@@ -6944,12 +7213,13 @@ def lease_release(controller: Path, task_id: str, lease_token: Optional[str]) ->
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "run", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+        "start", "run", "recover-predispatch", "status", "hydrate", "preflight", "finish", "contract", "handoff",
         "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap",
         "sync", "doctor", "lease-status", "lease-heartbeat", "lease-handoff",
         "lease-successor", "lease-revoke", "lease-release"))
     value.add_argument("--task")
+    value.add_argument("--run-id", help="exact active task-run identity for pre-dispatch recovery")
     value.add_argument("--child",
                        help="admitted ordered umbrella child task id for child-checkpoint")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -6989,6 +7259,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise TaskWorkspaceError(f"task {args.operation} requires --task")
             if args.operation != "start" and args.path:
                 raise TaskWorkspaceError("--path is supported only for task start")
+            if bool(args.run_id) != (args.operation == "recover-predispatch"):
+                raise TaskWorkspaceError("--run-id is required only for task recover-predispatch")
             if args.operation != "child-checkpoint" and args.child:
                 raise TaskWorkspaceError("--child is supported only for task child-checkpoint")
             if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
@@ -7060,6 +7332,8 @@ def main(argv: list[str] | None = None) -> int:
                         "admission/recovery options are unsupported for this operation")
                 if args.operation == "run":
                     result = managed_task_run(controller, args.task)
+                elif args.operation == "recover-predispatch":
+                    result = recover_task_predispatch(controller, args.task, args.run_id)
                 elif args.operation == "contract":
                     result = preimplementation_contract(controller, args.task)
                 elif args.operation == "handoff":
