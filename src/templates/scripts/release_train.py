@@ -1478,6 +1478,7 @@ PHASE1_SUITE_TESTS = (
     "ReleaseTrainTests.test_required_failure_pauses_and_shadow_is_read_only",
     "ReleaseTrainTests.test_recovered_worker_receipt_requires_exact_failed_artifacts",
     "ReleaseTrainTests.test_lean_target_drift_refuses_release",
+    "ReleaseTrainTests.test_phase1_substitution_matrix_is_complete_and_receipt_bound",
 )
 PHASE1_SUITE_MANIFEST = {
     "schema_version": PHASE1_SUITE_MANIFEST_SCHEMA,

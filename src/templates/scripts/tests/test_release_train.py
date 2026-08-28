@@ -744,8 +744,8 @@ raise SystemExit(2)
                       "evaluation": self.root / ".juno_task/runtime/watch-runs" /
                       acceptance_record["run_id"]}
         matrix = [(role, field) for role in role_roots for field in ("argv", "cwd", "footer")]
-        self.assertEqual({"proof", "suite", "evaluation"}, {role for role, _ in matrix})
-        self.assertIn(("suite", "cwd"), matrix); self.assertIn(("suite", "footer"), matrix)
+        self.assertEqual({(role, field) for role in ("proof", "suite", "evaluation")
+                          for field in ("argv", "cwd", "footer")}, set(matrix))
         for role, field in matrix:
             with self.subTest(role=role, field=field):
                 role_root = role_roots[role]
@@ -789,8 +789,124 @@ raise SystemExit(2)
         self.assertEqual({"proof", "suite", "evaluation"},
                          set(projection["stage_watch_run_ids"]))
         self.assertEqual("V9vE0X", projection["task_id"])
+        final_receipt = json.loads(Path(projection["receipt"]["path"]).read_text())
+        self.assertEqual(list(runtime.PHASE1_SUITE_TESTS),
+                         final_receipt["checked_closure"]["suite_manifest"]["tests"])
         source = (SCRIPTS / "release_train.py").read_text()
         self.assertEqual(1, source.count("def phase1_acceptance_receipt("))
+
+    def test_phase1_substitution_matrix_is_complete_and_receipt_bound(self) -> None:
+        """Exercise the non-recursive role/environment matrix named by the suite manifest."""
+        test_path = Path(__file__).resolve()
+        discovered = runtime._phase1_discovered_tests(test_path)
+        self.assertEqual(sorted([*runtime.PHASE1_SUITE_TESTS, runtime.PHASE1_ORCHESTRATION_TEST]),
+                         discovered)
+        self.assertIn(
+            "ReleaseTrainTests.test_phase1_substitution_matrix_is_complete_and_receipt_bound",
+            runtime.PHASE1_SUITE_MANIFEST["tests"])
+        self.assertEqual([runtime.PHASE1_ORCHESTRATION_TEST],
+                         runtime.PHASE1_SUITE_MANIFEST["excluded_recursive_tests"])
+
+        required_matrix = {(role, field) for role in ("proof", "suite", "evaluation")
+                           for field in ("argv", "cwd", "footer")}
+        exercised: set[tuple[str, str]] = set()
+        expected_argv = [str(Path(sys.executable).resolve()), "producer.py", "--structured"]
+        for role, field in sorted(required_matrix):
+            with self.subTest(role=role, field=field):
+                run_id = f"matrix-{role}-{field}"
+                run_root = self.root / ".juno_task/runtime/watch-runs" / run_id
+                run_root.mkdir(parents=True, exist_ok=True)
+                footer = ("schema_version=juno.watch-footer.v1\nexit_code=0\n"
+                          "completed_utc=2026-08-28T00:00:00Z\n")
+                (run_root / "footer").write_text(footer)
+                (run_root / "combined.log").write_text("structured PASS\n")
+                record = {"run_id": run_id, "state": "COMPLETED", "exit_code": 0,
+                    "cwd": str(self.root), "argv_sha256": hashlib.sha256(
+                        json.dumps(expected_argv, separators=(",", ":")).encode()).hexdigest()}
+                (run_root / "run.json").write_text(json.dumps(record) + "\n")
+                reference = {"run_id": run_id,
+                    "footer_sha256": hashlib.sha256(footer.encode()).hexdigest()}
+                self.assertEqual([], runtime._phase1_watch_correlation(
+                    self.root, reference, expected_argv))
+                if field == "footer":
+                    (run_root / "footer").write_text(
+                        "schema_version=juno.watch-footer.v1\nexit_code=1\n")
+                else:
+                    record["argv_sha256" if field == "argv" else "cwd"] = (
+                        "0" * 64 if field == "argv" else str(self.root / "substituted-cwd"))
+                    (run_root / "run.json").write_text(json.dumps(record) + "\n")
+                self.assertIn("watch.identity", runtime._phase1_watch_correlation(
+                    self.root, reference, expected_argv))
+                exercised.add((role, field))
+        self.assertEqual(required_matrix, exercised)
+
+        required_suite_substitutions = {
+            "help", "arbitrary_success", "forged_result", "result_count", "argv", "cwd",
+            "runtime", "footer", "environment", "authority_path", "manifest_membership",
+        }
+        suite_contract = {"producer_argv": expected_argv, "suite_command": ["python", "tests"],
+            "suite_cwd": str(self.root / "tests"), "runtime": {"executable_sha256": "a" * 64},
+            "result": {"outcome": "PASS", "test_count": len(runtime.PHASE1_SUITE_TESTS),
+                       "exit_code": 0},
+            "suite_manifest": runtime.PHASE1_SUITE_MANIFEST,
+            "observed_environment": {key: "bound" for key in runtime.PHASE1_ENV_KEYS}}
+        suite_substitutions = {
+            "help": {**suite_contract, "producer_argv": [*expected_argv[:2], "--help"]},
+            "arbitrary_success": {**suite_contract, "producer_argv": ["true"]},
+            "forged_result": {**suite_contract, "result": {"outcome": "PASS"}},
+            "result_count": {**suite_contract, "result": {
+                **suite_contract["result"], "test_count": len(runtime.PHASE1_SUITE_TESTS) - 1}},
+            "argv": {**suite_contract, "producer_argv": ["substituted"]},
+            "cwd": {**suite_contract, "suite_cwd": "/substituted"},
+            "runtime": {**suite_contract, "runtime": {"executable_sha256": "0" * 64}},
+            "footer": {**suite_contract, "footer_sha256": "0" * 64},
+            "environment": {**suite_contract, "observed_environment": {}},
+            "authority_path": {**suite_contract, "authority": {"path": "/substituted"}},
+            "manifest_membership": {**suite_contract, "suite_manifest": {
+                **runtime.PHASE1_SUITE_MANIFEST,
+                "tests": runtime.PHASE1_SUITE_MANIFEST["tests"][:-1]}},
+        }
+        self.assertEqual(required_suite_substitutions, set(suite_substitutions))
+        for name, candidate in suite_substitutions.items():
+            with self.subTest(suite_substitution=name):
+                self.assertNotEqual(runtime.digest(suite_contract), runtime.digest(candidate))
+
+        output = self.root / ".juno_task/runtime/phase-evidence/V9vE0X/matrix.json"
+        ambient = {"GIT_CONFIG_GLOBAL": "/ambient/gitconfig", "PYTHONPATH": "/ambient/python",
+                   "LC_ALL": "en_US.UTF-8", "TMPDIR": "/ambient/tmp",
+                   "YYLO_SECRET_TOKEN": "must-not-cross"}
+        with mock.patch.dict(os.environ, ambient, clear=False):
+            environment = runtime._phase1_suite_environment(self.root, output)
+        self.assertEqual(set(runtime.PHASE1_ENV_KEYS), set(environment))
+        self.assertFalse(set(environment) & {"PYTHONPATH", "YYLO_SECRET_TOKEN"})
+        self.assertEqual("/dev/null", environment["GIT_CONFIG_GLOBAL"])
+        self.assertEqual("C", environment["LC_ALL"])
+        self.assertNotEqual("/ambient/tmp", environment["TMPDIR"])
+        environment_substitutions = {
+            "missing_required": {key: value for key, value in environment.items()
+                                 if key != "PYTHONHASHSEED"},
+            "git": {**environment, "GIT_CONFIG_GLOBAL": "/substituted"},
+            "python": {**environment, "PYTHONHASHSEED": "random"},
+            "locale": {**environment, "LC_ALL": "en_US.UTF-8"},
+            "temp": {**environment, "TMPDIR": "/substituted"},
+            "configuration": {**environment, "JUNO_TASK_ROOT": "/substituted"},
+            "secret_extra": {**environment, "YYLO_SECRET_TOKEN": "redacted"},
+        }
+        for name, candidate in environment_substitutions.items():
+            with self.subTest(environment=name):
+                self.assertNotEqual(environment, candidate)
+                self.assertNotEqual(runtime.digest(environment), runtime.digest(candidate))
+
+        self.prepare_serial_conflict_epoch(preserve_runtime=True)
+        declaration_ref, authority_ref = runtime._phase1_publish_declaration(
+            self.root, "V9vE0X", self.declaration)
+        canonical_root = self.root / ".juno_task/runtime/phase-evidence/V9vE0X/inputs"
+        self.assertEqual(canonical_root, Path(declaration_ref["path"]).parent)
+        self.assertEqual(canonical_root, Path(authority_ref["path"]).parent)
+        external_authority = self.root / "external-authority.json"
+        external_authority.write_bytes(Path(authority_ref["path"]).read_bytes())
+        substituted = {"path": str(external_authority), "sha256": authority_ref["sha256"]}
+        self.assertNotEqual(authority_ref, substituted)
 
     def test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair(self) -> None:
         configured = os.environ.get("YYLO_RC_EVIDENCE_CONTROLLER")
