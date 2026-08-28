@@ -2288,13 +2288,38 @@ def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
             if resolve_bound_managed_generation(checkout, state, member, conflicts):
                 ordering_reason = "receipt_bound_cumulative_managed_generation"
             else:
-                packet = {"schema_version": "juno_release_epoch_conflict.v1", "task_id": member["task_id"],
-                      "base_sha": state["seal"]["base_sha"], "ours_sha": before,
-                      "theirs_sha": member["tip_sha"], "conflict_paths": sorted(conflicts),
-                      "admitted_paths": sorted({path for row in active_members(state) for path in row["changed_paths"]}),
+                manifest = state["seal"].get("conflict_manifest") or {}
+                authority = manifest.get("authority_binding")
+                logical_sets = ((authority or {}).get("document") or {}).get("logical_sets")
+                if (not isinstance(logical_sets, list) or len(logical_sets) != 1
+                        or not isinstance(logical_sets[0], dict)):
+                    state["operator_packet"] = {"reason_code": "repair.authority_missing",
+                        "task_id": member["task_id"], "conflict_paths": conflicts}
+                    return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_AUTHORITY_REFUSED",
+                                      state["operator_packet"])
+                logical_set = logical_sets[0]
+                admitted_paths = sorted(logical_set.get("permitted_paths") or [])
+                ordered_tasks = logical_set.get("ordered_task_ids") or []
+                if (member["task_id"] not in ordered_tasks
+                        or not set(conflicts).issubset(set(admitted_paths))):
+                    state["operator_packet"] = {"reason_code": "repair.outside_logical_set",
+                        "task_id": member["task_id"], "conflict_paths": conflicts}
+                    return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_AUTHORITY_REFUSED",
+                                      state["operator_packet"])
+                validation = task_runtime.load_config(controller)["full_suite_validation"]
+                packet = {"schema_version": "juno_release_epoch_conflict.v2",
+                      "task_id": member["task_id"], "base_sha": state["seal"]["base_sha"],
+                      "ours_sha": before, "theirs_sha": member["tip_sha"],
+                      "conflict_paths": sorted(conflicts), "admitted_paths": admitted_paths,
                       "dependency_edges": state["seal"]["dependency_edges"],
-                          "requirements_sha256": member["task_sha256"], "repair_budget": 1,
-                          "authority": "bounded_authorization_neutral_repair_only"}
+                      "requirements_sha256": member["task_sha256"], "repair_budget": 1,
+                      "authority": "declaration_bound_authorization_neutral_logical_set",
+                      "logical_conflict_set": {"set_id": logical_set.get("set_id"),
+                          "ordered_task_ids": ordered_tasks, "permitted_paths": admitted_paths,
+                          "classification": logical_set.get("classification"),
+                          "authority_sha256": authority.get("sha256")},
+                      "validation_root": {"cwd": validation["cwd"],
+                          "timeout_seconds": validation.get("timeout_seconds", 3600)}}
                 state["conflict"] = packet
                 save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
                 return state
@@ -2577,12 +2602,23 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
             or receipt.get("mode") != "worker" or receipt.get("state") != "succeeded"):
         raise ReleaseTrainError("conflict repair requires one successful canonical managed-worker receipt")
     validate_recovered_worker_receipt(receipt)
+    packet = state["conflict"]
+    identity = receipt.get("identity")
+    logical_set = packet.get("logical_conflict_set")
+    if (not isinstance(identity, dict)
+            or identity.get("admission_kind") != "sealed_release_epoch_conflict"
+            or identity.get("epoch_id") != state.get("epoch_id")
+            or identity.get("task_id") != packet.get("task_id")
+            or identity.get("ours_sha") != packet.get("ours_sha")
+            or identity.get("theirs_sha") != packet.get("theirs_sha")
+            or identity.get("conflict_sha256") != digest(packet)
+            or identity.get("logical_conflict_set") != logical_set):
+        raise ReleaseTrainError("managed repair logical conflict-set identity mismatch")
     checkout = Path(state["composition"]["worktree"])
     if git(checkout, "diff", "--name-only", "--diff-filter=U"):
         raise ReleaseTrainError("managed repair left unresolved conflicts")
     head = git(checkout, "rev-parse", "HEAD")
     parents = git(checkout, "show", "-s", "--format=%P", head).split()
-    packet = state["conflict"]
     if packet["ours_sha"] not in parents or packet["theirs_sha"] not in parents:
         raise ReleaseTrainError("managed repair did not produce the required both-parent repair commit")
     changed = set(git(checkout, "diff", "--name-only", f"{packet['ours_sha']}..{head}").splitlines())
@@ -2591,9 +2627,12 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
         state["operator_packet"] = {**packet, "reason_code": "repair.out_of_scope",
                                     "unexpected_paths": sorted(changed - admitted)}
         return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_ESCALATED", state["operator_packet"])
-    reference = {"path": str(receipt_path.expanduser().resolve()), "sha256": file_hash(receipt_path),
+    reference = {"schema_version": "juno_release_epoch_grouped_repair.v1",
+                 "path": str(receipt_path.expanduser().resolve()), "sha256": file_hash(receipt_path),
                  "session_id": receipt.get("session_id"), "repair_commit": head,
-                 "changed_paths": sorted(changed), "delta_review": "required"}
+                 "changed_paths": sorted(changed), "logical_conflict_set": logical_set,
+                 "model_sessions": 1, "immutable_receipts": 1,
+                 "delta_review": "one_scoped_delta_review_required"}
     state["conflict_repair"] = reference
     member = next(row for row in state["seal"]["members"] if row["task_id"] == packet["task_id"])
     state["composition"]["commits"].append({"task_id": member["task_id"],
