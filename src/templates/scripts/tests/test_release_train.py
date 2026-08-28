@@ -510,12 +510,9 @@ raise SystemExit(2)
         tree_sha = run(self.root, "git", "rev-parse", "HEAD^{tree}")
         script_path = self.root / ".juno_task/scripts/release_train.py"
         executable = str(Path(sys.executable).resolve())
-        declaration_sha = hashlib.sha256(self.declaration.read_bytes()).hexdigest()
-        fixture_sha = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
-        declaration_ref = {"path": str(evidence_root / "inputs" / f"declaration-{declaration_sha}.json"),
-                           "sha256": declaration_sha}
-        fixture_ref = {"path": str(evidence_root / "inputs" / f"fixture-{fixture_sha}.json"),
-                       "sha256": fixture_sha}
+        declaration_ref, authority_ref = runtime._phase1_publish_declaration(
+            self.root, "V9vE0X", self.declaration)
+        fixture_ref = runtime._phase1_publish_input(self.root, "V9vE0X", "fixture", fixture_path)
         input_identity = runtime.phase1_input_identity("V9vE0X", self.root, tip_sha, tree_sha,
             declaration_ref, fixture_ref, executable, script_path)
         proof_path = evidence_root / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json'
@@ -556,35 +553,45 @@ raise SystemExit(2)
             root = self.root / ".juno_task/runtime/watch-runs" / str(record["run_id"])
             return {"run_id": str(record["run_id"]),
                     "footer_sha256": hashlib.sha256((root / "footer").read_bytes()).hexdigest()}
-        # Until nested watch routing is independently delivered, the suite producer is
-        # explicitly rooted at the canonical controller and forwards that identity.
-        suite_command = [executable, str(script_path), "--help"]
+        # The watched producer executes the exact committed focused suite and owns all
+        # result/runtime/environment fields. The closure carries references only.
         suite_env = {**watch_env, "JUNO_TASK_ROOT": str(self.root),
                      "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict"}
-        suite_watch = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *suite_command],
+        suite_identity = runtime.digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
+            "test_blob_sha256": runtime._git_blob_hash(self.root, tip_sha,
+                runtime.PHASE1_COMMITTED_PATHS[1]), "tests": list(runtime.PHASE1_SUITE_TESTS)})
+        suite_path = evidence_root / f"phase1-suite-{suite_identity}.json"
+        suite_command = runtime._phase1_suite_argv(self.root, suite_path)
+        suite_watch = subprocess.run([yy, "watch", "exec", "--timeout", "120", "--", *suite_command],
             cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         suite_records = [json.loads(line) for line in suite_watch.stdout.splitlines()
                          if line.startswith("{") and line.endswith("}")]
         suite_record = next(row for row in reversed(suite_records)
                             if row.get("schema_version") == "juno.watch-run.v1")
-        self.assertEqual(0, suite_watch.returncode, suite_watch.stderr + suite_watch.stdout)
         suite_root = self.root / ".juno_task/runtime/watch-runs" / suite_record["run_id"]
-        self.assertTrue(suite_root.is_dir())
+        self.assertEqual(0, suite_watch.returncode, suite_watch.stderr + suite_watch.stdout
+                         + ((suite_root / "combined.log").read_text() if suite_root.is_dir() else ""))
+        suite_receipt = json.loads(suite_path.read_text())
+        self.assertEqual("PASS", suite_receipt["decision"])
+        self.assertEqual(len(runtime.PHASE1_SUITE_TESTS), suite_receipt["result"]["test_count"])
+        self.assertEqual(set(runtime.PHASE1_ENV_ALLOWLIST), set(suite_receipt["observed_environment"]))
         self.assertFalse((self.root / ".juno_task/scripts/tests/.juno_task/runtime/watch-runs"
                           / suite_record["run_id"]).exists())
-        suite_output_sha = hashlib.sha256((suite_root / "combined.log").read_bytes()).hexdigest()
         closure = {"schema_version": runtime.PHASE1_CLOSURE_SCHEMA, "proof": ref(proof_path),
             "watch": {"run_id": run_id, "footer_sha256": hashlib.sha256(footer.encode()).hexdigest()},
-            "suite": {"watch": watch_ref(suite_record), "argv": suite_command,
-                "candidate_tip": tip_sha,
-                "test_blob_sha256": runtime._git_blob_hash(self.root, tip_sha,
-                    runtime.PHASE1_COMMITTED_PATHS[1]),
-                "runtime": runtime._phase1_runtime_identity(executable, script_path),
-                "environment_keys": [],
-                "result": {"outcome": "PASS", "test_count": 1,
-                           "output_sha256": suite_output_sha}}}
+            "suite": {"watch": watch_ref(suite_record), "receipt": ref(suite_path)}}
+        checked = {"proof_sha256": proof["proof_sha256"],
+            "input_sha256": proof["input_identity"]["input_sha256"],
+            "declaration": proof["declaration"], "authority": proof["authority"],
+            "fixture": proof["fixture"], "manifest_sha256": proof["manifest"]["manifest_sha256"],
+            "proof_watch": closure["watch"], "suite_receipt_sha256": suite_receipt["receipt_sha256"],
+            "suite_watch": closure["suite"]["watch"], "suite_argv": suite_receipt["producer_argv"],
+            "suite_runtime": suite_receipt["runtime"],
+            "suite_environment_sha256": suite_receipt["environment_sha256"],
+            "suite_result": suite_receipt["result"]}
+        closure_sha = runtime.digest(checked)
         closure_path = evidence_root / "closure.json"; closure_path.write_text(runtime.canonical(closure) + "\n")
-        evaluation = evidence_root / f'phase1-evaluation-{proof["proof_sha256"]}.json'
+        evaluation = evidence_root / f"phase1-evaluation-{closure_sha}.json"
         accept = [executable, str(script_path), "--controller", str(self.root),
             "phase1-accept", "--closure", str(closure_path), "--output", str(evaluation)]
         acceptance_watch = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *accept],
@@ -600,12 +607,60 @@ raise SystemExit(2)
                          + (acceptance_log.read_text() if acceptance_log.is_file() else ""))
         evaluation_receipt = json.loads(evaluation.read_text())
         self.assertEqual("PASS", evaluation_receipt["decision"], evaluation_receipt)
-        output = evidence_root / f'phase1-acceptance-{proof["input_identity"]["input_sha256"]}.json'
+        output = evidence_root / f"phase1-acceptance-{closure_sha}.json"
         receipt_result = runtime.phase1_finalize_acceptance(
             self.root, ref(evaluation), watch_ref(acceptance_record), output)
         self.assertEqual("PASS", receipt_result["decision"], receipt_result)
         self.assertEqual(receipt_result, runtime.phase1_finalize_acceptance(
             self.root, ref(evaluation), watch_ref(acceptance_record), output))
+
+        # An unrelated successful command cannot substitute for the suite even with
+        # caller-forged PASS/count/blob/environment fields.
+        help_command = [executable, str(script_path), "--help"]
+        help_watch = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *help_command],
+            cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        help_records = [json.loads(line) for line in help_watch.stdout.splitlines()
+                        if line.startswith("{") and line.endswith("}")]
+        help_record = next(row for row in reversed(help_records)
+                           if row.get("schema_version") == "juno.watch-run.v1")
+        self.assertEqual(0, help_watch.returncode)
+        forged_suite = json.loads(suite_path.read_text())
+        forged_suite["producer_argv"] = help_command
+        forged_suite["result"] = {"outcome": "PASS", "test_count": len(runtime.PHASE1_SUITE_TESTS),
+            "exit_code": 0, "output_sha256": hashlib.sha256(
+                (self.root / ".juno_task/runtime/watch-runs" / help_record["run_id"] /
+                 "combined.log").read_bytes()).hexdigest()}
+        forged_body = {key: value for key, value in forged_suite.items() if key != "receipt_sha256"}
+        forged_suite["receipt_sha256"] = runtime.digest(forged_body)
+        forged_suite_path = evidence_root / "forged-suite.json"
+        forged_suite_path.write_text(runtime.canonical(forged_suite) + "\n")
+        forged_closure = {**closure, "suite": {"watch": watch_ref(help_record),
+                                                "receipt": ref(forged_suite_path)}}
+        forged_closure_path = evidence_root / "forged-closure.json"
+        forged_closure_path.write_text(runtime.canonical(forged_closure) + "\n")
+        rejected = runtime.phase1_acceptance_receipt(self.root, forged_closure_path, evaluation, accept)
+        self.assertEqual("FAIL", rejected["decision"])
+        self.assertIn("suite.closure", rejected["blocking_reason_codes"])
+
+        original_suite = suite_path.read_bytes()
+        substitutions = {
+            "runtime": {**suite_receipt, "runtime": {**suite_receipt["runtime"],
+                "executable_sha256": "0" * 64}},
+            "environment": {**suite_receipt, "observed_environment": {
+                **suite_receipt["observed_environment"], "UNAPPROVED": "1"}},
+            "argv": {**suite_receipt, "producer_argv": help_command},
+        }
+        for name, candidate in substitutions.items():
+            with self.subTest(substitution=name):
+                candidate_body = {key: value for key, value in candidate.items()
+                                  if key != "receipt_sha256"}
+                candidate["receipt_sha256"] = runtime.digest(candidate_body)
+                suite_path.write_text(runtime.canonical(candidate) + "\n")
+                refused = runtime.phase1_acceptance_receipt(
+                    self.root, closure_path, evaluation, accept)
+                self.assertEqual("FAIL", refused["decision"])
+                self.assertIn("suite.closure", refused["blocking_reason_codes"])
+        suite_path.write_bytes(original_suite)
         original_proof = proof_path.read_bytes(); original_closure = closure_path.read_bytes()
         forged = json.loads(original_proof); forged["manifest"]["operator_state"] = "FEASIBLE_FORGED"
         forged_body = {key: value for key, value in forged.items() if key != "proof_sha256"}
@@ -616,6 +671,26 @@ raise SystemExit(2)
             self.root, closure_path, evaluation, accept)
         self.assertEqual("FAIL", replayed["decision"])
         self.assertIn("manifest.replay", replayed["blocking_reason_codes"])
+        proof_path.write_bytes(original_proof); closure_path.write_bytes(original_closure)
+
+        external_authority = evidence_root / "external-authority.json"
+        external_authority.write_bytes(Path(proof["authority"]["path"]).read_bytes())
+        substituted_declaration = json.loads(Path(proof["declaration"]["path"]).read_text())
+        substituted_declaration["conflict_authority"] = {
+            "path": str(external_authority), "sha256": proof["authority"]["sha256"]}
+        substituted_declaration_path = evidence_root / "substituted-declaration.json"
+        substituted_declaration_path.write_text(runtime.canonical(substituted_declaration) + "\n")
+        substituted_proof = json.loads(original_proof)
+        substituted_proof["declaration"] = ref(substituted_declaration_path)
+        substituted_body = {key: value for key, value in substituted_proof.items()
+                            if key != "proof_sha256"}
+        substituted_proof["proof_sha256"] = runtime.digest(substituted_body)
+        proof_path.write_text(runtime.canonical(substituted_proof) + "\n")
+        closure["proof"] = ref(proof_path); closure_path.write_text(runtime.canonical(closure) + "\n")
+        authority_refused = runtime.phase1_acceptance_receipt(
+            self.root, closure_path, evaluation, accept)
+        self.assertEqual("FAIL", authority_refused["decision"])
+        self.assertIn("authority.path_substitution", authority_refused["blocking_reason_codes"])
         proof_path.write_bytes(original_proof); closure_path.write_bytes(original_closure)
         durable_fixture = Path(proof["fixture"]["path"])
         original = durable_fixture.read_bytes(); durable_fixture.write_bytes(original + b"tamper\n")
