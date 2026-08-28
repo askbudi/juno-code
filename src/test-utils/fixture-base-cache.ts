@@ -121,13 +121,38 @@ function entryPath(entry: { parentPath?: string; path?: string; name: string }):
   return path.join(entry.parentPath ?? entry.path ?? '.', entry.name);
 }
 
-function sealReadOnly(root: string): void {
-  fs.chmodSync(root, 0o555);
-  for (const entry of fs.readdirSync(root, { withFileTypes: true, recursive: true })) {
-    const target = entryPath(entry);
-    if (entry.isDirectory()) fs.chmodSync(target, 0o555);
-    else if (entry.isFile()) fs.chmodSync(target, 0o444);
+function chmodFixtureEntry(target: string, writable: boolean): void {
+  const entry = fs.lstatSync(target);
+  // chmod follows symlinks on supported Node platforms. Fixture virtualenvs
+  // contain links to interpreters outside the owned tree, so links must never
+  // reach chmod (or recursion) here.
+  if (entry.isSymbolicLink()) return;
+  if (entry.isDirectory()) {
+    fs.chmodSync(target, writable ? entry.mode | 0o700 : entry.mode & 0o555);
+  } else if (entry.isFile()) {
+    // Add/remove only owner write bits. In particular, retain executable bits
+    // on copied virtualenv interpreters and scripts.
+    fs.chmodSync(target, writable ? entry.mode | 0o600 : entry.mode & 0o555);
   }
+}
+
+function sealReadOnly(root: string): void {
+  for (const entry of fs.readdirSync(root, { withFileTypes: true, recursive: true })) {
+    chmodFixtureEntry(entryPath(entry), false);
+  }
+  chmodFixtureEntry(root, false);
+}
+
+/** Restore owner write permission only inside an owned fixture tree. */
+export function makeFixtureTreeOwnerWritable(root: string): void {
+  const rootEntry = fs.lstatSync(root);
+  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
+    throw new Error(`refusing to make non-directory fixture root writable: ${root}`);
+  }
+  for (const entry of fs.readdirSync(root, { withFileTypes: true, recursive: true })) {
+    chmodFixtureEntry(entryPath(entry), true);
+  }
+  chmodFixtureEntry(root, true);
 }
 
 function baseManifestDigest(root: string): string {
@@ -289,24 +314,36 @@ export function createFixtureOverlay(
     verbatimSymlinks: true,
     force: true,
   });
-  // Overlays are writable copies: restore owner permissions on the copy.
-  for (const entry of fs.readdirSync(overlayRoot, { withFileTypes: true, recursive: true })) {
-    const target = entryPath(entry);
-    if (entry.isDirectory()) fs.chmodSync(target, 0o755);
-    else if (entry.isFile()) fs.chmodSync(target, 0o644);
-  }
+  // Overlays are writable copies. Symlinks are skipped and executable bits
+  // from the sealed base are retained.
+  makeFixtureTreeOwnerWritable(overlayRoot);
+  const ownedRoot = fs.realpathSync(overlayRoot);
+  const ownedIdentity = fs.lstatSync(overlayRoot);
+  const ownedParent = fs.realpathSync(parent);
   return {
     root: overlayRoot,
     controllerPath,
     baseKey: base.key,
     cold: false,
     release: () => {
-      // Path-scoped deletion of exactly this overlay directory tree.
-      const resolved = fs.realpathSync(overlayRoot);
-      if (!resolved.startsWith(`${fs.realpathSync(parent)}${path.sep}`)) {
+      // Path-scoped deletion of exactly the directory inode created above.
+      // A missing root is a completed/interrupted release retry. A substituted
+      // symlink or sibling inode is refused before rm can follow it.
+      let current: fs.Stats;
+      try {
+        current = fs.lstatSync(overlayRoot);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+      }
+      if (!current.isDirectory() || current.isSymbolicLink()
+          || current.dev !== ownedIdentity.dev || current.ino !== ownedIdentity.ino
+          || fs.realpathSync(overlayRoot) !== ownedRoot
+          || !ownedRoot.startsWith(`${ownedParent}${path.sep}`)) {
         throw new Error(`refusing to delete foreign overlay path: ${overlayRoot}`);
       }
-      fs.rmSync(resolved, { recursive: true, force: true });
+      makeFixtureTreeOwnerWritable(overlayRoot);
+      fs.rmSync(overlayRoot, { recursive: true, force: true });
     },
   };
 }

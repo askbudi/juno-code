@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import {
   FIXTURE_BASE_SCHEMA,
   fixtureBaseKey,
   fixtureIdentityForRepository,
+  makeFixtureTreeOwnerWritable,
   type FixtureBaseKeyInput,
   type SealedFixtureBase,
 } from '../../test-utils/fixture-base-cache.js';
@@ -45,22 +47,10 @@ describe('content-addressed fixture bases', () => {
   });
 
   afterAll(() => {
-    // Sealed bases are read-only by design; restore write permission before
-    // removing the private scratch root.
-    const unseal = (directory: string): void => {
-      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-        const target = path.join(directory, entry.name);
-        if (entry.isDirectory()) {
-          fs.chmodSync(target, 0o755);
-          unseal(target);
-        } else {
-          fs.chmodSync(target, 0o644);
-        }
-      }
-      fs.chmodSync(directory, 0o755);
-    };
+    // Sealed bases are read-only by design; restore owner write permission
+    // without ever following virtualenv or fixture symlinks.
     try {
-      unseal(basesRoot);
+      makeFixtureTreeOwnerWritable(basesRoot);
     } catch {
       // best effort; rm below still attempts removal
     }
@@ -153,7 +143,51 @@ describe('content-addressed fixture bases', () => {
     expect(fs.existsSync(path.join(base.root, 'yylo-fixture-base.json'))).toBe(true);
   });
 
-  it('never deletes foreign or in-use entries on release', () => {
+  it('never mutates an external symlink target while making cleanup possible', () => {
+    const external = path.join(scratch, 'external-python');
+    const fixture = path.join(scratch, 'symlink-cleanup-fixture');
+    const link = path.join(fixture, 'bin', 'python');
+    fs.writeFileSync(external, '#!/bin/sh\necho isolated\n', { mode: 0o755 });
+    fs.chmodSync(external, 0o755);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(external, link);
+    fs.chmodSync(path.dirname(link), 0o555);
+    fs.chmodSync(fixture, 0o555);
+
+    const snapshot = () => {
+      const target = fs.statSync(external);
+      const linkEntry = fs.lstatSync(link);
+      return {
+        targetInode: target.ino,
+        targetMode: target.mode & 0o777,
+        targetSha256: createHash('sha256').update(fs.readFileSync(external)).digest('hex'),
+        linkInode: linkEntry.ino,
+        linkType: linkEntry.isSymbolicLink(),
+        linkText: fs.readlinkSync(link),
+      };
+    };
+    const before = snapshot();
+    makeFixtureTreeOwnerWritable(fixture);
+    const afterWritable = snapshot();
+    fs.rmSync(fixture, { recursive: true, force: true });
+
+    expect(afterWritable).toEqual(before);
+    expect(fs.existsSync(link)).toBe(false);
+    expect(fs.readFileSync(external, 'utf8')).toContain('isolated');
+    expect(fs.statSync(external).mode & 0o777).toBe(0o755);
+  });
+
+  it('makes release interruption retries idempotent', () => {
+    const base = ensureBase(identity({ dependencyLockSha256: '1'.repeat(64) }));
+    const overlay = createFixtureOverlay(base, { overlayParent: path.join(scratch, 'overlays-retry') });
+    const readOnly = path.join(overlay.controllerPath, '.juno_task');
+    fs.chmodSync(readOnly, 0o555);
+    overlay.release();
+    expect(fs.existsSync(overlay.root)).toBe(false);
+    expect(() => overlay.release()).not.toThrow();
+  });
+
+  it('never deletes foreign entries or escapes through a substituted link', () => {
     const parent = path.join(scratch, 'overlays-foreign');
     fs.mkdirSync(parent, { recursive: true });
     const foreign = path.join(parent, 'foreign-owned');
@@ -164,15 +198,13 @@ describe('content-addressed fixture bases', () => {
     overlay.release();
     // The foreign sibling survives an overlay release in the same parent.
     expect(fs.existsSync(path.join(foreign, 'keep.txt'))).toBe(true);
-    // A forged release path outside the overlay parent is refused.
-    const forged = {
-      ...overlay,
-      root: path.join(scratch, 'not-an-overlay'),
-    };
-    expect(() =>
-      createFixtureOverlay(base, { overlayParent: parent }),
-    ).not.toThrow();
-    void forged;
+
+    const substituted = createFixtureOverlay(base, { overlayParent: parent });
+    fs.rmSync(substituted.root, { recursive: true, force: true });
+    fs.symlinkSync(foreign, substituted.root);
+    expect(() => substituted.release()).toThrow('refusing to delete foreign overlay path');
+    expect(fs.readFileSync(path.join(foreign, 'keep.txt'), 'utf8')).toBe('foreign');
+    fs.unlinkSync(substituted.root);
   });
 
   it('recovers a stale materialization claim left by a dead process', () => {
