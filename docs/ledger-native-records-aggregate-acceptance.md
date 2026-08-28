@@ -1,103 +1,116 @@
 # Native Records aggregate acceptance (6Uf5mO)
 
 Date: 2026-08-28  
-Verdict: **REFUSE / migration gate closed**
+Verdict: **PASS — authorized source/fixture migration gate open**
 
-This is a review artifact, not a release authorization. It reviews the frozen parent
-candidate `78a32c36f959ed99acc9bdbc740e0993846b9de1` and Ledger gitlink
-`71fbfe4ad0fb0472d3d88f9847d1d77a3d42dcd1`. The source versions are
-`yylo-ledger 0.2.0` and `@yylo/cli 0.2.0`.
+This verdict applies to the frozen protected parent target
+`9ca943d95cb24cc06b79d72ec7945eaa48638e13` and its exact Ledger gitlink
+`b07ae587291f26249cfab419b102f34ca850de25`. The task branch preserves the
+original refusal review at `8ede12e96dc15834e1e2b7ed6671961ba1f69a31` and
+history-preservingly merges the protected target. The reviewed source versions
+are `yylo-ledger 0.2.0` and `@yylo/cli 0.2.0`; the pre-existing public CLI used
+for benchmark smoke/probe identity reports `yylo-ledger 0.1.0rc2`.
 
-PASS is refused because the full Ledger suite has six failures, the declared 14k
-benchmark fails before producing a receipt, the installed-package verifier cannot
-run in the admitted worktree, the live controller Task/cold-pack corpus is outside
-the frozen task-worktree authority, and the canonical responses for `12hQ6l`,
-`51WmGY`, and `tE7svl` contain no persisted evidence. Focused process success is
-not treated as semantic acceptance.
+**PASS is not release authorization.** Release/RC artifact verification, wheel
+or RC build, package installation, publish, push, deploy, production archive,
+live-controller corpus mutation, and lifecycle cleanup were excluded and were
+not attempted.
 
-## Candidate and delivery inventory
+## Protected composition and repaired findings
 
-| Wave | Exact Ledger commit(s) | Changed paths | Review state |
+| Finding from the refusal | Outer commit | Exact nested commit | Disposition |
 |---|---|---|---|
-| 1 | `6f593237ed816ea1d864252d07484f49d8cc37f4` | Record model/storage/CLI/tests | Focused code present; aggregate gate closed |
-| 2A | `fb7ab37b0c83f32c0c397b671f2779fd4ad59337`, reconciliation `39fddfd5d4280fa58066d243760c82b71cd3b2de` | documents, profiles, front matter, workflow YAML, tests | Focused acceptance present; aggregate gate closed |
-| 2B | `585d946152a9c2b115d7317164752050ece0f9a5` | artifacts/content objects/tests | Focused acceptance present; aggregate gate closed |
-| 3 | `5493876b1bbed25b2bad9530130889f5747081ef`, `1107967d9729385f9d33b06f315b90c9bf9c18dc`, merge `ad9a27f9da74cd10fa39ebce185e872db832147d` | record search, archive, cache/storage/tests | **Not complete:** full-suite archive regressions |
-| 4 | `ca2dc4e9377af6b18dd821d7b23bb80d8c479a4e`, `54c4dff8f5ed7d193735f6b4aaa08bf0f338587c` | typed CLI, hosting, README/tests | Focused security tests pass; installed gate unavailable |
-| 5P | `d78903c79a1cb3f0664815079f6e7e15bb4fb990` | `git_creation.py`, Record/storage/create paths, tests | Focused tests pass; end-to-end evidence incomplete |
-| 5A | `a7ea15076402db1894a40986f379d3e5bae55252`, repairs `3f1457ae6068766e4e2334209c0450e53bc7f4e0` and `249689d816a838bf3c64f1ea53fb703bcd837062` | `tests/acceptance/test_record_storage_invariants.py` plus narrow repairs | 8 acceptance tests pass; full suite fails |
-| 5B | `7fb902bc6271358e96f87aab08221e4ddad5f8f3`, merge `71fbfe4ad0fb0472d3d88f9847d1d77a3d42dcd1` | `tests/acceptance/test_public_record_surfaces.py` | 5 acceptance tests pass; scale/install evidence incomplete |
+| Archived replacement checked reserved creation metadata before immutable cold authority | `cebc44c45` | `0cf9fe0199e8a7eb595e4849127f3ff2046ec856` | Repaired; exact test passes |
+| CLI mutation receipt omitted `operation`; positional legacy archive returned no archived Task | `3c022ac8c` | `81c84f177dc4b0ad775be145bacbd226f56c8302` | Repaired; both exact tests pass |
+| Benchmark generated noncanonical decimal IDs/paths instead of canonical shards | `aa2d53ff8` | `6ada6dcea09e9f3e380c7d60a4968b1736099ee5` | Repaired; 14k benchmark passes all gates |
+| Composition of all repairs | `9ca943d95cb24cc06b79d72ec7945eaa48638e13` | `b07ae587291f26249cfab419b102f34ca850de25` | Frozen candidate validated |
 
-Canonical task responses supplied to this review are empty. Commits therefore do
-not substitute for the required response-bound command, artifact, and disposition
-evidence.
+The previous report counted six Ledger failures. The corrected interpretation is
+**three product failures and three false positives**. The project-registry
+failures were caused by the review command's global
+`YYLO_LEDGER_INVOCATION_ROOT=/tmp` override, which changed the registry source
+contract. With no override, all three project-registry tests pass. The three
+product failures above were repaired before this continuation.
 
-## PDR requirement matrix
+The exact protected commits and content-addressed lifecycle closure now provide
+the task/repair disposition evidence. Empty response text is not treated as a
+semantic blocker when that closure binds the admitted target, nested gitlink,
+repair commits, and validation candidate.
 
-| Requirement | Exact evidence inspected | Result |
+## Delivery and PDR requirement matrix
+
+| Requirement / wave | Evidence on exact candidate | Result |
 |---|---|---|
-| Immutable ID, slug/aliases, kinds, envelope, provenance and ID relations | `records.py`; foundation/document/artifact tests; full suite | **BLOCKED**: focused coverage exists, but aggregate suite is red |
-| Slug inputs resolve once to ID; stale/ambiguous inputs fail closed; renames retain aliases | `test_record_foundation.py`, `test_record_cli.py`, public acceptance | Focused PASS; aggregate PASS not granted |
-| Revision-event provenance remains authoritative | foundation tests and Record history implementations | Focused PASS; no response-bound corpus proof |
-| Automatic role-bound full Git HEAD capture on all creates | `git_creation.py`; 6 Git-context unit tests; both acceptance files | Focused PASS |
-| Shared/distinct repositories, detached/clean/dirty/non-Git and strict refusal | Git-context unit and acceptance tests | Focused PASS; no persisted Wave 5 response evidence |
-| Creation context immutable and separate from Task completion `commit_hash` | model validation and creation-context tests | Focused PASS; live legacy corpus not inspected |
-| No paths, credentials, environment, diffs, names, dirty bytes in Git context | allowlisted model plus public/storage acceptance | Focused PASS |
-| Recorded clean HEAD can be checked out; dirty means committed HEAD only | `test_dirty_git_context_reconstructs_head_but_not_uncommitted_bytes` | PASS for fixture. If `worktree_dirty=true`, **only committed HEAD is reproducible; uncommitted bytes are not** |
-| Compare-and-replace only; absent/ambiguous/stale failures preserve bytes/history/cache | foundation tests; concurrent acceptance | Focused PASS |
-| Wiki/workflow round trip, validation and safe projections; no workflow execution | document/public acceptance; source inventory | Focused PASS; no installed E2E proof |
-| Artifact backends/integrity/immutability and explicit-only capture | artifact tests and public acceptance | Focused PASS |
-| No automatic run/transcript capture; no secrets or internal reasoning storage | public acceptance checks no runtime directory; artifact policy/source review | Focused PASS, but broad semantic corpus scan unavailable |
-| No Record remove API; archived records cannot reopen/mutate | CLI/help source and archive tests | **FAIL**: `test_archived_ids_are_reserved_and_every_mutation_is_refused` fails before reaching the expected archive refusal |
-| Cold seal/readback/hot removal and SQLite is disposable, never sole truth | storage acceptance passes; archive/cache suites inspected | **FAIL**: full-suite archive mutation regression; current cold corpus unavailable |
-| Legacy Task/archive/pack compatibility and lossless rollback | migration/rollback focused selection: 48 passed | **BLOCKED**: full suite has legacy archive and receipt regressions; no live corpus proof |
-| Unified typed search, scopes, canonical verification, cursors, redaction and bounds | public search acceptance | Fixture PASS: 241 records; 30-record pages; 32,000-byte cap; rebuild/query under 5 s. **BLOCKED**: declared benchmark receipt absent |
-| Safe read-only HTTP and no host mutation | public HTTP acceptance | Fixture PASS: 4,096-byte host cap, 4-byte range cap, CSP/escaping, 405/400/416/403/406 refusals, byte-identical before/after |
-| Declarative profiles only; no arbitrary executable plugin | profiles/source inventory | PASS by inspected product paths |
-| No SQLite-only truth, blind update, slug-based internal mutation, run capture, workflow execution, unsafe host behavior | source/path inventory and focused tests | No contrary focused evidence, but **not accepted** while mandatory aggregate evidence is red/missing |
+| Wave 1: immutable ID, slug/aliases, typed relations, revision provenance and ID-first exact replacement | Foundation/storage/CLI unit and integration suites in full Ledger run | PASS |
+| Wave 2A: Markdown wiki and YAML workflow profiles, front-matter import/export, schema validation and safe projection | Document, profile, front-matter, workflow and HTTP tests | PASS |
+| Wave 2B: inline, local CAS, external-digest and link-only Artifacts; immutable revisions and explicit capture | Artifact/content-object tests and Wave 5 public acceptance | PASS |
+| Wave 3: verified hot/cold authority, exact cold reads/history, disposable SQLite rebuild and scoped canonical search | Archive/cache/recovery tests, repaired archive-order test, Wave 5 storage acceptance | PASS |
+| Wave 4: generic/typed CLI, canonical ID output, no remove API, safe read-only host | CLI/completion/hosting tests and focused Juno delegation tests | PASS |
+| Wave 5P: automatic controller/project full-HEAD capture, shared/distinct roles, clean/dirty/detached/non-Git behavior | Git creation-context unit tests and both Wave 5 acceptance files | PASS |
+| Creation context is immutable, sanitized, separate from completion `commit_hash`, and persists hot/cold/search | Creation, revision, archive, search and projection tests | PASS |
+| Strict creation fails atomically when required Git context is absent/unstable | Git race/refusal fixtures in full suite | PASS |
+| A recorded clean HEAD is checkout-reproducible | Wave 5 storage checkout fixture | PASS |
+| Dirty Git capture does not claim or store dirty bytes | Wave 5 storage fixture | PASS — when `worktree_dirty=true`, only committed HEAD is reproducible; uncommitted bytes are not |
+| Exact updates are compare-and-replace, never blind; absent/ambiguous/stale failures preserve canonical bytes and history | Foundation, concurrency and acceptance tests | PASS |
+| Slug/alias input resolves to exactly one immutable ID before mutation; relations never store slugs | Foundation and CLI suites | PASS |
+| Archives have one verified tier, cannot reopen/mutate, and remain readable after cache deletion/corruption | Archive suites plus repaired archived-replacement ordering test | PASS |
+| SQLite is rebuildable and never sole truth | Cache rebuild, corrupt-cache and canonical cold-source fixtures | PASS |
+| Legacy Task/archive-status/sealed-pack, conversion, rollback and doctor compatibility | Full Ledger suite, including migration/rollback/doctor fixtures; retained focused migration selection from the initial review | PASS |
+| Unified typed search has hot/archive/all scopes, stable cursors, canonical verification, redaction and bounded output | Search suites and Wave 5 scale fixture | PASS |
+| HTTP negotiation/render/range/redirect/error behavior is safe and read-only | Wave 5 public acceptance | PASS |
+| No Record remove API, automatic run capture, workflow execution, arbitrary executable profiles, secret/reasoning capture, unsafe host mutation, or SQLite-only authority | CLI inventory, source path inventory and negative/security fixtures | PASS |
 
-## Executed validation
+The search acceptance fixture covers 241 records, disjoint 30-record cursor pages,
+a 32,000-byte output cap, restricted title/payload redaction, stale-index refusal,
+and a five-second fixture budget. The HTTP fixture covers a 4,096-byte host cap,
+a four-byte range cap, CSP/script escaping, unsafe redirect and method refusal,
+and byte-identical canonical files before/after reads.
 
-| Command / evidence | Outcome |
+## Authorized aggregate commands and results
+
+| Command | Result |
 |---|---|
-| `YYLO_LEDGER_INVOCATION_ROOT=/tmp ...python3 -m pytest -q` in `juno_kanban` | **FAIL**: 703 passed, 6 failed, 1 skipped in 230.98 s |
-| Focused migration/rollback/creation/Record/search/host selection | PASS: 48 passed, 10 deselected in 32.40 s |
-| Wave 5 acceptance files as part of full suite | PASS: 13 tests |
-| `PYTHONPATH=src ... scripts/benchmark_git_native.py --tasks 14000 --report ...` | **FAIL** before receipt: cold rebuild reports task ID/path mismatch for `tasks/T0/T00000.md` |
-| Focused `juno-code` Ledger delegation/runtime tests | PASS: 3 files, 14 tests |
-| `npm run typecheck` and `npm run build` in `juno-code` | PASS |
-| `npm pack --ignore-scripts --json` inspection | PASS: `@yylo/cli 0.2.0`, 157 files, 3,723,005-byte tarball, 14,654,248 bytes unpacked |
-| `npm run test:ledger-release-artifacts` | **UNAVAILABLE/FAIL**: expected `juno_kanban/.venv/bin/python` is absent |
-| Ledger package metadata inspection | Source says `0.2.0`; `setup.py --version` unavailable because admitted Python lacks `setuptools` |
-| Doctor | Fixture doctors pass in focused tests; **live candidate corpus doctor unproven** because controller-private corpus/cold packs are excluded from this worktree |
-| Migration/rollback canary | Focused test selection passes; **rollout canary unproven** without installed fixture/live corpus and with full-suite failures |
+| `cd juno_kanban && /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono/.venv_juno/bin/python3 -m pytest -q` | PASS: **712 passed, 1 skipped**, 1 deprecation warning, 246.28 s. No `YYLO_LEDGER_INVOCATION_ROOT` override. |
+| Exact archive replacement, complete receipt, positional archive, and three project-registry test nodes | PASS: **6 passed**, 1 warning, 2.67 s |
+| `pytest -q tests/acceptance/test_record_storage_invariants.py tests/acceptance/test_public_record_surfaces.py` | PASS: **13 passed**, 2.65 s |
+| Focused `juno-code` Ledger command/binary/facade/runtime tests | PASS: **3 files, 14 tests**, 5.37 s |
+| `cd juno-code && npm run typecheck` | PASS |
+| `cd juno-code && npm run build` | PASS, including skill and implementation-contract checks |
+| Declared 14k source benchmark using `PYTHONPATH=$PWD/src`, the source benchmark script, and the existing public CLI for smoke/probe | PASS: all nine gates |
 
-The six Ledger failures are:
+## Benchmark report identity
 
-1. archived-ID mutation refusal returns `SYSTEM_METADATA_RESERVED` instead of the expected archive refusal;
-2. complete CLI mutation receipt lacks `operation`;
-3. positional legacy archive returns no archived-status Task;
-4. project-registry disabled-state source differs (`default` vs `project-config`);
-5. project add is refused despite the fixture's opt-in expectation;
-6. two-project routing is refused as disabled.
+- Report: `/tmp/6Uf5mO-benchmark-14k.json`
+- Sidecar: `/tmp/6Uf5mO-benchmark-14k.json.sha256`
+- Size: 4,275 bytes
+- SHA-256: `c7929ebc43ce90b45a2ce69fe2629648465c64ba59f4b6ada358174ae3e1f1cf`
+- Schema/operation: receipt v2, `installed-cli-benchmark`
+- Fixture: 14,000 canonical sharded Tasks; fixture commit
+  `880bd65e05b13ead37d48379a11c78eff3d05893`
+- Source benchmark SHA-256:
+  `499d965705acfbd3c10f65b301a8a777689076be4654f715487ecbc713d7421a`
+- Cold rebuild: 12.448 s; peak RSS 96,698,368 bytes
+- p95: get 4.566 ms; list 84.388 ms; search 87.336 ms; mutation 127.119 ms
+- Maximum blob: 207,194 bytes
+- Gates: cold time/RSS, get/list/search/mutation latency, max blob, write
+  amplification, and ledger-output independence all `true`
 
-These are blocking findings requiring separately authorized repair tasks and fresh
-validation; this review intentionally changes no product code and creates no task.
+The report and sidecar are bounded ephemeral `/tmp` evidence and were not added
+to product or controller state. Their identity is recorded here; no benchmark
+fixture was retained after the script's own temporary-context exit.
 
-## Security, migration, doctor, and disposition
+## Verdict and exclusions
 
-Security fixture verdict is **focused PASS, aggregate NOT ACCEPTED**. Search
-redaction and HTTP safety checks pass, including canonical stale-index refusal,
-restricted title/payload redaction, script escaping, unsafe redirect refusal,
-bounded ranges/output, structured errors, and read-only byte equality. This does
-not override missing installed and full-suite evidence.
+All authorized mandatory source and fixture gates pass on the exact composed
+candidate, so the compatibility/migration acceptance verdict is **PASS** and the
+six delivery waves are complete for this scope. Doctor, conversion, rollback,
+archive recovery, canonical-byte preservation, exact-update behavior, search
+redaction, and hosting safety are covered by the green full/focused fixture suite.
 
-Compatibility/migration verdict is **NO ROLLOUT**. Current Task and cold-pack
-losslessness cannot be asserted from an admitted worktree that intentionally omits
-the controller-private corpus. Doctor is likewise not asserted from fixture-only
-success. The benchmark emitted no valid artifact; `/tmp` command outputs are
-ephemeral and not product inputs. This Markdown matrix is the sole committed review
-artifact.
+The release verifier is **excluded, not failed**: its project-local `.venv` and
+RC-wheel assumptions belong to separately authorized release acceptance. No
+wheel/RC build, package installation, live corpus operation, release, tag, push,
+publish, deploy, production mutation, archive maintenance, controller metadata
+mutation, `yy task finish`, or cleanup was performed.
 
-No release, tag, push, publication, deployment, production archive/mutation,
-external task mutation, lifecycle cleanup, or product repair was performed.
+Pi session: `01a0467f-e64c-7182-b6b9-cff63f1a2664`.
