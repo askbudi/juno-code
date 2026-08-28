@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'replay-repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -84,6 +84,19 @@ export function configureReleaseTrainCommand(
     .action((epochId: string, options: { receipt: string; epochToken: string }) => invoke(
       'repair', epochId, ['--receipt', options.receipt, '--epoch-token', options.epochToken],
     ));
+  train.command('replay-repair')
+    .description('Replay one exact-closure historical repair without another model invocation')
+    .argument('<epoch-id>', 'Recovering successor epoch identity')
+    .requiredOption('--predecessor-epoch <epoch>', 'Historical validated epoch identity')
+    .requiredOption('--receipt <path>', 'Consumed no-model recovered-worker receipt')
+    .requiredOption('--epoch-token <token>', 'Exact successor epoch fencing token')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: {
+      predecessorEpoch: string; receipt: string; epochToken: string; json?: boolean;
+    }) => invoke('replay-repair', epochId, [
+      '--predecessor-epoch', options.predecessorEpoch, '--receipt', options.receipt,
+      '--epoch-token', options.epochToken, ...(options.json ? ['--json'] : []),
+    ]));
   train.command('retry')
     .description('Receipt-backed fenced retry of one failed aggregate gate on the exact train tip')
     .argument('<epoch-id>', 'Recovering epoch identity')

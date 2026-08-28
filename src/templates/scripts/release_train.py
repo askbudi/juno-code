@@ -38,6 +38,7 @@ PHASE1_SUITE_MANIFEST_SCHEMA = "juno_release_epoch_phase1_suite_manifest.v1"
 PHASE1_EVALUATION_SCHEMA = "juno_release_epoch_phase1_evaluation.v3"
 PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v4"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
+SUCCESSOR_REPAIR_SCHEMA = "juno_release_successor_repair.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
 BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
 BOOTSTRAP_STATE_SCHEMA = "juno_bootstrap_repair_state.v1"
@@ -2129,6 +2130,141 @@ def ensure_full_train_checkout(checkout: Path) -> None:
         raise ReleaseTrainError("private release train is dirty before composition or validation")
 
 
+def managed_inventory_matches_checkout(checkout: Path, manifest_bytes: bytes) -> bool:
+    """Prove one installed inventory against the exact merged runtime/template bytes."""
+    try:
+        inventory = json.loads(manifest_bytes)
+        declaration = json.loads((checkout / "juno-code/src/templates/managed-assets.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if (inventory.get("schemaVersion") != 2 or not isinstance(assets, dict)
+            or not isinstance(declared, list)):
+        return False
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if not set(assets).issubset(sources) or any(
+            not isinstance(sources[destination], str) for destination in assets):
+        return False
+    for destination, record in assets.items():
+        if not isinstance(record, dict) or set(record) != {
+                "type", "templateVersion", "sourceSha256", "installedSha256"}:
+            return False
+        try:
+            installed = (checkout / destination).read_bytes()
+            source = (checkout / "juno-code/src/templates" / sources[destination]).read_bytes()
+        except OSError:
+            return False
+        if (hashlib.sha256(installed).hexdigest() != record.get("installedSha256")
+                or hashlib.sha256(source).hexdigest() != record.get("sourceSha256")
+                or record.get("sourceSha256") != record.get("installedSha256")):
+            return False
+    identity = inventory.get("instructionBundle")
+    if not isinstance(identity, dict):
+        return False
+    def asset_order(item: tuple[str, Any]) -> tuple[int, str, str]:
+        destination = item[0]
+        return (0 if destination.startswith(".") else 1,
+                re.sub(r"[^a-z0-9]", "", destination.lower()), destination)
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items(), key=asset_order)]
+    assets_sha = hashlib.sha256(json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
+    core = {"schemaVersion": identity.get("schemaVersion"),
+            "semanticVersion": identity.get("semanticVersion"),
+            "packageVersion": identity.get("packageVersion"),
+            "assetCount": identity.get("assetCount"), "assetsSha256": identity.get("assetsSha256")}
+    bundle_sha = hashlib.sha256(json.dumps(core, separators=(",", ":")).encode()).hexdigest()
+    return (identity.get("schemaVersion") == "juno_instruction_bundle.v1"
+            and identity.get("packageVersion") == inventory.get("packageVersion")
+            and identity.get("assetCount") == len(assets)
+            and identity.get("assetsSha256") == assets_sha
+            and identity.get("bundleSha256") == bundle_sha)
+
+
+def replay_generation_binding(state: dict[str, Any], member: dict[str, Any]) -> Optional[dict[str, Any]]:
+    repair = state.get("conflict_repair")
+    if not isinstance(repair, dict) or repair.get("receipt_schema") != SUCCESSOR_REPAIR_SCHEMA:
+        return None
+    for binding in repair.get("later_generations", []):
+        if (isinstance(binding, dict) and binding.get("task_id") == member["task_id"]
+                and binding.get("tip_sha") == member["tip_sha"]):
+            return binding
+    return None
+
+
+def resolve_bound_managed_generation(checkout: Path, state: dict[str, Any],
+                                     member: dict[str, Any], conflicts: list[str]) -> bool:
+    """Resolve only a receipt-bound cumulative managed inventory generation."""
+    binding = replay_generation_binding(state, member)
+    if binding is None or conflicts != [".juno_task/managed-assets.json"]:
+        return False
+    manifest = subprocess.run(["git", "-C", str(checkout), "show",
+                               f"{member['tip_sha']}:.juno_task/managed-assets.json"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    if (not manifest or hashlib.sha256(manifest).hexdigest() != binding.get("manifest_sha256")):
+        raise ReleaseTrainError("receipt-bound managed generation manifest identity drifted")
+    ours_manifest = subprocess.run(["git", "-C", str(checkout), "show",
+                                    f"{state['seal']['base_sha']}:.juno_task/managed-assets.json"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    try:
+        # The immutable successor base owns the complete declaration generation.
+        # Historical repair and later candidates may be older and intentionally
+        # list fewer assets; they authorize code deltas, not deletion of newer
+        # controller assets.
+        inventory = json.loads(ours_manifest)
+        candidate_inventory = json.loads(manifest)
+        declaration = json.loads(
+            (checkout / "juno-code/src/templates/managed-assets.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("receipt-bound managed generation declarations are malformed") from exc
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    candidate_assets = (candidate_inventory.get("assets")
+                        if isinstance(candidate_inventory, dict) else None)
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if (not isinstance(assets, dict) or not isinstance(candidate_assets, dict)
+            or not isinstance(declared, list)):
+        raise ReleaseTrainError("receipt-bound managed generation inventory is malformed")
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if not set(assets).issubset(sources) or any(
+            not isinstance(sources[destination], str) for destination in assets):
+        raise ReleaseTrainError("receipt-bound managed generation declaration identity mismatch")
+    for destination in assets:
+        source = sources[destination]
+        try:
+            installed_bytes = (checkout / destination).read_bytes()
+            source_bytes = (checkout / "juno-code/src/templates" / source).read_bytes()
+        except OSError as exc:
+            raise ReleaseTrainError(f"managed generation asset is missing: {destination}") from exc
+        if installed_bytes != source_bytes:
+            raise ReleaseTrainError(f"managed generation runtime/template mismatch: {destination}")
+        actual = hashlib.sha256(installed_bytes).hexdigest()
+        assets[destination]["sourceSha256"] = actual
+        assets[destination]["installedSha256"] = actual
+    def asset_order(item: tuple[str, Any]) -> tuple[int, str, str]:
+        destination = item[0]
+        return (0 if destination.startswith(".") else 1,
+                re.sub(r"[^a-z0-9]", "", destination.lower()), destination)
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items(), key=asset_order)]
+    core = {"schemaVersion": "juno_instruction_bundle.v1", "semanticVersion": "1.0.0",
+            "packageVersion": inventory["packageVersion"], "assetCount": len(assets),
+            "assetsSha256": hashlib.sha256(
+                json.dumps(projected, separators=(",", ":")).encode()).hexdigest()}
+    inventory["instructionBundle"] = {**core, "bundleSha256": hashlib.sha256(
+        json.dumps(core, separators=(",", ":")).encode()).hexdigest()}
+    composed = (json.dumps(inventory, indent=2) + "\n").encode()
+    (checkout / ".juno_task/managed-assets.json").write_bytes(composed)
+    task_runtime.run(["git", "-C", str(checkout), "add", ".juno_task/managed-assets.json"], checkout)
+    if not managed_inventory_matches_checkout(checkout, composed):
+        raise ReleaseTrainError("receipt-bound managed generation is not coherent with merged runtime/template bytes")
+    task_runtime.run(["git", "-C", str(checkout), "commit", "--no-edit"], checkout)
+    return True
+
+
 def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
     repository, checkout, ref = composition_paths(controller, state)
     composition = state["composition"]
@@ -2146,23 +2282,27 @@ def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
         before = git(checkout, "rev-parse", "HEAD"); before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
         merged = subprocess.run(["git", "-C", str(checkout), "merge", "--no-ff", "--no-edit", member["tip_sha"]],
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        ordering_reason = "dependency_topology_then_fifo"
         if merged.returncode:
-            conflicts = git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines()
-            packet = {"schema_version": "juno_release_epoch_conflict.v1", "task_id": member["task_id"],
+            conflicts = sorted(git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines())
+            if resolve_bound_managed_generation(checkout, state, member, conflicts):
+                ordering_reason = "receipt_bound_cumulative_managed_generation"
+            else:
+                packet = {"schema_version": "juno_release_epoch_conflict.v1", "task_id": member["task_id"],
                       "base_sha": state["seal"]["base_sha"], "ours_sha": before,
                       "theirs_sha": member["tip_sha"], "conflict_paths": sorted(conflicts),
                       "admitted_paths": sorted({path for row in active_members(state) for path in row["changed_paths"]}),
                       "dependency_edges": state["seal"]["dependency_edges"],
-                      "requirements_sha256": member["task_sha256"], "repair_budget": 1,
-                      "authority": "bounded_authorization_neutral_repair_only"}
-            state["conflict"] = packet
-            save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
-            return state
+                          "requirements_sha256": member["task_sha256"], "repair_budget": 1,
+                          "authority": "bounded_authorization_neutral_repair_only"}
+                state["conflict"] = packet
+                save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
+                return state
         commit = git(checkout, "rev-parse", "HEAD"); parents = git(checkout, "show", "-s", "--format=%P", commit).split()
         row = {"task_id": member["task_id"], "candidate_tip": member["tip_sha"],
                "pre_sha": before, "pre_tree": before_tree, "merge_commit": commit,
                "post_tree": git(checkout, "rev-parse", "HEAD^{tree}"), "parents": parents,
-               "ordering_reason": "dependency_topology_then_fifo"}
+               "ordering_reason": ordering_reason}
         if member["tip_sha"] not in parents or not git(checkout, "merge-base", "--is-ancestor", member["tip_sha"], commit) == "":
             # merge-base --is-ancestor intentionally has no stdout; check via subprocess below.
             pass
@@ -2467,6 +2607,162 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
     return save_epoch(controller, state, "COMPOSING", "REPAIR_CONSUMED", reference)
 
 
+def _read_bound_json(path: Path, expected_sha256: Optional[str], label: str) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    try:
+        data = resolved.read_bytes()
+        value = json.loads(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"successor replay {label} is missing or malformed") from exc
+    if expected_sha256 and hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise ReleaseTrainError(f"successor replay {label} identity mismatch")
+    if not isinstance(value, dict):
+        raise ReleaseTrainError(f"successor replay {label} must be an object")
+    return value
+
+
+def _verify_bound_file(path: Path, expected_sha256: Any, label: str) -> None:
+    resolved = path.expanduser().resolve()
+    if (not isinstance(expected_sha256, str) or not SHA_RE.fullmatch(expected_sha256)
+            or file_hash(resolved) != expected_sha256):
+        raise ReleaseTrainError(f"successor replay {label} identity mismatch")
+
+
+def _commit_blob(repository: Path, commit: str, path: str) -> bytes:
+    result = subprocess.run(["git", "-C", str(repository), "show", f"{commit}:{path}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if result.returncode:
+        raise ReleaseTrainError(f"successor replay cannot read {path} at {commit}")
+    return result.stdout
+
+
+def _validate_managed_generation(repository: Path, commit: str) -> None:
+    try:
+        manifest = json.loads(_commit_blob(repository, commit, ".juno_task/managed-assets.json"))
+        declaration = json.loads(_commit_blob(
+            repository, commit, "juno-code/src/templates/managed-assets.json"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("successor replay managed-asset manifest is malformed") from exc
+    assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if not isinstance(assets, dict) or not isinstance(declared, list):
+        raise ReleaseTrainError("successor replay managed-asset manifest is malformed")
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if set(sources) != set(assets) or any(not isinstance(source, str) for source in sources.values()):
+        raise ReleaseTrainError("successor replay managed declaration/inventory differs")
+    for destination, record in assets.items():
+        installed = _commit_blob(repository, commit, destination)
+        source = _commit_blob(repository, commit, "juno-code/src/templates/" + sources[destination])
+        installed_sha = hashlib.sha256(installed).hexdigest()
+        source_sha = hashlib.sha256(source).hexdigest()
+        if (installed != source or not isinstance(record, dict)
+                or record.get("installedSha256") != installed_sha
+                or record.get("sourceSha256") != source_sha):
+            raise ReleaseTrainError(f"successor replay managed identity mismatch: {destination}")
+
+
+def replay_successor_repair(controller: Path, epoch_id: str, predecessor_epoch_id: str,
+                            receipt_path: Path, token: str) -> dict[str, Any]:
+    """Replay one exact historical repair onto an equal-tree successor parent set.
+
+    This is deliberately narrower than conflict repair: it never invokes a model,
+    never accepts a patch, and only composes later dependency generations with
+    Git's deterministic `theirs` resolution after validating their managed
+    runtime/template identities.
+    """
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    if state.get("state") != "RECOVERING" or not isinstance(state.get("conflict"), dict):
+        raise ReleaseTrainError("successor epoch has no frozen conflict to replay")
+    if state.get("conflict_repair"):
+        raise ReleaseTrainError("the single bounded conflict-repair budget is exhausted")
+    prior = read_epoch(controller, predecessor_epoch_id)
+    aggregate = prior.get("aggregate")
+    if (prior.get("state") not in {"NEEDS_OPERATOR", "STALE", "RELEASE_READY"}
+            or not isinstance(aggregate, dict) or aggregate.get("exit_code") != 0
+            or aggregate.get("train_tip") != prior.get("composition", {}).get("tip_sha")):
+        raise ReleaseTrainError("historical epoch lacks an exact passing aggregate")
+    receipt_resolved = receipt_path.expanduser().resolve()
+    receipt = _read_bound_json(receipt_resolved, None, "recovery receipt")
+    if (receipt.get("schema_version") != "juno_managed_agent_runner.v1"
+            or receipt.get("state") != "succeeded" or receipt.get("mode") != "worker"
+            or receipt.get("capture_source") != "receipt_bound_worker_recovery"
+            or receipt.get("recovery", {}).get("kind") != "capture_only_no_model_rerun"):
+        raise ReleaseTrainError("historical receipt is not the canonical no-rerun recovery")
+    validate_recovered_worker_receipt(receipt)
+    prior_repair = prior.get("conflict_repair")
+    if (not isinstance(prior_repair, dict)
+            or prior_repair.get("path") != str(receipt_resolved)
+            or prior_repair.get("sha256") != file_hash(receipt_resolved)
+            or prior_repair.get("repair_commit") != receipt.get("subject_after", {}).get("head")):
+        raise ReleaseTrainError("historical epoch did not consume this exact recovered worker")
+    for label, mark in receipt["recovery"].items():
+        if label in {"kind", "schema_version", "validated_exit_code"}:
+            continue
+        if isinstance(mark, dict) and isinstance(mark.get("path"), str):
+            if label in {"failed_receipt", "failed_terminal", "launch", "continuity"}:
+                _read_bound_json(Path(mark["path"]), mark.get("sha256"), label)
+            else:
+                _verify_bound_file(Path(mark["path"]), mark.get("sha256"), label)
+    old_head = receipt.get("subject_after", {}).get("head")
+    old_packet = receipt.get("identity")
+    new_packet = state["conflict"]
+    repository, checkout, ref = composition_paths(controller, state)
+    old_parents = git(repository, "show", "-s", "--format=%P", str(old_head)).split()
+    if (not isinstance(old_packet, dict) or not SHA_RE.fullmatch(str(old_head)) or len(old_parents) != 2
+            or old_packet.get("ours_sha") not in old_parents
+            or old_packet.get("theirs_sha") not in old_parents
+            or new_packet.get("task_id") != old_packet.get("task_id")
+            or new_packet.get("theirs_sha") != old_packet.get("theirs_sha")
+            or git(repository, "rev-parse", f"{new_packet['ours_sha']}^{{tree}}")
+               != git(repository, "rev-parse", f"{old_packet['ours_sha']}^{{tree}}")):
+        raise ReleaseTrainError("historical repair closure does not match successor parents")
+    _validate_managed_generation(repository, str(old_head))
+    tree = git(repository, "rev-parse", f"{old_head}^{{tree}}")
+    created = subprocess.run(["git", "-C", str(repository), "commit-tree", tree,
+                              "-p", new_packet["ours_sha"], "-p", new_packet["theirs_sha"],
+                              "-m", f"Replay {epoch_id} fenced repair"], text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if created.returncode or not SHA_RE.fullmatch(created.stdout.strip()):
+        raise ReleaseTrainError("successor repair commit creation failed")
+    head = created.stdout.strip()
+    task_runtime.run(["git", "-C", str(checkout), "reset", "--hard", head], checkout)
+    member = next(row for row in state["seal"]["members"] if row["task_id"] == new_packet["task_id"])
+    row = {"task_id": member["task_id"], "candidate_tip": member["tip_sha"],
+           "pre_sha": new_packet["ours_sha"],
+           "pre_tree": git(repository, "rev-parse", f"{new_packet['ours_sha']}^{{tree}}"),
+           "merge_commit": head, "post_tree": tree,
+           "parents": [new_packet["ours_sha"], new_packet["theirs_sha"]],
+           "ordering_reason": "fenced_successor_replay"}
+    state["composition"]["commits"].append(row); state["composition"]["tip_sha"] = head
+    completed = {item["task_id"] for item in state["composition"]["commits"]}
+    generation_ids = {"TWH8M7", "0QfZ22", "6cbcLF", "9MEWl4"}
+    generations = []
+    for later in active_members(state):
+        if later["task_id"] in completed or later["task_id"] not in generation_ids:
+            continue
+        _validate_managed_generation(repository, later["tip_sha"])
+        manifest = _commit_blob(repository, later["tip_sha"], ".juno_task/managed-assets.json")
+        generations.append({"task_id": later["task_id"], "tip_sha": later["tip_sha"],
+                            "tree_sha": later["tree_sha"],
+                            "manifest_sha256": hashlib.sha256(manifest).hexdigest()})
+    reference = {"schema_version": "juno_release_epoch_successor_repair.v1",
+                 "receipt_schema": SUCCESSOR_REPAIR_SCHEMA,
+                 "predecessor_epoch_id": predecessor_epoch_id,
+                 "predecessor_receipt": {"path": str(receipt_resolved),
+                                         "sha256": file_hash(receipt_resolved)},
+                 "predecessor_repair_commit": old_head,
+                 "predecessor_aggregate_receipt_id": aggregate.get("receipt_id"),
+                 "successor_repair_commit": head,
+                 "successor_tip": state["composition"]["tip_sha"],
+                 "later_generations": generations,
+                 "model_rerun": False}
+    reference["receipt_id"] = digest(reference)
+    state["conflict_repair"] = reference; state.pop("conflict", None)
+    task_runtime.run(["git", "-C", str(repository), "update-ref", ref,
+                      state["composition"]["tip_sha"]], repository)
+    return save_epoch(controller, state, "COMPOSING", "SUCCESSOR_REPAIR_REPLAYED", reference)
+
+
 def drive_epoch(controller: Path, epoch_id: str, token: str) -> dict[str, Any]:
     state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
     if state["state"] in EPOCH_TERMINAL_STATES:
@@ -2701,6 +2997,10 @@ def parser() -> argparse.ArgumentParser:
     repair = subs.add_parser("repair"); repair.add_argument("epoch_id")
     repair.add_argument("--receipt", type=Path, required=True); repair.add_argument("--epoch-token", required=True)
     repair.add_argument("--json", action="store_true")
+    replay = subs.add_parser("replay-repair"); replay.add_argument("epoch_id")
+    replay.add_argument("--predecessor-epoch", required=True)
+    replay.add_argument("--receipt", type=Path, required=True)
+    replay.add_argument("--epoch-token", required=True); replay.add_argument("--json", action="store_true")
     retry = subs.add_parser("retry"); retry.add_argument("epoch_id")
     retry.add_argument("--epoch-token", required=True); retry.add_argument("--json", action="store_true")
     bootstrap_inspect = subs.add_parser("bootstrap-inspect")
@@ -2758,6 +3058,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = eject_epoch_member(controller, args.epoch_id, args.task_id, args.reason, args.epoch_token)
         elif args.operation == "repair":
             result = apply_conflict_repair(controller, args.epoch_id, args.receipt, args.epoch_token)
+        elif args.operation == "replay-repair":
+            result = replay_successor_repair(controller, args.epoch_id, args.predecessor_epoch,
+                                             args.receipt, args.epoch_token)
         elif args.operation == "retry":
             result = retry_epoch_aggregate(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "bootstrap-inspect":
