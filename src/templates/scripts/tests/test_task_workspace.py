@@ -86,6 +86,59 @@ install_juno_admission_fixture = _fixture.install_juno_admission_fixture
 PACKAGE_ROOT = Path(_fixture.__file__).resolve().parents[4]
 PUBLIC_YY = PACKAGE_ROOT / "dist/bin/yylo.sh"
 
+# Immutable creation-order authorities from the two production defect shapes.
+# 0IttWR differs only by its originally admitted juno_kanban subtree.
+VHC90C_CREATION_PATHS = [
+    ".gitmodules", ".juno_task/config", ".juno_task/managed-assets.json",
+    ".juno_task/prompts", ".juno_task/scripts/await_blocker.py",
+    ".juno_task/scripts/controller_registration.py",
+    ".juno_task/scripts/controller_resolver.py",
+    ".juno_task/scripts/install_requirements.sh",
+    ".juno_task/scripts/integration_workspace.py",
+    ".juno_task/scripts/invocation_correlation.py",
+    ".juno_task/scripts/managed_agent_runner.py", ".juno_task/scripts/merge_queue.py",
+    ".juno_task/scripts/metadata_controller.py", ".juno_task/scripts/parallel_runner.sh",
+    ".juno_task/scripts/release_gate.py", ".juno_task/scripts/release_train.py",
+    ".juno_task/scripts/risk_policy.py", ".juno_task/scripts/run_until_completion.sh",
+    ".juno_task/scripts/target_runtime_provenance.py",
+    ".juno_task/scripts/task_workflow_helper.py", ".juno_task/scripts/task_workspace.py",
+    ".juno_task/scripts/task_workspace_decisions.py",
+    ".juno_task/scripts/tests/test_controller_registration.py",
+    ".juno_task/scripts/tests/test_integration_workspace.py",
+    ".juno_task/scripts/tests/test_managed_agent_runner.py",
+    ".juno_task/scripts/tests/test_merge_queue.py",
+    ".juno_task/scripts/tests/test_metadata_controller.py",
+    ".juno_task/scripts/tests/test_release_train.py",
+    ".juno_task/scripts/tests/test_risk_policy.py",
+    ".juno_task/scripts/tests/test_task_workspace.py",
+    ".juno_task/scripts/tests/test_task_workspace_decisions.py",
+    ".juno_task/scripts/watch_progress.py", ".juno_task/scripts/wiki_lint.py",
+    ".juno_task/scripts/workflow_runner.sh", ".juno_task/scripts/worktree_hydration.py",
+    ".juno_task/wiki", "AGENTS.md", "README.md", "juno-benchmark", "juno-code", "scripts",
+    ".pi/extensions/juno-skill-preprocessor.ts", ".juno_task/scripts/controller_checkpoint.py",
+    ".juno_task/scripts/controller_workspace.py", ".agents/skills/ralph-loop/scripts/kanban.sh",
+    ".claude/skills/ralph-loop/scripts/kanban.sh", ".juno_task/scripts/migration_inventory.py",
+    ".agents/skills/ralph-loop/references/implement.md",
+    ".claude/skills/ralph-loop/references/implement.md",
+    ".pi/skills/ralph-loop/references/implement.md", ".claude/skills/kanban-workflow/SKILL.md",
+    ".claude/skills/plan-kanban-tasks/SKILL.md", ".claude/skills/ralph-loop/SKILL.md",
+    ".claude/skills/ralph-loop/references/first_check.md",
+    ".claude/skills/understand-project/SKILL.md", ".agents/skills/kanban-workflow/SKILL.md",
+    ".agents/skills/plan-kanban-tasks/SKILL.md", ".agents/skills/ralph-loop/SKILL.md",
+    ".agents/skills/ralph-loop/references/first_check.md",
+    ".agents/skills/understand-project/SKILL.md", ".pi/skills/kanban-workflow/SKILL.md",
+    ".pi/skills/plan-kanban-tasks/SKILL.md", ".pi/skills/ralph-loop/SKILL.md",
+    ".pi/skills/ralph-loop/references/first_check.md", ".pi/skills/understand-project/SKILL.md",
+]
+OITTWR_CREATION_PATHS = [*VHC90C_CREATION_PATHS[:41], "juno_kanban",
+                         *VHC90C_CREATION_PATHS[41:]]
+HISTORICAL_CREATION_SHAPES = (
+    ("Vhc90c", VHC90C_CREATION_PATHS,
+     "199f964b6100769ed318556f4b77aeb8a4942523d7c6944e476f8ef8bb042ac9"),
+    ("0IttWR", OITTWR_CREATION_PATHS,
+     "f17804f989bbc5549eded74406983cee8c9529638cf2ae4b513b67b29cbbea12"),
+)
+
 
 DEFAULT_RESOURCE_LOCK_PATH = Path(tempfile.gettempdir()).resolve() / "yylo-real-git-managed-install.lock"
 _RESOURCE_LOCK_TOKEN: Optional[str] = None
@@ -5253,6 +5306,69 @@ steps:
                          plain["creation_receipt"]["allowed_paths"])
         self.assertEqual(create2["admission_kind"], "historical_creation")
         self.assertNotIn("admission_supersession_sha256", create2)
+
+    def test_historical_worker_receipts_preserve_exact_creation_order_and_fail_closed(self) -> None:
+        self.install_task_run_assets()
+        self.payload("start", "X")
+        original = task_runtime.read_state(self.controller)["tasks"]["X"]
+        worktree = Path(original["worktree"])
+        gate = {"dependency_evidence": [], "hydration_manifest_sha256": "a" * 64}
+        for task_shape, paths, expected_sha in HISTORICAL_CREATION_SHAPES:
+            self.assertEqual(task_runtime.stable_sha256(paths), expected_sha, task_shape)
+            self.assertNotEqual(paths, sorted(paths), task_shape)
+            record = json.loads(json.dumps(original))
+            record["creation_receipt"]["allowed_paths"] = paths
+            record["creation_receipt"]["expected_paths_sha256"] = expected_sha
+            creation_sha = task_runtime.stable_sha256(record["creation_receipt"])
+            record["workspace_identity"]["expected_paths_sha256"] = expected_sha
+            record["workspace_identity"]["create_receipt_sha256"] = creation_sha
+            git(worktree, "config", "--worktree", "juno.workspace.expectedPathsSha256",
+                expected_sha)
+            git(worktree, "config", "--worktree", "juno.workspace.createReceiptSha256",
+                creation_sha)
+            run_dir = self.controller / f"historical-order-{task_shape}"
+            run_dir.mkdir()
+            task_runtime._managed_worker_receipts(run_dir, record, gate)
+            create = json.loads((run_dir / "create-receipt.json").read_text())
+            edit = json.loads((run_dir / "edit-preflight-receipt.json").read_text())
+            self.assertEqual(create["expected_paths"], paths)
+            self.assertEqual(create["expected_paths_sha256"], expected_sha)
+            self.assertEqual(edit["allowed_paths_sha256"], expected_sha)
+
+        record = json.loads(json.dumps(original))
+        authoritative = VHC90C_CREATION_PATHS
+        authority_sha = task_runtime.stable_sha256(authoritative)
+        record["creation_receipt"]["allowed_paths"] = authoritative
+        record["creation_receipt"]["expected_paths_sha256"] = authority_sha
+        creation_sha = task_runtime.stable_sha256(record["creation_receipt"])
+        record["workspace_identity"]["expected_paths_sha256"] = authority_sha
+        record["workspace_identity"]["create_receipt_sha256"] = creation_sha
+        git(worktree, "config", "--worktree", "juno.workspace.expectedPathsSha256",
+            authority_sha)
+        git(worktree, "config", "--worktree", "juno.workspace.createReceiptSha256",
+            creation_sha)
+        mutations = (
+            (authoritative[:-1], "missing"),
+            ([*authoritative, authoritative[-1]], "duplicate"),
+            ([authoritative[1], authoritative[0], *authoritative[2:]], "reordered"),
+        )
+        for changed, label in mutations:
+            record["creation_receipt"]["allowed_paths"] = changed
+            run_dir = self.controller / f"historical-refusal-{label}"
+            run_dir.mkdir()
+            before = list(run_dir.iterdir())
+            with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                        "historical creation path authority drifted"):
+                task_runtime._managed_worker_receipts(run_dir, record, gate)
+            self.assertEqual(list(run_dir.iterdir()), before)
+        record["creation_receipt"]["allowed_paths"] = authoritative
+        git(worktree, "config", "--worktree", "juno.workspace.expectedPathsSha256", "f" * 64)
+        run_dir = self.controller / "historical-refusal-config"
+        run_dir.mkdir()
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "historical creation path authority drifted"):
+            task_runtime._managed_worker_receipts(run_dir, record, gate)
+        self.assertEqual(list(run_dir.iterdir()), [])
 
     def test_task_run_hydration_gate_detects_dependency_tree_drift_and_heals(self) -> None:
         self.install_task_run_assets()

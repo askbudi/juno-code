@@ -789,7 +789,9 @@ def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tup
     expected_paths = create.get("expected_paths")
     if (not isinstance(expected_paths, list) or not expected_paths
             or any(not isinstance(value, str) or not value for value in expected_paths)
-            or expected_paths != sorted(set(expected_paths))):
+            or len(expected_paths) != len(set(expected_paths))
+            or (admission_kind != "historical_creation"
+                and expected_paths != sorted(expected_paths))):
         raise RunnerError("worker path admission is malformed")
     if admission_kind == "historical_creation":
         role = git(root, "config", "--worktree", "--get", "juno.workspace.role", check=False)
@@ -801,6 +803,7 @@ def validate_worker(args: argparse.Namespace, controller: dict[str, Any]) -> tup
         if (create.get("schema_version") != "juno_managed_task_run_create.v1"
                 or create.get("workspace_role") != "task" or role != "task" or task != args.task_id
                 or create.get("workspace_manifest_identity") != manifest
+                or "admission_supersession_sha256" in create
                 or create.get("creation_receipt_sha256") != creation_sha
                 or create.get("expected_paths_sha256") != paths_sha or expected_sha != paths_sha
                 or create.get("clean_tip_sha") != mark["head"]):

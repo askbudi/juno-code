@@ -1004,7 +1004,9 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         subprocess.run(["git", "-C", str(self.candidate), "config", "extensions.worktreeConfig", "true"], check=True)
         workspace = {"role": "task", "taskId": "T1", "manifestIdentity": "manifest-1",
                      "createReceiptSha256": "1" * 64}
-        expected = ["allowed.txt"]
+        # Historical authority binds creation order, which may be intentionally
+        # non-lexical when managed outputs were appended after initial scope.
+        expected = ["z-appended-managed-output.txt", "allowed.txt"]
         paths_sha = hashlib.sha256(json.dumps(expected, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
         workspace["expectedPathsSha256"] = paths_sha
@@ -1033,6 +1035,7 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                 "verify_receipt_sha256": hashlib.sha256(verify_path.read_bytes()).hexdigest(),
                 "allowed_paths_sha256": paths_sha}
         edit_path = receipt_dir / "edit-preflight-receipt.json"; runner.atomic_json(edit_path, edit)
+        receipt_paths = (create_path, verify_path, edit_path)
         args = runner.argparse.Namespace(task_id="T1", create_receipt=str(create_path),
             verify_receipt=str(verify_path), edit_preflight_receipt=str(edit_path),
             candidate_sha=None, agent_root=str(self.candidate))
@@ -1058,11 +1061,25 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
                 ("branch_ref", "refs/heads/wrong", "branch/common"),
                 ("git_common_dir", str(self.tmp), "branch/common"),
                 ("admission_kind", "arbitrary", "unsupported"),
+                ("admission_supersession_sha256", "4" * 64, "creation authority"),
                 ("expected_paths_sha256", "3" * 64, "creation authority"),
                 ("workspace_role", "controller", "creation authority")):
             changed = dict(create); changed[field] = value; runner.atomic_json(create_path, changed)
+            before = {path: path.read_bytes() for path in receipt_paths}
             with self.assertRaisesRegex(runner.RunnerError, message):
                 runner.validate_worker(args, runner.controller_identity(self.controller))
+            self.assertEqual({path: path.read_bytes() for path in receipt_paths}, before)
+            create_path.write_bytes(original)
+        for changed_paths, message in (
+                (expected[:-1], "creation authority"),
+                ([*expected, expected[-1]], "path admission is malformed"),
+                (list(reversed(expected)), "creation authority")):
+            changed = dict(create); changed["expected_paths"] = changed_paths
+            runner.atomic_json(create_path, changed)
+            before = {path: path.read_bytes() for path in receipt_paths}
+            with self.assertRaisesRegex(runner.RunnerError, message):
+                runner.validate_worker(args, runner.controller_identity(self.controller))
+            self.assertEqual({path: path.read_bytes() for path in receipt_paths}, before)
             create_path.write_bytes(original)
         verify_path.write_text(json.dumps(verify, indent=2) + "\n")
         with self.assertRaisesRegex(runner.RunnerError, "bytes are not canonical"):

@@ -5941,11 +5941,40 @@ def _managed_worker_receipts(run_dir: Path, record: dict[str, Any],
     # Worker path authority is the effective admission: an authorized umbrella
     # supersession union is authoritative over the historical creation receipt.
     admitted_paths, _generated_admission, admission_kind = effective_admission(record)
+    if admission_kind == "historical_creation":
+        # Creation order is immutable authority. Older creation receipts append
+        # managed outputs after their original scope, so sorting here invents a
+        # different digest even though the path set is unchanged.
+        expected_paths = list(admitted_paths)
+        expected_paths_sha256 = stable_sha256(expected_paths)
+        creation_receipt = record.get("creation_receipt", {})
+        workspace_identity = record.get("workspace_identity", {})
+        configured_sha256 = git(
+            worktree, "config", "--worktree", "--get",
+            "juno.workspace.expectedPathsSha256", check=False)
+        configured_creation_sha256 = git(
+            worktree, "config", "--worktree", "--get",
+            "juno.workspace.createReceiptSha256", check=False)
+        if (not expected_paths
+                or any(not isinstance(value, str) or not value for value in expected_paths)
+                or len(expected_paths) != len(set(expected_paths))
+                or creation_receipt.get("expected_paths_sha256") != expected_paths_sha256
+                or stable_sha256(creation_receipt)
+                   != workspace_identity.get("create_receipt_sha256")
+                or configured_creation_sha256
+                   != workspace_identity.get("create_receipt_sha256")
+                or workspace_identity.get("expected_paths_sha256") != expected_paths_sha256
+                or configured_sha256 != expected_paths_sha256):
+            raise TaskWorkspaceError("historical creation path authority drifted")
+    else:
+        # Modern superseding admission remains canonical and sorted.
+        expected_paths = sorted(admitted_paths)
+        expected_paths_sha256 = stable_sha256(expected_paths)
     create = {"schema_version": "juno_managed_task_run_create.v1",
               "task_id": record["task_id"], "worktree": str(worktree.resolve()),
               "branch_ref": record["branch_ref"], "git_common_dir": common,
-              "expected_paths": sorted(admitted_paths),
-              "expected_paths_sha256": stable_sha256(sorted(admitted_paths)),
+              "expected_paths": expected_paths,
+              "expected_paths_sha256": expected_paths_sha256,
               "admission_kind": admission_kind, "workspace_role": "task",
               "clean_tip_sha": git(worktree, "rev-parse", "HEAD"),
               "creation_receipt_sha256": record["workspace_identity"]["create_receipt_sha256"],
@@ -5970,7 +5999,7 @@ def _managed_worker_receipts(run_dir: Path, record: dict[str, Any],
             "tip_sha": git(worktree, "rev-parse", "HEAD"),
             "create_receipt_sha256": create_ref["sha256"],
             "verify_receipt_sha256": verify_ref["sha256"],
-            "allowed_paths_sha256": stable_sha256(sorted(admitted_paths))}
+            "allowed_paths_sha256": expected_paths_sha256}
     lifecycle_runtime.atomic_json(paths[2], edit, exclusive=True)
     return paths
 
