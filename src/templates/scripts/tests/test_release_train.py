@@ -74,9 +74,35 @@ class ReleaseTrainTests(unittest.TestCase):
         self.write_board()
         wrapper = self.root / ".juno_task/scripts/kanban.sh"
         wrapper.write_text("""#!/usr/bin/env python3
-import json,pathlib,sys
-board=json.loads(pathlib.Path(__file__).resolve().parents[1].joinpath('board.json').read_text())
-if sys.argv[1]=='get' and sys.argv[2] in board: print(json.dumps([board[sys.argv[2]]])); raise SystemExit(0)
+import hashlib,json,pathlib,sys
+root=pathlib.Path(__file__).resolve().parents[1]; board_path=root/'board.json'
+board=json.loads(board_path.read_text()); args=sys.argv[1:]
+while args and args[0] in {'-f','--format'}: args=args[2:]
+if args and args[0]=='--raw': args=args[1:]
+def revision(task):
+    return hashlib.sha256(json.dumps(task,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def receipt():
+    if '--receipt-file' in args:
+        path=pathlib.Path(args[args.index('--receipt-file')+1]); path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text(json.dumps({'fixture':True,'revision':revision(board[task_id])})+'\\n')
+if args[0]=='get' and args[1] in board: print(json.dumps([board[args[1]]])); raise SystemExit(0)
+if args[0]=='history' and args[1] in board:
+    print(json.dumps([{'after_sha256':revision(board[args[1]])}])); raise SystemExit(0)
+if args[0] in {'mark','update'}:
+    task_id=args[args.index('--id')+1] if args[0]=='mark' else args[1]; task=board[task_id]
+    if '--expected-revision' in args and args[args.index('--expected-revision')+1] != revision(task):
+        print('stale task revision',file=sys.stderr); raise SystemExit(2)
+    if args[0]=='mark':
+        task['status']=args[1]; task['commit_hash']=args[args.index('--commit')+1]
+        task['agent_response']=pathlib.Path(args[args.index('--response-file')+1]).read_text()
+    else:
+        if '--status' in args: task['status']=args[args.index('--status')+1]
+        fields=task.setdefault('fields',{})
+        for index,value in enumerate(args):
+            if value=='--field':
+                key,encoded=args[index+1].split('=',1); fields[key]=json.loads(encoded)
+    task['last_modified']=revision(task); board_path.write_text(json.dumps(board)+'\\n'); receipt()
+    print(json.dumps(task)); raise SystemExit(0)
 raise SystemExit(2)
 """)
         wrapper.chmod(0o755)
@@ -268,6 +294,26 @@ raise SystemExit(2)
         declaration["optional_tasks"] = ["OLD"]
         self.declaration.write_text(json.dumps(declaration, sort_keys=True) + "\n")
         return old, req
+
+    def prepare_three_member_epoch(self) -> list[str]:
+        """Reproduce the real three-member stale Ledger projection on real Git tips."""
+        tree = run(self.root, "git", "rev-parse", f"{self.base}^{{tree}}")
+        tips = []
+        for sequence, task_id in enumerate(("OLD", "REQ", "DEP"), 1):
+            tip = subprocess.check_output(["git", "commit-tree", tree, "-p", self.base], cwd=self.root,
+                                          text=True, input=f"{task_id} candidate\n").strip()
+            tips.append(tip)
+            self.state["tasks"].setdefault(task_id, {"task_id": task_id, "state": "QUEUED",
+                "target_ref": "refs/heads/product", "changed_paths": [f"src/{task_id.lower()}"]})
+            self.state["tasks"][task_id].update({"tip_sha": tip, "enqueue_sequence": sequence,
+                "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
+                    "closure_sha256": "c" * 64, "tip_sha": tip, "tree_sha": tree},
+                "validation": [{"status": "passed", "receipt_id": task_id}]})
+            self.board[task_id].update(status="in_progress", blocked_by=[])
+        self.write_state(); self.write_board()
+        self.write_declaration(["OLD", "REQ", "DEP"], [
+            {"before": "OLD", "after": "REQ"}, {"before": "REQ", "after": "DEP"}])
+        return tips
 
     def commit_files_tree(self, parent: str, paths: list[str], content: str, message: str) -> str:
         with tempfile.NamedTemporaryFile() as stream:
@@ -978,8 +1024,68 @@ raise SystemExit(2)
         for tip in (old, req):
             subprocess.run(["git", "merge-base", "--is-ancestor", tip,
                             state["composition"]["tip_sha"]], cwd=self.root, check=True)
-        # Retry is observation-only and cannot duplicate commits, validation, or CAS.
+        finalization = (self.root / ".juno_task/runtime/release-epoch-finalization/rc-1/journal.json")
+        self.assertTrue(finalization.is_file())
+        self.assertTrue(all(self.board_path.is_file() for _ in [0]))
+        board = json.loads(self.board_path.read_text())
+        self.assertTrue(all(board[task_id]["status"] == "done" for task_id in ("OLD", "REQ")))
+        # Retry is observation-only and cannot duplicate commits, validation, CAS, or Ledger writes.
         self.assertEqual(state, runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"]))
+
+    def test_three_member_terminal_projection_resumes_after_interruption_and_is_idempotent(self) -> None:
+        tips = self.prepare_three_member_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        cas_calls = 0
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            nonlocal cas_calls
+            cas_calls += 1; run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        import merge_queue
+        actual_finalize = merge_queue.finalize_kanban_task
+        calls = 0
+        def interrupted(controller: Path, attempt: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls == 2: raise runtime.ReleaseTrainError("seeded interruption")
+            return actual_finalize(controller, attempt)
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas), \
+             mock.patch("merge_queue.finalize_kanban_task", side_effect=interrupted):
+            with self.assertRaisesRegex(runtime.ReleaseTrainError, "seeded interruption"):
+                runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("INTEGRATED", runtime.read_epoch(self.root, "rc-1")["state"])
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas):
+            complete = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual("RELEASE_READY", complete["state"]); self.assertEqual(1, cas_calls)
+        board = json.loads(self.board_path.read_text())
+        for task_id, tip in zip(("OLD", "REQ", "DEP"), tips):
+            self.assertEqual("done", board[task_id]["status"])
+            self.assertEqual(tip, board[task_id]["commit_hash"])
+            self.assertEqual("MERGED", board[task_id]["fields"]["lifecycle_state"])
+        repeated = runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
+        self.assertIsNotNone(repeated["completed_receipt"])
+
+    def test_terminal_projection_tamper_and_target_drift_refuse_without_ledger_mutation(self) -> None:
+        self.prepare_three_member_epoch(); sealed = runtime.seal_epoch(self.root, self.declaration)
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas), \
+             mock.patch.object(runtime, "reconcile_epoch_members", return_value={}):
+            complete = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        before = self.board_path.read_bytes()
+        cas_path = Path(next(row["path"] for row in complete["receipts"]
+                             if row["transition"] == "CAS_COMPLETE"))
+        original = cas_path.read_bytes(); cas_path.write_bytes(original + b" ")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "receipt path or hash drifted"):
+            runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
+        self.assertEqual(before, self.board_path.read_bytes())
+        cas_path.write_bytes(original)
+        run(self.root, "git", "commit", "--allow-empty", "-m", "target moved")
+        moved = run(self.root, "git", "rev-parse", "HEAD")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "protected target moved"):
+            runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
+        self.assertNotEqual(complete["cas"]["readback"], moved)
+        self.assertEqual(before, self.board_path.read_bytes())
 
     def test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate(self) -> None:
         package = {"name": "fixture", "version": "1.0.0", "private": True}

@@ -35,6 +35,7 @@ describe('release train CLI', () => {
       expect(command(name)?.description()).toContain('Read-only');
     }
     expect(command('epoch-status')?.description()).toContain('Read-only');
+    expect(command('reconcile-members')?.description()).toContain('Receipt-bound');
     expect(command('shadow')?.description()).toContain('Read-only');
     expect(command('seal')?.description()).toContain('Explicitly close admission');
     expect(command('drive')?.description()).toContain('one target CAS');
@@ -74,6 +75,16 @@ describe('release train CLI', () => {
       '--predecessor-epoch', 'historical', '--receipt', '/recovery.json',
       '--epoch-token', 'exact-token', '--json',
     ]);
+  });
+
+  it('forwards receipt-bound member reconciliation with exact target identity', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureReleaseTrainCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'reconcile-members', 'epoch-1',
+      '--expected-target', 'a'.repeat(40), '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('reconcile-members', 'epoch-1',
+      ['--expected-target', 'a'.repeat(40), '--json']);
   });
 
   it('forwards fenced aggregate retry without weakening token identity', async () => {

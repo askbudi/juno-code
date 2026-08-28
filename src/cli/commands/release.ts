@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'drive' | 'eject' | 'repair' | 'replay-repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'reconcile-members' | 'drive' | 'eject' | 'repair' | 'replay-repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -59,8 +59,17 @@ export function configureReleaseTrainCommand(
     .action((epochId: string, options: { json?: boolean }) => invoke(
       'epoch-status', epochId, options.json ? ['--json'] : [],
     ));
+  train.command('reconcile-members')
+    .description('Receipt-bound terminal Ledger recovery for every exact integrated epoch member')
+    .argument('<epoch-id>', 'Receipt-proven integrated epoch identity')
+    .requiredOption('--expected-target <sha>', 'Exact current protected-target readback')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: { expectedTarget: string; json?: boolean }) => invoke(
+      'reconcile-members', epochId,
+      ['--expected-target', options.expectedTarget, ...(options.json ? ['--json'] : [])],
+    ));
   train.command('drive')
-    .description('Fenced epoch mutation through composition, aggregate gates, and one target CAS')
+    .description('Fenced epoch mutation through composition, aggregate gates, terminal member projection, and one target CAS')
     .argument('<epoch-id>', 'Sealed epoch identity')
     .requiredOption('--epoch-token <token>', 'Exact fencing token emitted once by seal')
     .option('--json', 'Emit stable versioned JSON')

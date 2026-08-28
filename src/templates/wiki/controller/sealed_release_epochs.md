@@ -167,9 +167,23 @@ evidence, and the target base. Target movement preserves the epoch as
 `STALE`; create a successor seal on the new base and reuse only exact closures.
 
 A successful CAS advances the protected ref once, advances/readbacks the
-registered integration owner through the canonical merge owner, and emits
-`juno_release_epoch_readiness.v1`. That receipt grants no tag, package release,
-push, publication, deployment, production mutation, or cleanup authority.
+registered integration owner through the canonical merge owner, then revision-CAS
+projects every exact admitted member to canonical Ledger `done` / lifecycle
+`MERGED` before emitting `juno_release_epoch_readiness.v1`. Member finalization
+has a separate immutable journal and resumes after interruption without another
+CAS. For an older receipt-proven `RELEASE_READY` epoch whose Ledger projection was
+interrupted or omitted, use the explicit typed recovery bound to the exact current
+target readback:
+
+```bash
+yy release train reconcile-members EPOCH_ID --expected-target TARGET_SHA --json
+```
+
+Recovery verifies the seal, complete receipt chain, CAS/readiness, ordered member
+tips and ancestry, queue/task identities, and current Ledger revisions. It refuses
+target/replay drift and never substitutes direct Ledger mutation. Readiness grants
+no tag, package release, push, publication, deployment, production mutation, or
+cleanup authority.
 
 ## Shadow canary and rollback
 

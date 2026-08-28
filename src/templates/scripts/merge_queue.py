@@ -2354,6 +2354,10 @@ def persist_advisory_followups(controller: Path, task_id: str, candidate_sha: st
 
 def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str, Any]:
     task_id, candidate = attempt["task_id"], attempt["candidate_sha"]
+    expected_revision = attempt.get("expected_kanban_revision")
+    if expected_revision is not None and (not isinstance(expected_revision, str)
+            or not re.fullmatch(r"[0-9a-f]{16,128}", expected_revision)):
+        raise MergeQueueError("Kanban finalization expected revision is malformed")
     task = read_kanban_task(controller, task_id)
     if task.get("status") == "done":
         if task.get("commit_hash") != candidate:
@@ -2369,7 +2373,13 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
                 "lifecycle_projection": lifecycle.get("outcome")}
     response = task.get("agent_response")
     if not isinstance(response, str) or not response.strip():
-        response = f"Integrated through the guarded merge queue at {candidate}."
+        terminal_evidence = attempt.get("terminal_evidence")
+        if isinstance(terminal_evidence, dict) and terminal_evidence.get("epoch_id"):
+            response = (f"Integrated through receipt-proven release epoch "
+                        f"{terminal_evidence['epoch_id']} at {candidate}; "
+                        f"CAS receipt {terminal_evidence.get('cas_receipt_id', 'unknown')}.")
+        else:
+            response = f"Integrated through the guarded merge queue at {candidate}."
     receipt_path = (controller / ".juno_task/runtime/merge-queue/finalization"
                     / task_id / f"{candidate}.json")
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2383,6 +2393,7 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
         result = subprocess.run([
             str(wrapper), "mark", "done", "--id", task_id,
             "--response-file", response_name, "--commit", candidate,
+            *(["--expected-revision", expected_revision] if expected_revision else []),
             "--receipt-file", str(receipt_path),
         ], cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
     finally:
