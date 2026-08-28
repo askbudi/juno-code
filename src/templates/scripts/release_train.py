@@ -1446,9 +1446,9 @@ PHASE1_ENV_ALLOWLIST = (
 )
 
 
-def _phase1_suite_argv(worktree: Path, output: Path) -> list[str]:
+def _phase1_suite_argv(controller: Path, worktree: Path, output: Path) -> list[str]:
     script = (worktree.resolve() / PHASE1_COMMITTED_PATHS[0]).resolve()
-    return [str(Path(sys.executable).resolve()), str(script), "--controller", str(worktree.resolve()),
+    return [str(Path(sys.executable).resolve()), str(script), "--controller", str(controller.resolve()),
             "phase1-suite", "--task-id", "V9vE0X", "--worktree", str(worktree.resolve()),
             "--output", str(output.resolve())]
 
@@ -1465,7 +1465,7 @@ def phase1_suite_receipt(controller: Path, task_id: str, worktree: Path,
                              "tests": list(PHASE1_SUITE_TESTS)})
     expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
                        / f"phase1-suite-{suite_identity}.json")
-    expected_argv = _phase1_suite_argv(worktree, expected_output)
+    expected_argv = _phase1_suite_argv(controller, worktree, expected_output)
     if task_id != "V9vE0X" or output != expected_output or producer_argv != expected_argv:
         blockers.append("suite.routing")
     if file_hash(test_path) != test_blob:
@@ -1618,7 +1618,7 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
             or suite_receipt.get("tip_sha") != proof.get("tip_sha")
             or suite_receipt.get("tree_sha") != proof.get("tree_sha")
             or Path((suite.get("receipt") or {}).get("path", ".")).resolve() != expected_suite_output.resolve()
-            or suite_argv != _phase1_suite_argv(worktree, expected_suite_output)
+            or suite_argv != _phase1_suite_argv(controller, worktree, expected_suite_output)
             or suite_receipt.get("test_blob_sha256") != _git_blob_hash(
                 worktree, proof.get("tip_sha", ""), PHASE1_COMMITTED_PATHS[1])
             or suite_receipt.get("tests") != list(PHASE1_SUITE_TESTS)

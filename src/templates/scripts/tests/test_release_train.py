@@ -561,7 +561,7 @@ raise SystemExit(2)
             "test_blob_sha256": runtime._git_blob_hash(self.root, tip_sha,
                 runtime.PHASE1_COMMITTED_PATHS[1]), "tests": list(runtime.PHASE1_SUITE_TESTS)})
         suite_path = evidence_root / f"phase1-suite-{suite_identity}.json"
-        suite_command = runtime._phase1_suite_argv(self.root, suite_path)
+        suite_command = runtime._phase1_suite_argv(self.root, self.root, suite_path)
         suite_watch = subprocess.run([yy, "watch", "exec", "--timeout", "120", "--", *suite_command],
             cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         suite_records = [json.loads(line) for line in suite_watch.stdout.splitlines()
