@@ -971,9 +971,50 @@ def _proven_forecast_composition(controller: Path, repository: Path, task_id: st
     return matches[0] if matches else None
 
 
+def _forecast_declaration_identity(plan: dict[str, Any]) -> tuple[str, Optional[dict[str, Any]]]:
+    """Read a native identity or deterministically adapt one legacy immutable declaration.
+
+    The adapter grants no authority: it accepts only the exact bytes already named by
+    the historical seal and returns typed incompatibility for every incomplete or
+    ambiguous shape.  It never writes to the declaration or epoch registry.
+    """
+    declaration = plan.get("declaration")
+    if not isinstance(declaration, dict):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_reference_missing")
+    native = declaration.get("identity_sha256")
+    if native is not None:
+        if not isinstance(native, str) or not re.fullmatch(r"[0-9a-f]{64}", native):
+            raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_identity_ambiguous")
+        return native, None
+    if (plan.get("schema_version") != EPOCH_PLAN_SCHEMA
+            or set(declaration) != {"path", "sha256", "revision"}
+            or not isinstance(declaration.get("revision"), int)
+            or isinstance(declaration.get("revision"), bool)
+            or not re.fullmatch(r"[0-9a-f]{64}", declaration.get("sha256", ""))):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_reference_ambiguous")
+    path = Path(declaration["path"]).expanduser().resolve()
+    if not path.is_file():
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_missing")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != declaration["sha256"]:
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_tampered")
+    try:
+        value = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_invalid")
+    if (not isinstance(value, dict) or value.get("schema_version") != DECLARATION_SCHEMA
+            or value.get("revision") != declaration["revision"]
+            or value.get("train_id") != plan.get("epoch_id")):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_binding_mismatch")
+    identity = digest({key: item for key, item in value.items() if key != "conflict_authority"})
+    adapter = {"schema_version": "juno_release_epoch_legacy_declaration_identity.v1",
+               "source_sha256": declaration["sha256"], "derived_identity_sha256": identity}
+    return identity, adapter
+
+
 def _forecast_input_identity(plan: dict[str, Any]) -> dict[str, Any]:
-    declaration = plan["declaration"]
-    return {"base_sha": plan["base_sha"], "order": plan["order"],
+    declaration_identity, adapter = _forecast_declaration_identity(plan)
+    value = {"base_sha": plan["base_sha"], "order": plan["order"],
         "members": [{"task_id": row["task_id"], "tip_sha": row["tip_sha"],
             "tree_sha": row["tree_sha"], "task_revision": row["task_revision"],
             "task_sha256": row["task_sha256"],
@@ -982,7 +1023,8 @@ def _forecast_input_identity(plan: dict[str, Any]) -> dict[str, Any]:
             "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
             for row in plan["members"]],
         "runtime_sha256": plan["runtime_sha256"], "policy_sha256": plan["policy_sha256"],
-        "declaration_identity_sha256": declaration["identity_sha256"]}
+        "declaration_identity_sha256": declaration_identity}
+    return {**value, "legacy_declaration_identity": adapter} if adapter else value
 
 
 def _conflict_authority(plan: dict[str, Any], envelope: Optional[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], list[str]]:
@@ -1468,6 +1510,7 @@ PHASE1_SUITE_TESTS = (
     "ReleaseTrainTests.test_epoch_seal_refuses_required_missing_closure_without_state",
     "ReleaseTrainTests.test_rc7_rc8_serial_conflicts_fit_one_conservative_repair_set",
     "ReleaseTrainTests.test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity",
+    "ReleaseTrainTests.test_legacy_epoch_identity_adapter_is_deterministic_typed_and_read_only",
     "ReleaseTrainTests.test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair",
     "ReleaseTrainTests.test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once",
     "ReleaseTrainTests.test_bootstrap_reconciliation_finalizes_only_exact_ancestry_members",

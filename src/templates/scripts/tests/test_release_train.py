@@ -463,6 +463,52 @@ raise SystemExit(2)
         self.assertEqual(before_refs, run(self.root, "git", "for-each-ref",
                                           "--format=%(refname) %(objectname)"))
 
+    def test_legacy_epoch_identity_adapter_is_deterministic_typed_and_read_only(self) -> None:
+        self.prepare_serial_conflict_epoch()
+        plan = runtime.build_epoch_plan(self.root, self.declaration)
+        native_identity = plan["declaration"]["identity_sha256"]
+        source = Path(plan["declaration"]["path"])
+        legacy = json.loads(json.dumps(plan))
+        legacy["declaration"].pop("identity_sha256")
+        before = {"source": source.read_bytes(),
+                  "status": run(self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"),
+                  "refs": run(self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)"),
+                  "objects": run(self.root, "git", "count-objects", "-v")}
+        first = runtime._forecast_input_identity(legacy)
+        second = runtime._forecast_input_identity(legacy)
+        self.assertEqual(first, second)
+        self.assertEqual(native_identity, first["declaration_identity_sha256"])
+        self.assertEqual("juno_release_epoch_legacy_declaration_identity.v1",
+                         first["legacy_declaration_identity"]["schema_version"])
+        self.assertEqual(legacy["declaration"]["sha256"],
+                         first["legacy_declaration_identity"]["source_sha256"])
+
+        variants = {
+            "declaration_reference_ambiguous": {**legacy,
+                "declaration": {"path": str(source), "revision": 1}},
+            "declaration_identity_ambiguous": {**legacy,
+                "declaration": {**legacy["declaration"], "identity_sha256": "ambiguous"}},
+            "declaration_bytes_missing": {**legacy,
+                "declaration": {**legacy["declaration"], "path": str(self.root / "missing.json")}},
+        }
+        for code, candidate in variants.items():
+            with self.subTest(code=code), self.assertRaisesRegex(
+                    runtime.ReleaseTrainError, "legacy_epoch_evidence_incompatible:" + code):
+                runtime._forecast_input_identity(candidate)
+        tampered = self.root / "legacy-tampered.json"
+        tampered.write_bytes(source.read_bytes() + b"\\n")
+        candidate = {**legacy, "declaration": {**legacy["declaration"], "path": str(tampered)}}
+        with self.assertRaisesRegex(runtime.ReleaseTrainError,
+                                    "legacy_epoch_evidence_incompatible:declaration_bytes_tampered"):
+            runtime._forecast_input_identity(candidate)
+        tampered.unlink()
+        self.assertEqual(before["source"], source.read_bytes())
+        self.assertEqual(before["status"], run(
+            self.root, "git", "status", "--porcelain=v1", "--untracked-files=all"))
+        self.assertEqual(before["refs"], run(
+            self.root, "git", "for-each-ref", "--format=%(refname) %(objectname)"))
+        self.assertEqual(before["objects"], run(self.root, "git", "count-objects", "-v"))
+
     def test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity(self) -> None:
         self.prepare_serial_conflict_epoch()
         plan = runtime.build_epoch_plan(self.root, self.declaration)
@@ -489,11 +535,10 @@ raise SystemExit(2)
         authority_path.write_text(json.dumps(original, sort_keys=True) + "\n")
 
     def test_phase1_acceptance_cli_replays_semantics_and_correlates_watched_producer(self) -> None:
+        """The excluded driver performs only one positive typed orchestration."""
         self.prepare_serial_conflict_epoch(preserve_runtime=True)
         plan = runtime.build_epoch_plan(self.root, self.declaration)
         manifest = plan["conflict_manifest"]
-        evidence_root = self.root / ".juno_task/runtime/phase-evidence/V9vE0X"
-        evidence_root.mkdir(parents=True)
         proven = next(row for row in manifest["compositions"]
                       if row.get("decision") == "conflict_replayed")
         receipt_path = Path(proven["proven_composition"]["receipt_path"])
@@ -505,295 +550,30 @@ raise SystemExit(2)
             "serial_conflicts": [row["task_id"] for row in manifest["conflicts"]],
             "proven_compositions": [{"task_id": proven["task_id"],
                 "commit": proven["post_sha"], "tree": proven["post_tree"],
-                "receipt": receipt, "receipt_bytes_b64": base64.b64encode(receipt_path.read_bytes()).decode(),
+                "receipt": receipt,
+                "receipt_bytes_b64": base64.b64encode(receipt_path.read_bytes()).decode(),
                 "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}]}
-        fixture_path = evidence_root / "portable.json"
+        fixture_path = self.root / ".juno_task/runtime/phase-evidence/V9vE0X/orchestration.json"
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
         fixture_path.write_text(runtime.canonical(fixture) + "\n")
-        tip_sha = run(self.root, "git", "rev-parse", "HEAD")
-        tree_sha = run(self.root, "git", "rev-parse", "HEAD^{tree}")
-        script_path = self.root / ".juno_task/scripts/release_train.py"
         executable = str(Path(sys.executable).resolve())
-        declaration_ref, authority_ref = runtime._phase1_publish_declaration(
-            self.root, "V9vE0X", self.declaration)
-        fixture_ref = runtime._phase1_publish_input(self.root, "V9vE0X", "fixture", fixture_path)
-        repository_snapshot = runtime._phase1_repository_snapshot(self.root)
-        input_identity = runtime.phase1_input_identity("V9vE0X", self.root, tip_sha, tree_sha,
-            declaration_ref, fixture_ref, executable, script_path, repository_snapshot)
-        proof_path = evidence_root / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json'
-        command = [executable, str(script_path), "--controller", str(self.root),
-            "phase1-prove", "--declaration", str(self.declaration), "--fixture", str(fixture_path),
-            "--task-id", "V9vE0X", "--worktree", str(self.root), "--output", str(proof_path)]
-        yy = shutil.which("yy")
-        self.assertIsNotNone(yy, "yy watch is required for Phase-1 evidence tests")
-        watch_env = {key: value for key, value in os.environ.items()
-                     if key not in {"JUNO_TASK_ROOT", "JUNO_CONTROLLER_SOURCE",
-                                    "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT"}
-                     and not key.startswith("JUNO_CONTROL_")}
-        watched = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *command],
-            cwd=self.root, env=watch_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        records = [json.loads(line) for line in watched.stdout.splitlines()
-                   if line.startswith("{") and line.endswith("}")]
-        watch_record = next(row for row in reversed(records)
-                            if row.get("schema_version") == "juno.watch-run.v1")
-        inner_log = (self.root / ".juno_task/runtime/watch-runs" /
-                     watch_record["run_id"] / "combined.log")
-        diagnostic = inner_log.read_text() if inner_log.is_file() else "inner watch log unavailable"
-        if proof_path.is_file() and watched.returncode:
-            failed_proof = json.loads(proof_path.read_text())
-            actual_snapshot = (failed_proof.get("input_identity") or {}).get("repository_snapshot")
-            changed_snapshot_fields = sorted(key for key in repository_snapshot
-                                             if repository_snapshot.get(key) != (actual_snapshot or {}).get(key))
-            diagnostic += "\nrepository snapshot drift fields=" + ",".join(changed_snapshot_fields)
-        self.assertEqual(0, watched.returncode, watched.stderr + watched.stdout + diagnostic)
-        proof = json.loads(proof_path.read_text())
-        self.assertEqual("PASS", proof["decision"])
-        self.assertEqual(input_identity, proof["input_identity"])
-        self.assertIn(input_identity["input_sha256"], proof_path.name)
-        self.assertTrue(all(row["working_sha256"] == row["blob_sha256"]
-                            for row in proof["input_identity"]["committed_files"]))
-        self.assertEqual(executable, proof["input_identity"]["runtime"]["executable_path"])
-        run_id = watch_record["run_id"]
-        watch_root = self.root / ".juno_task/runtime/watch-runs" / run_id
-        self.assertTrue((watch_root / "run.json").is_file())
-        self.assertTrue((watch_root / "footer").is_file())
-        footer = (watch_root / "footer").read_text()
-        def ref(path: Path) -> dict[str, str]:
-            return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        def watch_ref(record: dict[str, object]) -> dict[str, str]:
-            root = self.root / ".juno_task/runtime/watch-runs" / str(record["run_id"])
-            return {"run_id": str(record["run_id"]),
-                    "footer_sha256": hashlib.sha256((root / "footer").read_bytes()).hexdigest()}
-        # The watched producer executes the exact committed focused suite and owns all
-        # result/runtime/environment fields. The closure carries references only.
-        suite_env = {**watch_env, "JUNO_TASK_ROOT": str(self.root),
-                     "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict"}
-        test_blob = runtime._git_blob_hash(self.root, tip_sha, runtime.PHASE1_COMMITTED_PATHS[1])
-        suite_manifest = {**runtime.PHASE1_SUITE_MANIFEST, "test_blob_sha256": test_blob}
-        evidence_context = runtime.digest(watch_ref(watch_record))
-        suite_identity = runtime.digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
-            "manifest_sha256": runtime.digest(suite_manifest),
-            "evidence_context": evidence_context})
-        suite_path = evidence_root / f"phase1-suite-{suite_identity}.json"
-        suite_command = runtime._phase1_suite_argv(
-            self.root, self.root, suite_path, evidence_context)
-        suite_watch = subprocess.run([yy, "watch", "exec", "--timeout", "120", "--", *suite_command],
-            cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        suite_records = [json.loads(line) for line in suite_watch.stdout.splitlines()
-                         if line.startswith("{") and line.endswith("}")]
-        suite_record = next(row for row in reversed(suite_records)
-                            if row.get("schema_version") == "juno.watch-run.v1")
-        suite_root = self.root / ".juno_task/runtime/watch-runs" / suite_record["run_id"]
-        self.assertEqual(0, suite_watch.returncode, suite_watch.stderr + suite_watch.stdout
-                         + ((suite_root / "combined.log").read_text() if suite_root.is_dir() else ""))
-        suite_receipt = json.loads(suite_path.read_text())
-        self.assertEqual("PASS", suite_receipt["decision"])
-        self.assertEqual(len(runtime.PHASE1_SUITE_TESTS), suite_receipt["result"]["test_count"])
-        self.assertEqual(suite_manifest, suite_receipt["suite_manifest"])
-        self.assertEqual(set(runtime.PHASE1_ENV_KEYS), set(suite_receipt["observed_environment"]))
-        self.assertEqual(sorted([*runtime.PHASE1_SUITE_TESTS, runtime.PHASE1_ORCHESTRATION_TEST]),
-                         suite_receipt["discovered_tests"])
-        self.assertFalse((self.root / ".juno_task/scripts/tests/.juno_task/runtime/watch-runs"
-                          / suite_record["run_id"]).exists())
-        closure = {"schema_version": runtime.PHASE1_CLOSURE_SCHEMA, "proof": ref(proof_path),
-            "watch": {"run_id": run_id, "footer_sha256": hashlib.sha256(footer.encode()).hexdigest()},
-            "suite": {"watch": watch_ref(suite_record), "receipt": ref(suite_path)}}
-        checked = {"proof_sha256": proof["proof_sha256"],
-            "input_sha256": proof["input_identity"]["input_sha256"],
-            "declaration": proof["declaration"], "authority": proof["authority"],
-            "fixture": proof["fixture"], "manifest_sha256": proof["manifest"]["manifest_sha256"],
-            "proof_watch": closure["watch"], "suite_receipt_sha256": suite_receipt["receipt_sha256"],
-            "suite_watch": closure["suite"]["watch"], "suite_argv": suite_receipt["producer_argv"],
-            "suite_command": suite_receipt["suite_command"], "suite_cwd": suite_receipt["suite_cwd"],
-            "suite_manifest": suite_receipt["suite_manifest"],
-            "suite_manifest_sha256": suite_receipt["suite_manifest_sha256"],
-            "suite_runtime": suite_receipt["runtime"],
-            "suite_environment": suite_receipt["observed_environment"],
-            "suite_environment_sha256": suite_receipt["environment_sha256"],
-            "suite_result": suite_receipt["result"]}
-        closure_sha = runtime.digest(checked)
-        closure_path = evidence_root / "closure.json"; closure_path.write_text(runtime.canonical(closure) + "\n")
-        evaluation = evidence_root / f"phase1-evaluation-{closure_sha}.json"
-        accept = [executable, str(script_path), "--controller", str(self.root),
-            "phase1-accept", "--closure", str(closure_path), "--output", str(evaluation)]
-        acceptance_watch = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *accept],
-            cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        acceptance_records = [json.loads(line) for line in acceptance_watch.stdout.splitlines()
-                              if line.startswith("{") and line.endswith("}")]
-        acceptance_record = next(row for row in reversed(acceptance_records)
-                                 if row.get("schema_version") == "juno.watch-run.v1")
-        acceptance_log = (self.root / ".juno_task/runtime/watch-runs" /
-                          acceptance_record["run_id"] / "combined.log")
-        self.assertEqual(0, acceptance_watch.returncode,
-                         acceptance_watch.stderr + acceptance_watch.stdout
-                         + (acceptance_log.read_text() if acceptance_log.is_file() else ""))
-        evaluation_receipt = json.loads(evaluation.read_text())
-        self.assertEqual("PASS", evaluation_receipt["decision"], evaluation_receipt)
-        output = evidence_root / f"phase1-acceptance-{closure_sha}.json"
-        receipt_result = runtime.phase1_finalize_acceptance(
-            self.root, ref(evaluation), watch_ref(acceptance_record), output)
-        self.assertEqual("PASS", receipt_result["decision"], receipt_result)
-        self.assertEqual(receipt_result, runtime.phase1_finalize_acceptance(
-            self.root, ref(evaluation), watch_ref(acceptance_record), output))
-
-        # An unrelated successful command cannot substitute for the suite even with
-        # caller-forged PASS/count/blob/environment fields.
-        help_command = [executable, str(script_path), "--help"]
-        help_watch = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *help_command],
-            cwd=self.root, env=suite_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        help_records = [json.loads(line) for line in help_watch.stdout.splitlines()
-                        if line.startswith("{") and line.endswith("}")]
-        help_record = next(row for row in reversed(help_records)
-                           if row.get("schema_version") == "juno.watch-run.v1")
-        self.assertEqual(0, help_watch.returncode)
-        forged_suite = json.loads(suite_path.read_text())
-        forged_suite["producer_argv"] = help_command
-        forged_suite["result"] = {"outcome": "PASS", "test_count": len(runtime.PHASE1_SUITE_TESTS),
-            "exit_code": 0, "output_sha256": hashlib.sha256(
-                (self.root / ".juno_task/runtime/watch-runs" / help_record["run_id"] /
-                 "combined.log").read_bytes()).hexdigest()}
-        forged_body = {key: value for key, value in forged_suite.items() if key != "receipt_sha256"}
-        forged_suite["receipt_sha256"] = runtime.digest(forged_body)
-        forged_suite_path = evidence_root / "forged-suite.json"
-        forged_suite_path.write_text(runtime.canonical(forged_suite) + "\n")
-        forged_closure = {**closure, "suite": {"watch": watch_ref(help_record),
-                                                "receipt": ref(forged_suite_path)}}
-        forged_closure_path = evidence_root / "forged-closure.json"
-        forged_closure_path.write_text(runtime.canonical(forged_closure) + "\n")
-        rejected = runtime.phase1_acceptance_receipt(self.root, forged_closure_path, evaluation, accept)
-        self.assertEqual("FAIL", rejected["decision"])
-        self.assertIn("suite.closure", rejected["blocking_reason_codes"])
-
-        original_suite = suite_path.read_bytes()
-        environment = suite_receipt["observed_environment"]
-        missing_environment = dict(environment); missing_environment.pop("PYTHONHASHSEED")
-        substitutions = {
-            "runtime": {**suite_receipt, "runtime": {**suite_receipt["runtime"],
-                "executable_sha256": "0" * 64}},
-            "argv": {**suite_receipt, "producer_argv": help_command},
-            "cwd": {**suite_receipt, "suite_cwd": str(self.root)},
-            "command": {**suite_receipt, "suite_command": help_command},
-            "manifest_membership": {**suite_receipt, "suite_manifest": {
-                **suite_receipt["suite_manifest"],
-                "tests": suite_receipt["suite_manifest"]["tests"][:-1]}},
-            "result_count": {**suite_receipt, "result": {
-                **suite_receipt["result"], "test_count": len(runtime.PHASE1_SUITE_TESTS) - 1}},
-            "environment_extra": {**suite_receipt, "observed_environment": {
-                **environment, "UNAPPROVED_SECRET": "redacted"}},
-            "environment_missing": {**suite_receipt, "observed_environment": missing_environment},
-            "environment_git": {**suite_receipt, "observed_environment": {
-                **environment, "GIT_CONFIG_GLOBAL": str(self.root / "substitute")}},
-            "environment_python": {**suite_receipt, "observed_environment": {
-                **environment, "PYTHONHASHSEED": "random"}},
-            "environment_locale": {**suite_receipt, "observed_environment": {
-                **environment, "LC_ALL": "en_US.UTF-8"}},
-            "environment_temp": {**suite_receipt, "observed_environment": {
-                **environment, "TMPDIR": str(self.root / "other-tmp")}},
-            "environment_path": {**suite_receipt, "observed_environment": {
-                **environment, "PATH": "/arbitrary"}},
-        }
-        for name, candidate in substitutions.items():
-            with self.subTest(substitution=name):
-                if "observed_environment" in candidate:
-                    candidate["environment_sha256"] = runtime.digest(candidate["observed_environment"])
-                candidate_body = {key: value for key, value in candidate.items()
-                                  if key != "receipt_sha256"}
-                candidate["receipt_sha256"] = runtime.digest(candidate_body)
-                suite_path.write_text(runtime.canonical(candidate) + "\n")
-                refused = runtime.phase1_acceptance_receipt(
-                    self.root, closure_path, evaluation, accept)
-                self.assertEqual("FAIL", refused["decision"])
-                self.assertIn("suite.closure", refused["blocking_reason_codes"])
-        suite_path.write_bytes(original_suite)
-        original_proof = proof_path.read_bytes(); original_closure = closure_path.read_bytes()
-        forged = json.loads(original_proof); forged["manifest"]["operator_state"] = "FEASIBLE_FORGED"
-        forged_body = {key: value for key, value in forged.items() if key != "proof_sha256"}
-        forged["proof_sha256"] = runtime.digest(forged_body)
-        proof_path.write_text(runtime.canonical(forged) + "\n")
-        closure["proof"] = ref(proof_path); closure_path.write_text(runtime.canonical(closure) + "\n")
-        replayed = runtime.phase1_acceptance_receipt(
-            self.root, closure_path, evaluation, accept)
-        self.assertEqual("FAIL", replayed["decision"])
-        self.assertIn("manifest.replay", replayed["blocking_reason_codes"])
-        proof_path.write_bytes(original_proof); closure_path.write_bytes(original_closure)
-
-        external_authority = evidence_root / "external-authority.json"
-        external_authority.write_bytes(Path(proof["authority"]["path"]).read_bytes())
-        substituted_declaration = json.loads(Path(proof["declaration"]["path"]).read_text())
-        substituted_declaration["conflict_authority"] = {
-            "path": str(external_authority), "sha256": proof["authority"]["sha256"]}
-        substituted_declaration_path = evidence_root / "substituted-declaration.json"
-        substituted_declaration_path.write_text(runtime.canonical(substituted_declaration) + "\n")
-        substituted_proof = json.loads(original_proof)
-        substituted_proof["declaration"] = ref(substituted_declaration_path)
-        substituted_body = {key: value for key, value in substituted_proof.items()
-                            if key != "proof_sha256"}
-        substituted_proof["proof_sha256"] = runtime.digest(substituted_body)
-        proof_path.write_text(runtime.canonical(substituted_proof) + "\n")
-        closure["proof"] = ref(proof_path); closure_path.write_text(runtime.canonical(closure) + "\n")
-        authority_refused = runtime.phase1_acceptance_receipt(
-            self.root, closure_path, evaluation, accept)
-        self.assertEqual("FAIL", authority_refused["decision"])
-        self.assertIn("authority.path_substitution", authority_refused["blocking_reason_codes"])
-        proof_path.write_bytes(original_proof); closure_path.write_bytes(original_closure)
-        durable_fixture = Path(proof["fixture"]["path"])
-        original = durable_fixture.read_bytes(); durable_fixture.write_bytes(original + b"tamper\n")
-        failed = subprocess.run(accept, cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(2, failed.returncode)
-        durable_fixture.write_bytes(original)
-        role_roots = {"proof": watch_root, "suite": suite_root,
-                      "evaluation": self.root / ".juno_task/runtime/watch-runs" /
-                      acceptance_record["run_id"]}
-        matrix = [(role, field) for role in role_roots for field in ("argv", "cwd", "footer")]
-        self.assertEqual({(role, field) for role in ("proof", "suite", "evaluation")
-                          for field in ("argv", "cwd", "footer")}, set(matrix))
-        for role, field in matrix:
-            with self.subTest(role=role, field=field):
-                role_root = role_roots[role]
-                run_path = role_root / "run.json"; footer_path = role_root / "footer"
-                original_run = run_path.read_bytes(); original_footer = footer_path.read_bytes()
-                if field == "footer":
-                    footer_path.write_text("schema_version=juno.watch-footer.v1\nexit_code=1\n")
-                else:
-                    record = json.loads(original_run)
-                    record["argv_sha256" if field == "argv" else "cwd"] = (
-                        "0" * 64 if field == "argv" else str(self.root / "substituted-cwd"))
-                    run_path.write_text(json.dumps(record) + "\n")
-                try:
-                    if role == "evaluation":
-                        correlated = runtime.phase1_finalize_acceptance(
-                            self.root, ref(evaluation), watch_ref(acceptance_record), output)
-                    else:
-                        correlated = runtime.phase1_acceptance_receipt(
-                            self.root, closure_path, evaluation, accept)
-                    self.assertEqual("FAIL", correlated["decision"])
-                    self.assertIn(f"{role}.watch.identity", correlated["blocking_reason_codes"])
-                finally:
-                    run_path.write_bytes(original_run); footer_path.write_bytes(original_footer)
-        committed_path = self.root / ".juno_task/scripts/tests/test_release_train.py"
-        committed_bytes = committed_path.read_bytes()
-        committed_path.write_bytes(committed_bytes + b"\n# tracked drift\n")
-        drifted = runtime.phase1_acceptance_receipt(
-            self.root, closure_path, evaluation, accept)
-        self.assertEqual("FAIL", drifted["decision"])
-        self.assertIn("task.committed_bytes", drifted["blocking_reason_codes"])
-        committed_path.write_bytes(committed_bytes)
+        script_path = self.root / ".juno_task/scripts/release_train.py"
         orchestrate = [executable, str(script_path), "--controller", str(self.root),
             "phase1-orchestrate", "--declaration", str(self.declaration),
             "--fixture", str(fixture_path), "--task-id", "V9vE0X",
             "--worktree", str(self.root)]
-        orchestrated = subprocess.run(orchestrate, cwd=self.root, env=suite_env, text=True,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=480)
-        self.assertEqual(0, orchestrated.returncode, orchestrated.stderr + orchestrated.stdout)
-        projection = json.loads(orchestrated.stdout.splitlines()[-1])
+        completed = subprocess.run(orchestrate, cwd=self.root,
+            env={**os.environ, "JUNO_TASK_ROOT": str(self.root),
+                 "JUNO_WORKSPACE_ROLE": "controller", "JUNO_WORKSPACE_ENFORCEMENT": "strict"},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=480)
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        projection = json.loads(completed.stdout.splitlines()[-1])
         self.assertEqual("PASS", projection["decision"])
         self.assertEqual({"proof", "suite", "evaluation"},
                          set(projection["stage_watch_run_ids"]))
-        self.assertEqual("V9vE0X", projection["task_id"])
-        final_receipt = json.loads(Path(projection["receipt"]["path"]).read_text())
+        receipt = json.loads(Path(projection["receipt"]["path"]).read_text())
         self.assertEqual(list(runtime.PHASE1_SUITE_TESTS),
-                         final_receipt["checked_closure"]["suite_manifest"]["tests"])
-        source = (SCRIPTS / "release_train.py").read_text()
-        self.assertEqual(1, source.count("def phase1_acceptance_receipt("))
+                         receipt["checked_closure"]["suite_manifest"]["tests"])
 
     def test_phase1_substitution_matrix_is_complete_and_receipt_bound(self) -> None:
         """Every admitted substitution reaches the production refusal path."""
@@ -1058,7 +838,11 @@ raise SystemExit(2)
         self.assertTrue(manifest["member_accounting_complete"])
         self.assertTrue(manifest["forecast_complete"])
         self.assertFalse(manifest["exact_composition_complete"])
-        self.assertTrue(manifest["repair_budget_feasible"])
+        self.assertFalse(manifest["repair_budget_feasible"])
+        self.assertEqual("NEEDS_OPERATOR", manifest["operator_state"])
+        self.assertEqual(["authority.missing"], manifest["authority_reason_codes"])
+        self.assertEqual("juno_release_epoch_legacy_declaration_identity.v1",
+                         manifest["identity"]["legacy_declaration_identity"]["schema_version"])
         self.assertEqual(1, manifest["required_logical_repair_set_count"])
         self.assertEqual(expected["sot-ledger-wave1-rc7"]["repair"],
                          manifest["conflicts"][0]["proven_composition"]["receipt_sha256"])
