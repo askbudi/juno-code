@@ -17,13 +17,37 @@ import {
 const resolverTemplate = path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py');
 const wrapperTemplate = path.resolve(process.cwd(), 'src/templates/scripts/kanban.sh');
 const policyTemplate = path.resolve(process.cwd(), 'src/templates/scripts/juno-toolchain-policy.sh');
+const controlIdentityNames = [
+  'JUNO_CONTROL_INVOCATION_ROOT',
+  'JUNO_CONTROL_INVOCATION_ROLE',
+  'JUNO_CONTROL_EFFECTIVE_ROOT',
+] as const;
+
+type ControlIdentity = Partial<Record<(typeof controlIdentityNames)[number], string>>;
+
+function withControlIdentity<T>(identity: ControlIdentity, operation: () => T): T {
+  const previous = Object.fromEntries(controlIdentityNames.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of controlIdentityNames) delete process.env[name];
+    Object.assign(process.env, identity);
+    return operation();
+  } finally {
+    for (const name of controlIdentityNames) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
 
 function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
+  const childEnv = { ...process.env };
+  for (const name of controlIdentityNames) delete childEnv[name];
   return spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...childEnv,
       JUNO_TASK_ROOT: '',
       JUNO_CONTROLLER_BRANCH: '',
       JUNO_WORKSPACE_ROLE: '',
@@ -83,13 +107,11 @@ describe('control-plane operation gate', () => {
         valid: true, diagnostics: [],
       };
     }) as typeof resolveController;
-    const names = ['JUNO_CONTROL_INVOCATION_ROOT', 'JUNO_CONTROL_INVOCATION_ROLE',
-      'JUNO_CONTROL_EFFECTIVE_ROOT'] as const;
-    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    try {
-      process.env.JUNO_CONTROL_INVOCATION_ROOT = task;
-      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
-      process.env.JUNO_CONTROL_EFFECTIVE_ROOT = controller;
+    withControlIdentity({
+      JUNO_CONTROL_INVOCATION_ROOT: task,
+      JUNO_CONTROL_INVOCATION_ROLE: 'task',
+      JUNO_CONTROL_EFFECTIVE_ROOT: controller,
+    }, () => {
       expect(routeControlPlane(controller, 'orchestration', resolver)).toMatchObject({
         controllerRoot: controller, invocationRoot: task, invocationRole: 'task',
       });
@@ -97,13 +119,7 @@ describe('control-plane operation gate', () => {
         { cwd: controller, operation: 'orchestration', trusted: true },
         { cwd: task, operation: 'diagnostic', trusted: true },
       ]);
-    } finally {
-      for (const name of names) {
-        const value = previous[name];
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
+    });
   });
 });
 
@@ -216,7 +232,13 @@ describe('canonical controller resolver', () => {
       path.join(task, '.juno_task/scripts/controller_resolver.py'),
       `#!/usr/bin/env python3\nfrom pathlib import Path\nPath(${JSON.stringify(untrustedMarker)}).write_text('ran')\nraise SystemExit(97)\n`,
     );
-    const routed = routeControlPlane(task, 'orchestration');
+    // A typed parent may carry a different complete forwarding identity. This
+    // fixture deliberately starts a fresh route and must not borrow that parent.
+    const routed = withControlIdentity({
+      JUNO_CONTROL_INVOCATION_ROOT: path.join(sandbox, 'ambient origin'),
+      JUNO_CONTROL_INVOCATION_ROLE: 'integration-owner',
+      JUNO_CONTROL_EFFECTIVE_ROOT: path.join(sandbox, 'ambient controller'),
+    }, () => withControlIdentity({}, () => routeControlPlane(task, 'orchestration')));
     expect(routed).toMatchObject({
       controllerRoot: controller,
       invocationRoot: task,
@@ -235,15 +257,11 @@ describe('canonical controller resolver', () => {
   });
 
   it('re-resolves forwarded routing identity and refuses incomplete, spoofed, or stale origins', async () => {
-    const names = [
-      'JUNO_CONTROL_INVOCATION_ROOT', 'JUNO_CONTROL_INVOCATION_ROLE',
-      'JUNO_CONTROL_EFFECTIVE_ROOT',
-    ] as const;
-    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    try {
-      process.env.JUNO_CONTROL_INVOCATION_ROOT = task;
-      process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
-      process.env.JUNO_CONTROL_EFFECTIVE_ROOT = controller;
+    withControlIdentity({
+      JUNO_CONTROL_INVOCATION_ROOT: task,
+      JUNO_CONTROL_INVOCATION_ROLE: 'task',
+      JUNO_CONTROL_EFFECTIVE_ROOT: controller,
+    }, () => {
       expect(routeControlPlane(controller, 'kanban')).toMatchObject({
         controllerRoot: controller, invocationRoot: task, invocationRole: 'task',
       });
@@ -257,13 +275,7 @@ describe('canonical controller resolver', () => {
       process.env.JUNO_CONTROL_INVOCATION_ROLE = 'task';
       process.env.JUNO_CONTROL_INVOCATION_ROOT = path.join(sandbox, 'removed-origin');
       expect(() => routeControlPlane(controller, 'kanban')).toThrow('no longer matches');
-    } finally {
-      for (const name of names) {
-        const value = previous[name];
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
+    });
   });
 
   it('initializes controller audit authority once and exposes no public role assignment', async () => {
