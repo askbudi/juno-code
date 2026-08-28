@@ -490,6 +490,20 @@ describe('ExecutionEngine', () => {
       expect(mocks.initialize).toHaveBeenCalledOnce();
       expect(mocks.isAvailable).toHaveBeenCalledOnce();
     });
+
+    it('should propagate project shortcuts and selected subagent to the service environment', async () => {
+      engineConfig.config.modelShortcuts = {
+        claude: { ':fav': 'anthropic/project-model' },
+        codex: { ':fav': 'openai/project-model' },
+      };
+      await engine.execute(makeRequest({ subagent: 'codex' }));
+
+      const configured = mocks.configure.mock.calls[0]?.[0];
+      expect(configured.environment.JUNO_SELECTED_SUBAGENT).toBe('codex');
+      expect(JSON.parse(configured.environment.JUNO_MODEL_SHORTCUTS)).toEqual(
+        engineConfig.config.modelShortcuts,
+      );
+    });
   });
 
   // =========================================================================

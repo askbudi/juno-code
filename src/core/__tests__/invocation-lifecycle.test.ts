@@ -486,7 +486,7 @@ sys.exit(1)
       encoding: 'utf8',
       timeout: 20_000,
     });
-    expect(result.status).toBe(1);
+    expect(result.status, result.stderr).toBe(1);
     expect(result.status).not.toBe(99);
     const written = await events(project, root);
     expect(written).toHaveLength(2);

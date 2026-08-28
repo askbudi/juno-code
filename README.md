@@ -1531,6 +1531,24 @@ This writes to `.juno_task/config.json`:
 
 `yylo` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
 
+### Per-project model shortcuts
+
+Define subagent-specific shortcuts in `.juno_task/config.json`:
+
+```json
+{
+  "modelShortcuts": {
+    "claude": { ":fav": "zai/glm-5.3" },
+    "cursor": { ":fav": ":opus" },
+    "codex": { ":fav": "openai/gpt-5.3-codex" },
+    "gemini": { ":fav": "google/gemini-3.0-pro" },
+    "pi": { ":fav": ":sol" }
+  }
+}
+```
+
+Shortcut lookup is scoped to the selected subagent. A project entry overrides the same shipped shortcut; otherwise the shipped shortcut remains available. Targets are opaque non-empty model strings and may reference project or shipped shortcuts. Shortcut chains resolve recursively. Cycles, unknown shortcuts, and malformed externally supplied shortcut data fail with an actionable error. Cursor uses the Claude service wrapper but reads the separate `cursor` shortcut map.
+
 For managed Workflow Runner calls, separately allow exact explicit Pi selectors:
 
 ```json

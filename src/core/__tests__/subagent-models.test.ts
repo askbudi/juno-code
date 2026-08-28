@@ -64,6 +64,17 @@ describe('subagent-models', () => {
     expect(resolved).toBe(':gpt-5');
   });
 
+  it('accepts an opaque project shortcut as a configured default for its subagent', () => {
+    const config = {
+      defaultSubagent: 'codex' as const,
+      defaultModels: { codex: ':sonnet' },
+      modelShortcuts: { codex: { ':sonnet': 'zai/glm-5.3' } },
+    };
+
+    expect(getConfiguredDefaultModelForSubagent(config, 'codex')).toBe(':sonnet');
+    expect(isModelCompatibleWithSubagent(':sonnet', 'codex', config)).toBe(true);
+  });
+
   it('ignores incompatible shorthand mappings', () => {
     const resolved = getConfiguredDefaultModelForSubagent(
       {

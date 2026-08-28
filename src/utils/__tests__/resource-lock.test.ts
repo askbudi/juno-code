@@ -65,8 +65,12 @@ describe('cross-language heavy test resource lock', () => {
       expect(pool).toBe('forks');
       return glob;
     }).sort();
+    const indirectLockSharers = [
+      'src/cli/__tests__/benchmark-command.test.ts',
+      'src/utils/__tests__/task-workspace.test.ts',
+    ];
 
-    expect(lockSharers).toEqual(scheduled);
+    expect([...lockSharers, ...indirectLockSharers].sort()).toEqual(scheduled);
     for (const config of [fullConfig, fastConfig]) {
       expect(config.test?.poolMatchGlobs).toEqual(MANAGED_INSTALL_POOL_MATCH_GLOBS);
       expect(config.test?.poolOptions?.forks).toMatchObject({ singleFork: true, isolate: true });

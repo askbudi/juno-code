@@ -1910,15 +1910,8 @@ function setupAliases(program: Command): void {
             throw new Error('Model cannot be empty. Example: yylo pi set-default-model :api-codex');
           }
 
-          if (!subagentModels.isModelCompatibleWithSubagent(normalizedModel, typedSubagent)) {
-            throw new Error(
-              `Model ${normalizedModel} is not compatible with subagent ${subagent}. ` +
-                `Use ${subagent} model shorthands or a full provider model id.`,
-            );
-          }
-
           // Ensure project config exists and is valid before we mutate it.
-          await loadConfig({
+          const config = await loadConfig({
             baseDir: workingDirectory,
             cliConfig: {
               verbose: 0,
@@ -1927,6 +1920,13 @@ function setupAliases(program: Command): void {
               workingDirectory,
             },
           });
+
+          if (!subagentModels.isModelCompatibleWithSubagent(normalizedModel, typedSubagent, config)) {
+            throw new Error(
+              `Model ${normalizedModel} is not compatible with subagent ${subagent}. ` +
+                `Use ${subagent} model shorthands or a full provider model id.`,
+            );
+          }
 
           const configPath = nodePath.join(workingDirectory, '.juno_task', 'config.json');
           const configObject = (await fsExtra.default.readJson(configPath)) as Record<string, unknown>;

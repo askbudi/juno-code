@@ -154,6 +154,9 @@ export interface JunoTaskConfig {
   // Prompt macro dictionary expansion configuration
   promptMacros?: PromptMacroConfig;
 
+  // Per-subagent model shortcuts. Project shortcuts merge with CLI defaults and take precedence.
+  modelShortcuts?: Partial<Record<SubagentType, Record<string, string>>>;
+
   // Skip hooks execution
   skipHooks?: boolean;
 }

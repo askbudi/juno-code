@@ -65,6 +65,29 @@ export const ENV_VAR_MAPPING = {
 const SubagentTypeSchema = z.enum(['claude', 'cursor', 'codex', 'gemini', 'pi']);
 
 /**
+ * Zod schema for validating model shortcuts.
+ * Keys must start with ":" (e.g., ":sonnet", ":fav").
+ * Values are arbitrary model identifiers.
+ */
+const ModelShortcutMapSchema = z.record(
+  z.string().regex(
+    /^:[a-zA-Z0-9_-]+$/,
+    'model shortcut must start with ":" and contain only alphanumeric, hyphen, or underscore',
+  ),
+  z.string().trim().min(1, 'model shortcut target must not be empty'),
+);
+
+const ModelShortcutsSchema = z
+  .object({
+    claude: ModelShortcutMapSchema.optional(),
+    cursor: ModelShortcutMapSchema.optional(),
+    codex: ModelShortcutMapSchema.optional(),
+    gemini: ModelShortcutMapSchema.optional(),
+    pi: ModelShortcutMapSchema.optional(),
+  })
+  .strict();
+
+/**
  * Zod schema for validating backend types
  */
 const BackendTypeSchema = z.enum(['shell']);
@@ -204,7 +227,7 @@ export const METADATA_CONTROLLER_CONFIG_FIELD_OWNERSHIP = {
     'defaultModels', 'workflowModels', 'mainTask', 'logLevel', 'logFile', 'verbose',
     'quiet', 'mcpTimeout', 'mcpRetries', 'mcpServerPath', 'mcpServerName',
     'hookCommandTimeout', 'onHourlyLimit', 'interactive', 'headlessMode',
-    'kanbanRegistry', 'promptMacros',
+    'kanbanRegistry', 'promptMacros', 'modelShortcuts',
   ],
   productOnly: ['workingDirectory', 'sessionDirectory', 'gitFlow', 'autoDependencyUpdate', 'hooks', 'skipHooks'],
   secret: ['envFilePath', 'envFileCopied'],
@@ -410,6 +433,11 @@ export const JunoTaskConfigSchema = z
     promptMacros: PromptMacrosSchema.describe(
       'Prompt macro dictionary expansion config (@@key). Use global/local dictionaries, local overrides global, and maxDepth controls recursive expansion safety.',
     ),
+
+    // Model shortcuts configuration
+    modelShortcuts: ModelShortcutsSchema
+      .optional()
+      .describe('Per-subagent model shortcuts. Project shortcuts merge with CLI defaults and take precedence. Keys start with ":" (e.g., ":fav").'),
   })
   .strict();
 
@@ -451,6 +479,7 @@ export function createPersistedProjectConfigDefaults(baseDir: string): Record<st
     hooks: getDefaultHooks(),
     autoDependencyUpdate: true,
     promptMacros: { ...DEFAULT_PROMPT_MACROS, global: {}, local: {} },
+    modelShortcuts: {},
   };
 }
 

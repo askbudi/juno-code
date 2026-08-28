@@ -4,8 +4,11 @@ import { resolve } from 'path';
 // Keep the suites that share the cross-process real-Git install lease in one
 // file lane. Independent npm processes still contend on the diagnostic lease.
 export const MANAGED_INSTALL_POOL_MATCH_GLOBS: [string, 'forks'][] = [
+  ['src/cli/__tests__/benchmark-command.test.ts', 'forks'],
+  ['src/utils/__tests__/managed-controller-recovery.test.ts', 'forks'],
   ['src/utils/__tests__/managed-project-assets.test.ts', 'forks'],
   ['src/utils/__tests__/script-installer.test.ts', 'forks'],
+  ['src/utils/__tests__/task-workspace.test.ts', 'forks'],
 ];
 
 /**

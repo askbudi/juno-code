@@ -44,3 +44,31 @@ def test_service_entrypoints_scrub_continuity_without_dropping_config(module):
         "routing_present": True,
         "config_present": True,
     }
+
+
+def test_provider_child_boundary_drops_internal_shortcut_transport(monkeypatch):
+    sys.path.insert(0, str(SERVICES))
+    try:
+        from environment_boundary import (
+            child_process_environment,
+            sanitize_model_shortcut_environment,
+        )
+
+        base = {
+            "JUNO_MODEL_SHORTCUTS": '{"pi":{":fav":"provider/model"}}',
+            "JUNO_SELECTED_SUBAGENT": "pi",
+            "JUNO_TASK_ROOT": "/controller",
+            "BOUNDARY_CONFIG": "preserved",
+        }
+        assert child_process_environment(base) == {
+            "JUNO_TASK_ROOT": "/controller",
+            "BOUNDARY_CONFIG": "preserved",
+        }
+
+        monkeypatch.setenv("JUNO_MODEL_SHORTCUTS", base["JUNO_MODEL_SHORTCUTS"])
+        monkeypatch.setenv("JUNO_SELECTED_SUBAGENT", "pi")
+        sanitize_model_shortcut_environment()
+        assert "JUNO_MODEL_SHORTCUTS" not in os.environ
+        assert "JUNO_SELECTED_SUBAGENT" not in os.environ
+    finally:
+        sys.path.remove(str(SERVICES))

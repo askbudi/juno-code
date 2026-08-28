@@ -21,8 +21,15 @@ export function getDefaultModelForSubagent(subagent: SubagentType): string {
  * Full model names (non-shorthand) are considered compatible because users
  * may provide provider-specific model ids.
  */
-export function isModelCompatibleWithSubagent(model: string, subagent: SubagentType): boolean {
+export function isModelCompatibleWithSubagent(
+  model: string,
+  subagent: SubagentType,
+  config?: Pick<JunoTaskConfig, 'modelShortcuts'>,
+): boolean {
   if (!model.startsWith(':')) {
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(config?.modelShortcuts?.[subagent] ?? {}, model)) {
     return true;
   }
 
@@ -59,18 +66,18 @@ export function isModelCompatibleWithSubagent(model: string, subagent: SubagentT
  * 3) undefined (caller should fallback to built-in defaults)
  */
 export function getConfiguredDefaultModelForSubagent(
-  config: Pick<JunoTaskConfig, 'defaultSubagent' | 'defaultModel' | 'defaultModels'>,
+  config: Pick<JunoTaskConfig, 'defaultSubagent' | 'defaultModel' | 'defaultModels' | 'modelShortcuts'>,
   subagent: SubagentType,
 ): string | undefined {
   const modelFromMap = config.defaultModels?.[subagent];
-  if (typeof modelFromMap === 'string' && isModelCompatibleWithSubagent(modelFromMap, subagent)) {
+  if (typeof modelFromMap === 'string' && isModelCompatibleWithSubagent(modelFromMap, subagent, config)) {
     return modelFromMap;
   }
 
   const legacyDefaultModel =
     config.defaultSubagent === subagent &&
     typeof config.defaultModel === 'string' &&
-    isModelCompatibleWithSubagent(config.defaultModel, subagent)
+    isModelCompatibleWithSubagent(config.defaultModel, subagent, config)
       ? config.defaultModel
       : undefined;
 

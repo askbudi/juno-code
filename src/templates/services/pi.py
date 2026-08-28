@@ -17,7 +17,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, TextIO, Tuple
 
-from environment_boundary import sanitize_current_process_environment
+from environment_boundary import (
+    ModelShortcutError,
+    resolve_model_shortcut,
+    sanitize_current_process_environment,
+    sanitize_model_shortcut_environment,
+)
 
 sanitize_current_process_environment()
 
@@ -317,20 +322,8 @@ class PiService:
         return f"{seconds:.2f}s"
 
     def expand_model_shorthand(self, model: str) -> str:
-        """Expand shorthand model names (colon-prefixed) to full identifiers.
-
-        Shorthands may point at another shorthand (for example ``:gpt`` ->
-        ``:sol``), so resolve aliases until a concrete provider/model id is
-        found. Unknown shorthands are intentionally passed through unchanged.
-        """
-        current = model
-        seen = set()
-        while current.startswith(":") and current in self.MODEL_SHORTHANDS:
-            if current in seen:
-                return current
-            seen.add(current)
-            current = self.MODEL_SHORTHANDS[current]
-        return current
+        """Resolve shipped and project model shortcuts for Pi."""
+        return resolve_model_shortcut(model, self.MODEL_SHORTHANDS, "pi")
 
     def _detect_prettifier_mode(self, model: str) -> str:
         """Detect which prettifier to use based on the resolved model name.
@@ -3874,7 +3867,13 @@ export default function (pi: ExtensionAPI) {
             print(f"Error: Project path does not exist: {self.project_path}", file=sys.stderr)
             return 1
 
-        self.model_name = self.expand_model_shorthand(args.model)
+        try:
+            self.model_name = self.expand_model_shorthand(args.model)
+        except ModelShortcutError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+        finally:
+            sanitize_model_shortcut_environment()
         self.prettifier_mode = self._detect_prettifier_mode(self.model_name)
         self.verbose = args.verbose
 

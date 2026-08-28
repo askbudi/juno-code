@@ -14,7 +14,12 @@ import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from environment_boundary import sanitize_current_process_environment
+from environment_boundary import (
+    ModelShortcutError,
+    resolve_model_shortcut,
+    sanitize_current_process_environment,
+    sanitize_model_shortcut_environment,
+)
 
 sanitize_current_process_environment()
 
@@ -62,10 +67,8 @@ class GeminiService:
         self._stdin_prompt: Optional[str] = None
 
     def expand_model_shorthand(self, model: str) -> str:
-        """Expand shorthand model names (colon-prefixed) to full identifiers."""
-        if model.startswith(":"):
-            return self.MODEL_SHORTHANDS.get(model, model)
-        return model
+        """Resolve shipped and project model shortcuts for Gemini."""
+        return resolve_model_shortcut(model, self.MODEL_SHORTHANDS, "gemini")
 
     def _prompt_arg_max_bytes(self) -> int:
         return _positive_int_env(PROMPT_ARG_MAX_BYTES_ENV, DEFAULT_PROMPT_ARG_MAX_BYTES)
@@ -574,7 +577,13 @@ Examples:
             print(f"Error: Project path does not exist: {self.project_path}", file=sys.stderr)
             return 1
 
-        self.model_name = self.expand_model_shorthand(args.model)
+        try:
+            self.model_name = self.expand_model_shorthand(args.model)
+        except ModelShortcutError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+        finally:
+            sanitize_model_shortcut_environment()
         self.output_format = args.output_format or self.DEFAULT_OUTPUT_FORMAT
         if self.output_format not in self.VALID_OUTPUT_FORMATS:
             print(f"Warning: Unsupported output format '{self.output_format}'. Falling back to {self.DEFAULT_OUTPUT_FORMAT}.", file=sys.stderr)

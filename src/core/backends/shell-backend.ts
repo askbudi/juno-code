@@ -694,6 +694,7 @@ export class ShellBackend implements Backend {
     const possibleNames = [
       `${subagent}.py`, // Subagent-specific Python script (e.g. claude.py, codex.py)
       `${subagent}.sh`, // Subagent-specific shell script
+      ...(subagent === 'cursor' ? ['claude.py'] : []), // Cursor uses the Claude service wrapper
       `subagent.py`, // Generic Python script (fallback)
       `subagent.sh`, // Generic shell script (fallback)
     ];

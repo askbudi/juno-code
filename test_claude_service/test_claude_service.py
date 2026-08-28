@@ -82,9 +82,12 @@ def test_non_shorthand_passthrough():
     assert svc.expand_model_shorthand("claude-sonnet-4-6") == "claude-sonnet-4-6"
 
 
-def test_unknown_shorthand_passthrough():
+def test_unknown_shorthand_is_rejected():
+    from environment_boundary import ModelShortcutError
+
     svc = _load_claude_service()
-    assert svc.expand_model_shorthand(":unknown") == ":unknown"
+    with pytest.raises(ModelShortcutError, match="unknown model shortcut for claude: :unknown"):
+        svc.expand_model_shorthand(":unknown")
 
 
 # ---------------------------------------------------------------------------

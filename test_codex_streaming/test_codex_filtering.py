@@ -5,6 +5,8 @@ import json
 import subprocess
 from contextlib import redirect_stdout
 
+import pytest
+
 
 def _build_ndjson_stream():
     events = [
@@ -734,10 +736,13 @@ def test_codex_model_shorthand_passthrough_full_name():
     assert svc.expand_model_shorthand("gpt-5.3-codex") == "gpt-5.3-codex"
 
 
-def test_codex_model_shorthand_unknown_colon_prefix():
-    """An unknown colon-prefixed shorthand should pass through unchanged."""
+def test_codex_model_shorthand_unknown_colon_prefix_is_rejected():
+    """An unknown colon-prefixed shorthand should fail before provider dispatch."""
+    from environment_boundary import ModelShortcutError
+
     svc = _load_codex_service()
-    assert svc.expand_model_shorthand(":unknown-model") == ":unknown-model"
+    with pytest.raises(ModelShortcutError, match="unknown model shortcut for codex: :unknown-model"):
+        svc.expand_model_shorthand(":unknown-model")
 
 
 # ---------------------------------------------------------------------------

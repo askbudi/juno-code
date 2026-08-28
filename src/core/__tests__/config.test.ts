@@ -1723,6 +1723,25 @@ logLevel: info
         expect(() => validateConfig(config)).not.toThrow();
       });
 
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        modelShortcuts: Object.fromEntries(
+          subagentTypes.map((subagent) => [subagent, { ':fav': `provider/${subagent}-model` }]),
+        ),
+      })).not.toThrow();
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        modelShortcuts: { claude: { fav: 'claude-model' } },
+      })).toThrow(/model shortcut must start with/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        modelShortcuts: { codex: { ':fav': '   ' } },
+      })).toThrow(/model shortcut target must not be empty/);
+      expect(() => validateConfig({
+        ...DEFAULT_CONFIG,
+        modelShortcuts: { unknown: { ':fav': 'provider/model' } },
+      } as any)).toThrow();
+
       // Test all valid log levels
       const logLevels = ['error', 'warn', 'info', 'debug', 'trace'] as const;
       logLevels.forEach((logLevel) => {

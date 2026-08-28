@@ -741,6 +741,7 @@ export class ExecutionEngine extends EventEmitter {
       : resolveController(request.workingDirectory, 'orchestration');
 
     // Configure
+    const modelShortcuts = this.engineConfig.config.modelShortcuts ?? {};
     (backend as any).configure({
       workingDirectory: request.workingDirectory,
       servicesPath: `${process.env.HOME || process.env.USERPROFILE}/.yylo/services`,
@@ -752,6 +753,8 @@ export class ExecutionEngine extends EventEmitter {
         JUNO_TASK_ROOT: controller.path,
         JUNO_CONTROLLER_SOURCE: controller.source,
         JUNO_WORKSPACE_ROLE: controller.role,
+        JUNO_MODEL_SHORTCUTS: JSON.stringify(modelShortcuts),
+        JUNO_SELECTED_SUBAGENT: request.subagent,
       }),
       sessionId: request.requestId,
     });

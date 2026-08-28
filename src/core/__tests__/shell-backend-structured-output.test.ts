@@ -268,6 +268,23 @@ time.sleep(30)
     expect(metadata?.rawOutput).toContain('"result": "done"');
   });
 
+  it('uses the Claude service wrapper when Cursor has no dedicated service script', async () => {
+    const { servicesDir, workingDir } = await createStubClaudeService();
+    const backend = new ShellBackend();
+    backend.configure({ workingDirectory: workingDir, servicesPath: servicesDir });
+    await backend.initialize();
+
+    const result = await backend.execute({
+      toolName: 'cursor_subagent',
+      arguments: { instruction: 'Return stub data', project_path: workingDir },
+      timeout: 15000,
+      priority: 'normal',
+      metadata: { sessionId: 'cursor-test', iterationNumber: 1 },
+    });
+
+    expect(result.content).toContain('done');
+  });
+
   it('filters service continuity while preserving config/routing and typed resume dispatch', async () => {
     const { servicesDir, workingDir } = await createEnvironmentBoundaryService();
     const backend = new ShellBackend();

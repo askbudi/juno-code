@@ -162,9 +162,12 @@ class TestModelShorthandExpansion:
         """A custom provider/model string without colon prefix passes through unchanged."""
         assert self.svc.expand_model_shorthand("custom/model-v2") == "custom/model-v2"
 
-    def test_unknown_shorthand_passthrough(self):
-        """An unknown colon-prefixed shorthand passes through unchanged."""
-        assert self.svc.expand_model_shorthand(":unknown") == ":unknown"
+    def test_unknown_shorthand_is_rejected(self):
+        """An unknown colon-prefixed shorthand fails before provider dispatch."""
+        from environment_boundary import ModelShortcutError
+
+        with pytest.raises(ModelShortcutError, match="unknown model shortcut for pi: :unknown"):
+            self.svc.expand_model_shorthand(":unknown")
 
     def test_empty_string(self):
         assert self.svc.expand_model_shorthand("") == ""
@@ -300,7 +303,7 @@ class TestBuildPiCommand:
         assert stdin_prompt == self.svc.prompt
 
     def test_oversized_live_prompt_uses_managed_file_and_bounded_positional_prefix(self, monkeypatch):
-        """Live mode keeps the prompt beginning in argv and writes the remainder to /tmp/juno-code."""
+        """Live mode keeps the prompt beginning in argv and writes the remainder to /tmp/yylo."""
         monkeypatch.setenv("JUNO_PROMPT_ARG_MAX_BYTES", "256")
         self.svc.model_name = "anthropic/claude-sonnet-4-6"
         beginning = "live prompt αβγ "
@@ -318,7 +321,7 @@ class TestBuildPiCommand:
         assert large_prompt not in cmd
         assert beginning in positional_prompt
         assert len(positional_prompt.encode("utf-8")) <= 256
-        assert referenced_path.startswith("/tmp/juno-code/")
+        assert referenced_path.startswith("/tmp/yylo/")
         assert referenced_path.endswith("-prompt.md")
         with open(referenced_path, "r", encoding="utf-8") as handle:
             assert positional_beginning + handle.read() == large_prompt
@@ -1523,14 +1526,14 @@ class TestBuildHideTypes:
         finally:
             os.environ.pop("PI_HIDE_STREAM_TYPES", None)
 
-    def test_juno_code_env_override(self):
-        os.environ["JUNO_CODE_HIDE_STREAM_TYPES"] = "extra_type"
+    def test_yylo_env_override(self):
+        os.environ["YYLO_HIDE_STREAM_TYPES"] = "extra_type"
         try:
             hide = self.svc._build_hide_types()
             assert "extra_type" in hide
             assert "session" in hide
         finally:
-            os.environ.pop("JUNO_CODE_HIDE_STREAM_TYPES", None)
+            os.environ.pop("YYLO_HIDE_STREAM_TYPES", None)
 
 
 class TestFirstNonemptyStr:
