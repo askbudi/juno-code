@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import hashlib
 import json
@@ -32,9 +33,10 @@ CONFLICT_FORECAST_POLICY_SCHEMA = "juno_release_epoch_conflict_forecast_policy.v
 CONFLICT_AUTHORITY_SCHEMA = "juno_release_epoch_conflict_authority.v1"
 PHASE1_CLOSURE_SCHEMA = "juno_release_epoch_phase1_closure.v4"
 PHASE1_PROOF_SCHEMA = "juno_release_epoch_phase1_proof.v3"
-PHASE1_SUITE_SCHEMA = "juno_release_epoch_phase1_suite.v1"
-PHASE1_EVALUATION_SCHEMA = "juno_release_epoch_phase1_evaluation.v2"
-PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v3"
+PHASE1_SUITE_SCHEMA = "juno_release_epoch_phase1_suite.v2"
+PHASE1_SUITE_MANIFEST_SCHEMA = "juno_release_epoch_phase1_suite_manifest.v1"
+PHASE1_EVALUATION_SCHEMA = "juno_release_epoch_phase1_evaluation.v3"
+PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v4"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
 BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
@@ -1222,7 +1224,10 @@ def _publish_exclusive_receipt(path: Path, receipt: dict[str, Any]) -> dict[str,
         except (OSError, json.JSONDecodeError) as exc:
             raise ReleaseTrainError("phase1 acceptance receipt collision") from exc
         if current != receipt:
-            raise ReleaseTrainError("phase1 acceptance receipt collision")
+            changed = sorted(key for key in set(current) | set(receipt)
+                             if current.get(key) != receipt.get(key))
+            raise ReleaseTrainError("phase1 acceptance receipt collision fields="
+                                    + ",".join(changed))
         return current
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
@@ -1234,7 +1239,10 @@ def _publish_exclusive_receipt(path: Path, receipt: dict[str, Any]) -> dict[str,
         except FileExistsError:
             current = json.loads(path.read_text())
             if current != receipt:
-                raise ReleaseTrainError("phase1 acceptance receipt collision")
+                changed = sorted(key for key in set(current) | set(receipt)
+                                 if current.get(key) != receipt.get(key))
+                raise ReleaseTrainError("phase1 acceptance receipt collision fields="
+                                        + ",".join(changed))
         return json.loads(path.read_text())
     finally:
         temporary.unlink(missing_ok=True)
@@ -1274,23 +1282,30 @@ def _phase1_committed_bindings(worktree: Path, tip_sha: str) -> list[dict[str, A
 
 
 def _phase1_runtime_identity(executable_request: str, script_path: Path) -> dict[str, Any]:
+    """Bind the resolved interpreter and conservative local Python import closure."""
     located = shutil.which(executable_request) if not Path(executable_request).is_absolute() else executable_request
     executable = Path(located).resolve() if located else None
-    dependencies = []
+    script_path = script_path.resolve()
+    module_root = script_path.parent
+    # Local imports are deliberately over-bound. Adding or substituting any sibling
+    # runtime module changes the closure even when Python import order differs.
+    dependencies = [{"module": path.stem, "path": str(path.resolve()),
+                     "sha256": file_hash(path.resolve())}
+                    for path in sorted(module_root.glob("*.py")) if path.is_file()]
     imported_task_runtime = Path(task_runtime.__file__).resolve()
-    sibling_task_runtime = script_path.resolve().parent / "task_workspace.py"
-    module_path = sibling_task_runtime if sibling_task_runtime.is_file() else imported_task_runtime
-    dependencies.append({"module": "task_workspace", "path": str(module_path.resolve()),
-                         "sha256": file_hash(module_path.resolve())})
-    return {"schema_version": "juno_phase1_python_runtime.v2",
+    if not any(row["module"] == "task_workspace" for row in dependencies):
+        dependencies.append({"module": "task_workspace", "path": str(imported_task_runtime),
+                             "sha256": file_hash(imported_task_runtime)})
+    dependencies.sort(key=lambda row: (row["module"], row["path"]))
+    return {"schema_version": "juno_phase1_python_runtime.v3",
             "executable_request": executable_request,
             "executable_path": str(executable) if executable else None,
             "executable_sha256": file_hash(executable) if executable and executable.is_file() else None,
             "implementation": platform.python_implementation(),
             "python_version": platform.python_version(),
             "python_build": sys.version,
-            "script_path": str(script_path.resolve()),
-            "script_sha256": file_hash(script_path.resolve()),
+            "script_path": str(script_path),
+            "script_sha256": file_hash(script_path),
             "import_closure": dependencies}
 
 
@@ -1369,10 +1384,12 @@ def _phase1_watch_correlation(controller: Path, reference: Any, expected_argv: l
 
 def phase1_input_identity(task_id: str, worktree: Path, tip_sha: str, tree_sha: str,
                           declaration_ref: dict[str, Any], fixture_ref: dict[str, Any],
-                          executable_request: str, script_path: Path) -> dict[str, Any]:
-    body = {"schema_version": "juno_release_epoch_phase1_input.v1", "task_id": task_id,
+                          executable_request: str, script_path: Path,
+                          repository_snapshot: dict[str, str]) -> dict[str, Any]:
+    body = {"schema_version": "juno_release_epoch_phase1_input.v2", "task_id": task_id,
             "worktree": str(worktree.resolve()), "tip_sha": tip_sha, "tree_sha": tree_sha,
             "declaration": declaration_ref, "fixture": fixture_ref,
+            "repository_snapshot": repository_snapshot,
             "runtime": _phase1_runtime_identity(executable_request, script_path),
             "committed_files": _phase1_committed_bindings(worktree.resolve(), tip_sha)}
     return {**body, "input_sha256": digest(body)}
@@ -1436,58 +1453,131 @@ def _verify_phase1_fixture(repository: Path, plan: dict[str, Any], fixture: dict
     return sorted(set(blockers))
 
 
+PHASE1_ORCHESTRATION_TEST = (
+    "ReleaseTrainTests.test_phase1_acceptance_cli_replays_semantics_and_correlates_watched_producer"
+)
 PHASE1_SUITE_TESTS = (
+    "ReleaseTrainTests.test_deterministic_non_mutating_json_and_human_projection",
+    "ReleaseTrainTests.test_fifo_conflict_dependency_blocker_and_parallel_lanes",
+    "ReleaseTrainTests.test_cycle_is_explicit",
+    "ReleaseTrainTests.test_stale_kanban_and_target_identity_refuse_shared_gate",
+    "ReleaseTrainTests.test_missing_runtime_blocks",
+    "ReleaseTrainTests.test_clean_ready_release_and_version_gate",
+    "ReleaseTrainTests.test_lean_sparse_controller_plans_release_from_target_tree",
+    "ReleaseTrainTests.test_epoch_seal_is_complete_immutable_and_idempotent",
+    "ReleaseTrainTests.test_epoch_seal_refuses_required_missing_closure_without_state",
     "ReleaseTrainTests.test_rc7_rc8_serial_conflicts_fit_one_conservative_repair_set",
     "ReleaseTrainTests.test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity",
+    "ReleaseTrainTests.test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair",
+    "ReleaseTrainTests.test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once",
+    "ReleaseTrainTests.test_bootstrap_reconciliation_finalizes_only_exact_ancestry_members",
+    "ReleaseTrainTests.test_bootstrap_repair_refuses_missing_causal_dependency",
+    "ReleaseTrainTests.test_epoch_composes_history_validates_once_and_cas_once",
+    "ReleaseTrainTests.test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate",
+    "ReleaseTrainTests.test_failed_aggregate_has_fenced_receipt_retry_without_duplicate_merge_or_cas",
+    "ReleaseTrainTests.test_required_failure_pauses_and_shadow_is_read_only",
+    "ReleaseTrainTests.test_recovered_worker_receipt_requires_exact_failed_artifacts",
+    "ReleaseTrainTests.test_lean_target_drift_refuses_release",
 )
-PHASE1_ENV_ALLOWLIST = (
-    "JUNO_TASK_ROOT", "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT",
-    "PYTHONHASHSEED", "PYTHONPATH", "LANG", "LC_ALL",
+PHASE1_SUITE_MANIFEST = {
+    "schema_version": PHASE1_SUITE_MANIFEST_SCHEMA,
+    "selection": "all_release_train_tests_except_evidence_orchestrator",
+    "tests": list(PHASE1_SUITE_TESTS),
+    "excluded_recursive_tests": [PHASE1_ORCHESTRATION_TEST],
+}
+PHASE1_ENV_KEYS = (
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_OPTIONAL_LOCKS",
+    "GIT_TERMINAL_PROMPT", "HOME", "JUNO_TASK_ROOT", "JUNO_WORKSPACE_ENFORCEMENT",
+    "JUNO_WORKSPACE_ROLE", "LANG", "LC_ALL", "PATH", "PYTHONDONTWRITEBYTECODE",
+    "PYTHONHASHSEED", "PYTHONNOUSERSITE", "TMPDIR", "TZ",
 )
 
 
-def _phase1_suite_argv(controller: Path, worktree: Path, output: Path) -> list[str]:
+def _phase1_discovered_tests(test_path: Path) -> list[str]:
+    tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=str(test_path))
+    return sorted(f"{node.name}.{child.name}" for node in tree.body if isinstance(node, ast.ClassDef)
+                  for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and child.name.startswith("test_"))
+
+
+def _phase1_suite_environment(controller: Path, output: Path) -> dict[str, str]:
+    """Return the complete sanitized child environment; ambient values are not inherited."""
+    executable_dir = str(Path(sys.executable).resolve().parent)
+    yy = shutil.which("yy")
+    path_parts = [executable_dir]
+    if yy:
+        path_parts.append(str(Path(yy).resolve().parent))
+    path_parts.extend(["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    path = ":".join(dict.fromkeys(path_parts))
+    tmpdir = output.resolve().parent / "tmp" / output.stem
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    home = output.resolve().parent / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    return {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+            "HOME": str(home), "JUNO_TASK_ROOT": str(controller.resolve()),
+            "JUNO_WORKSPACE_ENFORCEMENT": "strict", "JUNO_WORKSPACE_ROLE": "controller",
+            "LANG": "C", "LC_ALL": "C", "PATH": path,
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1", "TMPDIR": str(tmpdir), "TZ": "UTC"}
+
+
+def _phase1_suite_argv(controller: Path, worktree: Path, output: Path,
+                       evidence_context: str) -> list[str]:
     script = (worktree.resolve() / PHASE1_COMMITTED_PATHS[0]).resolve()
     return [str(Path(sys.executable).resolve()), str(script), "--controller", str(controller.resolve()),
             "phase1-suite", "--task-id", "V9vE0X", "--worktree", str(worktree.resolve()),
-            "--output", str(output.resolve())]
+            "--evidence-context", evidence_context, "--output", str(output.resolve())]
 
 
 def phase1_suite_receipt(controller: Path, task_id: str, worktree: Path,
-                         output: Path, producer_argv: list[str]) -> dict[str, Any]:
-    """Run the committed focused suite and publish producer-derived structured truth."""
+                         output: Path, producer_argv: list[str],
+                         evidence_context: str) -> dict[str, Any]:
+    """Run the complete non-recursive committed suite under an exact environment."""
     controller = controller.resolve(); worktree = worktree.resolve(); output = output.resolve()
     blockers: list[str] = []
     tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
     test_path = (worktree / PHASE1_COMMITTED_PATHS[1]).resolve()
     test_blob = _git_blob_hash(worktree, tip_sha, PHASE1_COMMITTED_PATHS[1])
-    suite_identity = digest({"tip_sha": tip_sha, "tree_sha": tree_sha, "test_blob_sha256": test_blob,
-                             "tests": list(PHASE1_SUITE_TESTS)})
+    discovered = _phase1_discovered_tests(test_path)
+    expected_discovered = sorted([*PHASE1_SUITE_TESTS, PHASE1_ORCHESTRATION_TEST])
+    manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": test_blob}
+    manifest_sha256 = digest(manifest)
+    suite_identity = digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
+                             "manifest_sha256": manifest_sha256,
+                             "evidence_context": evidence_context})
     expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
                        / f"phase1-suite-{suite_identity}.json")
-    expected_argv = _phase1_suite_argv(controller, worktree, expected_output)
+    expected_argv = _phase1_suite_argv(controller, worktree, expected_output, evidence_context)
     if task_id != "V9vE0X" or output != expected_output or producer_argv != expected_argv:
         blockers.append("suite.routing")
     if file_hash(test_path) != test_blob:
         blockers.append("suite.committed_bytes")
+    if discovered != expected_discovered or len(PHASE1_SUITE_TESTS) != len(set(PHASE1_SUITE_TESTS)):
+        blockers.append("suite.manifest_membership")
     command = [str(Path(sys.executable).resolve()), str(test_path), *PHASE1_SUITE_TESTS]
+    child_environment = _phase1_suite_environment(controller, output)
+    if set(child_environment) != set(PHASE1_ENV_KEYS):
+        blockers.append("suite.environment_contract")
     completed = subprocess.run(command, cwd=test_path.parent, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               env=os.environ.copy(), timeout=120)
+                               env=child_environment, timeout=120)
     match = re.search(r"Ran (\d+) tests? in ", completed.stdout)
     test_count = int(match.group(1)) if match else 0
     outcome = "PASS" if completed.returncode == 0 and test_count == len(PHASE1_SUITE_TESTS) and re.search(
-        r"(?:^|\n)OK(?:\n|$)", completed.stdout) else "FAIL"
+        r"(?:^|\n)OK(?: \(skipped=\d+\))?(?:\n|$)", completed.stdout) else "FAIL"
     if outcome != "PASS": blockers.append("suite.result")
-    observed_environment = {key: os.environ.get(key) for key in PHASE1_ENV_ALLOWLIST}
     runtime = _phase1_runtime_identity(str(Path(sys.executable).resolve()), Path(__file__).resolve())
     body = {"schema_version": PHASE1_SUITE_SCHEMA, "decision": "PASS" if not blockers else "FAIL",
             "task_id": task_id, "tip_sha": tip_sha, "tree_sha": tree_sha,
-            "suite_identity_sha256": suite_identity, "producer_argv": producer_argv,
-            "suite_command": command, "test_path": str(test_path),
-            "test_blob_sha256": test_blob, "tests": list(PHASE1_SUITE_TESTS),
-            "runtime": runtime, "observed_environment": observed_environment,
-            "environment_sha256": digest(observed_environment),
+            "suite_identity_sha256": suite_identity, "evidence_context": evidence_context,
+            "producer_argv": producer_argv, "suite_command": command,
+            "suite_cwd": str(test_path.parent),
+            "test_path": str(test_path), "test_blob_sha256": test_blob,
+            "suite_manifest": manifest, "suite_manifest_sha256": manifest_sha256,
+            "discovered_tests": discovered, "runtime": runtime,
+            "observed_environment": child_environment,
+            "environment_sha256": digest(child_environment),
             "result": {"outcome": outcome, "test_count": test_count,
                        "output_sha256": hashlib.sha256(completed.stdout.encode()).hexdigest(),
                        "exit_code": completed.returncode},
@@ -1512,9 +1602,11 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
     plan = build_epoch_plan(controller, Path(declaration_ref["path"]))
     executable_request = producer_argv[0] if producer_argv else ""
     script_path = Path(producer_argv[1]).resolve() if len(producer_argv) > 1 else Path(".").resolve()
+    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+    before = _phase1_repository_snapshot(repository)
     input_identity = phase1_input_identity(task_id, worktree, tip_sha, tree_sha,
                                            declaration_ref, fixture_ref,
-                                           executable_request, script_path)
+                                           executable_request, script_path, before)
     expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
                        / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json')
     if (output != expected_output or not task_runtime.TASK_RE.fullmatch(task_id)):
@@ -1529,8 +1621,6 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
            for row in committed):
         blockers.append("task.committed_bytes")
     fixture = json.loads(Path(fixture_ref["path"]).read_text())
-    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
-    before = _phase1_repository_snapshot(repository)
     blockers.extend(_verify_phase1_fixture(repository, plan, fixture))
     parity = _phase1_parity(worktree)
     if any(file_hash(Path(row["left"])) != row["sha256"]
@@ -1549,6 +1639,27 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
             "blocking_reason_codes": sorted(set(blockers))}
     proof = {**body, "proof_sha256": digest(body)}
     return _publish_exclusive_receipt(output, proof)
+
+
+def _phase1_checked_closure(proof: dict[str, Any], closure: dict[str, Any],
+                            suite_receipt: dict[str, Any]) -> dict[str, Any]:
+    suite = closure.get("suite") or {}
+    return {"proof_sha256": proof.get("proof_sha256"),
+        "input_sha256": (proof.get("input_identity") or {}).get("input_sha256"),
+        "declaration": proof.get("declaration"), "authority": proof.get("authority"),
+        "fixture": proof.get("fixture"),
+        "manifest_sha256": (proof.get("manifest") or {}).get("manifest_sha256"),
+        "proof_watch": closure.get("watch"),
+        "suite_receipt_sha256": suite_receipt.get("receipt_sha256"),
+        "suite_watch": suite.get("watch"), "suite_argv": suite_receipt.get("producer_argv"),
+        "suite_command": suite_receipt.get("suite_command"),
+        "suite_cwd": suite_receipt.get("suite_cwd"),
+        "suite_manifest": suite_receipt.get("suite_manifest"),
+        "suite_manifest_sha256": suite_receipt.get("suite_manifest_sha256"),
+        "suite_runtime": suite_receipt.get("runtime"),
+        "suite_environment": suite_receipt.get("observed_environment"),
+        "suite_environment_sha256": suite_receipt.get("environment_sha256"),
+        "suite_result": suite_receipt.get("result")}
 
 
 def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path,
@@ -1593,7 +1704,7 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
     script_path = Path(argv[1]).resolve() if isinstance(argv, list) and len(argv) > 1 else Path(".").resolve()
     recomputed_input = phase1_input_identity(task_id, worktree, proof.get("tip_sha", ""),
         proof.get("tree_sha", ""), proof.get("declaration") or {}, proof.get("fixture") or {},
-        executable_request, script_path)
+        executable_request, script_path, proof.get("snapshot_before") or {})
     if recomputed_input != proof.get("input_identity"): blockers.append("input_identity.drift")
     if recomputed_input["runtime"]["executable_path"] != str(Path(sys.executable).resolve()):
         blockers.append("runtime.executable")
@@ -1611,6 +1722,12 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
     suite_argv = suite_receipt.get("producer_argv")
     expected_suite_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
         / f'phase1-suite-{suite_receipt.get("suite_identity_sha256", "invalid")}.json')
+    expected_evidence_context = digest(closure.get("watch"))
+    expected_test_blob = _git_blob_hash(
+        worktree, proof.get("tip_sha", ""), PHASE1_COMMITTED_PATHS[1])
+    expected_manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": expected_test_blob}
+    expected_environment = _phase1_suite_environment(controller, expected_suite_output)
+    expected_discovered = sorted([*PHASE1_SUITE_TESTS, PHASE1_ORCHESTRATION_TEST])
     if (suite_receipt.get("schema_version") != PHASE1_SUITE_SCHEMA
             or suite_receipt.get("receipt_sha256") != digest(suite_body)
             or suite_receipt.get("decision") != "PASS"
@@ -1618,15 +1735,22 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
             or suite_receipt.get("tip_sha") != proof.get("tip_sha")
             or suite_receipt.get("tree_sha") != proof.get("tree_sha")
             or Path((suite.get("receipt") or {}).get("path", ".")).resolve() != expected_suite_output.resolve()
-            or suite_argv != _phase1_suite_argv(controller, worktree, expected_suite_output)
-            or suite_receipt.get("test_blob_sha256") != _git_blob_hash(
-                worktree, proof.get("tip_sha", ""), PHASE1_COMMITTED_PATHS[1])
-            or suite_receipt.get("tests") != list(PHASE1_SUITE_TESTS)
+            or suite_receipt.get("evidence_context") != expected_evidence_context
+            or suite_argv != _phase1_suite_argv(controller, worktree, expected_suite_output,
+                                                 expected_evidence_context)
+            or suite_receipt.get("test_blob_sha256") != expected_test_blob
+            or suite_receipt.get("suite_manifest") != expected_manifest
+            or suite_receipt.get("suite_manifest_sha256") != digest(expected_manifest)
+            or suite_receipt.get("discovered_tests") != expected_discovered
+            or suite_receipt.get("suite_command") != [str(Path(sys.executable).resolve()),
+                str((worktree / PHASE1_COMMITTED_PATHS[1]).resolve()), *PHASE1_SUITE_TESTS]
+            or suite_receipt.get("suite_cwd") != str(
+                (worktree / PHASE1_COMMITTED_PATHS[1]).resolve().parent)
             or suite_receipt.get("runtime") != _phase1_runtime_identity(
                 str(Path(sys.executable).resolve()), Path(__file__).resolve())
-            or suite_receipt.get("environment_sha256") != digest(
-                suite_receipt.get("observed_environment"))
-            or set((suite_receipt.get("observed_environment") or {})) != set(PHASE1_ENV_ALLOWLIST)
+            or suite_receipt.get("observed_environment") != expected_environment
+            or suite_receipt.get("environment_sha256") != digest(expected_environment)
+            or set(expected_environment) != set(PHASE1_ENV_KEYS)
             or (suite_receipt.get("result") or {}).get("outcome") != "PASS"
             or (suite_receipt.get("result") or {}).get("test_count") != len(PHASE1_SUITE_TESTS)
             or (suite_receipt.get("result") or {}).get("exit_code") != 0):
@@ -1638,15 +1762,7 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
     if (not suite_log.is_file()
             or suite_receipt.get("receipt_sha256", "").encode() not in suite_log.read_bytes()):
         blockers.append("suite.watch.output")
-    checked_closure = {"proof_sha256": proof.get("proof_sha256"),
-        "input_sha256": (proof.get("input_identity") or {}).get("input_sha256"),
-        "declaration": proof.get("declaration"), "authority": proof.get("authority"),
-        "fixture": proof.get("fixture"), "manifest_sha256": (proof.get("manifest") or {}).get("manifest_sha256"),
-        "proof_watch": closure.get("watch"), "suite_receipt_sha256": suite_receipt.get("receipt_sha256"),
-        "suite_watch": suite.get("watch"), "suite_argv": suite_argv,
-        "suite_runtime": suite_receipt.get("runtime"),
-        "suite_environment_sha256": suite_receipt.get("environment_sha256"),
-        "suite_result": suite_receipt.get("result")}
+    checked_closure = _phase1_checked_closure(proof, closure, suite_receipt)
     closure_sha256 = digest(checked_closure)
     expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
                        / f"phase1-evaluation-{closure_sha256}.json")
@@ -1709,6 +1825,111 @@ def phase1_finalize_acceptance(controller: Path, evaluation_ref: dict[str, Any],
                   "blocking_reason_codes": sorted(set(blockers))}
     receipt = {**final_body, "receipt_sha256": digest(final_body)}
     return receipt if blockers else _publish_exclusive_receipt(output.resolve(), receipt)
+
+
+def _phase1_reference(path: Path) -> dict[str, str]:
+    return {"path": str(path.resolve()), "sha256": file_hash(path.resolve()) or ""}
+
+
+def _phase1_watch_reference(controller: Path, record: dict[str, Any]) -> dict[str, str]:
+    footer = controller.resolve() / ".juno_task/runtime/watch-runs" / record["run_id"] / "footer"
+    return {"run_id": record["run_id"], "footer_sha256": file_hash(footer) or ""}
+
+
+def _phase1_watch_exec(controller: Path, argv: list[str], timeout: int, role: str) -> dict[str, Any]:
+    yy = shutil.which("yy")
+    if not yy:
+        raise ReleaseTrainError("phase1 orchestration requires yy watch")
+    launch_marker = controller.resolve() / ".juno_task/runtime/phase-evidence/V9vE0X/orchestrator"
+    environment = _phase1_suite_environment(controller, launch_marker)
+    completed = subprocess.run([str(Path(yy).resolve()), "watch", "exec", "--timeout", str(timeout),
+                                "--", *argv], cwd=controller.resolve(), env=environment,
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               timeout=timeout + 30)
+    records: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if value.get("schema_version") == "juno.watch-run.v1":
+                records.append(value)
+    if completed.returncode or not records or records[-1].get("exit_code") != 0:
+        detail = completed.stderr[-1000:]
+        if records:
+            log = controller.resolve() / ".juno_task/runtime/watch-runs" / records[-1]["run_id"] / "combined.log"
+            if log.is_file():
+                detail = log.read_text(errors="replace")[-1000:]
+        raise ReleaseTrainError(f"phase1 {role} watched stage failed: " + detail)
+    return records[-1]
+
+
+def phase1_orchestrate(controller: Path, declaration: Path, fixture: Path,
+                       task_id: str, worktree: Path) -> dict[str, Any]:
+    """Run the typed proof/suite/evaluation watch chain and finalize one receipt."""
+    controller = controller.resolve(); worktree = worktree.resolve()
+    if task_id != "V9vE0X":
+        raise ReleaseTrainError("phase1 orchestration task identity mismatch")
+    evidence_root = controller / ".juno_task/runtime/phase-evidence" / task_id
+    declaration_ref, _ = _phase1_publish_declaration(controller, task_id, declaration)
+    fixture_ref = _phase1_publish_input(controller, task_id, "fixture", fixture)
+    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
+    executable = str(Path(sys.executable).resolve())
+    script = (worktree / PHASE1_COMMITTED_PATHS[0]).resolve()
+    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+    input_identity = phase1_input_identity(task_id, worktree, tip_sha, tree_sha,
+                                           declaration_ref, fixture_ref, executable, script,
+                                           _phase1_repository_snapshot(repository))
+    proof_path = evidence_root / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json'
+    proof_argv = [executable, str(script), "--controller", str(controller), "phase1-prove",
+                  "--declaration", str(declaration.resolve()), "--fixture", str(fixture.resolve()),
+                  "--task-id", task_id, "--worktree", str(worktree), "--output", str(proof_path)]
+    proof_watch = _phase1_watch_exec(controller, proof_argv, 120, "proof")
+    proof = json.loads(proof_path.read_text())
+    if proof.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 proof refused")
+
+    test_blob = _git_blob_hash(worktree, tip_sha, PHASE1_COMMITTED_PATHS[1])
+    suite_manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": test_blob}
+    proof_watch_ref = _phase1_watch_reference(controller, proof_watch)
+    evidence_context = digest(proof_watch_ref)
+    suite_identity = digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
+                             "manifest_sha256": digest(suite_manifest),
+                             "evidence_context": evidence_context})
+    suite_path = evidence_root / f"phase1-suite-{suite_identity}.json"
+    suite_argv = _phase1_suite_argv(controller, worktree, suite_path, evidence_context)
+    suite_watch = _phase1_watch_exec(controller, suite_argv, 180, "suite")
+    suite_receipt = json.loads(suite_path.read_text())
+    if suite_receipt.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 suite refused")
+
+    closure = {"schema_version": PHASE1_CLOSURE_SCHEMA, "proof": _phase1_reference(proof_path),
+               "watch": _phase1_watch_reference(controller, proof_watch),
+               "suite": {"receipt": _phase1_reference(suite_path),
+                         "watch": _phase1_watch_reference(controller, suite_watch)}}
+    closure_identity = digest(closure)
+    closure_path = evidence_root / f"phase1-closure-{closure_identity}.json"
+    _publish_exclusive_receipt(closure_path, closure)
+    checked = _phase1_checked_closure(proof, closure, suite_receipt)
+    evaluation_path = evidence_root / f"phase1-evaluation-{digest(checked)}.json"
+    evaluation_argv = [executable, str(script), "--controller", str(controller), "phase1-accept",
+                       "--closure", str(closure_path), "--output", str(evaluation_path)]
+    evaluation_watch = _phase1_watch_exec(controller, evaluation_argv, 120, "evaluation")
+    evaluation = json.loads(evaluation_path.read_text())
+    if evaluation.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 evaluation refused")
+    output = evidence_root / f'phase1-acceptance-{evaluation["closure_sha256"]}.json'
+    receipt = phase1_finalize_acceptance(controller, _phase1_reference(evaluation_path),
+        _phase1_watch_reference(controller, evaluation_watch), output)
+    if receipt.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 finalization refused")
+    return {"schema_version": "juno_release_epoch_phase1_orchestration.v1",
+            "decision": "PASS", "task_id": task_id, "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "stage_watch_run_ids": {"proof": proof_watch["run_id"], "suite": suite_watch["run_id"],
+                                    "evaluation": evaluation_watch["run_id"]},
+            "closure_sha256": evaluation["closure_sha256"],
+            "receipt": _phase1_reference(output)}
 
 
 def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
@@ -2447,11 +2668,18 @@ def parser() -> argparse.ArgumentParser:
     bootstrap_drive = subs.add_parser("bootstrap-drive")
     bootstrap_drive.add_argument("operation_id"); bootstrap_drive.add_argument("--bootstrap-token", required=True)
     bootstrap_drive.add_argument("--json", action="store_true")
+    orchestrate = subs.add_parser("phase1-orchestrate")
+    orchestrate.add_argument("--declaration", type=Path, required=True)
+    orchestrate.add_argument("--fixture", type=Path, required=True)
+    orchestrate.add_argument("--task-id", required=True)
+    orchestrate.add_argument("--worktree", type=Path, required=True)
     proof = subs.add_parser("phase1-prove"); proof.add_argument("--declaration", type=Path, required=True)
     proof.add_argument("--fixture", type=Path, required=True); proof.add_argument("--task-id", required=True)
     proof.add_argument("--worktree", type=Path, required=True); proof.add_argument("--output", type=Path, required=True)
     suite = subs.add_parser("phase1-suite"); suite.add_argument("--task-id", required=True)
-    suite.add_argument("--worktree", type=Path, required=True); suite.add_argument("--output", type=Path, required=True)
+    suite.add_argument("--worktree", type=Path, required=True)
+    suite.add_argument("--evidence-context", required=True)
+    suite.add_argument("--output", type=Path, required=True)
     phase1 = subs.add_parser("phase1-accept"); phase1.add_argument("--closure", type=Path, required=True)
     phase1.add_argument("--output", type=Path, required=True)
     finalize = subs.add_parser("phase1-finalize")
@@ -2496,6 +2724,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = read_bootstrap(controller, args.operation_id)
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
+        elif args.operation == "phase1-orchestrate":
+            result = phase1_orchestrate(controller, args.declaration, args.fixture,
+                                        args.task_id, args.worktree)
         elif args.operation == "phase1-prove":
             actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
                            *(argv if argv is not None else sys.argv[1:])]
@@ -2506,7 +2737,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "phase1-suite":
             actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
                            *(argv if argv is not None else sys.argv[1:])]
-            result = phase1_suite_receipt(controller, args.task_id, args.worktree, args.output, actual_argv)
+            result = phase1_suite_receipt(controller, args.task_id, args.worktree, args.output,
+                                          actual_argv, args.evidence_context)
             if result["decision"] != "PASS":
                 raise ReleaseTrainError("phase1 suite failed: " + ",".join(result["blocking_reason_codes"]))
         elif args.operation == "phase1-accept":
