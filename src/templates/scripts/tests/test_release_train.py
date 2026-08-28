@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,8 +31,8 @@ class ReleaseTrainTests(unittest.TestCase):
         run(self.root, "git", "config", "user.email", "test@example.invalid")
         run(self.root, "git", "config", "user.name", "Test")
         (self.root / ".juno_task/scripts").mkdir(parents=True)
-        for name in ("release_train.py", "merge_queue.py", "worktree_hydration.py"):
-            (self.root / ".juno_task/scripts" / name).write_bytes((SCRIPTS / name).read_bytes())
+        for source in SCRIPTS.glob("*.py"):
+            (self.root / ".juno_task/scripts" / source.name).write_bytes(source.read_bytes())
         template_scripts = self.root / "juno-code/src/templates/scripts"
         (template_scripts / "tests").mkdir(parents=True)
         (template_scripts / "release_train.py").write_bytes((SCRIPTS / "release_train.py").read_bytes())
@@ -284,12 +285,13 @@ raise SystemExit(2)
         return subprocess.check_output(["git", "commit-tree", tree, "-p", parent], cwd=self.root,
                                        env=environment, text=True, input=message + "\n").strip()
 
-    def prepare_serial_conflict_epoch(self) -> tuple[str, str, list[str]]:
+    def prepare_serial_conflict_epoch(self, *, preserve_runtime: bool = False) -> tuple[str, str, list[str]]:
         """Build the portable six-member rc7/rc8 order and two-conflict topology."""
-        conflict_paths = [".juno_task/managed-assets.json", ".juno_task/scripts/release_train.py",
+        runtime_name = "release_train-fixture.py" if preserve_runtime else "release_train.py"
+        conflict_paths = [".juno_task/managed-assets.json", f".juno_task/scripts/{runtime_name}",
             "juno-code/src/cli/__tests__/release-command.test.ts",
             "juno-code/src/cli/commands/release.ts",
-            "juno-code/src/templates/scripts/release_train.py"]
+            f"juno-code/src/templates/scripts/{runtime_name}"]
         for path in conflict_paths:
             target = self.root / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -484,7 +486,7 @@ raise SystemExit(2)
         authority_path.write_text(json.dumps(original, sort_keys=True) + "\n")
 
     def test_phase1_acceptance_cli_replays_semantics_and_correlates_watched_producer(self) -> None:
-        self.prepare_serial_conflict_epoch()
+        self.prepare_serial_conflict_epoch(preserve_runtime=True)
         plan = runtime.build_epoch_plan(self.root, self.declaration)
         manifest = plan["conflict_manifest"]
         evidence_root = self.root / ".juno_task/runtime/phase-evidence/V9vE0X"
@@ -504,24 +506,48 @@ raise SystemExit(2)
                 "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}]}
         fixture_path = evidence_root / "portable.json"
         fixture_path.write_text(runtime.canonical(fixture) + "\n")
-        proof_path = evidence_root / f'phase1-proof-{run(self.root, "git", "rev-parse", "HEAD")}.json'
-        command = ["python3", str(SCRIPTS / "release_train.py"), "--controller", str(self.root),
+        tip_sha = run(self.root, "git", "rev-parse", "HEAD")
+        tree_sha = run(self.root, "git", "rev-parse", "HEAD^{tree}")
+        script_path = self.root / ".juno_task/scripts/release_train.py"
+        executable = str(Path(sys.executable).resolve())
+        declaration_ref = {"path": str(self.declaration.resolve()),
+                           "sha256": hashlib.sha256(self.declaration.read_bytes()).hexdigest()}
+        fixture_ref = {"path": str(fixture_path.resolve()),
+                       "sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest()}
+        input_identity = runtime.phase1_input_identity("V9vE0X", self.root, tip_sha, tree_sha,
+            declaration_ref, fixture_ref, executable, script_path)
+        proof_path = evidence_root / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json'
+        command = [executable, str(script_path), "--controller", str(self.root),
             "phase1-prove", "--declaration", str(self.declaration), "--fixture", str(fixture_path),
             "--task-id", "V9vE0X", "--worktree", str(self.root), "--output", str(proof_path)]
-        produced = subprocess.run(command, cwd=self.root, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(0, produced.returncode, produced.stderr)
+        yy = shutil.which("yy")
+        self.assertIsNotNone(yy, "yy watch is required for Phase-1 evidence tests")
+        watch_env = {key: value for key, value in os.environ.items()
+                     if key not in {"JUNO_TASK_ROOT", "JUNO_CONTROLLER_SOURCE",
+                                    "JUNO_WORKSPACE_ROLE", "JUNO_WORKSPACE_ENFORCEMENT"}
+                     and not key.startswith("JUNO_CONTROL_")}
+        watched = subprocess.run([yy, "watch", "exec", "--timeout", "30", "--", *command],
+            cwd=self.root, env=watch_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        records = [json.loads(line) for line in watched.stdout.splitlines()
+                   if line.startswith("{") and line.endswith("}")]
+        watch_record = next(row for row in reversed(records)
+                            if row.get("schema_version") == "juno.watch-run.v1")
+        inner_log = (self.root / ".juno_task/runtime/watch-runs" /
+                     watch_record["run_id"] / "combined.log")
+        diagnostic = inner_log.read_text() if inner_log.is_file() else "inner watch log unavailable"
+        self.assertEqual(0, watched.returncode, watched.stderr + watched.stdout + diagnostic)
         proof = json.loads(proof_path.read_text())
         self.assertEqual("PASS", proof["decision"])
-        run_id = "20000101T000000Z-phase1fixture"
+        self.assertEqual(input_identity, proof["input_identity"])
+        self.assertIn(input_identity["input_sha256"], proof_path.name)
+        self.assertTrue(all(row["working_sha256"] == row["blob_sha256"]
+                            for row in proof["input_identity"]["committed_files"]))
+        self.assertEqual(executable, proof["input_identity"]["runtime"]["executable_path"])
+        run_id = watch_record["run_id"]
         watch_root = self.root / ".juno_task/runtime/watch-runs" / run_id
-        watch_root.mkdir(parents=True)
-        footer = "schema_version=juno.watch-footer.v1\nexit_code=0\ncompleted_utc=2000-01-01T00:00:00Z\n"
-        (watch_root / "footer").write_text(footer)
-        (watch_root / "combined.log").write_text(produced.stdout)
-        (watch_root / "run.json").write_text(json.dumps({"schema_version": "juno.watch-run.v1",
-            "run_id": run_id, "state": "COMPLETED", "exit_code": 0, "cwd": str(self.root),
-            "argv_sha256": hashlib.sha256(json.dumps(command, separators=(",", ":")).encode()).hexdigest()}) + "\n")
+        self.assertTrue((watch_root / "run.json").is_file())
+        self.assertTrue((watch_root / "footer").is_file())
+        footer = (watch_root / "footer").read_text()
         def ref(path: Path) -> dict[str, str]:
             return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
         closure = {"schema_version": runtime.PHASE1_CLOSURE_SCHEMA, "proof": ref(proof_path),
@@ -550,11 +576,22 @@ raise SystemExit(2)
         self.assertEqual(2, failed.returncode)
         fixture_path.write_bytes(original)
         run_record = json.loads((watch_root / "run.json").read_text())
+        original_run_record = dict(run_record)
         run_record["argv_sha256"] = "0" * 64
         (watch_root / "run.json").write_text(json.dumps(run_record) + "\n")
         correlated = runtime.phase1_acceptance_receipt(self.root, closure_path, output)
         self.assertEqual("FAIL", correlated["decision"])
         self.assertIn("watch.correlation", correlated["blocking_reason_codes"])
+        (watch_root / "run.json").write_text(json.dumps(original_run_record) + "\n")
+        committed_path = self.root / ".juno_task/scripts/tests/test_release_train.py"
+        committed_bytes = committed_path.read_bytes()
+        committed_path.write_bytes(committed_bytes + b"\n# tracked drift\n")
+        drifted = runtime.phase1_acceptance_receipt(self.root, closure_path, output)
+        self.assertEqual("FAIL", drifted["decision"])
+        self.assertIn("task.committed_bytes", drifted["blocking_reason_codes"])
+        committed_path.write_bytes(committed_bytes)
+        source = (SCRIPTS / "release_train.py").read_text()
+        self.assertEqual(1, source.count("def phase1_acceptance_receipt("))
 
     def test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair(self) -> None:
         configured = os.environ.get("YYLO_RC_EVIDENCE_CONTROLLER")

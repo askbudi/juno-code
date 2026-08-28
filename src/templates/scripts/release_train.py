@@ -7,8 +7,10 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1236,117 +1238,61 @@ def _publish_exclusive_receipt(path: Path, receipt: dict[str, Any]) -> dict[str,
         temporary.unlink(missing_ok=True)
 
 
-def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path) -> dict[str, Any]:
-    """Resolve immutable Phase-1 evidence and publish one canonical atomic receipt."""
-    blockers: list[str] = []
-    closure_reference = {"path": str(closure_path.expanduser().resolve()),
-                         "sha256": file_hash(closure_path.expanduser().resolve())}
-    closure = _immutable_json(closure_reference, "closure", blockers)
-    required = {"schema_version", "task_id", "worktree", "tip_sha", "tree_sha", "manifest",
-                "authority", "portable_fixture", "non_mutation", "parity", "watch"}
-    if not closure or set(closure) != required or closure.get("schema_version") != PHASE1_CLOSURE_SCHEMA:
-        blockers.append("closure.schema"); closure = closure or {}
-    task_id = closure.get("task_id", "")
-    worktree = Path(closure.get("worktree", ".")).expanduser().resolve()
-    if (not task_runtime.TASK_RE.fullmatch(task_id) or git(worktree, "rev-parse", "HEAD") != closure.get("tip_sha")
-            or git(worktree, "rev-parse", "HEAD^{tree}") != closure.get("tree_sha")):
-        blockers.append("task.commit_tree")
-    registry = (controller / ".juno_task/runtime/phase-evidence" / task_id).resolve()
-    if output.expanduser().resolve() != registry / "phase1-acceptance.json":
-        blockers.append("receipt.routing")
-    manifest = _immutable_json(closure.get("manifest"), "manifest", blockers) or {}
-    authority = _immutable_json(closure.get("authority"), "authority", blockers) or {}
-    fixture = _immutable_json(closure.get("portable_fixture"), "fixture", blockers) or {}
-    before = _immutable_json((closure.get("non_mutation") or {}).get("before"), "non_mutation.before", blockers)
-    after = _immutable_json((closure.get("non_mutation") or {}).get("after"), "non_mutation.after", blockers)
-    manifest_body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    identity = manifest.get("identity") or {}
-    if (manifest.get("schema_version") != CONFLICT_MANIFEST_SCHEMA
-            or manifest.get("manifest_sha256") != digest(manifest_body)
-            or manifest.get("identity_sha256") != digest(identity)
-            or not manifest.get("member_accounting_complete") or not manifest.get("forecast_complete")):
-        blockers.append("manifest.invalid")
-    order = identity.get("order") or []
-    if ([row.get("task_id") for row in manifest.get("compositions", [])] != order
-            or manifest.get("operator_state") != "FEASIBLE"
-            or not manifest.get("repair_budget_feasible")):
-        blockers.append("manifest.incomplete")
-    if (authority.get("schema_version") != CONFLICT_AUTHORITY_SCHEMA
-            or file_hash(Path((closure.get("authority") or {}).get("path", ""))) != identity.get("conflict_authority_sha256")
-            or (manifest.get("authority_binding") or {}).get("sha256") != identity.get("conflict_authority_sha256")):
-        blockers.append("authority.unbound")
-    fixture_receipts = fixture.get("receipt_identities") or []
-    if (fixture.get("schema_version") != "juno_release_epoch_portable_topology.v1"
-            or fixture.get("order") != order
-            or fixture.get("serial_conflicts") != [row.get("task_id") for row in manifest.get("conflicts", [])]
-            or not fixture_receipts
-            or any(not isinstance(row, dict) or not all(re.fullmatch(r"[0-9a-f]{40,64}", row.get(key, ""))
-                                                       for key in ("commit", "tree", "receipt_sha256"))
-                   for row in fixture_receipts)):
-        blockers.append("fixture.topology")
-    if before is None or after is None or before != after:
-        blockers.append("non_mutation.drift")
-    pairs = (closure.get("parity") or {}).get("pairs", [])
-    expected_pairs = {(str(worktree / ".juno_task/scripts/release_train.py"),
-                       str(worktree / "juno-code/src/templates/scripts/release_train.py")),
-                      (str(worktree / ".juno_task/scripts/tests/test_release_train.py"),
-                       str(worktree / "juno-code/src/templates/scripts/tests/test_release_train.py"))}
-    observed_pairs = {(str(Path(row.get("left", "")).expanduser().resolve()),
-                       str(Path(row.get("right", "")).expanduser().resolve()))
-                      for row in pairs if isinstance(row, dict)} if isinstance(pairs, list) else set()
-    if not isinstance(pairs, list) or observed_pairs != expected_pairs:
-        blockers.append("parity.missing")
-    else:
-        for row in pairs:
-            try:
-                left = Path(row["left"]).resolve(); right = Path(row["right"]).resolve()
-                expected = row["sha256"]
-            except (KeyError, TypeError):
-                blockers.append("parity.schema"); continue
-            if file_hash(left) != expected or file_hash(right) != expected:
-                blockers.append("parity.drift")
-    watch = closure.get("watch") or {}
-    run_id = watch.get("run_id", "")
-    run_root = controller / ".juno_task/runtime/watch-runs" / run_id
-    footer = run_root / "footer"; run_path = run_root / "run.json"
-    try:
-        run_record = json.loads(run_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        run_record = {}
-    footer_text = footer.read_text() if footer.is_file() else ""
-    if (not re.fullmatch(r"schema_version=juno\.watch-footer\.v1\nexit_code=0\ncompleted_utc=[^\n]+\n", footer_text)
-            or file_hash(footer) != watch.get("footer_sha256")
-            or run_record.get("run_id") != run_id or run_record.get("state") != "COMPLETED"
-            or run_record.get("exit_code") != 0):
-        blockers.append("watch.terminal")
-    body = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
-        "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
-        "tip_sha": closure.get("tip_sha"), "tree_sha": closure.get("tree_sha"),
-        "closure_sha256": closure_reference["sha256"],
-        "manifest_sha256": manifest.get("manifest_sha256"),
-        "authority_sha256": identity.get("conflict_authority_sha256"),
-        "fixture_sha256": (closure.get("portable_fixture") or {}).get("sha256"),
-        "watch_run_id": run_id, "footer_sha256": watch.get("footer_sha256"),
-        "blocking_reason_codes": sorted(set(blockers))}
-    receipt = {**body, "receipt_sha256": digest(body)}
-    if blockers:
-        return receipt
-    return _publish_exclusive_receipt(output.expanduser().resolve(), receipt)
-
-
 def _phase1_repository_snapshot(repository: Path) -> dict[str, str]:
     return {"status": git(repository, "status", "--porcelain=v1", "--untracked-files=all"),
             "refs": git(repository, "for-each-ref", "--format=%(refname) %(objectname)"),
             "objects": git(repository, "count-objects", "-v")}
 
 
+PHASE1_COMMITTED_PATHS = (
+    ".juno_task/scripts/release_train.py",
+    ".juno_task/scripts/tests/test_release_train.py",
+    "juno-code/src/templates/scripts/release_train.py",
+    "juno-code/src/templates/scripts/tests/test_release_train.py",
+)
+
+
 def _phase1_parity(worktree: Path) -> list[dict[str, str]]:
-    pairs = [(worktree / ".juno_task/scripts/release_train.py",
-              worktree / "juno-code/src/templates/scripts/release_train.py"),
-             (worktree / ".juno_task/scripts/tests/test_release_train.py",
-              worktree / "juno-code/src/templates/scripts/tests/test_release_train.py")]
+    pairs = [(worktree / PHASE1_COMMITTED_PATHS[0], worktree / PHASE1_COMMITTED_PATHS[2]),
+             (worktree / PHASE1_COMMITTED_PATHS[1], worktree / PHASE1_COMMITTED_PATHS[3])]
     return [{"left": str(left.resolve()), "right": str(right.resolve()),
              "sha256": file_hash(left)} for left, right in pairs]
+
+
+def _git_blob_hash(worktree: Path, tip_sha: str, relative_path: str) -> Optional[str]:
+    result = subprocess.run(["git", "-C", str(worktree), "show", f"{tip_sha}:{relative_path}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else None
+
+
+def _phase1_committed_bindings(worktree: Path, tip_sha: str) -> list[dict[str, Any]]:
+    return [{"path": path, "working_sha256": file_hash(worktree / path),
+             "blob_sha256": _git_blob_hash(worktree, tip_sha, path)}
+            for path in PHASE1_COMMITTED_PATHS]
+
+
+def _phase1_runtime_identity(executable_request: str, script_path: Path) -> dict[str, Any]:
+    located = shutil.which(executable_request) if not Path(executable_request).is_absolute() else executable_request
+    executable = Path(located).resolve() if located else None
+    return {"schema_version": "juno_phase1_python_runtime.v1",
+            "executable_request": executable_request,
+            "executable_path": str(executable) if executable else None,
+            "implementation": platform.python_implementation(),
+            "python_version": platform.python_version(),
+            "python_build": sys.version,
+            "script_path": str(script_path.resolve()),
+            "script_sha256": file_hash(script_path.resolve())}
+
+
+def phase1_input_identity(task_id: str, worktree: Path, tip_sha: str, tree_sha: str,
+                          declaration_ref: dict[str, Any], fixture_ref: dict[str, Any],
+                          executable_request: str, script_path: Path) -> dict[str, Any]:
+    body = {"schema_version": "juno_release_epoch_phase1_input.v1", "task_id": task_id,
+            "worktree": str(worktree.resolve()), "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "declaration": declaration_ref, "fixture": fixture_ref,
+            "runtime": _phase1_runtime_identity(executable_request, script_path),
+            "committed_files": _phase1_committed_bindings(worktree.resolve(), tip_sha)}
+    return {**body, "input_sha256": digest(body)}
 
 
 def _verify_phase1_fixture(repository: Path, plan: dict[str, Any], fixture: dict[str, Any]) -> list[str]:
@@ -1414,13 +1360,27 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
     controller = controller.resolve(); worktree = worktree.resolve(); output = output.resolve()
     blockers: list[str] = []
     tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
-    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
-                       / f"phase1-proof-{tip_sha}.json")
-    if output != expected_output or not task_runtime.TASK_RE.fullmatch(task_id):
-        blockers.append("proof.routing")
     declaration_path = declaration_path.resolve(); fixture_path = fixture_path.resolve()
     declaration_ref = {"path": str(declaration_path), "sha256": file_hash(declaration_path)}
     fixture_ref = {"path": str(fixture_path), "sha256": file_hash(fixture_path)}
+    executable_request = producer_argv[0] if producer_argv else ""
+    script_path = Path(producer_argv[1]).resolve() if len(producer_argv) > 1 else Path(".").resolve()
+    input_identity = phase1_input_identity(task_id, worktree, tip_sha, tree_sha,
+                                           declaration_ref, fixture_ref,
+                                           executable_request, script_path)
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json')
+    if (output != expected_output or not task_runtime.TASK_RE.fullmatch(task_id)):
+        blockers.append("proof.routing")
+    expected_script = (worktree / PHASE1_COMMITTED_PATHS[0]).resolve()
+    if script_path != expected_script or script_path != Path(__file__).resolve():
+        blockers.append("runtime.script")
+    if input_identity["runtime"]["executable_path"] != str(Path(sys.executable).resolve()):
+        blockers.append("runtime.executable")
+    committed = input_identity["committed_files"]
+    if any(not row.get("working_sha256") or row.get("working_sha256") != row.get("blob_sha256")
+           for row in committed):
+        blockers.append("task.committed_bytes")
     fixture = json.loads(fixture_path.read_text())
     repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
     before = _phase1_repository_snapshot(repository)
@@ -1437,6 +1397,7 @@ def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
             "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
             "worktree": str(worktree), "tip_sha": tip_sha, "tree_sha": tree_sha,
             "declaration": declaration_ref, "fixture": fixture_ref,
+            "input_identity": input_identity,
             "manifest": plan["conflict_manifest"], "snapshot_before": before,
             "snapshot_after": after, "parity": parity, "producer_argv": producer_argv,
             "blocking_reason_codes": sorted(set(blockers))}
@@ -1481,6 +1442,20 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
         blockers.append("non_mutation.drift")
     if _phase1_parity(worktree) != proof.get("parity"):
         blockers.append("parity.drift")
+    argv = proof.get("producer_argv")
+    executable_request = argv[0] if isinstance(argv, list) and argv else ""
+    script_path = Path(argv[1]).resolve() if isinstance(argv, list) and len(argv) > 1 else Path(".").resolve()
+    recomputed_input = phase1_input_identity(task_id, worktree, proof.get("tip_sha", ""),
+        proof.get("tree_sha", ""), proof.get("declaration") or {}, proof.get("fixture") or {},
+        executable_request, script_path)
+    if recomputed_input != proof.get("input_identity"):
+        blockers.append("input_identity.drift")
+    if recomputed_input["runtime"]["executable_path"] != str(Path(sys.executable).resolve()):
+        blockers.append("runtime.executable")
+    committed = recomputed_input["committed_files"]
+    if any(not row.get("working_sha256") or row.get("working_sha256") != row.get("blob_sha256")
+           for row in committed):
+        blockers.append("task.committed_bytes")
     watch = closure.get("watch") or {}; run_id = watch.get("run_id", "")
     run_root = controller / ".juno_task/runtime/watch-runs" / run_id
     try:
@@ -1488,12 +1463,10 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
         footer = (run_root / "footer").read_text(); combined = (run_root / "combined.log").read_text()
     except (OSError, json.JSONDecodeError):
         run_record, footer, combined = {}, "", ""
-    argv = proof.get("producer_argv")
-    expected_argv = ["python3", str(Path(__file__).resolve()), "--controller", str(controller.resolve()),
+    expected_argv = [executable_request, str(script_path), "--controller", str(controller.resolve()),
         "phase1-prove", "--declaration", proof.get("declaration", {}).get("path"),
         "--fixture", proof.get("fixture", {}).get("path"), "--task-id", task_id,
-        "--worktree", str(worktree), "--output", proof.get("proof_output",
-            (closure.get("proof") or {}).get("path"))]
+        "--worktree", str(worktree), "--output", (closure.get("proof") or {}).get("path")]
     argv_sha = hashlib.sha256(json.dumps(argv, separators=(",", ":")).encode()).hexdigest()
     if (not isinstance(argv, list) or argv != expected_argv or run_record.get("argv_sha256") != argv_sha
             or run_record.get("cwd") != str(controller.resolve())
@@ -1505,6 +1478,7 @@ def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path
     body = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
             "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
             "tip_sha": proof.get("tip_sha"), "tree_sha": proof.get("tree_sha"),
+            "input_sha256": (proof.get("input_identity") or {}).get("input_sha256"),
             "proof_sha256": proof.get("proof_sha256"), "watch_run_id": run_id,
             "footer_sha256": watch.get("footer_sha256"),
             "blocking_reason_codes": sorted(set(blockers))}
@@ -2292,7 +2266,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
         elif args.operation == "phase1-prove":
-            actual_argv = ["python3", str(Path(__file__).resolve()), *(argv if argv is not None else sys.argv[1:])]
+            actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
+                           *(argv if argv is not None else sys.argv[1:])]
             result = phase1_proof(controller, args.declaration, args.fixture, args.task_id,
                                   args.worktree, args.output, actual_argv)
             if result["decision"] != "PASS":
