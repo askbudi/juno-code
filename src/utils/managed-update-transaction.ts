@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -100,6 +101,37 @@ async function cleanupSnapshot(snapshotRoot: string): Promise<unknown[]> {
   }
 }
 
+async function persistInterruptionEvidence(
+  projectRoot: string,
+  transactionId: string,
+  startedAt: string,
+  primaryError: unknown,
+  rollbackErrors: readonly unknown[],
+): Promise<void> {
+  const evidenceRoot = path.join(
+    projectRoot, '.juno_task/runtime/managed-controller/update-interruptions',
+  );
+  await assertSafeManagedWritePath(projectRoot, evidenceRoot);
+  await fs.ensureDir(evidenceRoot);
+  const evidencePath = path.join(evidenceRoot, `${transactionId}.json`);
+  await assertSafeManagedWritePath(projectRoot, evidencePath);
+  const failure = primaryError instanceof Error
+    ? `${primaryError.name}\0${primaryError.message}`
+    : String(primaryError);
+  const receipt = {
+    schema_version: 'juno_managed_update_interruption.v1',
+    transaction_id: transactionId,
+    started_at: startedAt,
+    recovered_at: new Date().toISOString(),
+    owner_pid: process.pid,
+    outcome: rollbackErrors.length === 0 ? 'rolled_back' : 'rollback_incomplete',
+    rollback_error_count: rollbackErrors.length,
+    failure_sha256: createHash('sha256').update(failure).digest('hex'),
+    update_roots: [...MANAGED_UPDATE_ROOTS],
+  };
+  await fs.writeFile(evidencePath, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
+}
+
 /**
  * Snapshot all update-owned roots and restore them if any later phase fails.
  * The snapshot lives outside the project, so rollback does not depend on a
@@ -110,6 +142,8 @@ export async function withManagedUpdateRollback<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const projectRoot = path.resolve(projectDir);
+  const transactionId = randomUUID();
+  const startedAt = new Date().toISOString();
   const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'juno-managed-update-'));
   const present = new Set<string>();
 
@@ -153,6 +187,13 @@ export async function withManagedUpdateRollback<T>(
       }
     }
     rollbackErrors.push(...await cleanupSnapshot(snapshotRoot));
+    try {
+      await persistInterruptionEvidence(
+        projectRoot, transactionId, startedAt, primaryError, rollbackErrors,
+      );
+    } catch (evidenceError) {
+      rollbackErrors.push(evidenceError);
+    }
     throw combinedFailure(primaryError, rollbackErrors, 'Managed update');
   }
 

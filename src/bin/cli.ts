@@ -1297,33 +1297,45 @@ function setupScriptManagementCommands(program: Command): void {
     // This is deliberately before even an update progress claim. These probes
     // cover every script, dependency, guidance, manifest/backup, and ignored
     // agent-surface destination and perform no writes.
-    await ScriptInstaller.preflightUpdate(workingDirectory, Boolean(options.force));
+    const recovery = await ScriptInstaller.preflightUpdate(
+      workingDirectory, Boolean(options.force),
+    );
     await SkillInstaller.preflightInstall(workingDirectory);
     const metadataOnlyController = await ScriptInstaller.isMetadataOnlyController(workingDirectory);
 
     if (options.force) {
-      console.log(chalk.blue(metadataOnlyController
-        ? '🔄 Force updating ignored metadata-controller runtime scripts, agent surface, and Python dependencies...'
-        : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
+      console.log(chalk.blue(recovery
+        ? '🔄 Recovering the exact target-bound metadata-controller bundle...'
+        : metadataOnlyController
+          ? '🔄 Force updating ignored metadata-controller runtime scripts, agent surface, and Python dependencies...'
+          : '🔄 Force updating project scripts, managed prompts/wiki, macros, and Python dependencies...'));
       const outcome = await withManagedUpdateRollback(workingDirectory, async () => {
-        if (metadataOnlyController) {
+        if (metadataOnlyController && !recovery) {
           await ScriptInstaller.updateMetadataControllerPolicies(workingDirectory, true, true);
         }
         const assets = await ManagedProjectAssets.update(
           workingDirectory,
-          { force: true, silent: true },
+          { force: true, silent: true, recovery: recovery ?? undefined },
         );
-        const scriptsUpdated = await ScriptInstaller.forceUpdateAll(workingDirectory, true);
-        const skillsUpdated = await SkillInstaller.install(workingDirectory, true, true, true);
+        const scriptsUpdated = recovery
+          ? false
+          : await ScriptInstaller.forceUpdateAll(workingDirectory, true);
+        const skillsUpdated = recovery
+          ? false
+          : await SkillInstaller.install(workingDirectory, true, true, true);
         if (metadataOnlyController) {
-          await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
-          if (await SkillInstaller.needsUpdate(workingDirectory)) {
+          await ScriptInstaller.assertMetadataControllerUpdateComplete(
+            workingDirectory, recovery ?? undefined,
+          );
+          if (!recovery && await SkillInstaller.needsUpdate(workingDirectory)) {
             throw new Error('Metadata-controller agent surface remains incomplete after update');
           }
         }
         return { scriptsUpdated, skillsUpdated, assets };
       });
-      console.log(chalk.green('✓ Force updated scripts, requirements, and managed project assets'));
+      console.log(chalk.green(recovery
+        ? `✓ Recovered exact target-bound controller bundle at ${recovery.targetSha}`
+        : '✓ Force updated scripts, requirements, and managed project assets'));
       if (!outcome.scriptsUpdated && !outcome.skillsUpdated &&
           outcome.assets.installed.length + outcome.assets.updated.length === 0) {
         console.log(chalk.yellow('No project assets updated. Is this an initialized yylo project with .juno_task/?'));
@@ -1396,11 +1408,16 @@ ${chalk.gray('This updates scripts from the currently installed yylo package/tem
       ]);
       if (await ScriptInstaller.isMetadataOnlyController(workingDirectory)) {
         await SkillInstaller.assertInstallAllowed(workingDirectory);
-        await ScriptInstaller.assertMetadataControllerUpdateComplete(workingDirectory);
+        const recovery = await ScriptInstaller.assertManagedControllerPackageUpdateAllowed(
+          workingDirectory,
+        );
+        await ScriptInstaller.assertMetadataControllerUpdateComplete(
+          workingDirectory, recovery ?? undefined,
+        );
         const [generation, agentSurfaceStale, bundle] = await Promise.all([
           ScriptInstaller.inspectManagedControllerGeneration(workingDirectory),
-          SkillInstaller.needsUpdate(workingDirectory),
-          ManagedProjectAssets.inspectGeneration(workingDirectory),
+          recovery ? false : SkillInstaller.needsUpdate(workingDirectory),
+          ManagedProjectAssets.inspectGeneration(workingDirectory, recovery ?? undefined),
         ]);
         if (generation.present) {
           if (generation.healthy && !agentSurfaceStale) {

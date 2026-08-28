@@ -177,9 +177,20 @@ yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
 ```
 
 A receipt-bound controller generation is Git-target-owned. `yy scripts update`
-from a mismatched (especially older) package refuses instead of replacing those
-ignored scripts. It also refreshes only controller-local managed bytes; it does
-not repair a missing or stale target-tracked task runtime. For an ordinary
+from a mismatched (especially older) package normally refuses instead of replacing
+those ignored scripts. When the routed installed release, immutable target package
+and declaration, complete exact generation receipt, and unchanged controller plus
+checkpoint policies all prove one identity, the tested post-integration recovery is:
+
+```bash
+yy scripts update --force
+```
+
+That explicit transaction installs the complete target-bound bundle, persists and
+reads back one coherent schema-2 receipt, or restores every update-owned path while
+retaining ignored interruption evidence. Without every exact proof the ordinary
+refusal remains. `scripts update` still refreshes only controller-local managed
+bytes; it does not repair a missing or stale target-tracked task runtime. For an ordinary
 consumer target (one containing neither the `yylo` package nor template source), use
 the explicit package-bound recovery instead:
 
@@ -393,10 +404,10 @@ Rollback operations are intentionally separate:
 
 These local commands authorize neither push/deploy nor production-board conversion or post-deploy E2E.
 
-The RC installation remains explicit and independent:
+The installation remains explicit and independent:
 
 ```bash
-npm install -g @yylo/cli@0.1.0-rc.32
+npm install -g @yylo/cli@0.2.0
 
 # For Pi agent support (optional - multi-provider coding agent)
 npm install -g @mariozechner/pi-coding-agent
@@ -677,8 +688,8 @@ yylo -b shell -s claude -i 10 --on-hourly-limit raise
 ## Quick Start
 
 ```bash
-# Install the RC
-npm install -g @yylo/cli@0.1.0-rc.32
+# Install the current release
+npm install -g @yylo/cli@0.2.0
 
 # Initialize project
 yylo init --task "Add user authentication..." --subagent claude
@@ -1832,8 +1843,8 @@ yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph
 ## Get Started Now
 
 ```bash
-# Install the RC globally
-npm install -g @yylo/cli@0.1.0-rc.32
+# Install the current release globally
+npm install -g @yylo/cli@0.2.0
 
 # Initialize in your project
 cd your-project

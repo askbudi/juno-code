@@ -12,6 +12,11 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import managedAssetManifest from '../templates/managed-assets.json';
 import {
+  resolveTargetBoundManagedRecovery,
+  type ManagedControllerGenerationReceipt,
+  type TargetBoundManagedRecovery,
+} from './managed-controller-recovery.js';
+import {
   assertPackageSource,
   assertSafeManagedWritePath,
   lstatIfPresent,
@@ -48,16 +53,7 @@ const CONTROLLER_BUNDLE_TRACKED_PATHS = [
     .filter((destination) => /^\.juno_task\/(prompts|wiki|workflows)\//.test(destination)),
 ].sort();
 
-type ManagedControllerGeneration = {
-  schema_version: 'juno_managed_controller_runtime.v1';
-  target_sha: string;
-  package_version: string;
-  scripts: Record<string, {
-    classification: 'exact' | 'preserved_customization';
-    source_sha256: string;
-    actual_sha256: string;
-  }>;
-};
+type ManagedControllerGeneration = ManagedControllerGenerationReceipt;
 
 export class ScriptInstaller {
   static async isMetadataOnlyController(projectDir: string): Promise<boolean> {
@@ -124,10 +120,12 @@ export class ScriptInstaller {
    * exact bound source and no owner customization is present. In particular an
    * older globally installed yy must not silently roll ignored scripts back.
    */
-  static async assertManagedControllerPackageUpdateAllowed(projectDir: string): Promise<void> {
-    if (!(await this.isMetadataOnlyController(projectDir))) return;
+  static async assertManagedControllerPackageUpdateAllowed(
+    projectDir: string,
+  ): Promise<TargetBoundManagedRecovery | null> {
+    if (!(await this.isMetadataOnlyController(projectDir))) return null;
     const generationPath = path.join(projectDir, MANAGED_CONTROLLER_GENERATION);
-    if (!(await fs.pathExists(generationPath))) return;
+    if (!(await fs.pathExists(generationPath))) return null;
 
     let generation: ManagedControllerGeneration;
     try {
@@ -161,14 +159,21 @@ export class ScriptInstaller {
       const packageHash = createHash('sha256').update(await fs.readFile(sourcePath)).digest('hex');
       if (packageHash !== binding.source_sha256) mismatches.push(relative);
     }
-    if (mismatches.length > 0) {
-      const sample = mismatches.slice(0, 3).join(', ');
+    if (mismatches.length === 0) return null;
+    const sample = mismatches.slice(0, 3).join(', ');
+    try {
+      return await resolveTargetBoundManagedRecovery(
+        projectDir, generation, packageScriptsDir,
+      );
+    } catch (recoveryError) {
       throw new Error(
         `Refusing package script update: controller runtime is receipt-bound to target ${generation.target_sha} ` +
         `(package ${generation.package_version}), but the invoked package source is not that exact generation` +
         `${sample ? `; non-package bindings: ${sample}` : ''}. ` +
+        `No exact target-bound recovery provenance was admitted: ${String(recoveryError)}. ` +
         `Preserved the exact target generation. Rebind the executable with \`yy migrate runtime-rebind\`; ` +
         `recover scripts with \`yy integration runtime-refresh --previous-sha ${generation.target_sha} --target-sha ${generation.target_sha}\`.`,
+        { cause: recoveryError },
       );
     }
   }
@@ -286,7 +291,10 @@ export class ScriptInstaller {
   }
 
   /** Refuse a success message until sparse policy and routed runtime parity are proven. */
-  static async assertMetadataControllerUpdateComplete(projectDir: string): Promise<void> {
+  static async assertMetadataControllerUpdateComplete(
+    projectDir: string,
+    recovery?: TargetBoundManagedRecovery,
+  ): Promise<void> {
     if (!(await this.isMetadataOnlyController(projectDir))) return;
     const metadataPath = path.join(projectDir, CONTROLLER_POLICY_PATHS[0]);
     const metadata = await fs.readJson(metadataPath).catch((error) => {
@@ -315,12 +323,66 @@ export class ScriptInstaller {
       }
     }
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
-    const bundle = await ManagedProjectAssets.inspectGeneration(projectDir);
-    if (!bundle.coherent || !bundle.instructionBundle) {
+    const bundle = await ManagedProjectAssets.inspectGeneration(projectDir, recovery);
+    if (!bundle.coherent || !bundle.instructionBundle ||
+        (recovery && bundle.instructionBundle.packageVersion !== recovery.packageVersion)) {
       throw new Error(
         `Metadata-controller instruction bundle readback is ${bundle.status}; ` +
         'the complete schema-2 receipt was not persisted',
       );
+    }
+    if (recovery) {
+      const generationReceipt = await fs.readJson(
+        path.join(projectDir, MANAGED_CONTROLLER_GENERATION),
+      ) as ManagedControllerGeneration;
+      const packageScriptsDir = this.getPackageScriptsDir();
+      if (!packageScriptsDir) throw new Error('YYLO package scripts are missing during readback');
+      const persistedRecovery = await resolveTargetBoundManagedRecovery(
+        projectDir, generationReceipt, packageScriptsDir,
+      );
+      if (persistedRecovery.targetSha !== recovery.targetSha ||
+          persistedRecovery.packageVersion !== recovery.packageVersion ||
+          persistedRecovery.generationSha256 !== recovery.generationSha256 ||
+          persistedRecovery.generationPolicySha256 !== recovery.generationPolicySha256 ||
+          persistedRecovery.policySha256 !== recovery.policySha256 ||
+          persistedRecovery.checkpointSha256 !== recovery.checkpointSha256 ||
+          persistedRecovery.packageIdentitySha256 !== recovery.packageIdentitySha256 ||
+          persistedRecovery.assets.size !== recovery.assets.size) {
+        throw new Error('Recovered target-bound package identity changed before readback');
+      }
+      const manifest = await fs.readJson(
+        path.join(projectDir, '.juno_task/managed-assets.json'),
+      ) as Record<string, any>;
+      if (manifest.schemaVersion !== 2 || manifest.packageName !== '@yylo/cli' ||
+          manifest.packageVersion !== recovery.packageVersion ||
+          Object.keys(manifest.assets ?? {}).length !== recovery.assets.size) {
+        throw new Error('Recovered target-bound managed inventory is incomplete');
+      }
+      for (const [relative, expected] of recovery.assets) {
+        const persistedExpected = persistedRecovery.assets.get(relative);
+        const actual = await fs.readFile(path.join(projectDir, relative)).catch((error) => {
+          throw new Error(`Recovered target-bound asset is unreadable: ${relative}`, {
+            cause: error,
+          });
+        });
+        const expectedHash = createHash('sha256').update(expected).digest('hex');
+        const record = manifest.assets[relative];
+        if (!persistedExpected?.equals(expected) || !actual.equals(expected) ||
+            record?.templateVersion !== recovery.packageVersion ||
+            record?.sourceSha256 !== expectedHash || record?.installedSha256 !== expectedHash) {
+          throw new Error(`Recovered target-bound asset has mixed persisted identity: ${relative}`);
+        }
+      }
+    }
+    const checkpointInclude = await fs.readJson(
+      path.join(projectDir, '.juno_task/config.json'),
+    ).then((config) => config?.gitCheckpoint?.include).catch(() => null) as unknown;
+    if (recovery && (!Array.isArray(checkpointInclude) ||
+        !checkpointInclude.every((entry) => typeof entry === 'string') ||
+        CONTROLLER_BUNDLE_TRACKED_PATHS.some((relative) =>
+          !(checkpointInclude as string[]).some((root) =>
+            relative === root || relative.startsWith(`${root.replace(/\/$/, '')}/`))))) {
+      throw new Error('Metadata-controller checkpoint policy omits managed bundle outputs');
     }
     const generation = await this.inspectManagedControllerGeneration(projectDir);
     if (generation.present) {
@@ -834,16 +896,24 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
   }
 
   /** Validate config, package sources, and every possible script/requirement destination. */
-  static async preflightUpdate(projectDir: string, force = false): Promise<void> {
+  static async preflightUpdate(
+    projectDir: string,
+    force = false,
+  ): Promise<TargetBoundManagedRecovery | null> {
     const junoTaskDir = path.join(projectDir, '.juno_task');
-    if (!(await lstatIfPresent(junoTaskDir))) return;
-    await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    if (!(await lstatIfPresent(junoTaskDir))) return null;
+    const recovery = await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    if (recovery && !force) {
+      throw new Error(
+        'Exact target-bound controller recovery requires the explicit `yy scripts update --force` transaction',
+      );
+    }
     if (await this.isMetadataOnlyController(projectDir)) {
       await this.updateMetadataControllerPolicies(projectDir, force);
     }
 
     const { ManagedProjectAssets } = await import('./managed-project-assets.js');
-    await ManagedProjectAssets.preflight(projectDir, { force });
+    await ManagedProjectAssets.preflight(projectDir, { force, recovery: recovery ?? undefined });
 
     const packageScriptsDir = this.getPackageScriptsDir();
     if (!packageScriptsDir) {
@@ -851,8 +921,11 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
     }
     await assertPackageSource(packageScriptsDir, packageScriptsDir, 'directory');
     for (const scriptName of this.REQUIRED_SCRIPTS) {
-      const source = path.join(packageScriptsDir, scriptName);
-      await assertPackageSource(source, packageScriptsDir, 'file');
+      const recovered = recovery?.assets.get(path.join(MANAGED_SCRIPT_ROOT, scriptName));
+      if (!recovered) {
+        const source = path.join(packageScriptsDir, scriptName);
+        await assertPackageSource(source, packageScriptsDir, 'file');
+      }
       await assertSafeManagedWritePath(
         projectDir,
         path.join(projectDir, '.juno_task', 'scripts', scriptName),
@@ -864,6 +937,7 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
       projectDir,
       path.join(projectDir, '.juno_task', '.requirements-cache'),
     );
+    return recovery;
   }
 
   /**
@@ -880,7 +954,12 @@ exec "$ROOT/.juno_task/scripts/git-flow.sh" "$@"
   static async autoUpdate(projectDir: string, silent = true, force = false): Promise<boolean> {
     // Keep this outside the compatibility catch: generation regression is a
     // control-plane refusal, not a best-effort installer miss.
-    await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    const recovery = await this.assertManagedControllerPackageUpdateAllowed(projectDir);
+    if (recovery) {
+      throw new Error(
+        'Target-bound controller runtime cannot use package auto-update; run `yy scripts update --force`',
+      );
+    }
     try {
       const debug = process.env.YYLO_DEBUG === '1';
       const metadataOnlyController = await this.isMetadataOnlyController(projectDir);

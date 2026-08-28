@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import managedAssetManifest from '../templates/managed-assets.json';
 import { version as packageVersion } from '../version.js';
+import type { TargetBoundManagedRecovery } from './managed-controller-recovery.js';
 import {
   assertPackageSource,
   assertSafeManagedWritePath,
@@ -160,11 +161,12 @@ function recordsIdentity(assets: Record<string, ManagedAssetRecord>): string {
 
 function instructionBundleIdentity(
   assets: Record<string, ManagedAssetRecord>,
+  identityVersion = packageVersion,
 ): ManagedInstructionBundleIdentity {
   const core = {
     schemaVersion: 'juno_instruction_bundle.v1' as const,
     semanticVersion: INSTRUCTION_BUNDLE_DECLARATION.semanticVersion,
-    packageVersion,
+    packageVersion: identityVersion,
     assetCount: Object.keys(assets).length,
     assetsSha256: recordsIdentity(assets),
   };
@@ -220,15 +222,27 @@ async function writeAtomic(
   await fs.rename(temporary, destination);
 }
 
-function emptyManifest(): ManagedAssetManifest {
+function emptyManifest(identityVersion = packageVersion): ManagedAssetManifest {
   const assets: Record<string, ManagedAssetRecord> = {};
   return {
     schemaVersion: 2,
     packageName: '@yylo/cli',
-    packageVersion,
-    instructionBundle: instructionBundleIdentity(assets),
+    packageVersion: identityVersion,
+    instructionBundle: instructionBundleIdentity(assets, identityVersion),
     assets,
   };
+}
+
+function targetBoundSource(
+  recovery: TargetBoundManagedRecovery | undefined,
+  asset: ManagedAssetDefinition,
+): Buffer | undefined {
+  if (!recovery) return undefined;
+  const content = recovery.assets.get(asset.destination);
+  if (!content) {
+    throw new Error(`Target-bound managed source is incomplete: ${asset.destination}`);
+  }
+  return content;
 }
 
 export class ManagedProjectAssets {
@@ -244,7 +258,7 @@ export class ManagedProjectAssets {
   /** Validate every source, config, manifest, and possible write path without writing. */
   static async preflight(
     projectDir: string,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; recovery?: TargetBoundManagedRecovery | undefined } = {},
   ): Promise<void> {
     const junoTaskDir = path.join(projectDir, '.juno_task');
     const junoTaskEntry = await lstatIfPresent(junoTaskDir);
@@ -274,16 +288,18 @@ export class ManagedProjectAssets {
     }
 
     const templatesDir = this.getTemplatesDirectory();
-    if (!templatesDir) {
+    if (!templatesDir && !options.recovery) {
       throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
-    let manifest = emptyManifest();
+    let manifest = emptyManifest(options.recovery?.packageVersion);
     if (await fs.pathExists(manifestPath)) {
       manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
 
-    await assertPackageSource(templatesDir, templatesDir, 'directory');
+    if (templatesDir && !options.recovery) {
+      await assertPackageSource(templatesDir, templatesDir, 'directory');
+    }
     const possiblePaths = [
       projectConfigPath,
       manifestPath,
@@ -294,8 +310,11 @@ export class ManagedProjectAssets {
       ),
     ];
     for (const asset of managedAssetsForProject(projectConfig)) {
-      const sourcePath = path.join(templatesDir, asset.source);
-      await assertPackageSource(sourcePath, templatesDir, 'file');
+      const recovered = targetBoundSource(options.recovery, asset);
+      if (!recovered) {
+        const sourcePath = path.join(templatesDir as string, asset.source);
+        await assertPackageSource(sourcePath, templatesDir as string, 'file');
+      }
       possiblePaths.push(
         path.join(projectDir, asset.destination),
         path.join(
@@ -340,9 +359,15 @@ export class ManagedProjectAssets {
 
   static async update(
     projectDir: string,
-    options: { force?: boolean; silent?: boolean } = {},
+    options: {
+      force?: boolean;
+      silent?: boolean;
+      recovery?: TargetBoundManagedRecovery | undefined;
+    } = {},
   ): Promise<ManagedAssetUpdateResult> {
-    await this.preflight(projectDir, { force: Boolean(options.force) });
+    await this.preflight(projectDir, {
+      force: Boolean(options.force), recovery: options.recovery,
+    });
     const result: ManagedAssetUpdateResult = {
       installed: [],
       updated: [],
@@ -375,12 +400,12 @@ export class ManagedProjectAssets {
       }
     }
     const templatesDir = this.getTemplatesDirectory();
-    if (!templatesDir) {
+    if (!templatesDir && !options.recovery) {
       throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
 
     const manifestPath = path.join(junoTaskDir, 'managed-assets.json');
-    let manifest = emptyManifest();
+    let manifest = emptyManifest(options.recovery?.packageVersion);
     if (await fs.pathExists(manifestPath)) {
       manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
@@ -420,11 +445,12 @@ export class ManagedProjectAssets {
     // manifest stay untouched until the whole generation is admissible.
     if (!options.force) {
       for (const asset of applicableAssets) {
-        const sourcePath = path.join(templatesDir, asset.source);
-        if (!(await fs.pathExists(sourcePath))) {
+        const recovered = targetBoundSource(options.recovery, asset);
+        const sourcePath = recovered ? null : path.join(templatesDir as string, asset.source);
+        if (!recovered && !(await fs.pathExists(sourcePath as string))) {
           throw new Error(`Missing managed package asset: ${sourcePath}`);
         }
-        const sourceContent = await fs.readFile(sourcePath);
+        const sourceContent = recovered ?? await fs.readFile(sourcePath as string);
         const destinationPath = path.join(projectDir, asset.destination);
         const record = manifest.assets[asset.destination];
         if (await fs.pathExists(destinationPath)) {
@@ -484,11 +510,12 @@ export class ManagedProjectAssets {
     // prompts/config here and letting ScriptInstaller overwrite scripts later
     // would bypass checksum conflict detection for customized runtime bytes.
     for (const asset of applicableAssets) {
-      const sourcePath = path.join(templatesDir, asset.source);
-      if (!(await fs.pathExists(sourcePath))) {
+      const recovered = targetBoundSource(options.recovery, asset);
+      const sourcePath = recovered ? null : path.join(templatesDir as string, asset.source);
+      if (!recovered && !(await fs.pathExists(sourcePath as string))) {
         throw new Error(`Missing managed package asset: ${sourcePath}`);
       }
-      const sourceContent = await fs.readFile(sourcePath);
+      const sourceContent = recovered ?? await fs.readFile(sourcePath as string);
       const sourceHash = sha256(sourceContent);
       const destinationPath = path.join(projectDir, asset.destination);
       const record = manifest.assets[asset.destination];
@@ -550,7 +577,7 @@ export class ManagedProjectAssets {
 
       manifest.assets[asset.destination] = {
         type: asset.type,
-        templateVersion: packageVersion,
+        templateVersion: options.recovery?.packageVersion ?? packageVersion,
         sourceSha256: sourceHash,
         installedSha256: sourceHash,
       };
@@ -566,8 +593,10 @@ export class ManagedProjectAssets {
     );
     manifest.schemaVersion = 2;
     manifest.packageName = '@yylo/cli';
-    manifest.packageVersion = packageVersion;
-    manifest.instructionBundle = instructionBundleIdentity(manifest.assets);
+    manifest.packageVersion = options.recovery?.packageVersion ?? packageVersion;
+    manifest.instructionBundle = instructionBundleIdentity(
+      manifest.assets, manifest.packageVersion,
+    );
     await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, projectDir);
 
     if (!options.silent) {
@@ -797,13 +826,16 @@ export class ManagedProjectAssets {
   }
 
   /** Inspect the installed lifecycle bundle without changing project files. */
-  static async inspectGeneration(projectDir: string): Promise<ManagedAssetGenerationReport> {
+  static async inspectGeneration(
+    projectDir: string,
+    recovery?: TargetBoundManagedRecovery,
+  ): Promise<ManagedAssetGenerationReport> {
     const templatesDir = this.getTemplatesDirectory();
-    if (!templatesDir) {
+    if (!templatesDir && !recovery) {
       throw new Error('YYLO managed prompt/wiki templates are missing from this package');
     }
     const manifestPath = path.join(projectDir, '.juno_task', 'managed-assets.json');
-    let manifest = emptyManifest();
+    let manifest = emptyManifest(recovery?.packageVersion);
     if (await fs.pathExists(manifestPath)) {
       manifest = validateManifest(await fs.readJson(manifestPath), manifestPath);
     }
@@ -820,7 +852,8 @@ export class ManagedProjectAssets {
     const retiredSpecializationPresent = await fs.pathExists(specializationReceipt);
     const entries: ManagedAssetGenerationReport['entries'] = [];
     for (const asset of managedAssetsForProject(projectConfig)) {
-      const sourceContent = await fs.readFile(path.join(templatesDir, asset.source));
+      const sourceContent = targetBoundSource(recovery, asset) ??
+        await fs.readFile(path.join(templatesDir as string, asset.source));
       const sourceHash = sha256(sourceContent);
       const destinationPath = path.join(projectDir, asset.destination);
       let state: ManagedAssetGenerationState;

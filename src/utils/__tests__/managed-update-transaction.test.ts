@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { withManagedUpdateRollback } from '../managed-update-transaction.js';
+import {
+  MANAGED_UPDATE_ROOTS,
+  withManagedUpdateRollback,
+} from '../managed-update-transaction.js';
 
 describe('managed update transaction', () => {
   let project = '';
@@ -39,6 +42,46 @@ describe('managed update transaction', () => {
     expect((await fs.stat(prompt)).mode & 0o777).toBe(0o640);
     expect(await fs.pathExists(path.join(project, '.venv_juno'))).toBe(false);
     expect(await fs.pathExists(path.join(project, '.juno_task/managed-conflicts'))).toBe(false);
+  });
+
+  it('restores every update-owned root while preserving unrelated dirty bytes', async () => {
+    project = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-update-all-roots-'));
+    const fileRoots = new Set([
+      '.juno_task/config.json', '.juno_task/managed-assets.json',
+      '.juno_task/.requirements-cache', 'scripts/git-flow.sh', 'AGENTS.md', 'CLAUDE.md',
+    ]);
+    for (const [index, relative] of MANAGED_UPDATE_ROOTS.entries()) {
+      const destination = path.join(project, relative);
+      const file = fileRoots.has(relative) ? destination : path.join(destination, 'owner.bin');
+      await fs.outputFile(file, Buffer.from([0, index, 255, 10]));
+      await fs.chmod(file, 0o600 + (index % 8));
+    }
+    const unrelated = path.join(project, '.juno_task/ledger/unrelated.bin');
+    const unrelatedBytes = Buffer.from([9, 0, 8, 7]);
+    await fs.outputFile(unrelated, unrelatedBytes);
+
+    await expect(withManagedUpdateRollback(project, async () => {
+      for (const relative of MANAGED_UPDATE_ROOTS) {
+        const destination = path.join(project, relative);
+        await fs.remove(destination);
+        await fs.outputFile(
+          fileRoots.has(relative) ? destination : path.join(destination, 'partial.bin'),
+          'partial generation\n',
+        );
+      }
+      throw new Error('interrupted complete managed update');
+    })).rejects.toThrow('interrupted complete managed update');
+
+    for (const [index, relative] of MANAGED_UPDATE_ROOTS.entries()) {
+      const destination = path.join(project, relative);
+      const file = fileRoots.has(relative) ? destination : path.join(destination, 'owner.bin');
+      expect(await fs.readFile(file), relative).toEqual(Buffer.from([0, index, 255, 10]));
+      expect((await fs.stat(file)).mode & 0o777, relative).toBe(0o600 + (index % 8));
+      if (!fileRoots.has(relative)) {
+        expect(await fs.pathExists(path.join(destination, 'partial.bin')), relative).toBe(false);
+      }
+    }
+    expect(await fs.readFile(unrelated)).toEqual(unrelatedBytes);
   });
 
   it('snapshots and restores an owned dangling symbolic link exactly', async () => {

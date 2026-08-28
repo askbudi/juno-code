@@ -26,6 +26,7 @@ import {
   createSessionContinuityFixture,
   explicitContinueScopeHash,
 } from './helpers/session-continuity-fixture.js';
+import { createTargetBoundMetadataController } from './helpers/managed-controller-recovery-fixture.js';
 
 // Binary paths for testing
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
@@ -1144,6 +1145,47 @@ exit 1
         { cwd: tempDir, encoding: 'utf8' },
       )).toBe('');
     });
+
+    it('recovers the exact target-bound metadata-controller bundle through scripts update', async () => {
+      const { targetSha, changedScripts } = await createTargetBoundMetadataController(
+        tempDir, '0.2.0', { routedCurrentPackage: true },
+      );
+      const manifestPath = path.join(tempDir, '.juno_task/managed-assets.json');
+      expect((await fs.readJson(manifestPath)).packageVersion).not.toBe('0.2.0');
+
+      const update = await executeCLI(['scripts', 'update', '--force'], { timeout: 120_000 });
+      expect(update.exitCode).toBe(0);
+      expect(update.stdout).toContain(
+        `Recovered exact target-bound controller bundle at ${targetSha}`,
+      );
+      const manifest = await fs.readJson(manifestPath);
+      expect(manifest).toMatchObject({
+        schemaVersion: 2,
+        packageName: '@yylo/cli',
+        packageVersion: '0.2.0',
+        instructionBundle: {
+          schemaVersion: 'juno_instruction_bundle.v1',
+          packageVersion: '0.2.0',
+          assetCount: Object.keys(manifest.assets).length,
+        },
+      });
+      for (const name of changedScripts) {
+        expect(await fs.readFile(
+          path.join(tempDir, '.juno_task/scripts', name), 'utf8',
+        )).toContain(`exact target-only recovery fixture: ${name}`);
+      }
+      const doctor = await executeCLI(['scripts', 'doctor']);
+      expect(doctor.exitCode).toBe(0);
+      expect(doctor.stdout).toContain('Receipt-bound controller scripts and instruction bundle');
+      expect(doctor.stdout).toContain(targetSha);
+
+      const receipt = await fs.readFile(manifestPath);
+      const retry = await executeCLI(['scripts', 'update', '--force'], { timeout: 120_000 });
+      expect(retry.exitCode).toBe(0);
+      expect(await fs.readFile(manifestPath)).toEqual(receipt);
+      expect(await fs.readFile(path.join(tempDir, '.juno_task/ledger/owner.txt'), 'utf8'))
+        .toBe('owner metadata\n');
+    }, 120_000);
 
     it('preserves an explicit short subagent over YYLO_SUBAGENT', async () => {
       const result = await executeCLI(['-s', 'invalid-explicit-provider', '-p', 'precedence check'], {

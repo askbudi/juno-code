@@ -106,6 +106,13 @@ python3 .juno_task/scripts/metadata_controller.py prepare \
 
 `migration-plan` freezes the exact old controller, product target, installed runtime, selected metadata, excluded product/history inventory, rollback identity, and canonical reviewed metadata/task/risk policies. A single reviewed policy bundle is preferred; alternatively pass both `--task-workspace-policy` and `--risk-policy` with the global `--policy` metadata policy. `prepare` re-reads those exact sources and refuses source or content drift before mutation. It requires a fresh output receipt path, then creates a fresh unrelated root and linked worktree; it neither moves the product target nor changes live controller registration. The root boundary receipt binds every preserved source path, mode, blob identity, and generated policy digest. The old sparse/full controller remains intact.
 
+A receipt-bound target generation normally refuses package-template mismatch.
+One explicit `yy scripts update --force` recovery is admitted only when the routed
+installed release, immutable target package/declaration, complete exact generation
+receipt, and unchanged controller/checkpoint policies all prove the same target-bound
+identity. It transactionally installs and reads back the complete schema-2 bundle;
+absent any proof it remains mutation-free. This exception never edits tracked policy.
+
 A registered legacy controller whose metadata policy omits only the `integration-workspace.json` classifications must use the dedicated transaction; `scripts update`, including `--force`, intentionally refuses to mutate tracked policy:
 
 ```bash
