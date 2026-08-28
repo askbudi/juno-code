@@ -39,6 +39,7 @@ describe('release train CLI', () => {
     expect(command('seal')?.description()).toContain('Explicitly close admission');
     expect(command('drive')?.description()).toContain('one target CAS');
     expect(command('repair')?.description()).toContain('one bounded');
+    expect(command('replay-repair')?.description()).toContain('without another model');
     expect(command('retry')?.description()).toContain('Receipt-backed fenced retry');
     expect(command('bootstrap-inspect')?.description()).toContain('Read-only');
     expect(command('bootstrap-status')?.description()).toContain('Read-only');
@@ -60,6 +61,19 @@ describe('release train CLI', () => {
       '--bootstrap-token', 'exact-token', '--json']);
     expect(invoke).toHaveBeenLastCalledWith('bootstrap-drive', 'bootstrap-1',
       ['--bootstrap-token', 'exact-token', '--json']);
+  });
+
+  it('forwards exact-closure replay without weakening historical or fence identity', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureReleaseTrainCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'replay-repair', 'successor',
+      '--predecessor-epoch', 'historical', '--receipt', '/recovery.json',
+      '--epoch-token', 'exact-token', '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('replay-repair', 'successor', [
+      '--predecessor-epoch', 'historical', '--receipt', '/recovery.json',
+      '--epoch-token', 'exact-token', '--json',
+    ]);
   });
 
   it('forwards fenced aggregate retry without weakening token identity', async () => {

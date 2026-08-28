@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import base64
 import hashlib
 import json
 import os
+import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,7 +28,17 @@ EPOCH_PLAN_SCHEMA = "juno_release_epoch_plan.v1"
 EPOCH_SEAL_SCHEMA = "juno_release_epoch_seal.v1"
 EPOCH_STATE_SCHEMA = "juno_release_epoch_state.v1"
 EPOCH_RECEIPT_SCHEMA = "juno_release_epoch_receipt.v1"
+CONFLICT_MANIFEST_SCHEMA = "juno_release_epoch_conflict_manifest.v1"
+CONFLICT_FORECAST_POLICY_SCHEMA = "juno_release_epoch_conflict_forecast_policy.v1"
+CONFLICT_AUTHORITY_SCHEMA = "juno_release_epoch_conflict_authority.v1"
+PHASE1_CLOSURE_SCHEMA = "juno_release_epoch_phase1_closure.v4"
+PHASE1_PROOF_SCHEMA = "juno_release_epoch_phase1_proof.v3"
+PHASE1_SUITE_SCHEMA = "juno_release_epoch_phase1_suite.v2"
+PHASE1_SUITE_MANIFEST_SCHEMA = "juno_release_epoch_phase1_suite_manifest.v1"
+PHASE1_EVALUATION_SCHEMA = "juno_release_epoch_phase1_evaluation.v3"
+PHASE1_ACCEPTANCE_SCHEMA = "juno_release_epoch_phase1_acceptance.v4"
 SHADOW_SCHEMA = "juno_release_epoch_shadow.v1"
+SUCCESSOR_REPAIR_SCHEMA = "juno_release_successor_repair.v1"
 BOOTSTRAP_DECLARATION_SCHEMA = "juno_bootstrap_repair_declaration.v1"
 BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
 BOOTSTRAP_STATE_SCHEMA = "juno_bootstrap_repair_state.v1"
@@ -70,7 +85,9 @@ def load_declaration(path: Path) -> tuple[dict[str, Any], Path]:
     required_keys = {"schema_version", "train_id", "revision", "requested_version", "target_ref",
                      "planning_base_sha", "required_tasks", "optional_tasks", "dependencies",
                      "gates", "authority", "exclusions"}
-    if not isinstance(value, dict) or set(value) != required_keys or value.get("schema_version") != DECLARATION_SCHEMA:
+    allowed_keys = required_keys | {"conflict_authority"}
+    if (not isinstance(value, dict) or not required_keys.issubset(value)
+            or not set(value).issubset(allowed_keys) or value.get("schema_version") != DECLARATION_SCHEMA):
         raise ReleaseTrainError("release-train declaration has an unsupported or non-exact schema")
     train_id = value["train_id"]
     if not isinstance(train_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", train_id):
@@ -112,6 +129,12 @@ def load_declaration(path: Path) -> tuple[dict[str, Any], Path]:
         raise ReleaseTrainError("authority requires controller_common_dir and release_command")
     if not all(isinstance(item, str) and item for item in authority.values()):
         raise ReleaseTrainError("authority values must be non-empty strings")
+    conflict_authority = value.get("conflict_authority")
+    if (conflict_authority is not None and (not isinstance(conflict_authority, dict)
+            or set(conflict_authority) != {"path", "sha256"}
+            or not isinstance(conflict_authority.get("path"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", conflict_authority.get("sha256", "")))):
+        raise ReleaseTrainError("conflict_authority requires exact path and sha256")
     return value, resolved
 
 
@@ -867,6 +890,1094 @@ def epoch_dependency_order(members: list[dict[str, Any]], declaration: dict[str,
     return order, [list(edge) for edge in sorted(edges)]
 
 
+def _forecast_git(repository: Path, *args: str, env: Optional[dict[str, str]] = None,
+                  check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(["git", "-C", str(repository), *args], text=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, env=env)
+    if check and result.returncode:
+        raise ReleaseTrainError("conflict forecast Git operation failed: " + result.stdout.strip()[:1000])
+    return result
+
+
+def _forecast_conflict_paths(checkout: Path) -> list[str]:
+    unmerged = _forecast_git(checkout, "ls-files", "-u", "-z").stdout
+    paths: set[str] = set()
+    for entry in unmerged.split("\0"):
+        if not entry:
+            continue
+        metadata, separator, path = entry.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or not fields[2].isdigit():
+            raise ReleaseTrainError("conflict forecast produced an unreadable unmerged index")
+        paths.add(path)
+    if not paths:
+        raise ReleaseTrainError("conflict forecast merge failed without exact conflict paths")
+    return sorted(paths)
+
+
+def _proven_forecast_composition(controller: Path, repository: Path, task_id: str,
+                                 before: str, candidate: str,
+                                 current_epoch: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Find one receipt-bound both-parent composition without treating it as authority."""
+    root = controller / ".juno_task/runtime/release-epochs"
+    matches: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return None
+    for state_path in sorted(root.glob("*/state.json")):
+        try:
+            state = json.loads(state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        repair_receipts = []
+        for receipt in state.get("receipts", []):
+            if receipt.get("transition") != "REPAIR_CONSUMED":
+                continue
+            receipt_path = Path(receipt.get("path", ""))
+            if (not receipt_path.is_file() or file_hash(receipt_path) != receipt.get("sha256")):
+                continue
+            try:
+                payload = json.loads(receipt_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("transition") == "REPAIR_CONSUMED":
+                repair_receipts.append((receipt, payload))
+        evidence_epoch = state.get("epoch_id")
+        if evidence_epoch == current_epoch:
+            continue
+        current_match = re.fullmatch(r"(.*?)(\d+)", current_epoch or "")
+        evidence_match = re.fullmatch(r"(.*?)(\d+)", evidence_epoch or "")
+        if (current_match and evidence_match and current_match.group(1) == evidence_match.group(1)
+                and int(evidence_match.group(2)) >= int(current_match.group(2))):
+            continue
+        for row in state.get("composition", {}).get("commits", []):
+            commit = row.get("merge_commit")
+            if (row.get("task_id") != task_id or row.get("pre_sha") != before
+                    or row.get("candidate_tip") != candidate or not SHA_RE.fullmatch(commit or "")):
+                continue
+            parents = git(repository, "show", "-s", "--format=%P", commit).split()
+            tree = git(repository, "rev-parse", f"{commit}^{{tree}}")
+            if parents != [before, candidate] or tree != row.get("post_tree"):
+                continue
+            bound = next(((receipt, payload) for receipt, payload in repair_receipts
+                          if payload.get("detail", {}).get("repair_commit") == commit), None)
+            if bound:
+                receipt, _ = bound
+                matches.append({"commit": commit, "tree": tree,
+                    "epoch_id": state.get("epoch_id"), "state_sha256": file_hash(state_path),
+                    "receipt_path": receipt["path"], "receipt_sha256": receipt["sha256"]})
+    identities = {digest(row) for row in matches}
+    if len(identities) > 1:
+        raise ReleaseTrainError("conflict forecast found ambiguous proven compositions")
+    return matches[0] if matches else None
+
+
+def _forecast_declaration_identity(plan: dict[str, Any]) -> tuple[str, Optional[dict[str, Any]]]:
+    """Read a native identity or deterministically adapt one legacy immutable declaration.
+
+    The adapter grants no authority: it accepts only the exact bytes already named by
+    the historical seal and returns typed incompatibility for every incomplete or
+    ambiguous shape.  It never writes to the declaration or epoch registry.
+    """
+    declaration = plan.get("declaration")
+    if not isinstance(declaration, dict):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_reference_missing")
+    native = declaration.get("identity_sha256")
+    if native is not None:
+        if not isinstance(native, str) or not re.fullmatch(r"[0-9a-f]{64}", native):
+            raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_identity_ambiguous")
+        return native, None
+    if (plan.get("schema_version") != EPOCH_PLAN_SCHEMA
+            or set(declaration) != {"path", "sha256", "revision"}
+            or not isinstance(declaration.get("revision"), int)
+            or isinstance(declaration.get("revision"), bool)
+            or not re.fullmatch(r"[0-9a-f]{64}", declaration.get("sha256", ""))):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_reference_ambiguous")
+    path = Path(declaration["path"]).expanduser().resolve()
+    if not path.is_file():
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_missing")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != declaration["sha256"]:
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_tampered")
+    try:
+        value = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_bytes_invalid")
+    if (not isinstance(value, dict) or value.get("schema_version") != DECLARATION_SCHEMA
+            or value.get("revision") != declaration["revision"]
+            or value.get("train_id") != plan.get("epoch_id")):
+        raise ReleaseTrainError("legacy_epoch_evidence_incompatible:declaration_binding_mismatch")
+    identity = digest({key: item for key, item in value.items() if key != "conflict_authority"})
+    adapter = {"schema_version": "juno_release_epoch_legacy_declaration_identity.v1",
+               "source_sha256": declaration["sha256"], "derived_identity_sha256": identity}
+    return identity, adapter
+
+
+def _forecast_input_identity(plan: dict[str, Any]) -> dict[str, Any]:
+    declaration_identity, adapter = _forecast_declaration_identity(plan)
+    value = {"base_sha": plan["base_sha"], "order": plan["order"],
+        "members": [{"task_id": row["task_id"], "tip_sha": row["tip_sha"],
+            "tree_sha": row["tree_sha"], "task_revision": row["task_revision"],
+            "task_sha256": row["task_sha256"],
+            "queue_record_sha256": row["queue_record_sha256"],
+            "complete_input_identity_sha256": digest(row["complete_input_identity"]),
+            "closure_sha256": (row["complete_input_identity"] or {}).get("closure_sha256")}
+            for row in plan["members"]],
+        "runtime_sha256": plan["runtime_sha256"], "policy_sha256": plan["policy_sha256"],
+        "declaration_identity_sha256": declaration_identity}
+    return {**value, "legacy_declaration_identity": adapter} if adapter else value
+
+
+def _conflict_authority(plan: dict[str, Any], envelope: Optional[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], list[str]]:
+    """Resolve frozen grouped-repair authority; malformed or drifted input is observation-only refusal."""
+    reference = plan.get("conflict_authority")
+    if not envelope:
+        return None, []
+    reasons: list[str] = []
+    if not isinstance(reference, dict):
+        return None, ["authority.missing"]
+    path = Path(reference.get("path", "")).expanduser().resolve()
+    if not path.is_file() or file_hash(path) != reference.get("sha256"):
+        return None, ["authority.identity"]
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, ["authority.unreadable"]
+    required = {"schema_version", "revision", "train_id", "input_identity_sha256",
+                "logical_sets", "repair_budget", "grouped_worker", "risk"}
+    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != CONFLICT_AUTHORITY_SCHEMA:
+        return None, ["authority.schema"]
+    if not isinstance(value.get("revision"), int) or isinstance(value.get("revision"), bool) or value["revision"] < 1:
+        reasons.append("authority.revision")
+    if value.get("train_id") != plan.get("epoch_id"):
+        reasons.append("authority.train")
+    input_identity = _forecast_input_identity(plan)
+    if value.get("input_identity_sha256") != digest(input_identity):
+        reasons.append("authority.input_identity")
+    sets = value.get("logical_sets")
+    if not isinstance(sets, list) or len(sets) != 1:
+        reasons.append("authority.logical_sets")
+    else:
+        logical_set = sets[0]
+        expected_tasks = [row["task_id"] for row in envelope["ordered_members"]]
+        expected_paths = sorted({path for row in envelope["ordered_members"]
+                                 for path in row["possible_conflict_paths"]})
+        if (not isinstance(logical_set, dict)
+                or set(logical_set) != {"set_id", "ordered_task_ids", "permitted_paths", "classification"}
+                or logical_set.get("ordered_task_ids") != expected_tasks
+                or logical_set.get("permitted_paths") != expected_paths
+                or logical_set.get("classification") != "authorization_neutral"):
+            reasons.append("authority.scope")
+    risk = value.get("risk")
+    if (not isinstance(risk, dict) or set(risk) != {"ambiguous", "sensitive", "destructive", "scope_expansion"}
+            or any(risk.get(key) is not False for key in risk)):
+        reasons.append("authority.risk")
+    if value.get("repair_budget") != 1 or value.get("grouped_worker") is not True:
+        reasons.append("authority.policy")
+    binding = {"path": str(path), "sha256": reference["sha256"], "document": value,
+               "input_identity": input_identity}
+    return (binding if not reasons else None), sorted(set(reasons))
+
+
+def forecast_epoch_conflicts(controller: Path, repository: Path,
+                             plan: dict[str, Any]) -> dict[str, Any]:
+    """Exactly precompose frozen members; never invent a material conflict repair."""
+    by_id = {row["task_id"]: row for row in plan["members"]}
+    conflicts: list[dict[str, Any]] = []
+    compositions: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="yylo-epoch-forecast-") as temporary:
+        checkout = Path(temporary) / "checkout"
+        _forecast_git(repository, "clone", "--quiet", "--shared", "--no-checkout",
+                      str(repository), str(checkout))
+        _forecast_git(checkout, "checkout", "--quiet", "--detach", plan["base_sha"])
+        unresolved_boundary: Optional[dict[str, Any]] = None
+        indeterminate_members: list[dict[str, Any]] = []
+        for index, task_id in enumerate(plan["order"]):
+            member = by_id[task_id]
+            if unresolved_boundary is not None:
+                # Material repair output is unknowable without spending repair authority.
+                # Account for every later member, but probe it only against the frozen base
+                # and never pretend that probe is the ordered composition result.
+                _forecast_git(checkout, "reset", "--quiet", "--hard", plan["base_sha"])
+                anchor_merge = _forecast_git(checkout, "merge", "--no-ff", "--no-commit",
+                                             member["tip_sha"], check=False)
+                anchor_paths = _forecast_conflict_paths(checkout) if anchor_merge.returncode else []
+                if anchor_merge.returncode:
+                    _forecast_git(checkout, "merge", "--abort")
+                else:
+                    _forecast_git(checkout, "reset", "--quiet", "--hard", plan["base_sha"])
+                row = {"task_id": task_id, "pre_sha": None, "pre_tree": None,
+                       "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                       "post_sha": None, "post_tree": None,
+                       "decision": "composition_indeterminate",
+                       "indeterminate_due_to": unresolved_boundary,
+                       "independent_base_probe": {"anchor_sha": plan["base_sha"],
+                           "decision": "conflict" if anchor_paths else "clean",
+                           "conflict_paths": anchor_paths}}
+                compositions.append(row)
+                indeterminate_members.append(row)
+                continue
+            before = git(checkout, "rev-parse", "HEAD")
+            before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
+            if subprocess.run(["git", "-C", str(checkout), "merge-base", "--is-ancestor",
+                               member["tip_sha"], before], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode == 0:
+                compositions.append({"task_id": task_id, "pre_sha": before,
+                                     "pre_tree": before_tree, "post_sha": before,
+                                     "post_tree": before_tree, "decision": "already_present"})
+                continue
+            merged = _forecast_git(checkout, "merge", "--no-ff", "--no-commit",
+                                   member["tip_sha"], check=False)
+            conflict_paths: list[str] = []
+            replay = None
+            if merged.returncode:
+                conflict_paths = _forecast_conflict_paths(checkout)
+                _forecast_git(checkout, "merge", "--abort")
+                replay = _proven_forecast_composition(controller, repository, task_id,
+                                                      before, member["tip_sha"], plan["epoch_id"])
+                if not replay:
+                    row = {"task_id": task_id, "pre_sha": before, "pre_tree": before_tree,
+                           "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                           "post_sha": None, "post_tree": None, "decision": "conflict_unresolved"}
+                    unresolved_boundary = {"task_id": task_id, "pre_sha": before,
+                                           "candidate_tip": member["tip_sha"],
+                                           "conflict_paths": conflict_paths}
+                    compositions.append(row)
+                    conflicts.append({**row, "conflict_paths": conflict_paths,
+                                      "required": member["required"],
+                                      "forecast_resolution": "requires_proven_both_parent_composition"})
+                    continue
+                _forecast_git(checkout, "reset", "--quiet", "--hard", replay["commit"])
+                commit, tree = replay["commit"], replay["tree"]
+            else:
+                tree = _forecast_git(checkout, "write-tree").stdout.strip()
+                if not SHA_RE.fullmatch(tree):
+                    raise ReleaseTrainError("conflict forecast did not produce an exact tree")
+                fixed_time = f"2000-01-01T00:00:{index % 60:02d}Z"
+                environment = {**os.environ, "GIT_AUTHOR_NAME": "YYLO Conflict Forecast",
+                               "GIT_AUTHOR_EMAIL": "forecast@invalid.local",
+                               "GIT_COMMITTER_NAME": "YYLO Conflict Forecast",
+                               "GIT_COMMITTER_EMAIL": "forecast@invalid.local",
+                               "GIT_AUTHOR_DATE": fixed_time, "GIT_COMMITTER_DATE": fixed_time}
+                commit = _forecast_git(checkout, "commit-tree", tree, "-p", before, "-p",
+                                       member["tip_sha"], env=environment).stdout.strip()
+                if not SHA_RE.fullmatch(commit):
+                    raise ReleaseTrainError("conflict forecast did not produce an exact composition commit")
+                _forecast_git(checkout, "reset", "--quiet", "--hard", commit)
+            row = {"task_id": task_id, "pre_sha": before, "pre_tree": before_tree,
+                   "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                   "post_sha": commit, "post_tree": tree,
+                   "decision": "conflict_replayed" if conflict_paths else "clean"}
+            if replay:
+                row["proven_composition"] = replay
+            compositions.append(row)
+            if conflict_paths:
+                conflicts.append({**row, "conflict_paths": conflict_paths,
+                                  "required": member["required"],
+                                  "forecast_resolution": "immutable_receipt_bound_composition"})
+    member_accounting_complete = len(compositions) == len(plan["order"])
+    exact_composition_complete = member_accounting_complete and unresolved_boundary is None
+    conservative_envelope = None
+    if unresolved_boundary is not None:
+        boundary_index = plan["order"].index(unresolved_boundary["task_id"])
+        suffix = plan["order"][boundary_index:]
+        composition_by_id = {row["task_id"]: row for row in compositions}
+        conflict_by_id = {row["task_id"]: row for row in conflicts}
+        envelope_members = []
+        for task_id in suffix:
+            member = by_id[task_id]
+            composition = composition_by_id[task_id]
+            exact_conflict = conflict_by_id.get(task_id)
+            possible_paths = (exact_conflict["conflict_paths"] if exact_conflict
+                              else sorted(member["changed_paths"]))
+            envelope_members.append({"task_id": task_id,
+                "candidate_tip": member["tip_sha"], "candidate_tree": member["tree_sha"],
+                "required": member["required"], "changed_paths": sorted(member["changed_paths"]),
+                "classification": ("exact_unresolved_conflict" if exact_conflict
+                                   else "conservative_possible_conflict"),
+                "possible_conflict_paths": possible_paths,
+                "independent_base_probe": composition.get("independent_base_probe")})
+        envelope_core = {"schema_version": "juno_release_epoch_conservative_envelope.v1",
+            "strategy": "frozen_unknown_suffix.v1", "boundary": unresolved_boundary,
+            "ordered_members": envelope_members,
+            "logical_repair_sets": [{"set_index": 1,
+                "authority": "authorization_neutral_grouped_repair_only",
+                "task_ids": suffix,
+                "possible_conflict_paths": sorted({path for row in envelope_members
+                                                    for path in row["possible_conflict_paths"]})}],
+            "complete": len(envelope_members) == len(suffix)}
+        conservative_envelope = {**envelope_core, "envelope_sha256": digest(envelope_core)}
+    envelope_complete = bool(conservative_envelope and conservative_envelope["complete"])
+    forecast_complete = member_accounting_complete and (exact_composition_complete or envelope_complete)
+    required_conflicts = sum(1 for row in conflicts if row["required"])
+    required_repair_sets = (len(conservative_envelope["logical_repair_sets"])
+                            if conservative_envelope else 0)
+    authority, authority_reasons = _conflict_authority(plan, conservative_envelope)
+    policy = {"schema_version": CONFLICT_FORECAST_POLICY_SCHEMA,
+              "repair_budget": 1,
+              "repair_unit": "authorization_neutral_logical_conflict_set.v1",
+              "logical_conflict_set_grouping": "frozen_unknown_suffix.v1",
+              "grouped_worker_authorized": authority is not None,
+              "authority_sha256": (authority or {}).get("sha256"),
+              "serial_forecast_resolution": "exact_prefix_then_conservative_envelope.v1"}
+    policy_feasible = (forecast_complete and required_repair_sets <= policy["repair_budget"]
+                       and (required_repair_sets == 0 or authority is not None))
+    input_identity = _forecast_input_identity(plan)
+    identity = {"declaration": plan["declaration"], **input_identity,
+                "forecast_policy": policy,
+                "conflict_authority_sha256": (authority or {}).get("sha256"),
+                "conservative_envelope_sha256": (conservative_envelope or {}).get("envelope_sha256")}
+    body = {"schema_version": CONFLICT_MANIFEST_SCHEMA, "identity": identity,
+            "identity_sha256": digest(identity), "compositions": compositions,
+            "conflicts": conflicts, "indeterminate_members": indeterminate_members,
+            "unresolved_boundary": unresolved_boundary,
+            "conservative_envelope": conservative_envelope,
+            "member_accounting_complete": member_accounting_complete,
+            "forecast_complete": forecast_complete,
+            "exact_composition_complete": exact_composition_complete,
+            "required_conflict_count": required_conflicts,
+            "required_logical_repair_set_count": required_repair_sets,
+            "authority_binding": authority,
+            "authority_reason_codes": authority_reasons,
+            "operator_state": "FEASIBLE" if policy_feasible else "NEEDS_OPERATOR",
+            "policy_repair_budget_feasible": policy_feasible,
+            "repair_budget_feasible": policy_feasible}
+    return {**body, "manifest_sha256": digest(body)}
+
+
+def _immutable_json(reference: Any, code: str, blockers: list[str]) -> Optional[dict[str, Any]]:
+    if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
+            or not re.fullmatch(r"[0-9a-f]{64}", reference.get("sha256", ""))):
+        blockers.append(code + ".reference"); return None
+    path = Path(reference["path"]).expanduser().resolve()
+    if not path.is_file() or file_hash(path) != reference["sha256"]:
+        blockers.append(code + ".identity"); return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        blockers.append(code + ".json"); return None
+    return value if isinstance(value, dict) else None
+
+
+def _publish_exclusive_receipt(path: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    rendered = canonical(receipt) + "\n"
+    if path.exists():
+        try:
+            current = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReleaseTrainError("phase1 acceptance receipt collision") from exc
+        if current != receipt:
+            changed = sorted(key for key in set(current) | set(receipt)
+                             if current.get(key) != receipt.get(key))
+            raise ReleaseTrainError("phase1 acceptance receipt collision fields="
+                                    + ",".join(changed))
+        return current
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(rendered); stream.flush(); os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            current = json.loads(path.read_text())
+            if current != receipt:
+                changed = sorted(key for key in set(current) | set(receipt)
+                                 if current.get(key) != receipt.get(key))
+                raise ReleaseTrainError("phase1 acceptance receipt collision fields="
+                                        + ",".join(changed))
+        return json.loads(path.read_text())
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _phase1_repository_snapshot(repository: Path) -> dict[str, str]:
+    return {"status": git(repository, "status", "--porcelain=v1", "--untracked-files=all"),
+            "refs": git(repository, "for-each-ref", "--format=%(refname) %(objectname)"),
+            "objects": git(repository, "count-objects", "-v")}
+
+
+PHASE1_COMMITTED_PATHS = (
+    ".juno_task/scripts/release_train.py",
+    ".juno_task/scripts/tests/test_release_train.py",
+    "juno-code/src/templates/scripts/release_train.py",
+    "juno-code/src/templates/scripts/tests/test_release_train.py",
+)
+
+
+def _phase1_parity(worktree: Path) -> list[dict[str, str]]:
+    pairs = [(worktree / PHASE1_COMMITTED_PATHS[0], worktree / PHASE1_COMMITTED_PATHS[2]),
+             (worktree / PHASE1_COMMITTED_PATHS[1], worktree / PHASE1_COMMITTED_PATHS[3])]
+    return [{"left": str(left.resolve()), "right": str(right.resolve()),
+             "sha256": file_hash(left)} for left, right in pairs]
+
+
+def _git_blob_hash(worktree: Path, tip_sha: str, relative_path: str) -> Optional[str]:
+    result = subprocess.run(["git", "-C", str(worktree), "show", f"{tip_sha}:{relative_path}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else None
+
+
+def _phase1_committed_bindings(worktree: Path, tip_sha: str) -> list[dict[str, Any]]:
+    return [{"path": path, "working_sha256": file_hash(worktree / path),
+             "blob_sha256": _git_blob_hash(worktree, tip_sha, path)}
+            for path in PHASE1_COMMITTED_PATHS]
+
+
+def _phase1_runtime_identity(executable_request: str, script_path: Path) -> dict[str, Any]:
+    """Bind the resolved interpreter and conservative local Python import closure."""
+    located = shutil.which(executable_request) if not Path(executable_request).is_absolute() else executable_request
+    executable = Path(located).resolve() if located else None
+    script_path = script_path.resolve()
+    module_root = script_path.parent
+    # Local imports are deliberately over-bound. Adding or substituting any sibling
+    # runtime module changes the closure even when Python import order differs.
+    dependencies = [{"module": path.stem, "path": str(path.resolve()),
+                     "sha256": file_hash(path.resolve())}
+                    for path in sorted(module_root.glob("*.py")) if path.is_file()]
+    imported_task_runtime = Path(task_runtime.__file__).resolve()
+    if not any(row["module"] == "task_workspace" for row in dependencies):
+        dependencies.append({"module": "task_workspace", "path": str(imported_task_runtime),
+                             "sha256": file_hash(imported_task_runtime)})
+    dependencies.sort(key=lambda row: (row["module"], row["path"]))
+    return {"schema_version": "juno_phase1_python_runtime.v3",
+            "executable_request": executable_request,
+            "executable_path": str(executable) if executable else None,
+            "executable_sha256": file_hash(executable) if executable and executable.is_file() else None,
+            "implementation": platform.python_implementation(),
+            "python_version": platform.python_version(),
+            "python_build": sys.version,
+            "script_path": str(script_path),
+            "script_sha256": file_hash(script_path),
+            "import_closure": dependencies}
+
+
+def _phase1_publish_bytes(controller: Path, task_id: str, kind: str,
+                          content: bytes) -> dict[str, str]:
+    """Publish exact replay inputs under the canonical evidence registry."""
+    identity = hashlib.sha256(content).hexdigest()
+    destination = (controller.resolve() / ".juno_task/runtime/phase-evidence" / task_id
+                   / "inputs" / f"{kind}-{identity}.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.read_bytes() != content:
+            raise ReleaseTrainError("phase1 input publication collision")
+    else:
+        temporary = destination.parent / f".{destination.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(content); stream.flush(); os.fsync(stream.fileno())
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                if destination.read_bytes() != content:
+                    raise ReleaseTrainError("phase1 input publication collision")
+        finally:
+            temporary.unlink(missing_ok=True)
+    return {"path": str(destination), "sha256": identity}
+
+
+def _phase1_publish_input(controller: Path, task_id: str, kind: str, source: Path) -> dict[str, str]:
+    return _phase1_publish_bytes(controller, task_id, kind, source.resolve().read_bytes())
+
+
+def _phase1_publish_declaration(controller: Path, task_id: str,
+                                source: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Canonicalize declaration authority so proof never retains an external path."""
+    declaration, resolved = load_declaration(source.resolve())
+    authority = declaration.get("conflict_authority")
+    if not isinstance(authority, dict) or not isinstance(authority.get("path"), str):
+        raise ReleaseTrainError("phase1 declaration requires conflict authority")
+    authority_path = Path(authority["path"]).expanduser()
+    if not authority_path.is_absolute():
+        authority_path = resolved.parent / authority_path
+    authority_ref = _phase1_publish_input(controller, task_id, "authority", authority_path.resolve())
+    if authority.get("sha256") != authority_ref["sha256"]:
+        raise ReleaseTrainError("phase1 conflict authority identity drift")
+    declaration["conflict_authority"] = authority_ref
+    content = (canonical(declaration) + "\n").encode()
+    return _phase1_publish_bytes(controller, task_id, "declaration", content), authority_ref
+
+
+def _phase1_watch_correlation(controller: Path, reference: Any, expected_argv: list[str],
+                              required_output_sha256: Optional[str] = None) -> list[str]:
+    blockers: list[str] = []
+    if not isinstance(reference, dict) or set(reference) != {"run_id", "footer_sha256"}:
+        return ["watch.reference"]
+    run_id = reference.get("run_id", "")
+    run_root = controller.resolve() / ".juno_task/runtime/watch-runs" / run_id
+    try:
+        run_record = json.loads((run_root / "run.json").read_text())
+        footer = (run_root / "footer").read_text()
+        combined_bytes = (run_root / "combined.log").read_bytes()
+    except (OSError, json.JSONDecodeError):
+        return ["watch.missing"]
+    argv_sha = hashlib.sha256(json.dumps(expected_argv, separators=(",", ":")).encode()).hexdigest()
+    if (run_record.get("argv_sha256") != argv_sha
+            or run_record.get("cwd") != str(controller.resolve())
+            or run_record.get("run_id") != run_id or run_record.get("state") != "COMPLETED"
+            or run_record.get("exit_code") != 0
+            or not re.fullmatch(r"schema_version=juno\.watch-footer\.v1\nexit_code=0\ncompleted_utc=[^\n]+\n", footer)
+            or file_hash(run_root / "footer") != reference.get("footer_sha256")):
+        blockers.append("watch.identity")
+    if required_output_sha256 and hashlib.sha256(combined_bytes).hexdigest() != required_output_sha256:
+        blockers.append("watch.output")
+    return blockers
+
+
+def phase1_input_identity(task_id: str, worktree: Path, tip_sha: str, tree_sha: str,
+                          declaration_ref: dict[str, Any], fixture_ref: dict[str, Any],
+                          executable_request: str, script_path: Path,
+                          repository_snapshot: dict[str, str]) -> dict[str, Any]:
+    body = {"schema_version": "juno_release_epoch_phase1_input.v2", "task_id": task_id,
+            "worktree": str(worktree.resolve()), "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "declaration": declaration_ref, "fixture": fixture_ref,
+            "repository_snapshot": repository_snapshot,
+            "runtime": _phase1_runtime_identity(executable_request, script_path),
+            "committed_files": _phase1_committed_bindings(worktree.resolve(), tip_sha)}
+    return {**body, "input_sha256": digest(body)}
+
+
+def _verify_phase1_fixture(repository: Path, plan: dict[str, Any], fixture: dict[str, Any]) -> list[str]:
+    """Reconstruct portable topology from Git objects and embedded receipt bytes."""
+    blockers: list[str] = []
+    manifest = plan["conflict_manifest"]
+    members = [{"task_id": row["task_id"], "tip_sha": row["tip_sha"],
+                "tree_sha": row["tree_sha"]} for row in plan["members"]]
+    if (fixture.get("schema_version") != "juno_release_epoch_portable_topology.v2"
+            or fixture.get("base_sha") != plan["base_sha"]
+            or fixture.get("order") != plan["order"]
+            or fixture.get("members") != members
+            or fixture.get("serial_conflicts") != [row["task_id"] for row in manifest["conflicts"]]):
+        blockers.append("fixture.topology")
+    for member in members:
+        try:
+            if (git(repository, "rev-parse", f'{member["tip_sha"]}^{{tree}}')
+                    != member["tree_sha"]):
+                blockers.append("fixture.member_tree")
+        except (ReleaseTrainError, subprocess.CalledProcessError):
+            blockers.append("fixture.member_object")
+    expected = {row["task_id"]: row for row in manifest["compositions"]
+                if row.get("decision") == "conflict_replayed"}
+    observed = fixture.get("proven_compositions")
+    if not isinstance(observed, list) or {row.get("task_id") for row in observed
+                                         if isinstance(row, dict)} != set(expected):
+        blockers.append("fixture.compositions")
+        observed = observed if isinstance(observed, list) else []
+    for row in observed:
+        if not isinstance(row, dict) or row.get("task_id") not in expected:
+            blockers.append("fixture.composition_schema"); continue
+        source = expected[row["task_id"]]
+        receipt = row.get("receipt")
+        try:
+            receipt_bytes = base64.b64decode(row.get("receipt_bytes_b64", ""), validate=True)
+        except (ValueError, TypeError):
+            receipt_bytes = b""
+        try:
+            if json.loads(receipt_bytes) != receipt:
+                blockers.append("fixture.receipt_bytes")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            blockers.append("fixture.receipt_bytes")
+        try:
+            parents = git(repository, "show", "-s", "--format=%P", row["commit"]).split()
+            tree = git(repository, "rev-parse", f'{row["commit"]}^{{tree}}')
+        except (KeyError, ReleaseTrainError, subprocess.CalledProcessError):
+            blockers.append("fixture.composition_object"); continue
+        if (row.get("commit") != source.get("post_sha") or row.get("tree") != source.get("post_tree")
+                or parents != [source.get("pre_sha"), source.get("candidate_tip")]
+                or tree != row.get("tree")):
+            blockers.append("fixture.composition_identity")
+        receipt_sha = hashlib.sha256(receipt_bytes).hexdigest()
+        if (receipt_sha != row.get("receipt_sha256")
+                or receipt_sha != (source.get("proven_composition") or {}).get("receipt_sha256")
+                or not isinstance(receipt, dict)
+                or (receipt.get("detail") or {}).get("repair_commit") != row.get("commit")):
+            blockers.append("fixture.receipt_identity")
+    return sorted(set(blockers))
+
+
+PHASE1_ORCHESTRATION_TEST = (
+    "ReleaseTrainTests.test_phase1_acceptance_cli_replays_semantics_and_correlates_watched_producer"
+)
+PHASE1_SUITE_TESTS = (
+    "ReleaseTrainTests.test_deterministic_non_mutating_json_and_human_projection",
+    "ReleaseTrainTests.test_fifo_conflict_dependency_blocker_and_parallel_lanes",
+    "ReleaseTrainTests.test_cycle_is_explicit",
+    "ReleaseTrainTests.test_stale_kanban_and_target_identity_refuse_shared_gate",
+    "ReleaseTrainTests.test_missing_runtime_blocks",
+    "ReleaseTrainTests.test_clean_ready_release_and_version_gate",
+    "ReleaseTrainTests.test_lean_sparse_controller_plans_release_from_target_tree",
+    "ReleaseTrainTests.test_epoch_seal_is_complete_immutable_and_idempotent",
+    "ReleaseTrainTests.test_epoch_status_projection_is_bounded_and_actionable",
+    "ReleaseTrainTests.test_epoch_seal_refuses_required_missing_closure_without_state",
+    "ReleaseTrainTests.test_rc7_rc8_serial_conflicts_fit_one_conservative_repair_set",
+    "ReleaseTrainTests.test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity",
+    "ReleaseTrainTests.test_legacy_epoch_identity_adapter_is_deterministic_typed_and_read_only",
+    "ReleaseTrainTests.test_exact_rc7_rc8_receipts_cover_every_member_without_synthetic_repair",
+    "ReleaseTrainTests.test_bootstrap_repair_is_causal_fenced_preserves_queue_and_cas_once",
+    "ReleaseTrainTests.test_bootstrap_reconciliation_finalizes_only_exact_ancestry_members",
+    "ReleaseTrainTests.test_bootstrap_repair_refuses_missing_causal_dependency",
+    "ReleaseTrainTests.test_epoch_composes_history_validates_once_and_cas_once",
+    "ReleaseTrainTests.test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate",
+    "ReleaseTrainTests.test_failed_aggregate_has_fenced_receipt_retry_without_duplicate_merge_or_cas",
+    "ReleaseTrainTests.test_required_failure_pauses_and_shadow_is_read_only",
+    "ReleaseTrainTests.test_recovered_worker_receipt_requires_exact_failed_artifacts",
+    "ReleaseTrainTests.test_lean_target_drift_refuses_release",
+    "ReleaseTrainTests.test_phase1_substitution_matrix_is_complete_and_receipt_bound",
+)
+PHASE1_SUITE_MANIFEST = {
+    "schema_version": PHASE1_SUITE_MANIFEST_SCHEMA,
+    "selection": "all_release_train_tests_except_evidence_orchestrator",
+    "tests": list(PHASE1_SUITE_TESTS),
+    "excluded_recursive_tests": [PHASE1_ORCHESTRATION_TEST],
+}
+PHASE1_ENV_KEYS = (
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_OPTIONAL_LOCKS",
+    "GIT_TERMINAL_PROMPT", "HOME", "JUNO_TASK_ROOT", "JUNO_WORKSPACE_ENFORCEMENT",
+    "JUNO_WORKSPACE_ROLE", "LANG", "LC_ALL", "PATH", "PYTHONDONTWRITEBYTECODE",
+    "PYTHONHASHSEED", "PYTHONNOUSERSITE", "TMPDIR", "TZ",
+)
+
+
+def _phase1_discovered_tests(test_path: Path) -> list[str]:
+    tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=str(test_path))
+    return sorted(f"{node.name}.{child.name}" for node in tree.body if isinstance(node, ast.ClassDef)
+                  for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and child.name.startswith("test_"))
+
+
+def _phase1_suite_environment(controller: Path, output: Path) -> dict[str, str]:
+    """Return the complete sanitized child environment; ambient values are not inherited."""
+    executable_dir = str(Path(sys.executable).resolve().parent)
+    yy = shutil.which("yy")
+    path_parts = [executable_dir]
+    if yy:
+        path_parts.append(str(Path(yy).resolve().parent))
+    path_parts.extend(["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    path = ":".join(dict.fromkeys(path_parts))
+    tmpdir = output.resolve().parent / "tmp" / output.stem
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    home = output.resolve().parent / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    return {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+            "HOME": str(home), "JUNO_TASK_ROOT": str(controller.resolve()),
+            "JUNO_WORKSPACE_ENFORCEMENT": "strict", "JUNO_WORKSPACE_ROLE": "controller",
+            "LANG": "C", "LC_ALL": "C", "PATH": path,
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1", "TMPDIR": str(tmpdir), "TZ": "UTC"}
+
+
+def _phase1_suite_argv(controller: Path, worktree: Path, output: Path,
+                       evidence_context: str) -> list[str]:
+    script = (worktree.resolve() / PHASE1_COMMITTED_PATHS[0]).resolve()
+    return [str(Path(sys.executable).resolve()), str(script), "--controller", str(controller.resolve()),
+            "phase1-suite", "--task-id", "V9vE0X", "--worktree", str(worktree.resolve()),
+            "--evidence-context", evidence_context, "--output", str(output.resolve())]
+
+
+def phase1_suite_receipt(controller: Path, task_id: str, worktree: Path,
+                         output: Path, producer_argv: list[str],
+                         evidence_context: str) -> dict[str, Any]:
+    """Run the complete non-recursive committed suite under an exact environment."""
+    controller = controller.resolve(); worktree = worktree.resolve(); output = output.resolve()
+    blockers: list[str] = []
+    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
+    test_path = (worktree / PHASE1_COMMITTED_PATHS[1]).resolve()
+    test_blob = _git_blob_hash(worktree, tip_sha, PHASE1_COMMITTED_PATHS[1])
+    discovered = _phase1_discovered_tests(test_path)
+    expected_discovered = sorted([*PHASE1_SUITE_TESTS, PHASE1_ORCHESTRATION_TEST])
+    manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": test_blob}
+    manifest_sha256 = digest(manifest)
+    suite_identity = digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
+                             "manifest_sha256": manifest_sha256,
+                             "evidence_context": evidence_context})
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f"phase1-suite-{suite_identity}.json")
+    expected_argv = _phase1_suite_argv(controller, worktree, expected_output, evidence_context)
+    if task_id != "V9vE0X" or output != expected_output or producer_argv != expected_argv:
+        blockers.append("suite.routing")
+    if file_hash(test_path) != test_blob:
+        blockers.append("suite.committed_bytes")
+    if discovered != expected_discovered or len(PHASE1_SUITE_TESTS) != len(set(PHASE1_SUITE_TESTS)):
+        blockers.append("suite.manifest_membership")
+    command = [str(Path(sys.executable).resolve()), str(test_path), *PHASE1_SUITE_TESTS]
+    child_environment = _phase1_suite_environment(controller, output)
+    if set(child_environment) != set(PHASE1_ENV_KEYS):
+        blockers.append("suite.environment_contract")
+    completed = subprocess.run(command, cwd=test_path.parent, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               env=child_environment, timeout=120)
+    match = re.search(r"Ran (\d+) tests? in ", completed.stdout)
+    test_count = int(match.group(1)) if match else 0
+    outcome = "PASS" if completed.returncode == 0 and test_count == len(PHASE1_SUITE_TESTS) and re.search(
+        r"(?:^|\n)OK(?: \(skipped=\d+\))?(?:\n|$)", completed.stdout) else "FAIL"
+    if outcome != "PASS": blockers.append("suite.result")
+    runtime = _phase1_runtime_identity(str(Path(sys.executable).resolve()), Path(__file__).resolve())
+    body = {"schema_version": PHASE1_SUITE_SCHEMA, "decision": "PASS" if not blockers else "FAIL",
+            "task_id": task_id, "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "suite_identity_sha256": suite_identity, "evidence_context": evidence_context,
+            "producer_argv": producer_argv, "suite_command": command,
+            "suite_cwd": str(test_path.parent),
+            "test_path": str(test_path), "test_blob_sha256": test_blob,
+            "suite_manifest": manifest, "suite_manifest_sha256": manifest_sha256,
+            "discovered_tests": discovered, "runtime": runtime,
+            "observed_environment": child_environment,
+            "environment_sha256": digest(child_environment),
+            "result": {"outcome": outcome, "test_count": test_count,
+                       "output_sha256": hashlib.sha256(completed.stdout.encode()).hexdigest(),
+                       "exit_code": completed.returncode},
+            "blocking_reason_codes": sorted(set(blockers))}
+    receipt = {**body, "receipt_sha256": digest(body)}
+    return receipt if blockers else _publish_exclusive_receipt(output, receipt)
+
+
+def phase1_proof(controller: Path, declaration_path: Path, fixture_path: Path,
+                 task_id: str, worktree: Path, output: Path,
+                 producer_argv: list[str]) -> dict[str, Any]:
+    """Produce verifier-owned semantic evidence; caller attestations have no decision weight."""
+    controller = controller.resolve(); worktree = worktree.resolve(); output = output.resolve()
+    blockers: list[str] = []
+    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
+    declaration_path = declaration_path.resolve(); fixture_path = fixture_path.resolve()
+    # Publish first and build from those canonical bytes so later replay has the
+    # same path/identity semantics and never depends on an ephemeral /tmp path.
+    declaration_ref, authority_ref = _phase1_publish_declaration(
+        controller, task_id, declaration_path)
+    fixture_ref = _phase1_publish_input(controller, task_id, "fixture", fixture_path)
+    plan = build_epoch_plan(controller, Path(declaration_ref["path"]))
+    executable_request = producer_argv[0] if producer_argv else ""
+    script_path = Path(producer_argv[1]).resolve() if len(producer_argv) > 1 else Path(".").resolve()
+    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+    before = _phase1_repository_snapshot(repository)
+    input_identity = phase1_input_identity(task_id, worktree, tip_sha, tree_sha,
+                                           declaration_ref, fixture_ref,
+                                           executable_request, script_path, before)
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json')
+    if (output != expected_output or not task_runtime.TASK_RE.fullmatch(task_id)):
+        blockers.append("proof.routing")
+    expected_script = (worktree / PHASE1_COMMITTED_PATHS[0]).resolve()
+    if script_path != expected_script or script_path != Path(__file__).resolve():
+        blockers.append("runtime.script")
+    if input_identity["runtime"]["executable_path"] != str(Path(sys.executable).resolve()):
+        blockers.append("runtime.executable")
+    committed = input_identity["committed_files"]
+    if any(not row.get("working_sha256") or row.get("working_sha256") != row.get("blob_sha256")
+           for row in committed):
+        blockers.append("task.committed_bytes")
+    fixture = json.loads(Path(fixture_ref["path"]).read_text())
+    blockers.extend(_verify_phase1_fixture(repository, plan, fixture))
+    parity = _phase1_parity(worktree)
+    if any(file_hash(Path(row["left"])) != row["sha256"]
+           or file_hash(Path(row["right"])) != row["sha256"] for row in parity):
+        blockers.append("parity.drift")
+    after = _phase1_repository_snapshot(repository)
+    if before != after:
+        blockers.append("non_mutation.drift")
+    body = {"schema_version": PHASE1_PROOF_SCHEMA,
+            "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
+            "worktree": str(worktree), "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "declaration": declaration_ref, "authority": authority_ref,
+            "fixture": fixture_ref, "input_identity": input_identity,
+            "manifest": plan["conflict_manifest"], "snapshot_before": before,
+            "snapshot_after": after, "parity": parity, "producer_argv": producer_argv,
+            "blocking_reason_codes": sorted(set(blockers))}
+    proof = {**body, "proof_sha256": digest(body)}
+    return _publish_exclusive_receipt(output, proof)
+
+
+def _phase1_checked_closure(proof: dict[str, Any], closure: dict[str, Any],
+                            suite_receipt: dict[str, Any]) -> dict[str, Any]:
+    suite = closure.get("suite") or {}
+    return {"proof_sha256": proof.get("proof_sha256"),
+        "input_sha256": (proof.get("input_identity") or {}).get("input_sha256"),
+        "declaration": proof.get("declaration"), "authority": proof.get("authority"),
+        "fixture": proof.get("fixture"),
+        "manifest_sha256": (proof.get("manifest") or {}).get("manifest_sha256"),
+        "proof_watch": closure.get("watch"),
+        "suite_receipt_sha256": suite_receipt.get("receipt_sha256"),
+        "suite_watch": suite.get("watch"), "suite_argv": suite_receipt.get("producer_argv"),
+        "suite_command": suite_receipt.get("suite_command"),
+        "suite_cwd": suite_receipt.get("suite_cwd"),
+        "suite_manifest": suite_receipt.get("suite_manifest"),
+        "suite_manifest_sha256": suite_receipt.get("suite_manifest_sha256"),
+        "suite_runtime": suite_receipt.get("runtime"),
+        "suite_environment": suite_receipt.get("observed_environment"),
+        "suite_environment_sha256": suite_receipt.get("environment_sha256"),
+        "suite_result": suite_receipt.get("result")}
+
+
+def phase1_acceptance_receipt(controller: Path, closure_path: Path, output: Path,
+                              producer_argv: Optional[list[str]] = None) -> dict[str, Any]:
+    """Evaluate proof plus exact-tip suite; final acceptance is post-terminal correlated."""
+    controller = controller.resolve(); blockers: list[str] = []
+    closure = json.loads(closure_path.resolve().read_text())
+    if (set(closure) != {"schema_version", "proof", "watch", "suite"}
+            or closure.get("schema_version") != PHASE1_CLOSURE_SCHEMA):
+        blockers.append("closure.schema")
+    proof = _immutable_json(closure.get("proof"), "proof", blockers) or {}
+    proof_body = {key: value for key, value in proof.items() if key != "proof_sha256"}
+    if (proof.get("schema_version") != PHASE1_PROOF_SCHEMA
+            or proof.get("proof_sha256") != digest(proof_body) or proof.get("decision") != "PASS"):
+        blockers.append("proof.invalid")
+    task_id = proof.get("task_id", ""); worktree = Path(proof.get("worktree", ".")).resolve()
+    try:
+        if (git(worktree, "rev-parse", "HEAD") != proof.get("tip_sha")
+                or git(worktree, "rev-parse", "HEAD^{tree}") != proof.get("tree_sha")):
+            blockers.append("task.commit_tree")
+    except (ReleaseTrainError, subprocess.CalledProcessError):
+        blockers.append("task.commit_tree")
+    declaration = _immutable_json(proof.get("declaration"), "declaration", blockers)
+    authority = _immutable_json(proof.get("authority"), "authority", blockers)
+    fixture = _immutable_json(proof.get("fixture"), "fixture", blockers)
+    if declaration is not None and authority is not None and fixture is not None:
+        repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+        acceptance_before = _phase1_repository_snapshot(repository)
+        if declaration.get("conflict_authority") != proof.get("authority"):
+            blockers.append("authority.path_substitution")
+        plan = build_epoch_plan(controller, Path(proof["declaration"]["path"]))
+        if (plan.get("conflict_authority") != proof.get("authority")
+                or plan["conflict_manifest"] != proof.get("manifest")):
+            blockers.append("manifest.replay")
+        blockers.extend(_verify_phase1_fixture(repository, plan, fixture))
+        if _phase1_repository_snapshot(repository) != acceptance_before:
+            blockers.append("non_mutation.acceptance_drift")
+    if proof.get("snapshot_before") != proof.get("snapshot_after"): blockers.append("non_mutation.drift")
+    if _phase1_parity(worktree) != proof.get("parity"): blockers.append("parity.drift")
+    argv = proof.get("producer_argv")
+    executable_request = argv[0] if isinstance(argv, list) and argv else ""
+    script_path = Path(argv[1]).resolve() if isinstance(argv, list) and len(argv) > 1 else Path(".").resolve()
+    recomputed_input = phase1_input_identity(task_id, worktree, proof.get("tip_sha", ""),
+        proof.get("tree_sha", ""), proof.get("declaration") or {}, proof.get("fixture") or {},
+        executable_request, script_path, proof.get("snapshot_before") or {})
+    if recomputed_input != proof.get("input_identity"): blockers.append("input_identity.drift")
+    if recomputed_input["runtime"]["executable_path"] != str(Path(sys.executable).resolve()):
+        blockers.append("runtime.executable")
+    if any(not row.get("working_sha256") or row.get("working_sha256") != row.get("blob_sha256")
+           for row in recomputed_input["committed_files"]): blockers.append("task.committed_bytes")
+    blockers.extend("proof." + code for code in _phase1_watch_correlation(
+        controller, closure.get("watch"), argv if isinstance(argv, list) else []))
+    proof_log = controller / ".juno_task/runtime/watch-runs" / (closure.get("watch") or {}).get("run_id", "") / "combined.log"
+    if not proof_log.is_file() or proof.get("proof_sha256", "").encode() not in proof_log.read_bytes():
+        blockers.append("proof.watch.output")
+
+    suite = closure.get("suite") or {}
+    suite_receipt = _immutable_json(suite.get("receipt"), "suite", blockers) or {}
+    suite_body = {key: value for key, value in suite_receipt.items() if key != "receipt_sha256"}
+    suite_argv = suite_receipt.get("producer_argv")
+    expected_suite_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+        / f'phase1-suite-{suite_receipt.get("suite_identity_sha256", "invalid")}.json')
+    expected_evidence_context = digest(closure.get("watch"))
+    expected_test_blob = _git_blob_hash(
+        worktree, proof.get("tip_sha", ""), PHASE1_COMMITTED_PATHS[1])
+    expected_manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": expected_test_blob}
+    expected_environment = _phase1_suite_environment(controller, expected_suite_output)
+    expected_discovered = sorted([*PHASE1_SUITE_TESTS, PHASE1_ORCHESTRATION_TEST])
+    if (suite_receipt.get("schema_version") != PHASE1_SUITE_SCHEMA
+            or suite_receipt.get("receipt_sha256") != digest(suite_body)
+            or suite_receipt.get("decision") != "PASS"
+            or suite_receipt.get("task_id") != task_id
+            or suite_receipt.get("tip_sha") != proof.get("tip_sha")
+            or suite_receipt.get("tree_sha") != proof.get("tree_sha")
+            or Path((suite.get("receipt") or {}).get("path", ".")).resolve() != expected_suite_output.resolve()
+            or suite_receipt.get("evidence_context") != expected_evidence_context
+            or suite_argv != _phase1_suite_argv(controller, worktree, expected_suite_output,
+                                                 expected_evidence_context)
+            or suite_receipt.get("test_blob_sha256") != expected_test_blob
+            or suite_receipt.get("suite_manifest") != expected_manifest
+            or suite_receipt.get("suite_manifest_sha256") != digest(expected_manifest)
+            or suite_receipt.get("discovered_tests") != expected_discovered
+            or suite_receipt.get("suite_command") != [str(Path(sys.executable).resolve()),
+                str((worktree / PHASE1_COMMITTED_PATHS[1]).resolve()), *PHASE1_SUITE_TESTS]
+            or suite_receipt.get("suite_cwd") != str(
+                (worktree / PHASE1_COMMITTED_PATHS[1]).resolve().parent)
+            or suite_receipt.get("runtime") != _phase1_runtime_identity(
+                str(Path(sys.executable).resolve()), Path(__file__).resolve())
+            or suite_receipt.get("observed_environment") != expected_environment
+            or suite_receipt.get("environment_sha256") != digest(expected_environment)
+            or set(expected_environment) != set(PHASE1_ENV_KEYS)
+            or (suite_receipt.get("result") or {}).get("outcome") != "PASS"
+            or (suite_receipt.get("result") or {}).get("test_count") != len(PHASE1_SUITE_TESTS)
+            or (suite_receipt.get("result") or {}).get("exit_code") != 0):
+        blockers.append("suite.closure")
+    blockers.extend("suite." + code for code in _phase1_watch_correlation(
+        controller, suite.get("watch"), suite_argv if isinstance(suite_argv, list) else []))
+    suite_log = (controller / ".juno_task/runtime/watch-runs" /
+                 (suite.get("watch") or {}).get("run_id", "") / "combined.log")
+    if (not suite_log.is_file()
+            or suite_receipt.get("receipt_sha256", "").encode() not in suite_log.read_bytes()):
+        blockers.append("suite.watch.output")
+    checked_closure = _phase1_checked_closure(proof, closure, suite_receipt)
+    closure_sha256 = digest(checked_closure)
+    expected_output = (controller / ".juno_task/runtime/phase-evidence" / task_id
+                       / f"phase1-evaluation-{closure_sha256}.json")
+    if output.resolve() != expected_output.resolve(): blockers.append("receipt.routing")
+    actual_producer_argv = producer_argv or []
+    body = {"schema_version": PHASE1_EVALUATION_SCHEMA,
+            "decision": "PASS" if not blockers else "FAIL", "task_id": task_id,
+            "tip_sha": proof.get("tip_sha"), "tree_sha": proof.get("tree_sha"),
+            "input_sha256": (proof.get("input_identity") or {}).get("input_sha256"),
+            "proof_sha256": proof.get("proof_sha256"),
+            "checked_closure": checked_closure, "closure_sha256": closure_sha256,
+            "proof_watch_run_id": (closure.get("watch") or {}).get("run_id"),
+            "suite_watch_run_id": (suite.get("watch") or {}).get("run_id"),
+            "suite_receipt_sha256": suite_receipt.get("receipt_sha256"),
+            "suite_output_sha256": (suite_receipt.get("result") or {}).get("output_sha256"),
+            "producer_argv": actual_producer_argv,
+            "blocking_reason_codes": sorted(set(blockers))}
+    receipt = {**body, "receipt_sha256": digest(body)}
+    return receipt if blockers else _publish_exclusive_receipt(output.resolve(), receipt)
+
+
+def phase1_finalize_acceptance(controller: Path, evaluation_ref: dict[str, Any],
+                               watch_ref: dict[str, Any], output: Path) -> dict[str, Any]:
+    """Publish final PASS only after the acceptance evaluator's watch is terminal."""
+    controller = controller.resolve(); blockers: list[str] = []
+    evaluation = _immutable_json(evaluation_ref, "evaluation", blockers) or {}
+    body_without_hash = {k: v for k, v in evaluation.items() if k != "receipt_sha256"}
+    if (evaluation.get("schema_version") != PHASE1_EVALUATION_SCHEMA
+            or evaluation.get("receipt_sha256") != digest(body_without_hash)
+            or evaluation.get("decision") != "PASS"):
+        blockers.append("evaluation.invalid")
+    argv = evaluation.get("producer_argv")
+    blockers.extend("evaluation." + code for code in _phase1_watch_correlation(
+        controller, watch_ref, argv if isinstance(argv, list) else []))
+    run_root = controller / ".juno_task/runtime/watch-runs" / watch_ref.get("run_id", "")
+    if (not (run_root / "combined.log").is_file()
+            or evaluation.get("receipt_sha256", "").encode() not in (run_root / "combined.log").read_bytes()):
+        blockers.append("evaluation.watch.output")
+    if (evaluation.get("closure_sha256") != digest(evaluation.get("checked_closure"))
+            or (evaluation.get("checked_closure") or {}).get("proof_sha256") != evaluation.get("proof_sha256")
+            or (evaluation.get("checked_closure") or {}).get("suite_receipt_sha256") != evaluation.get("suite_receipt_sha256")):
+        blockers.append("evaluation.closure")
+    expected = (controller / ".juno_task/runtime/phase-evidence" / evaluation.get("task_id", "")
+                / f'phase1-acceptance-{evaluation.get("closure_sha256", "invalid")}.json')
+    if output.resolve() != expected.resolve(): blockers.append("receipt.routing")
+    final_body = {"schema_version": PHASE1_ACCEPTANCE_SCHEMA,
+                  "decision": "PASS" if not blockers else "FAIL",
+                  "task_id": evaluation.get("task_id"), "tip_sha": evaluation.get("tip_sha"),
+                  "tree_sha": evaluation.get("tree_sha"),
+                  "input_sha256": evaluation.get("input_sha256"),
+                  "proof_sha256": evaluation.get("proof_sha256"),
+                  "checked_closure": evaluation.get("checked_closure"),
+                  "closure_sha256": evaluation.get("closure_sha256"),
+                  "suite_receipt_sha256": evaluation.get("suite_receipt_sha256"),
+                  "suite_output_sha256": evaluation.get("suite_output_sha256"),
+                  "evaluation_sha256": evaluation.get("receipt_sha256"),
+                  "proof_watch_run_id": evaluation.get("proof_watch_run_id"),
+                  "suite_watch_run_id": evaluation.get("suite_watch_run_id"),
+                  "evaluation_watch_run_id": watch_ref.get("run_id"),
+                  "blocking_reason_codes": sorted(set(blockers))}
+    receipt = {**final_body, "receipt_sha256": digest(final_body)}
+    return receipt if blockers else _publish_exclusive_receipt(output.resolve(), receipt)
+
+
+def _phase1_reference(path: Path) -> dict[str, str]:
+    return {"path": str(path.resolve()), "sha256": file_hash(path.resolve()) or ""}
+
+
+def _phase1_watch_reference(controller: Path, record: dict[str, Any]) -> dict[str, str]:
+    footer = controller.resolve() / ".juno_task/runtime/watch-runs" / record["run_id"] / "footer"
+    return {"run_id": record["run_id"], "footer_sha256": file_hash(footer) or ""}
+
+
+def _phase1_watch_exec(controller: Path, argv: list[str], timeout: int, role: str) -> dict[str, Any]:
+    yy = shutil.which("yy")
+    if not yy:
+        raise ReleaseTrainError("phase1 orchestration requires yy watch")
+    launch_marker = controller.resolve() / ".juno_task/runtime/phase-evidence/V9vE0X/orchestrator"
+    environment = _phase1_suite_environment(controller, launch_marker)
+    completed = subprocess.run([str(Path(yy).resolve()), "watch", "exec", "--timeout", str(timeout),
+                                "--", *argv], cwd=controller.resolve(), env=environment,
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               timeout=timeout + 30)
+    records: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if value.get("schema_version") == "juno.watch-run.v1":
+                records.append(value)
+    if completed.returncode or not records or records[-1].get("exit_code") != 0:
+        detail = completed.stderr[-1000:]
+        if records:
+            log = controller.resolve() / ".juno_task/runtime/watch-runs" / records[-1]["run_id"] / "combined.log"
+            if log.is_file():
+                detail = log.read_text(errors="replace")[-1000:]
+        raise ReleaseTrainError(f"phase1 {role} watched stage failed: " + detail)
+    return records[-1]
+
+
+def phase1_orchestrate(controller: Path, declaration: Path, fixture: Path,
+                       task_id: str, worktree: Path) -> dict[str, Any]:
+    """Run the typed proof/suite/evaluation watch chain and finalize one receipt."""
+    controller = controller.resolve(); worktree = worktree.resolve()
+    if task_id != "V9vE0X":
+        raise ReleaseTrainError("phase1 orchestration task identity mismatch")
+    evidence_root = controller / ".juno_task/runtime/phase-evidence" / task_id
+    declaration_ref, _ = _phase1_publish_declaration(controller, task_id, declaration)
+    fixture_ref = _phase1_publish_input(controller, task_id, "fixture", fixture)
+    tip_sha = git(worktree, "rev-parse", "HEAD"); tree_sha = git(worktree, "rev-parse", "HEAD^{tree}")
+    executable = str(Path(sys.executable).resolve())
+    script = (worktree / PHASE1_COMMITTED_PATHS[0]).resolve()
+    repository = task_runtime.product_repository(controller, task_runtime.load_config(controller))
+    input_identity = phase1_input_identity(task_id, worktree, tip_sha, tree_sha,
+                                           declaration_ref, fixture_ref, executable, script,
+                                           _phase1_repository_snapshot(repository))
+    proof_path = evidence_root / f'phase1-proof-{tip_sha}-{input_identity["input_sha256"]}.json'
+    proof_argv = [executable, str(script), "--controller", str(controller), "phase1-prove",
+                  "--declaration", str(declaration.resolve()), "--fixture", str(fixture.resolve()),
+                  "--task-id", task_id, "--worktree", str(worktree), "--output", str(proof_path)]
+    proof_watch = _phase1_watch_exec(controller, proof_argv, 120, "proof")
+    proof = json.loads(proof_path.read_text())
+    if proof.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 proof refused")
+
+    test_blob = _git_blob_hash(worktree, tip_sha, PHASE1_COMMITTED_PATHS[1])
+    suite_manifest = {**PHASE1_SUITE_MANIFEST, "test_blob_sha256": test_blob}
+    proof_watch_ref = _phase1_watch_reference(controller, proof_watch)
+    evidence_context = digest(proof_watch_ref)
+    suite_identity = digest({"tip_sha": tip_sha, "tree_sha": tree_sha,
+                             "manifest_sha256": digest(suite_manifest),
+                             "evidence_context": evidence_context})
+    suite_path = evidence_root / f"phase1-suite-{suite_identity}.json"
+    suite_argv = _phase1_suite_argv(controller, worktree, suite_path, evidence_context)
+    suite_watch = _phase1_watch_exec(controller, suite_argv, 180, "suite")
+    suite_receipt = json.loads(suite_path.read_text())
+    if suite_receipt.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 suite refused")
+
+    closure = {"schema_version": PHASE1_CLOSURE_SCHEMA, "proof": _phase1_reference(proof_path),
+               "watch": _phase1_watch_reference(controller, proof_watch),
+               "suite": {"receipt": _phase1_reference(suite_path),
+                         "watch": _phase1_watch_reference(controller, suite_watch)}}
+    closure_identity = digest(closure)
+    closure_path = evidence_root / f"phase1-closure-{closure_identity}.json"
+    _publish_exclusive_receipt(closure_path, closure)
+    checked = _phase1_checked_closure(proof, closure, suite_receipt)
+    evaluation_path = evidence_root / f"phase1-evaluation-{digest(checked)}.json"
+    evaluation_argv = [executable, str(script), "--controller", str(controller), "phase1-accept",
+                       "--closure", str(closure_path), "--output", str(evaluation_path)]
+    evaluation_watch = _phase1_watch_exec(controller, evaluation_argv, 120, "evaluation")
+    evaluation = json.loads(evaluation_path.read_text())
+    if evaluation.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 evaluation refused")
+    output = evidence_root / f'phase1-acceptance-{evaluation["closure_sha256"]}.json'
+    receipt = phase1_finalize_acceptance(controller, _phase1_reference(evaluation_path),
+        _phase1_watch_reference(controller, evaluation_watch), output)
+    if receipt.get("decision") != "PASS":
+        raise ReleaseTrainError("phase1 finalization refused")
+    return {"schema_version": "juno_release_epoch_phase1_orchestration.v1",
+            "decision": "PASS", "task_id": task_id, "tip_sha": tip_sha, "tree_sha": tree_sha,
+            "stage_watch_run_ids": {"proof": proof_watch["run_id"], "suite": suite_watch["run_id"],
+                                    "evaluation": evaluation_watch["run_id"]},
+            "closure_sha256": evaluation["closure_sha256"],
+            "receipt": _phase1_reference(output)}
+
+
 def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]:
     declaration, resolved = load_declaration(declaration_path)
     config = task_runtime.load_config(controller)
@@ -884,9 +1995,19 @@ def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]
     order, edges = epoch_dependency_order(members, declaration)
     runtime_paths = [".juno_task/scripts/release_train.py", ".juno_task/scripts/merge_queue.py",
                      ".juno_task/scripts/task_workspace.py"]
+    declaration_identity = digest({key: value for key, value in declaration.items()
+                                   if key != "conflict_authority"})
+    conflict_authority = declaration.get("conflict_authority")
+    if conflict_authority:
+        authority_path = Path(conflict_authority["path"]).expanduser()
+        if not authority_path.is_absolute():
+            authority_path = resolved.parent / authority_path
+        conflict_authority = {**conflict_authority, "path": str(authority_path.resolve())}
     body = {"schema_version": EPOCH_PLAN_SCHEMA, "epoch_id": declaration["train_id"],
             "declaration": {"path": str(resolved), "sha256": file_hash(resolved),
-                            "revision": declaration["revision"]},
+                            "revision": declaration["revision"],
+                            "identity_sha256": declaration_identity},
+            "conflict_authority": conflict_authority,
             "target_ref": declaration["target_ref"], "base_sha": target_sha,
             "members": members, "order": order, "dependency_edges": edges,
             "runtime_sha256": {path: file_hash(controller / path) for path in runtime_paths},
@@ -895,6 +2016,8 @@ def build_epoch_plan(controller: Path, declaration_path: Path) -> dict[str, Any]
             "requested_version": declaration["requested_version"],
             "exclusions": declaration["exclusions"],
             "mutation_authority": "explicit_seal_required"}
+    manifest = forecast_epoch_conflicts(controller, repository, body)
+    body["conflict_manifest"] = manifest
     return {**body, "plan_id": digest(body)}
 
 
@@ -911,6 +2034,13 @@ def seal_epoch(controller: Path, declaration_path: Path) -> dict[str, Any]:
     if invalid:
         raise ReleaseTrainError("candidate.complete_input_missing:" + ",".join(sorted(invalid))
                                 + "; next=regenerate exact review-ready closure before seal")
+    manifest = plan["conflict_manifest"]
+    if not manifest["repair_budget_feasible"]:
+        raise ReleaseTrainError(
+            "conflict_manifest.repair_budget_infeasible:required_repair_sets="
+            f"{manifest['required_logical_repair_set_count']},exact_complete={manifest['exact_composition_complete']},budget="
+            f"{manifest['identity']['forecast_policy']['repair_budget']}; "
+            "next=revise the declared repair policy or candidate set before seal")
     path = epoch_state_path(controller, plan["epoch_id"])
     if path.exists():
         current = read_epoch(controller, plan["epoch_id"])
@@ -1001,6 +2131,141 @@ def ensure_full_train_checkout(checkout: Path) -> None:
         raise ReleaseTrainError("private release train is dirty before composition or validation")
 
 
+def managed_inventory_matches_checkout(checkout: Path, manifest_bytes: bytes) -> bool:
+    """Prove one installed inventory against the exact merged runtime/template bytes."""
+    try:
+        inventory = json.loads(manifest_bytes)
+        declaration = json.loads((checkout / "juno-code/src/templates/managed-assets.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if (inventory.get("schemaVersion") != 2 or not isinstance(assets, dict)
+            or not isinstance(declared, list)):
+        return False
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if not set(assets).issubset(sources) or any(
+            not isinstance(sources[destination], str) for destination in assets):
+        return False
+    for destination, record in assets.items():
+        if not isinstance(record, dict) or set(record) != {
+                "type", "templateVersion", "sourceSha256", "installedSha256"}:
+            return False
+        try:
+            installed = (checkout / destination).read_bytes()
+            source = (checkout / "juno-code/src/templates" / sources[destination]).read_bytes()
+        except OSError:
+            return False
+        if (hashlib.sha256(installed).hexdigest() != record.get("installedSha256")
+                or hashlib.sha256(source).hexdigest() != record.get("sourceSha256")
+                or record.get("sourceSha256") != record.get("installedSha256")):
+            return False
+    identity = inventory.get("instructionBundle")
+    if not isinstance(identity, dict):
+        return False
+    def asset_order(item: tuple[str, Any]) -> tuple[int, str, str]:
+        destination = item[0]
+        return (0 if destination.startswith(".") else 1,
+                re.sub(r"[^a-z0-9]", "", destination.lower()), destination)
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items(), key=asset_order)]
+    assets_sha = hashlib.sha256(json.dumps(projected, separators=(",", ":")).encode()).hexdigest()
+    core = {"schemaVersion": identity.get("schemaVersion"),
+            "semanticVersion": identity.get("semanticVersion"),
+            "packageVersion": identity.get("packageVersion"),
+            "assetCount": identity.get("assetCount"), "assetsSha256": identity.get("assetsSha256")}
+    bundle_sha = hashlib.sha256(json.dumps(core, separators=(",", ":")).encode()).hexdigest()
+    return (identity.get("schemaVersion") == "juno_instruction_bundle.v1"
+            and identity.get("packageVersion") == inventory.get("packageVersion")
+            and identity.get("assetCount") == len(assets)
+            and identity.get("assetsSha256") == assets_sha
+            and identity.get("bundleSha256") == bundle_sha)
+
+
+def replay_generation_binding(state: dict[str, Any], member: dict[str, Any]) -> Optional[dict[str, Any]]:
+    repair = state.get("conflict_repair")
+    if not isinstance(repair, dict) or repair.get("receipt_schema") != SUCCESSOR_REPAIR_SCHEMA:
+        return None
+    for binding in repair.get("later_generations", []):
+        if (isinstance(binding, dict) and binding.get("task_id") == member["task_id"]
+                and binding.get("tip_sha") == member["tip_sha"]):
+            return binding
+    return None
+
+
+def resolve_bound_managed_generation(checkout: Path, state: dict[str, Any],
+                                     member: dict[str, Any], conflicts: list[str]) -> bool:
+    """Resolve only a receipt-bound cumulative managed inventory generation."""
+    binding = replay_generation_binding(state, member)
+    if binding is None or conflicts != [".juno_task/managed-assets.json"]:
+        return False
+    manifest = subprocess.run(["git", "-C", str(checkout), "show",
+                               f"{member['tip_sha']}:.juno_task/managed-assets.json"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    if (not manifest or hashlib.sha256(manifest).hexdigest() != binding.get("manifest_sha256")):
+        raise ReleaseTrainError("receipt-bound managed generation manifest identity drifted")
+    ours_manifest = subprocess.run(["git", "-C", str(checkout), "show",
+                                    f"{state['seal']['base_sha']}:.juno_task/managed-assets.json"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    try:
+        # The immutable successor base owns the complete declaration generation.
+        # Historical repair and later candidates may be older and intentionally
+        # list fewer assets; they authorize code deltas, not deletion of newer
+        # controller assets.
+        inventory = json.loads(ours_manifest)
+        candidate_inventory = json.loads(manifest)
+        declaration = json.loads(
+            (checkout / "juno-code/src/templates/managed-assets.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("receipt-bound managed generation declarations are malformed") from exc
+    assets = inventory.get("assets") if isinstance(inventory, dict) else None
+    candidate_assets = (candidate_inventory.get("assets")
+                        if isinstance(candidate_inventory, dict) else None)
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if (not isinstance(assets, dict) or not isinstance(candidate_assets, dict)
+            or not isinstance(declared, list)):
+        raise ReleaseTrainError("receipt-bound managed generation inventory is malformed")
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if not set(assets).issubset(sources) or any(
+            not isinstance(sources[destination], str) for destination in assets):
+        raise ReleaseTrainError("receipt-bound managed generation declaration identity mismatch")
+    for destination in assets:
+        source = sources[destination]
+        try:
+            installed_bytes = (checkout / destination).read_bytes()
+            source_bytes = (checkout / "juno-code/src/templates" / source).read_bytes()
+        except OSError as exc:
+            raise ReleaseTrainError(f"managed generation asset is missing: {destination}") from exc
+        if installed_bytes != source_bytes:
+            raise ReleaseTrainError(f"managed generation runtime/template mismatch: {destination}")
+        actual = hashlib.sha256(installed_bytes).hexdigest()
+        assets[destination]["sourceSha256"] = actual
+        assets[destination]["installedSha256"] = actual
+    def asset_order(item: tuple[str, Any]) -> tuple[int, str, str]:
+        destination = item[0]
+        return (0 if destination.startswith(".") else 1,
+                re.sub(r"[^a-z0-9]", "", destination.lower()), destination)
+    projected = [{"destination": destination, "type": record.get("type"),
+                  "sourceSha256": record.get("sourceSha256"),
+                  "installedSha256": record.get("installedSha256")}
+                 for destination, record in sorted(assets.items(), key=asset_order)]
+    core = {"schemaVersion": "juno_instruction_bundle.v1", "semanticVersion": "1.0.0",
+            "packageVersion": inventory["packageVersion"], "assetCount": len(assets),
+            "assetsSha256": hashlib.sha256(
+                json.dumps(projected, separators=(",", ":")).encode()).hexdigest()}
+    inventory["instructionBundle"] = {**core, "bundleSha256": hashlib.sha256(
+        json.dumps(core, separators=(",", ":")).encode()).hexdigest()}
+    composed = (json.dumps(inventory, indent=2) + "\n").encode()
+    (checkout / ".juno_task/managed-assets.json").write_bytes(composed)
+    task_runtime.run(["git", "-C", str(checkout), "add", ".juno_task/managed-assets.json"], checkout)
+    if not managed_inventory_matches_checkout(checkout, composed):
+        raise ReleaseTrainError("receipt-bound managed generation is not coherent with merged runtime/template bytes")
+    task_runtime.run(["git", "-C", str(checkout), "commit", "--no-edit"], checkout)
+    return True
+
+
 def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
     repository, checkout, ref = composition_paths(controller, state)
     composition = state["composition"]
@@ -1018,23 +2283,52 @@ def compose_epoch(controller: Path, state: dict[str, Any]) -> dict[str, Any]:
         before = git(checkout, "rev-parse", "HEAD"); before_tree = git(checkout, "rev-parse", "HEAD^{tree}")
         merged = subprocess.run(["git", "-C", str(checkout), "merge", "--no-ff", "--no-edit", member["tip_sha"]],
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        ordering_reason = "dependency_topology_then_fifo"
         if merged.returncode:
-            conflicts = git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines()
-            packet = {"schema_version": "juno_release_epoch_conflict.v1", "task_id": member["task_id"],
-                      "base_sha": state["seal"]["base_sha"], "ours_sha": before,
-                      "theirs_sha": member["tip_sha"], "conflict_paths": sorted(conflicts),
-                      "admitted_paths": sorted({path for row in active_members(state) for path in row["changed_paths"]}),
+            conflicts = sorted(git(checkout, "diff", "--name-only", "--diff-filter=U").splitlines())
+            if resolve_bound_managed_generation(checkout, state, member, conflicts):
+                ordering_reason = "receipt_bound_cumulative_managed_generation"
+            else:
+                manifest = state["seal"].get("conflict_manifest") or {}
+                authority = manifest.get("authority_binding")
+                logical_sets = ((authority or {}).get("document") or {}).get("logical_sets")
+                if (not isinstance(logical_sets, list) or len(logical_sets) != 1
+                        or not isinstance(logical_sets[0], dict)):
+                    state["operator_packet"] = {"reason_code": "repair.authority_missing",
+                        "task_id": member["task_id"], "conflict_paths": conflicts}
+                    return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_AUTHORITY_REFUSED",
+                                      state["operator_packet"])
+                logical_set = logical_sets[0]
+                admitted_paths = sorted(logical_set.get("permitted_paths") or [])
+                ordered_tasks = logical_set.get("ordered_task_ids") or []
+                if (member["task_id"] not in ordered_tasks
+                        or not set(conflicts).issubset(set(admitted_paths))):
+                    state["operator_packet"] = {"reason_code": "repair.outside_logical_set",
+                        "task_id": member["task_id"], "conflict_paths": conflicts}
+                    return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_AUTHORITY_REFUSED",
+                                      state["operator_packet"])
+                validation = task_runtime.load_config(controller)["full_suite_validation"]
+                packet = {"schema_version": "juno_release_epoch_conflict.v2",
+                      "task_id": member["task_id"], "base_sha": state["seal"]["base_sha"],
+                      "ours_sha": before, "theirs_sha": member["tip_sha"],
+                      "conflict_paths": sorted(conflicts), "admitted_paths": admitted_paths,
                       "dependency_edges": state["seal"]["dependency_edges"],
                       "requirements_sha256": member["task_sha256"], "repair_budget": 1,
-                      "authority": "bounded_authorization_neutral_repair_only"}
-            state["conflict"] = packet
-            save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
-            return state
+                      "authority": "declaration_bound_authorization_neutral_logical_set",
+                      "logical_conflict_set": {"set_id": logical_set.get("set_id"),
+                          "ordered_task_ids": ordered_tasks, "permitted_paths": admitted_paths,
+                          "classification": logical_set.get("classification"),
+                          "authority_sha256": authority.get("sha256")},
+                      "validation_root": {"cwd": validation["cwd"],
+                          "timeout_seconds": validation.get("timeout_seconds", 3600)}}
+                state["conflict"] = packet
+                save_epoch(controller, state, "RECOVERING", "CONFLICT", packet)
+                return state
         commit = git(checkout, "rev-parse", "HEAD"); parents = git(checkout, "show", "-s", "--format=%P", commit).split()
         row = {"task_id": member["task_id"], "candidate_tip": member["tip_sha"],
                "pre_sha": before, "pre_tree": before_tree, "merge_commit": commit,
                "post_tree": git(checkout, "rev-parse", "HEAD^{tree}"), "parents": parents,
-               "ordering_reason": "dependency_topology_then_fifo"}
+               "ordering_reason": ordering_reason}
         if member["tip_sha"] not in parents or not git(checkout, "merge-base", "--is-ancestor", member["tip_sha"], commit) == "":
             # merge-base --is-ancestor intentionally has no stdout; check via subprocess below.
             pass
@@ -1309,12 +2603,23 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
             or receipt.get("mode") != "worker" or receipt.get("state") != "succeeded"):
         raise ReleaseTrainError("conflict repair requires one successful canonical managed-worker receipt")
     validate_recovered_worker_receipt(receipt)
+    packet = state["conflict"]
+    identity = receipt.get("identity")
+    logical_set = packet.get("logical_conflict_set")
+    if (not isinstance(identity, dict)
+            or identity.get("admission_kind") != "sealed_release_epoch_conflict"
+            or identity.get("epoch_id") != state.get("epoch_id")
+            or identity.get("task_id") != packet.get("task_id")
+            or identity.get("ours_sha") != packet.get("ours_sha")
+            or identity.get("theirs_sha") != packet.get("theirs_sha")
+            or identity.get("conflict_sha256") != digest(packet)
+            or identity.get("logical_conflict_set") != logical_set):
+        raise ReleaseTrainError("managed repair logical conflict-set identity mismatch")
     checkout = Path(state["composition"]["worktree"])
     if git(checkout, "diff", "--name-only", "--diff-filter=U"):
         raise ReleaseTrainError("managed repair left unresolved conflicts")
     head = git(checkout, "rev-parse", "HEAD")
     parents = git(checkout, "show", "-s", "--format=%P", head).split()
-    packet = state["conflict"]
     if packet["ours_sha"] not in parents or packet["theirs_sha"] not in parents:
         raise ReleaseTrainError("managed repair did not produce the required both-parent repair commit")
     changed = set(git(checkout, "diff", "--name-only", f"{packet['ours_sha']}..{head}").splitlines())
@@ -1323,9 +2628,12 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
         state["operator_packet"] = {**packet, "reason_code": "repair.out_of_scope",
                                     "unexpected_paths": sorted(changed - admitted)}
         return save_epoch(controller, state, "NEEDS_OPERATOR", "REPAIR_ESCALATED", state["operator_packet"])
-    reference = {"path": str(receipt_path.expanduser().resolve()), "sha256": file_hash(receipt_path),
+    reference = {"schema_version": "juno_release_epoch_grouped_repair.v1",
+                 "path": str(receipt_path.expanduser().resolve()), "sha256": file_hash(receipt_path),
                  "session_id": receipt.get("session_id"), "repair_commit": head,
-                 "changed_paths": sorted(changed), "delta_review": "required"}
+                 "changed_paths": sorted(changed), "logical_conflict_set": logical_set,
+                 "model_sessions": 1, "immutable_receipts": 1,
+                 "delta_review": "one_scoped_delta_review_required"}
     state["conflict_repair"] = reference
     member = next(row for row in state["seal"]["members"] if row["task_id"] == packet["task_id"])
     state["composition"]["commits"].append({"task_id": member["task_id"],
@@ -1337,6 +2645,162 @@ def apply_conflict_repair(controller: Path, epoch_id: str, receipt_path: Path,
     repository, _, ref = composition_paths(controller, state)
     task_runtime.run(["git", "-C", str(repository), "update-ref", ref, head], repository)
     return save_epoch(controller, state, "COMPOSING", "REPAIR_CONSUMED", reference)
+
+
+def _read_bound_json(path: Path, expected_sha256: Optional[str], label: str) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    try:
+        data = resolved.read_bytes()
+        value = json.loads(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError(f"successor replay {label} is missing or malformed") from exc
+    if expected_sha256 and hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise ReleaseTrainError(f"successor replay {label} identity mismatch")
+    if not isinstance(value, dict):
+        raise ReleaseTrainError(f"successor replay {label} must be an object")
+    return value
+
+
+def _verify_bound_file(path: Path, expected_sha256: Any, label: str) -> None:
+    resolved = path.expanduser().resolve()
+    if (not isinstance(expected_sha256, str) or not SHA_RE.fullmatch(expected_sha256)
+            or file_hash(resolved) != expected_sha256):
+        raise ReleaseTrainError(f"successor replay {label} identity mismatch")
+
+
+def _commit_blob(repository: Path, commit: str, path: str) -> bytes:
+    result = subprocess.run(["git", "-C", str(repository), "show", f"{commit}:{path}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if result.returncode:
+        raise ReleaseTrainError(f"successor replay cannot read {path} at {commit}")
+    return result.stdout
+
+
+def _validate_managed_generation(repository: Path, commit: str) -> None:
+    try:
+        manifest = json.loads(_commit_blob(repository, commit, ".juno_task/managed-assets.json"))
+        declaration = json.loads(_commit_blob(
+            repository, commit, "juno-code/src/templates/managed-assets.json"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("successor replay managed-asset manifest is malformed") from exc
+    assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    declared = declaration.get("assets") if isinstance(declaration, dict) else None
+    if not isinstance(assets, dict) or not isinstance(declared, list):
+        raise ReleaseTrainError("successor replay managed-asset manifest is malformed")
+    sources = {row.get("destination"): row.get("source") for row in declared if isinstance(row, dict)}
+    if set(sources) != set(assets) or any(not isinstance(source, str) for source in sources.values()):
+        raise ReleaseTrainError("successor replay managed declaration/inventory differs")
+    for destination, record in assets.items():
+        installed = _commit_blob(repository, commit, destination)
+        source = _commit_blob(repository, commit, "juno-code/src/templates/" + sources[destination])
+        installed_sha = hashlib.sha256(installed).hexdigest()
+        source_sha = hashlib.sha256(source).hexdigest()
+        if (installed != source or not isinstance(record, dict)
+                or record.get("installedSha256") != installed_sha
+                or record.get("sourceSha256") != source_sha):
+            raise ReleaseTrainError(f"successor replay managed identity mismatch: {destination}")
+
+
+def replay_successor_repair(controller: Path, epoch_id: str, predecessor_epoch_id: str,
+                            receipt_path: Path, token: str) -> dict[str, Any]:
+    """Replay one exact historical repair onto an equal-tree successor parent set.
+
+    This is deliberately narrower than conflict repair: it never invokes a model,
+    never accepts a patch, and only composes later dependency generations with
+    Git's deterministic `theirs` resolution after validating their managed
+    runtime/template identities.
+    """
+    state = read_epoch(controller, epoch_id); require_epoch_token(state, token)
+    if state.get("state") != "RECOVERING" or not isinstance(state.get("conflict"), dict):
+        raise ReleaseTrainError("successor epoch has no frozen conflict to replay")
+    if state.get("conflict_repair"):
+        raise ReleaseTrainError("the single bounded conflict-repair budget is exhausted")
+    prior = read_epoch(controller, predecessor_epoch_id)
+    aggregate = prior.get("aggregate")
+    if (prior.get("state") not in {"NEEDS_OPERATOR", "STALE", "RELEASE_READY"}
+            or not isinstance(aggregate, dict) or aggregate.get("exit_code") != 0
+            or aggregate.get("train_tip") != prior.get("composition", {}).get("tip_sha")):
+        raise ReleaseTrainError("historical epoch lacks an exact passing aggregate")
+    receipt_resolved = receipt_path.expanduser().resolve()
+    receipt = _read_bound_json(receipt_resolved, None, "recovery receipt")
+    if (receipt.get("schema_version") != "juno_managed_agent_runner.v1"
+            or receipt.get("state") != "succeeded" or receipt.get("mode") != "worker"
+            or receipt.get("capture_source") != "receipt_bound_worker_recovery"
+            or receipt.get("recovery", {}).get("kind") != "capture_only_no_model_rerun"):
+        raise ReleaseTrainError("historical receipt is not the canonical no-rerun recovery")
+    validate_recovered_worker_receipt(receipt)
+    prior_repair = prior.get("conflict_repair")
+    if (not isinstance(prior_repair, dict)
+            or prior_repair.get("path") != str(receipt_resolved)
+            or prior_repair.get("sha256") != file_hash(receipt_resolved)
+            or prior_repair.get("repair_commit") != receipt.get("subject_after", {}).get("head")):
+        raise ReleaseTrainError("historical epoch did not consume this exact recovered worker")
+    for label, mark in receipt["recovery"].items():
+        if label in {"kind", "schema_version", "validated_exit_code"}:
+            continue
+        if isinstance(mark, dict) and isinstance(mark.get("path"), str):
+            if label in {"failed_receipt", "failed_terminal", "launch", "continuity"}:
+                _read_bound_json(Path(mark["path"]), mark.get("sha256"), label)
+            else:
+                _verify_bound_file(Path(mark["path"]), mark.get("sha256"), label)
+    old_head = receipt.get("subject_after", {}).get("head")
+    old_packet = receipt.get("identity")
+    new_packet = state["conflict"]
+    repository, checkout, ref = composition_paths(controller, state)
+    old_parents = git(repository, "show", "-s", "--format=%P", str(old_head)).split()
+    if (not isinstance(old_packet, dict) or not SHA_RE.fullmatch(str(old_head)) or len(old_parents) != 2
+            or old_packet.get("ours_sha") not in old_parents
+            or old_packet.get("theirs_sha") not in old_parents
+            or new_packet.get("task_id") != old_packet.get("task_id")
+            or new_packet.get("theirs_sha") != old_packet.get("theirs_sha")
+            or git(repository, "rev-parse", f"{new_packet['ours_sha']}^{{tree}}")
+               != git(repository, "rev-parse", f"{old_packet['ours_sha']}^{{tree}}")):
+        raise ReleaseTrainError("historical repair closure does not match successor parents")
+    _validate_managed_generation(repository, str(old_head))
+    tree = git(repository, "rev-parse", f"{old_head}^{{tree}}")
+    created = subprocess.run(["git", "-C", str(repository), "commit-tree", tree,
+                              "-p", new_packet["ours_sha"], "-p", new_packet["theirs_sha"],
+                              "-m", f"Replay {epoch_id} fenced repair"], text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if created.returncode or not SHA_RE.fullmatch(created.stdout.strip()):
+        raise ReleaseTrainError("successor repair commit creation failed")
+    head = created.stdout.strip()
+    task_runtime.run(["git", "-C", str(checkout), "reset", "--hard", head], checkout)
+    member = next(row for row in state["seal"]["members"] if row["task_id"] == new_packet["task_id"])
+    row = {"task_id": member["task_id"], "candidate_tip": member["tip_sha"],
+           "pre_sha": new_packet["ours_sha"],
+           "pre_tree": git(repository, "rev-parse", f"{new_packet['ours_sha']}^{{tree}}"),
+           "merge_commit": head, "post_tree": tree,
+           "parents": [new_packet["ours_sha"], new_packet["theirs_sha"]],
+           "ordering_reason": "fenced_successor_replay"}
+    state["composition"]["commits"].append(row); state["composition"]["tip_sha"] = head
+    completed = {item["task_id"] for item in state["composition"]["commits"]}
+    generation_ids = {"TWH8M7", "0QfZ22", "6cbcLF", "9MEWl4"}
+    generations = []
+    for later in active_members(state):
+        if later["task_id"] in completed or later["task_id"] not in generation_ids:
+            continue
+        _validate_managed_generation(repository, later["tip_sha"])
+        manifest = _commit_blob(repository, later["tip_sha"], ".juno_task/managed-assets.json")
+        generations.append({"task_id": later["task_id"], "tip_sha": later["tip_sha"],
+                            "tree_sha": later["tree_sha"],
+                            "manifest_sha256": hashlib.sha256(manifest).hexdigest()})
+    reference = {"schema_version": "juno_release_epoch_successor_repair.v1",
+                 "receipt_schema": SUCCESSOR_REPAIR_SCHEMA,
+                 "predecessor_epoch_id": predecessor_epoch_id,
+                 "predecessor_receipt": {"path": str(receipt_resolved),
+                                         "sha256": file_hash(receipt_resolved)},
+                 "predecessor_repair_commit": old_head,
+                 "predecessor_aggregate_receipt_id": aggregate.get("receipt_id"),
+                 "successor_repair_commit": head,
+                 "successor_tip": state["composition"]["tip_sha"],
+                 "later_generations": generations,
+                 "model_rerun": False}
+    reference["receipt_id"] = digest(reference)
+    state["conflict_repair"] = reference; state.pop("conflict", None)
+    task_runtime.run(["git", "-C", str(repository), "update-ref", ref,
+                      state["composition"]["tip_sha"]], repository)
+    return save_epoch(controller, state, "COMPOSING", "SUCCESSOR_REPAIR_REPLAYED", reference)
 
 
 def drive_epoch(controller: Path, epoch_id: str, token: str) -> dict[str, Any]:
@@ -1443,7 +2907,8 @@ def shadow_source(controller: Path, source_path: Path) -> tuple[dict[str, Any], 
         raise ReleaseTrainError("historical epoch lacks an immutable sealed plan")
     plan_fields = {key: seal[key] for key in ("schema_version", "epoch_id", "declaration",
         "target_ref", "base_sha", "members", "order", "dependency_edges", "runtime_sha256",
-        "policy_sha256", "requested_version", "exclusions", "mutation_authority") if key in seal}
+        "policy_sha256", "requested_version", "exclusions", "mutation_authority",
+        "conflict_authority", "conflict_manifest") if key in seal}
     if digest(plan_fields) != seal["plan_id"]:
         raise ReleaseTrainError("historical epoch sealed plan identity is invalid")
     receipts = value.get("receipts")
@@ -1572,6 +3037,10 @@ def parser() -> argparse.ArgumentParser:
     repair = subs.add_parser("repair"); repair.add_argument("epoch_id")
     repair.add_argument("--receipt", type=Path, required=True); repair.add_argument("--epoch-token", required=True)
     repair.add_argument("--json", action="store_true")
+    replay = subs.add_parser("replay-repair"); replay.add_argument("epoch_id")
+    replay.add_argument("--predecessor-epoch", required=True)
+    replay.add_argument("--receipt", type=Path, required=True)
+    replay.add_argument("--epoch-token", required=True); replay.add_argument("--json", action="store_true")
     retry = subs.add_parser("retry"); retry.add_argument("epoch_id")
     retry.add_argument("--epoch-token", required=True); retry.add_argument("--json", action="store_true")
     bootstrap_inspect = subs.add_parser("bootstrap-inspect")
@@ -1583,6 +3052,24 @@ def parser() -> argparse.ArgumentParser:
     bootstrap_drive = subs.add_parser("bootstrap-drive")
     bootstrap_drive.add_argument("operation_id"); bootstrap_drive.add_argument("--bootstrap-token", required=True)
     bootstrap_drive.add_argument("--json", action="store_true")
+    orchestrate = subs.add_parser("phase1-orchestrate")
+    orchestrate.add_argument("--declaration", type=Path, required=True)
+    orchestrate.add_argument("--fixture", type=Path, required=True)
+    orchestrate.add_argument("--task-id", required=True)
+    orchestrate.add_argument("--worktree", type=Path, required=True)
+    proof = subs.add_parser("phase1-prove"); proof.add_argument("--declaration", type=Path, required=True)
+    proof.add_argument("--fixture", type=Path, required=True); proof.add_argument("--task-id", required=True)
+    proof.add_argument("--worktree", type=Path, required=True); proof.add_argument("--output", type=Path, required=True)
+    suite = subs.add_parser("phase1-suite"); suite.add_argument("--task-id", required=True)
+    suite.add_argument("--worktree", type=Path, required=True)
+    suite.add_argument("--evidence-context", required=True)
+    suite.add_argument("--output", type=Path, required=True)
+    phase1 = subs.add_parser("phase1-accept"); phase1.add_argument("--closure", type=Path, required=True)
+    phase1.add_argument("--output", type=Path, required=True)
+    finalize = subs.add_parser("phase1-finalize")
+    finalize.add_argument("--evaluation", type=Path, required=True)
+    finalize.add_argument("--watch-run", required=True); finalize.add_argument("--footer-sha256", required=True)
+    finalize.add_argument("--output", type=Path, required=True)
     shadow = subs.add_parser("shadow"); shadow.add_argument("declaration", type=Path)
     shadow.add_argument("--baseline", type=Path); shadow.add_argument("--json", action="store_true")
     shadow.add_argument("--output", type=Path)
@@ -1591,6 +3078,37 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--task-id"); check.add_argument("--requested-version")
     value.add_argument("--controller", type=Path, default=Path.cwd(), help=argparse.SUPPRESS)
     return value
+
+
+def epoch_status_projection(controller: Path, epoch_id: str) -> dict[str, Any]:
+    """Return bounded operator truth without projecting immutable receipt history."""
+    state = read_epoch(controller, epoch_id)
+    seal = state.get("seal") or {}; conflict = state.get("conflict") or {}
+    aggregate = state.get("aggregate") or {}; receipts = state.get("receipts") or []
+    reason_code = ((state.get("operator_packet") or {}).get("reason_code")
+                   or (state.get("cas") or {}).get("reason")
+                   or aggregate.get("reason") or state.get("state", "UNKNOWN").lower())
+    actions = {"SEALED": "drive with the exact epoch token", "COMPOSING": "continue fenced drive",
+        "RECOVERING": "inspect the bounded conflict/aggregate reason and use only its typed recovery",
+        "NEEDS_OPERATOR": "stop for explicit operator authority", "STALE": "inspect a fresh successor",
+        "READY_CAS": "continue fenced drive for the single expected-SHA CAS",
+        "RELEASE_READY": "delivery is separate; do not infer release authority"}
+    last = receipts[-1] if receipts and isinstance(receipts[-1], dict) else None
+    return {"schema_version": "juno_release_epoch_status_projection.v1",
+        "epoch_id": state.get("epoch_id"), "state": state.get("state"),
+        "target": {"ref": seal.get("target_ref"), "base_sha": seal.get("base_sha")},
+        "plan_id": seal.get("plan_id"), "member_count": len(seal.get("members") or []),
+        "conflict": ({"task_id": conflict.get("task_id"),
+            "logical_set_id": (conflict.get("logical_conflict_set") or {}).get("set_id"),
+            "conflict_path_count": len(conflict.get("conflict_paths") or [])} if conflict else None),
+        "aggregate": {key: aggregate.get(key) for key in
+                      ("status", "stage", "exit_code", "receipt_id") if key in aggregate},
+        "receipt_count": len(receipts),
+        "last_receipt": ({key: last.get(key) for key in ("transition", "sha256")}
+                         if last else None), "history_truncated": len(receipts) > 1,
+        "reason_code": reason_code,
+        "next_action": actions.get(state.get("state"), "inspect immutable epoch evidence"),
+        "excluded_actions": ["release", "tag", "push", "publish", "deploy", "cleanup"]}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -1604,13 +3122,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "seal":
             result = seal_epoch(controller, args.declaration)
         elif args.operation == "epoch-status":
-            result = read_epoch(controller, args.epoch_id)
+            result = epoch_status_projection(controller, args.epoch_id)
         elif args.operation == "drive":
             result = drive_epoch(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "eject":
             result = eject_epoch_member(controller, args.epoch_id, args.task_id, args.reason, args.epoch_token)
         elif args.operation == "repair":
             result = apply_conflict_repair(controller, args.epoch_id, args.receipt, args.epoch_token)
+        elif args.operation == "replay-repair":
+            result = replay_successor_repair(controller, args.epoch_id, args.predecessor_epoch,
+                                             args.receipt, args.epoch_token)
         elif args.operation == "retry":
             result = retry_epoch_aggregate(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "bootstrap-inspect":
@@ -1621,13 +3142,42 @@ def main(argv: Optional[list[str]] = None) -> int:
             result = read_bootstrap(controller, args.operation_id)
         elif args.operation == "bootstrap-drive":
             result = drive_bootstrap(controller, args.operation_id, args.bootstrap_token)
+        elif args.operation == "phase1-orchestrate":
+            result = phase1_orchestrate(controller, args.declaration, args.fixture,
+                                        args.task_id, args.worktree)
+        elif args.operation == "phase1-prove":
+            actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
+                           *(argv if argv is not None else sys.argv[1:])]
+            result = phase1_proof(controller, args.declaration, args.fixture, args.task_id,
+                                  args.worktree, args.output, actual_argv)
+            if result["decision"] != "PASS":
+                raise ReleaseTrainError("phase1 proof failed: " + ",".join(result["blocking_reason_codes"]))
+        elif args.operation == "phase1-suite":
+            actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
+                           *(argv if argv is not None else sys.argv[1:])]
+            result = phase1_suite_receipt(controller, args.task_id, args.worktree, args.output,
+                                          actual_argv, args.evidence_context)
+            if result["decision"] != "PASS":
+                raise ReleaseTrainError("phase1 suite failed: " + ",".join(result["blocking_reason_codes"]))
+        elif args.operation == "phase1-accept":
+            actual_argv = [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()),
+                           *(argv if argv is not None else sys.argv[1:])]
+            result = phase1_acceptance_receipt(controller, args.closure, args.output, actual_argv)
+            if result["decision"] != "PASS":
+                raise ReleaseTrainError("phase1 evaluation failed: " + ",".join(result["blocking_reason_codes"]))
+        elif args.operation == "phase1-finalize":
+            evaluation_ref = {"path": str(args.evaluation.resolve()), "sha256": file_hash(args.evaluation.resolve())}
+            watch_ref = {"run_id": args.watch_run, "footer_sha256": args.footer_sha256}
+            result = phase1_finalize_acceptance(controller, evaluation_ref, watch_ref, args.output)
+            if result["decision"] != "PASS":
+                raise ReleaseTrainError("phase1 acceptance failed: " + ",".join(result["blocking_reason_codes"]))
         elif args.operation == "shadow":
             result = shadow_epoch(controller, args.declaration, args.baseline)
         else:
             result = build_plan(controller, args.declaration, args.output)
         rendered = canonical(result) + "\n"
         output = getattr(args, "output", None)
-        if output:
+        if output and args.operation not in {"phase1-prove", "phase1-suite", "phase1-accept", "phase1-finalize"}:
             output.expanduser().resolve().write_text(rendered)
         if args.operation not in {"plan", "status"} or getattr(args, "json", False):
             print(canonical(result))

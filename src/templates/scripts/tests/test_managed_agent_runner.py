@@ -649,6 +649,31 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         with self.assertRaisesRegex(runner.RunnerError, "capture is missing"):
             runner.finalize_managed_capture(capture, stdout, metadata, None, started_ns)
 
+    def test_conflict_worker_hydrates_exact_lock_before_launch_without_git_drift(self):
+        scripts = self.controller / ".juno_task/scripts"; scripts.mkdir(parents=True)
+        helper = scripts / "worktree_hydration.py"
+        helper.write_text("#!/usr/bin/env python3\nraise SystemExit(0)\n"); helper.chmod(0o755)
+        root = self.candidate / "juno-code"; root.mkdir()
+        lock = root / "package-lock.json"; lock.write_text('{"lockfileVersion":3}\n')
+        (self.candidate / ".gitignore").write_text("juno-code/node_modules/\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "lock"],
+                       check=True, stdout=subprocess.DEVNULL)
+        identity = {"admission_kind": "sealed_release_epoch_conflict",
+                    "validation_root": {"cwd": "juno-code", "timeout_seconds": 10}}
+        first = runner.hydrate_conflict_validation_root(
+            self.controller, self.candidate, identity)
+        second = runner.hydrate_conflict_validation_root(
+            self.controller, self.candidate, identity)
+        self.assertEqual(first, second)
+        self.assertEqual("passed", first["decision"])
+        self.assertEqual(hashlib.sha256(lock.read_bytes()).hexdigest(), first["lock_sha256"])
+        self.assertEqual("", git(self.candidate, "status", "--porcelain=v1", "--untracked-files=all"))
+        lock.unlink()
+        with self.assertRaisesRegex(runner.RunnerError, "exact lock"):
+            runner.hydrate_conflict_validation_root(self.controller, self.candidate, identity)
+
     def test_worker_capture_recovery_binds_failed_run_without_model_rerun(self):
         ours = git(self.candidate, "rev-parse", "HEAD")
         subprocess.run(["git", "-C", str(self.candidate), "checkout", "-b", "recovery-theirs", "target"],

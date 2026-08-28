@@ -111,19 +111,39 @@ state before composition or validation. Dependency topology wins, then frozen
 FIFO order. Every admitted task gets a both-parent merge commit; task commits
 are never squashed, rebased, or rewritten. Ejected tips must be absent.
 
-A conflict preserves the dirty checkout and writes one bounded repair packet
-with base/ours/theirs, conflict paths, task contract identity, dependencies, and
-admitted paths. Run exactly one canonical managed worker against that packet.
-After it creates a clean both-parent repair commit, consume its immutable receipt:
+Before seal, read-only inspection precomposes the exact prefix and records every
+remaining member after the first unresolved repair in one deterministic conservative
+envelope. Seal refuses unless that complete envelope fits one frozen, declaration-
+bound authorization-neutral logical set. Member accounting and forecast completion
+do not claim unknown post-repair trees are exact.
+
+A conflict preserves the dirty checkout and writes one bounded repair packet with
+base/ours/theirs, the authority hash, ordered logical-set members, exact permitted
+paths, and the selected validation root. The canonical managed worker verifies and
+hydrates that root from its exact lock before model launch, then atomically finalizes
+an exact successful capture when provider capture is missing or stale. Run one model
+session for the whole frozen set and consume its one immutable receipt:
 
 ```bash
 yy release train repair EPOCH --receipt RECEIPT --epoch-token TOKEN
 yy release train drive EPOCH --epoch-token TOKEN --json
 ```
 
-Out-of-scope edits, unresolved conflicts, a second repair, sensitive/destructive
-choices, new dependencies, or ambiguous requirements stop as `NEEDS_OPERATOR`.
-Material repair remains subject to scoped delta review.
+A successor may instead replay an already consumed predecessor repair without a
+model call, but only when package/runtime/policy, receipt artifacts, candidate,
+parents, ancestry, and resulting tree are exact:
+
+```bash
+yy release train replay-repair EPOCH --predecessor-epoch PREDECESSOR \
+  --receipt RECEIPT --epoch-token TOKEN --json
+```
+
+Replay never edits predecessor evidence and records `model_rerun=false`. Missing or
+ambiguous legacy evidence returns a typed incompatibility; deterministic adaptation
+binds only immutable declaration bytes and grants no authority. Out-of-set edits,
+unresolved conflicts, a second set, identity drift, sensitive/destructive choices,
+new dependencies, or ambiguity stop as `NEEDS_OPERATOR`. Material repair receives
+one scoped delta review.
 
 ## Evidence, CAS, and recovery
 
@@ -139,7 +159,9 @@ yy release train drive EPOCH --epoch-token TOKEN --json
 ```
 
 The retry is fenced and binds the failure receipt; it never recomposes members or
-performs a duplicate CAS. A passing exact aggregate receipt is reused. Before CAS,
+performs a duplicate CAS. A passing exact aggregate receipt is reused. Use
+`yy release train epoch-status EPOCH --json` for the bounded state/reason/next-action
+projection; immutable receipt history remains out of the default projection. Before CAS,
 drive rechecks queue records, ancestry/dispositions, runtime/policy, aggregate
 evidence, and the target base. Target movement preserves the epoch as
 `STALE`; create a successor seal on the new base and reuse only exact closures.

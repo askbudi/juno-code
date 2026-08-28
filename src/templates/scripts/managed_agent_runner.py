@@ -732,11 +732,21 @@ def release_conflict_admission(args: argparse.Namespace, controller: dict[str, A
             or not unresolved or unresolved != sorted(conflict.get("conflict_paths") or [])
             or not set(changed).issubset(set(admitted))):
         raise RunnerError("conflict worker checkout does not match the frozen repair packet")
+    logical_set = conflict.get("logical_conflict_set")
+    validation_root = conflict.get("validation_root")
+    if (conflict.get("schema_version") != "juno_release_epoch_conflict.v2"
+            or not isinstance(logical_set, dict)
+            or logical_set.get("classification") != "authorization_neutral"
+            or logical_set.get("ordered_task_ids", [None])[0] != args.task_id
+            or sorted(logical_set.get("permitted_paths") or []) != admitted
+            or not isinstance(validation_root, dict)):
+        raise RunnerError("conflict worker requires one declaration-bound logical conflict set")
     admission = {"task_id": args.task_id, "expected_paths": admitted,
                  "admission_kind": "sealed_release_epoch_conflict",
                  "epoch_id": state.get("epoch_id"), "epoch_state": evidence(state_path),
                  "conflict_sha256": sha(canonical(conflict)), "before": mark,
-                 "ours_sha": conflict["ours_sha"], "theirs_sha": conflict["theirs_sha"]}
+                 "ours_sha": conflict["ours_sha"], "theirs_sha": conflict["theirs_sha"],
+                 "logical_conflict_set": logical_set, "validation_root": validation_root}
     return admission, mark
 
 
@@ -969,6 +979,41 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
                 "node_runtime": node_contract}
     contract["sha256"] = sha(canonical(contract))
     return env, contract
+
+
+def hydrate_conflict_validation_root(controller_root: Path, agent_root: Path,
+                                       identity: dict[str, Any]) -> dict[str, Any]:
+    """Probe/hydrate one exact-lock conflict-worker validation root before model launch."""
+    if identity.get("admission_kind") != "sealed_release_epoch_conflict":
+        return {"schema_version": "juno_managed_worker_hydration.v1",
+                "decision": "not_applicable"}
+    validation = identity.get("validation_root")
+    cwd = validation.get("cwd") if isinstance(validation, dict) else None
+    if (not isinstance(cwd, str) or not cwd or Path(cwd).is_absolute()
+            or ".." in Path(cwd).parts):
+        raise RunnerError("conflict validation root is malformed")
+    lock = agent_root / cwd / "package-lock.json"
+    helper = controller_root / ".juno_task/scripts/worktree_hydration.py"
+    if not helper.is_file() or not lock.is_file():
+        raise RunnerError("conflict validation exact lock or hydration helper is missing")
+    before = git(agent_root, "status", "--porcelain=v1", "--untracked-files=all")
+    base = [sys.executable, str(helper), "--project-root", str(agent_root)]
+    output = bytearray()
+    timeout = int(validation.get("timeout_seconds", 3600))
+    for command in ([*base, "verify-node-lock", "--cwd", cwd],
+                    [*base, "hydrate-node", "--cwd", cwd],
+                    [*base, "verify-clean"]):
+        completed = subprocess.run(command, cwd=agent_root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        output.extend(completed.stdout[-65536:])
+        if completed.returncode:
+            raise RunnerError("conflict validation exact-lock hydration/probe failed")
+    after = git(agent_root, "status", "--porcelain=v1", "--untracked-files=all")
+    if after != before:
+        raise RunnerError("conflict validation hydration left unadmitted Git drift")
+    return {"schema_version": "juno_managed_worker_hydration.v1", "decision": "passed",
+            "cwd": cwd, "lock_sha256": sha(lock.read_bytes()),
+            "output_sha256": sha(bytes(output)), "git_status_sha256": sha(after.encode())}
 
 
 def finalize_managed_capture(capture: Path, stdout_path: Path, metadata: Path,
@@ -1333,6 +1378,8 @@ def run(args: argparse.Namespace) -> int:
     # process owner, and sparse controllers may intentionally omit hook targets.
     env, env_contract = clean_environment(
         args, capture, metadata, binding, controller_before, identity)
+    validation_hydration = hydrate_conflict_validation_root(
+        controller_root, agent_root, identity)
     argv = [env_contract["node_runtime"]["yy_executable"], "pi", "--no-hooks", "--config",
             compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     prompt_evidence = evidence(prompt)
@@ -1343,6 +1390,7 @@ def run(args: argparse.Namespace) -> int:
               "launcher_config": evidence(launcher_config),
               "tool_id": args.tool_id, "review_binding": binding,
               "prompt": prompt_evidence, "compatible_config": compatible_config, "argv": argv,
+              "validation_hydration": validation_hydration,
               "effective_hook_policy": effective_hook_policy,
               "argv_sha256": sha(shlex.join(argv).encode()), "environment_contract": env_contract}
     atomic_json(out / "launch.json", launch)
