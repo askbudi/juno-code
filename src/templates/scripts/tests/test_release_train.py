@@ -407,6 +407,25 @@ raise SystemExit(2)
         current = runtime.read_epoch(self.root, "rc-1")
         self.assertEqual(["OLD", "REQ"], [row["task_id"] for row in current["seal"]["members"]])
 
+    def test_epoch_status_projection_is_bounded_and_actionable(self) -> None:
+        self.prepare_epoch()
+        runtime.seal_epoch(self.root, self.declaration)
+        state = runtime.read_epoch(self.root, "rc-1")
+        state["receipts"].extend({"transition": "OBSERVED", "sha256": str(index) * 64,
+                                  "path": "/private/receipt"}
+                                 for index in range(1, 5))
+        (runtime.epoch_state_path(self.root, "rc-1")).write_text(
+            json.dumps(state, sort_keys=True) + "\n")
+        projected = runtime.epoch_status_projection(self.root, "rc-1")
+        self.assertEqual("juno_release_epoch_status_projection.v1", projected["schema_version"])
+        self.assertEqual("SEALED", projected["state"])
+        self.assertEqual(5, projected["receipt_count"])
+        self.assertTrue(projected["history_truncated"])
+        self.assertIn("drive", projected["next_action"])
+        self.assertNotIn("seal", projected)
+        self.assertNotIn("receipts", projected)
+        self.assertLess(len(runtime.canonical(projected)), 4096)
+
     def test_epoch_seal_refuses_required_missing_closure_without_state(self) -> None:
         self.prepare_epoch()
         self.state["tasks"]["REQ"].pop("review_ready_closure")

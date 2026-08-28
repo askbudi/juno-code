@@ -1508,6 +1508,7 @@ PHASE1_SUITE_TESTS = (
     "ReleaseTrainTests.test_clean_ready_release_and_version_gate",
     "ReleaseTrainTests.test_lean_sparse_controller_plans_release_from_target_tree",
     "ReleaseTrainTests.test_epoch_seal_is_complete_immutable_and_idempotent",
+    "ReleaseTrainTests.test_epoch_status_projection_is_bounded_and_actionable",
     "ReleaseTrainTests.test_epoch_seal_refuses_required_missing_closure_without_state",
     "ReleaseTrainTests.test_rc7_rc8_serial_conflicts_fit_one_conservative_repair_set",
     "ReleaseTrainTests.test_conflict_authority_refuses_missing_ambiguous_sensitive_scope_and_identity",
@@ -3079,6 +3080,37 @@ def parser() -> argparse.ArgumentParser:
     return value
 
 
+def epoch_status_projection(controller: Path, epoch_id: str) -> dict[str, Any]:
+    """Return bounded operator truth without projecting immutable receipt history."""
+    state = read_epoch(controller, epoch_id)
+    seal = state.get("seal") or {}; conflict = state.get("conflict") or {}
+    aggregate = state.get("aggregate") or {}; receipts = state.get("receipts") or []
+    reason_code = ((state.get("operator_packet") or {}).get("reason_code")
+                   or (state.get("cas") or {}).get("reason")
+                   or aggregate.get("reason") or state.get("state", "UNKNOWN").lower())
+    actions = {"SEALED": "drive with the exact epoch token", "COMPOSING": "continue fenced drive",
+        "RECOVERING": "inspect the bounded conflict/aggregate reason and use only its typed recovery",
+        "NEEDS_OPERATOR": "stop for explicit operator authority", "STALE": "inspect a fresh successor",
+        "READY_CAS": "continue fenced drive for the single expected-SHA CAS",
+        "RELEASE_READY": "delivery is separate; do not infer release authority"}
+    last = receipts[-1] if receipts and isinstance(receipts[-1], dict) else None
+    return {"schema_version": "juno_release_epoch_status_projection.v1",
+        "epoch_id": state.get("epoch_id"), "state": state.get("state"),
+        "target": {"ref": seal.get("target_ref"), "base_sha": seal.get("base_sha")},
+        "plan_id": seal.get("plan_id"), "member_count": len(seal.get("members") or []),
+        "conflict": ({"task_id": conflict.get("task_id"),
+            "logical_set_id": (conflict.get("logical_conflict_set") or {}).get("set_id"),
+            "conflict_path_count": len(conflict.get("conflict_paths") or [])} if conflict else None),
+        "aggregate": {key: aggregate.get(key) for key in
+                      ("status", "stage", "exit_code", "receipt_id") if key in aggregate},
+        "receipt_count": len(receipts),
+        "last_receipt": ({key: last.get(key) for key in ("transition", "sha256")}
+                         if last else None), "history_truncated": len(receipts) > 1,
+        "reason_code": reason_code,
+        "next_action": actions.get(state.get("state"), "inspect immutable epoch evidence"),
+        "excluded_actions": ["release", "tag", "push", "publish", "deploy", "cleanup"]}
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -3090,7 +3122,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.operation == "seal":
             result = seal_epoch(controller, args.declaration)
         elif args.operation == "epoch-status":
-            result = read_epoch(controller, args.epoch_id)
+            result = epoch_status_projection(controller, args.epoch_id)
         elif args.operation == "drive":
             result = drive_epoch(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "eject":
