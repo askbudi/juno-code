@@ -5189,7 +5189,9 @@ steps:
             receipt_value = json.loads(Path(wall["receipt"]["path"]).read_text())
             self.assertLessEqual(receipt_value["remaining_budget_ns"],
                                  receipt_value["frozen_total_wall_seconds"] * 1_000_000_000)
-            self.assertGreater(task_runtime._task_run_remaining_seconds(recovered_journal), 0)
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=recovery_now + 1_000_000_000):
+                self.assertGreater(task_runtime._task_run_remaining_seconds(recovered_journal), 0)
 
             # The recovered authority reaches the next typed implementation
             # dispatch without changing ownership or bypassing the canonical runner.
@@ -5200,7 +5202,9 @@ steps:
                 launches.append(kwargs)
                 raise LaunchObserved("next typed launch observed")
             fencing_before = task_runtime.read_state(self.controller)["tasks"][task_id].get("fencing")
-            with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=observe_launch):
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=recovery_now + 1_000_000_000), \
+                    mock.patch.object(task_runtime, "_launch_task_worker", side_effect=observe_launch):
                 with self.assertRaisesRegex(LaunchObserved, "next typed launch observed"):
                     task_runtime.managed_task_run(self.controller.resolve(), task_id)
             self.assertEqual(len(launches), 1)
