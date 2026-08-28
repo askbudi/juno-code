@@ -67,6 +67,8 @@ TASK_HYDRATE_RECOVERY_SCHEMA = "juno_task_hydrate_recovery.v1"
 TASK_RUNTIME_CAPABILITY_HYDRATE_V1 = True
 TASK_PREDISPATCH_RECOVERY_SCHEMA = "juno_task_predispatch_recovery.v1"
 TASK_RUNTIME_CAPABILITY_PREDISPATCH_RECOVERY_V1 = True
+TASK_WALL_BUDGET_RECOVERY_SCHEMA = "juno_task_wall_budget_recovery.v1"
+TASK_RUNTIME_CAPABILITY_WALL_BUDGET_RECOVERY_V1 = True
 RUNTIME_BOOTSTRAP_SCHEMA = "juno_target_task_runtime_bootstrap.v1"
 RUNTIME_BOOTSTRAP_ROOT = ".juno_task/runtime/task-runtime-bootstrap"
 MANAGED_INVENTORY_PATH = ".juno_task/managed-assets.json"
@@ -2218,7 +2220,7 @@ def record_control_audit(controller: Path, surface: str, operation: str,
     expected_policy = ("kanban" if operation in {"status", "preflight", "recovery-plan", "contract", "handoff", "evidence-status", "doctor", "lease-status"}
                        else "orchestration")
     if surface == "task" and operation not in {
-            "start", "run", "recover-predispatch", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+            "start", "run", "recover-predispatch", "recover-wall-budget", "status", "hydrate", "preflight", "finish", "contract", "handoff",
             "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
             "recovery-plan", "recovery-authorize", "recovery-apply", "sync", "doctor",
             "lease-status", "lease-heartbeat", "lease-handoff", "lease-successor",
@@ -6376,6 +6378,332 @@ def recover_task_predispatch(controller: Path, task_id: str, run_id: str) -> dic
                 "receipt": receipt, "next_command": f"yy task run {task_id}"}
 
 
+def _wall_recovery_runtime_identity(controller: Path, plan: dict[str, Any],
+                                    journal: dict[str, Any]) -> dict[str, Any]:
+    """Prove the frozen policy is still executed by the integrated target runtime."""
+    try:
+        current = lifecycle_runtime.compile_lifecycle_template(
+            controller, "task-run", plan["task_id"], model_identity=plan.get("model_identity"))
+    except lifecycle_runtime.LifecycleContractError as exc:
+        raise TaskWorkspaceError("wall-budget recovery runtime/policy identity drifted") from exc
+    if (_task_plan_execution_identity(current) != journal.get("execution_identity_sha256")
+            or current.get("controller_commit") != plan.get("controller_commit")
+            or current.get("template") != plan.get("template")
+            or current.get("budgets") != plan.get("budgets")
+            or current.get("runtime_sha256") != plan.get("runtime_sha256")):
+        raise TaskWorkspaceError("wall-budget recovery runtime/policy identity drifted")
+    config = load_config(controller)
+    repository = product_repository(controller, config)
+    target_sha = ref_sha(repository, config["target_ref"])
+    generation = require_current_runtime(repository, target_sha, controller)
+    running_sha = hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+    if generation.get("running_sha256") != running_sha:
+        raise TaskWorkspaceError("wall-budget recovery integrated runtime identity drifted")
+    policy_path = controller / ".juno_task/config/task-workspace.json"
+    policy_relative = ".juno_task/config/task-workspace.json"
+    policy_check = subprocess.run(
+        ["git", "-C", str(controller), "diff", "--quiet", "HEAD", "--", policy_relative],
+        cwd=controller, stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    if (policy_check.returncode != 0
+            or git(controller, "ls-files", "--error-unmatch", policy_relative,
+                   check=False) != policy_relative):
+        raise TaskWorkspaceError("wall-budget recovery runtime/policy identity drifted")
+    return {
+        "controller_commit": plan["controller_commit"],
+        "execution_identity_sha256": journal["execution_identity_sha256"],
+        "lifecycle_runtime_sha256": plan["runtime_sha256"],
+        "task_runtime_sha256": running_sha,
+        "task_workspace_policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+        "target_sha": target_sha,
+        "template": plan["template"],
+    }
+
+
+def _verified_wall_predispatch(record: dict[str, Any], journal: dict[str, Any],
+                               attempt: dict[str, Any], task_id: str, run_id: str,
+                               attempt_index: int,
+                               receipt_sha256: str) -> tuple[dict[str, str], dict[str, Any]]:
+    if (len(journal.get("workers", [])) != 1 or attempt.get("kind") != "implementation"
+            or attempt.get("index") != attempt_index or attempt_index != 1
+            or attempt.get("terminal_state") != "controller_pre_dispatch"
+            or attempt.get("model_budget_consumed") is not False
+            or journal.get("attempts") != {"implementation": 0, "decision_resumes": 0,
+                "attributable_test_repair": 0, "worker_launches": 1}):
+        raise TaskWorkspaceError("wall-budget recovery requires one restored unused model attempt")
+    reference = attempt.get("predispatch_receipt")
+    value = _verify_receipt_reference(reference, "wall-budget pre-dispatch receipt")
+    attempt_dir = Path(str(attempt.get("attempt_dir", ""))).resolve()
+    expected_path = attempt_dir / "controller-predispatch-receipt.json"
+    if (reference.get("sha256") != receipt_sha256
+            or Path(str(reference.get("path", ""))).resolve() != expected_path
+            or value.get("schema_version") != TASK_PREDISPATCH_RECOVERY_SCHEMA
+            or value.get("classification") != "controller_pre_dispatch"
+            or value.get("task_id") != task_id or value.get("run_id") != run_id
+            or value.get("before_sha") != attempt.get("before_sha")
+            or value.get("provider_launch_observed") is not False
+            or value.get("model_budget_consumed") is not False):
+        raise TaskWorkspaceError("wall-budget pre-dispatch receipt identity mismatch")
+    raw = expected_path.read_bytes()
+    if raw != lifecycle_runtime.canonical_bytes(value):
+        raise TaskWorkspaceError("wall-budget pre-dispatch receipt is non-canonical")
+    managed = attempt_dir / "managed-agent"
+    if any((managed / name).exists() for name in
+           ("launch.json", "receipt.json", "terminal.json", "active.json")):
+        raise TaskWorkspaceError("wall-budget recovery found provider or managed-agent evidence")
+    worktree = Path(record["worktree"])
+    if (git(worktree, "rev-parse", "HEAD") != attempt.get("before_sha")
+            or record.get("tip_sha") != attempt.get("before_sha")
+            or git(worktree, "status", "--porcelain=v1", "--untracked-files=all")):
+        raise TaskWorkspaceError("wall-budget recovery requires zero commits and dirty bytes")
+    references = value.get("admission_receipts")
+    names = ("create-receipt.json", "verify-receipt.json", "edit-preflight-receipt.json")
+    if not isinstance(references, list) or len(references) != len(names):
+        raise TaskWorkspaceError("wall-budget pre-dispatch admission evidence is malformed")
+    admission = []
+    for index, (reference_value, name) in enumerate(zip(references, names), 1):
+        if Path(str(reference_value.get("path", ""))).resolve() != attempt_dir / name:
+            raise TaskWorkspaceError("wall-budget pre-dispatch admission receipt path drifted")
+        admission.append(_verify_receipt_reference(
+            reference_value, f"wall-budget admission receipt {index}"))
+    create, verify, edit = admission
+    admitted, _generated, admission_kind = effective_admission(record)
+    common = str(Path(git(worktree, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir")).resolve())
+    if (create.get("task_id") != task_id
+            or Path(str(create.get("worktree", ""))).resolve() != worktree.resolve()
+            or create.get("branch_ref") != record.get("branch_ref")
+            or create.get("git_common_dir") != common
+            or create.get("expected_paths") != admitted
+            or create.get("admission_kind") != admission_kind
+            or verify.get("task_id") != task_id or verify.get("passed") is not True
+            or verify.get("tip_sha") != attempt.get("before_sha")
+            or edit.get("task_id") != task_id or edit.get("passed") is not True
+            or edit.get("allowed_paths_sha256") != stable_sha256(admitted)):
+        raise TaskWorkspaceError("wall-budget task/admission identity drifted")
+    return reference, value
+
+
+def _wall_timeout_failure(journal: dict[str, Any], attempt: dict[str, Any],
+                          receipt: dict[str, str]) -> tuple[dict[str, Any], int]:
+    events = journal.get("events")
+    if not isinstance(events, list) or len(events) < 3:
+        raise TaskWorkspaceError("wall-budget recovery evidence is malformed or interrupted")
+    phase = f"implementation-{attempt['index']}"
+    pre = [event for event in events
+           if event.get("phase") == phase and event.get("boundary") == "PRE"]
+    recovered = [event for event in events
+                 if event.get("phase") == phase and event.get("boundary") == "RECOVERED"
+                 and event.get("detail", {}).get("classification") == "controller_pre_dispatch"]
+    if len(recovered) != 1:
+        raise TaskWorkspaceError("wall-budget recovery failure identity is not exact")
+    recovered_index = events.index(recovered[0])
+    trailing = events[recovered_index + 1:]
+    timeout = trailing[0] if trailing else {}
+    if (len(pre) != 1 or len(trailing) not in {1, 2}
+            or (len(trailing) == 2 and not
+                (trailing[1].get("phase") == "wall-budget-recovery"
+                 and trailing[1].get("boundary") == "RECOVERED"))
+            or recovered[0].get("detail", {}).get("receipt") != receipt
+            or recovered[0].get("detail", {}).get("model_budget_consumed") is not False
+            or timeout.get("phase") != "task-run" or timeout.get("boundary") != "ERROR"
+            or timeout.get("detail") != {"error_type": "LifecycleContractError",
+                                         "error": "lifecycle cumulative wall budget exhausted"}):
+        raise TaskWorkspaceError("wall-budget recovery failure identity is not exact")
+    pre_ns = pre[0].get("recorded_at_unix_ns")
+    if not isinstance(pre_ns, int):
+        raise TaskWorkspaceError("wall-budget recovery pre-dispatch interval is malformed")
+    return timeout, pre_ns
+
+
+def _verify_existing_wall_recovery(run_dir: Path, reference: Any,
+                                   expected: dict[str, Any]) -> dict[str, Any]:
+    value = _verify_receipt_reference(reference, "wall-budget recovery receipt")
+    path = Path(str(reference["path"])).resolve()
+    if (path.parent != (run_dir / "wall-budget-recoveries").resolve()
+            or path.name != f"{reference['sha256']}.json"
+            or value.get("schema_version") != TASK_WALL_BUDGET_RECOVERY_SCHEMA):
+        raise TaskWorkspaceError("wall-budget recovery receipt location/identity drifted")
+    for key, expected_value in expected.items():
+        if value.get(key) != expected_value:
+            raise TaskWorkspaceError(f"wall-budget recovery {key} identity drifted")
+    recovered_at = value.get("recovered_at_unix_ns")
+    recovered_deadline = value.get("recovered_deadline_unix_ns")
+    remaining = value.get("remaining_budget_ns")
+    forgiven = value.get("forgiven_interval_ns")
+    original = value.get("original_deadline_unix_ns")
+    frozen_seconds = value.get("frozen_total_wall_seconds")
+    consumed = value.get("consumed_before_predispatch_ns")
+    integers = (recovered_at, recovered_deadline, remaining, forgiven,
+                original, frozen_seconds, consumed)
+    if not all(isinstance(item, int) and not isinstance(item, bool) for item in integers):
+        raise TaskWorkspaceError("wall-budget recovery deadline evidence is malformed")
+    predispatch_started = recovered_at - forgiven
+    expected_predispatch_started = original - frozen_seconds * 1_000_000_000 + consumed
+    if (value.get("classification") != "controller_predispatch_wall_interval"
+            or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("source_journal_sha256", "")))
+            or remaining <= 0 or forgiven < 0
+            or predispatch_started != expected_predispatch_started
+            or recovered_deadline != recovered_at + remaining):
+        raise TaskWorkspaceError("wall-budget recovery deadline evidence is malformed")
+    return value
+
+
+def recover_task_wall_budget(controller: Path, task_id: str, run_id: str,
+                             attempt_index: int, predispatch_receipt_sha256: str,
+                             original_deadline_unix_ns: int) -> dict[str, Any]:
+    """Forgive once only the receipt-proven controller pre-dispatch interval."""
+    if (not TASK_RE.fullmatch(task_id)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", run_id)
+            or attempt_index != 1
+            or not re.fullmatch(r"[0-9a-f]{64}", predispatch_receipt_sha256)
+            or original_deadline_unix_ns <= 0):
+        raise TaskWorkspaceError("unsafe wall-budget recovery identity")
+    root = controller / TASK_RUN_ROOT / task_id
+    run_dir = root / run_id
+    journal_path = run_dir / "journal.json"
+    if not journal_path.is_file() or not (root / "latest.json").is_file():
+        raise TaskWorkspaceError("wall-budget recovery run is unavailable or malformed")
+    with lifecycle_runtime.lifecycle_claim(root / ".claim.lock"):
+        try:
+            journal_bytes = journal_path.read_bytes()
+            journal = json.loads(journal_bytes)
+            latest = json.loads((root / "latest.json").read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskWorkspaceError("wall-budget recovery run is unavailable or malformed") from exc
+        if (journal_bytes != lifecycle_runtime.canonical_bytes(journal)
+                or journal.get("schema_version") != "juno_managed_task_run_journal.v2"
+                or journal.get("task_id") != task_id or journal.get("run_id") != run_id
+                or latest.get("run_id") != run_id or latest.get("terminal") is not False
+                or journal.get("terminal") is not False):
+            raise TaskWorkspaceError("wall-budget recovery requires the exact active run")
+        with state_lock(controller):
+            record = read_state(controller)["tasks"].get(task_id)
+        if not isinstance(record, dict) or record.get("state") != "WORKING":
+            raise TaskWorkspaceError("wall-budget recovery requires the exact WORKING task")
+        plan = _verify_receipt_reference(journal.get("compiled_plan"), "wall-budget compiled plan")
+        if (Path(str(journal["compiled_plan"]["path"])).resolve()
+                != (run_dir / "compiled-plan.json").resolve()
+                or plan.get("schema_version") != "juno_compiled_lifecycle_plan.v1"
+                or plan.get("kind") != "task-run" or plan.get("task_id") != task_id):
+            raise TaskWorkspaceError("wall-budget frozen plan identity drifted")
+        budget_seconds = plan.get("budgets", {}).get("total_wall_seconds")
+        started_ns = journal.get("started_at_unix_ns")
+        if (not isinstance(budget_seconds, int) or budget_seconds <= 0
+                or not isinstance(started_ns, int)
+                or journal.get("deadline_unix_ns") != original_deadline_unix_ns
+                or original_deadline_unix_ns != started_ns + budget_seconds * 1_000_000_000):
+            raise TaskWorkspaceError("wall-budget original deadline identity drifted")
+        if time.time_ns() <= original_deadline_unix_ns:
+            raise TaskWorkspaceError("wall-budget recovery requires the exact expired original deadline")
+        runtime_identity = _wall_recovery_runtime_identity(controller, plan, journal)
+        workers = journal.get("workers")
+        if not isinstance(workers, list) or not workers:
+            raise TaskWorkspaceError("wall-budget recovery worker evidence is malformed")
+        attempt = workers[0]
+        predispatch_ref, _predispatch = _verified_wall_predispatch(
+            record, journal, attempt, task_id, run_id, attempt_index,
+            predispatch_receipt_sha256)
+        timeout_event, predispatch_started_ns = _wall_timeout_failure(
+            journal, attempt, predispatch_ref)
+        consumed_before_ns = predispatch_started_ns - started_ns
+        total_budget_ns = budget_seconds * 1_000_000_000
+        remaining_ns = total_budget_ns - consumed_before_ns
+        if consumed_before_ns < 0 or remaining_ns <= 0 or remaining_ns > total_budget_ns:
+            raise TaskWorkspaceError("wall-budget attributable interval is invalid")
+        expected = {
+            "task_id": task_id, "run_id": run_id, "attempt_index": attempt_index,
+            "predispatch_receipt": predispatch_ref,
+            "original_deadline_unix_ns": original_deadline_unix_ns,
+            "frozen_total_wall_seconds": budget_seconds,
+            "consumed_before_predispatch_ns": consumed_before_ns,
+            "remaining_budget_ns": remaining_ns,
+            "failure_event_sha256": lifecycle_runtime.digest(timeout_event),
+            "compiled_plan": journal["compiled_plan"],
+            "integrated_identity": runtime_identity,
+        }
+        existing_pointer = journal.get("wall_budget_recovery")
+        recovery_dir = run_dir / "wall-budget-recoveries"
+        candidates = sorted(recovery_dir.glob("*.json")) if recovery_dir.is_dir() else []
+        if existing_pointer is not None:
+            value = _verify_existing_wall_recovery(run_dir, existing_pointer, expected)
+            if (len(candidates) != 1
+                    or candidates[0].resolve() != Path(str(existing_pointer["path"])).resolve()):
+                raise TaskWorkspaceError("wall-budget recovery has duplicate or chained receipts")
+            events = [event for event in journal.get("events", [])
+                      if event.get("phase") == "wall-budget-recovery"]
+            if (len(events) != 1 or events[0].get("boundary") != "RECOVERED"
+                    or events[0].get("detail", {}).get("receipt") != existing_pointer
+                    or events[0].get("detail", {}).get("recovered_deadline_unix_ns")
+                    != value["recovered_deadline_unix_ns"]):
+                raise TaskWorkspaceError("wall-budget recovery journal disposition drifted")
+            return {"schema_version": TASK_WALL_BUDGET_RECOVERY_SCHEMA,
+                    "task_id": task_id, "run_id": run_id, "attempt_index": attempt_index,
+                    "outcome": "already_recovered", "receipt": existing_pointer,
+                    "recovered_deadline_unix_ns": value["recovered_deadline_unix_ns"],
+                    "next_command": f"yy task run {task_id}"}
+        if any(event.get("phase") == "wall-budget-recovery"
+               for event in journal.get("events", [])):
+            raise TaskWorkspaceError("wall-budget recovery has a chained or malformed disposition")
+        if len(candidates) > 1:
+            raise TaskWorkspaceError("wall-budget recovery has duplicate interrupted receipts")
+        if candidates:
+            candidate = candidates[0]
+            reference = {"path": str(candidate.resolve()),
+                         "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()}
+            value = _verify_existing_wall_recovery(run_dir, reference, expected)
+            if (candidate.name != f"{reference['sha256']}.json"
+                    or value.get("source_journal_sha256") != hashlib.sha256(journal_bytes).hexdigest()):
+                raise TaskWorkspaceError("interrupted wall-budget recovery evidence drifted")
+        else:
+            recovered_at_ns = time.time_ns()
+            payload = {"schema_version": TASK_WALL_BUDGET_RECOVERY_SCHEMA, **expected,
+                       "classification": "controller_predispatch_wall_interval",
+                       "recovered_at_unix_ns": recovered_at_ns,
+                       "recovered_deadline_unix_ns": recovered_at_ns + remaining_ns,
+                       "forgiven_interval_ns": recovered_at_ns - predispatch_started_ns,
+                       "source_journal_sha256": hashlib.sha256(journal_bytes).hexdigest()}
+            payload_bytes = lifecycle_runtime.canonical_bytes(payload)
+            digest = hashlib.sha256(payload_bytes).hexdigest()
+            reference = lifecycle_runtime.atomic_json(
+                recovery_dir / f"{digest}.json", payload, exclusive=True)
+            value = payload
+        journal["wall_budget_recovery"] = reference
+        lifecycle_runtime.lifecycle_checkpoint(
+            journal_path, journal, phase="wall-budget-recovery", boundary="RECOVERED",
+            detail={"classification": "controller_predispatch_wall_interval",
+                    "receipt": reference,
+                    "original_deadline_unix_ns": original_deadline_unix_ns,
+                    "recovered_deadline_unix_ns": value["recovered_deadline_unix_ns"]})
+        return {"schema_version": TASK_WALL_BUDGET_RECOVERY_SCHEMA,
+                "task_id": task_id, "run_id": run_id, "attempt_index": attempt_index,
+                "outcome": "recovered", "receipt": reference,
+                "recovered_deadline_unix_ns": value["recovered_deadline_unix_ns"],
+                "next_command": f"yy task run {task_id}"}
+
+
+def _task_run_remaining_seconds(journal: dict[str, Any]) -> int:
+    reference = journal.get("wall_budget_recovery")
+    if reference is None:
+        return lifecycle_runtime.lifecycle_remaining_seconds(journal)
+    value = _verify_receipt_reference(reference, "task-run wall-budget recovery receipt")
+    if (value.get("schema_version") != TASK_WALL_BUDGET_RECOVERY_SCHEMA
+            or value.get("task_id") != journal.get("task_id")
+            or value.get("run_id") != journal.get("run_id")
+            or value.get("original_deadline_unix_ns") != journal.get("deadline_unix_ns")
+            or len([event for event in journal.get("events", [])
+                    if event.get("phase") == "wall-budget-recovery"
+                    and event.get("boundary") == "RECOVERED"
+                    and event.get("detail", {}).get("receipt") == reference]) != 1):
+        raise TaskWorkspaceError("task-run wall-budget recovery authority is malformed")
+    deadline = value.get("recovered_deadline_unix_ns")
+    if not isinstance(deadline, int):
+        raise TaskWorkspaceError("task-run recovered deadline is malformed")
+    remaining_ns = deadline - time.time_ns()
+    if remaining_ns <= 0:
+        raise lifecycle_runtime.LifecycleContractError("lifecycle cumulative wall budget exhausted")
+    return max(1, remaining_ns // 1_000_000_000)
+
+
 def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
     """Resume one durably claimed controller-owned typed task workflow."""
     if not TASK_RE.fullmatch(task_id):
@@ -6503,7 +6831,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                 journal_path, journal, phase="claim", boundary="POST",
                 detail={"task_revision_sha256": hashlib.sha256(task_bytes).hexdigest()})
         try:
-            lifecycle_runtime.lifecycle_remaining_seconds(journal)
+            _task_run_remaining_seconds(journal)
             # Recover orchestration boundaries whose side effect became durable
             # before their POST checkpoint (for example process death after queueing).
             for recoverable_phase in ("admit", "finish-initial", "finish-after-repair"):
@@ -6642,7 +6970,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         worker = _launch_task_worker(
                             controller, task_id, state_record, attempt_dir,
                             Path(journal["frozen_prompts"][0]["path"]), repair=False,
-                            timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                            timeout_seconds=_task_run_remaining_seconds(journal),
                             hydration_gate=hydration_gate)
                     except ManagedAgentPreDispatchError as exc:
                         _release_predispatch_budget(journal, attempt, exc.receipt)
@@ -6734,7 +7062,7 @@ def managed_task_run(controller: Path, task_id: str) -> dict[str, Any]:
                         repaired = _launch_task_worker(
                             controller, task_id, state_record, attempt_dir,
                             Path(journal["frozen_prompts"][1]["path"]), repair=True,
-                            timeout_seconds=lifecycle_runtime.lifecycle_remaining_seconds(journal),
+                            timeout_seconds=_task_run_remaining_seconds(journal),
                             context_bytes=initial_error.encode("utf-8", errors="replace"),
                             hydration_gate=repair_gate)
                     except ManagedAgentPreDispatchError as exc:
@@ -7213,13 +7541,19 @@ def lease_release(controller: Path, task_id: str, lease_token: Optional[str]) ->
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("operation", choices=(
-        "start", "run", "recover-predispatch", "status", "hydrate", "preflight", "finish", "contract", "handoff",
+        "start", "run", "recover-predispatch", "recover-wall-budget", "status", "hydrate", "preflight", "finish", "contract", "handoff",
         "checkpoint", "child-checkpoint", "evidence-run", "evidence-status", "evidence-await",
         "recovery-plan", "recovery-authorize", "recovery-apply", "runtime-bootstrap",
         "sync", "doctor", "lease-status", "lease-heartbeat", "lease-handoff",
         "lease-successor", "lease-revoke", "lease-release"))
     value.add_argument("--task")
-    value.add_argument("--run-id", help="exact active task-run identity for pre-dispatch recovery")
+    value.add_argument("--run-id", help="exact active task-run identity for receipt-bound recovery")
+    value.add_argument("--attempt", type=int,
+                       help="exact task-run worker attempt for wall-budget recovery")
+    value.add_argument("--predispatch-receipt-sha256",
+                       help="exact integrated controller pre-dispatch receipt digest")
+    value.add_argument("--original-deadline-unix-ns", type=int,
+                       help="immutable original cumulative task-run deadline")
     value.add_argument("--child",
                        help="admitted ordered umbrella child task id for child-checkpoint")
     value.add_argument("--path", action="append", default=[], help="required policy-admitted product root")
@@ -7259,8 +7593,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise TaskWorkspaceError(f"task {args.operation} requires --task")
             if args.operation != "start" and args.path:
                 raise TaskWorkspaceError("--path is supported only for task start")
-            if bool(args.run_id) != (args.operation == "recover-predispatch"):
-                raise TaskWorkspaceError("--run-id is required only for task recover-predispatch")
+            recovery_operations = {"recover-predispatch", "recover-wall-budget"}
+            if bool(args.run_id) != (args.operation in recovery_operations):
+                raise TaskWorkspaceError("--run-id is required only for receipt-bound task recovery")
+            wall_options = (args.attempt, args.predispatch_receipt_sha256,
+                            args.original_deadline_unix_ns)
+            if args.operation == "recover-wall-budget":
+                if any(option is None for option in wall_options):
+                    raise TaskWorkspaceError(
+                        "recover-wall-budget requires --attempt, --predispatch-receipt-sha256, "
+                        "and --original-deadline-unix-ns")
+            elif any(option is not None for option in wall_options):
+                raise TaskWorkspaceError(
+                    "wall-budget identity options are supported only for task recover-wall-budget")
             if args.operation != "child-checkpoint" and args.child:
                 raise TaskWorkspaceError("--child is supported only for task child-checkpoint")
             if args.dry_run or args.apply or args.package_version or args.package_runtime_sha256:
@@ -7334,6 +7679,10 @@ def main(argv: list[str] | None = None) -> int:
                     result = managed_task_run(controller, args.task)
                 elif args.operation == "recover-predispatch":
                     result = recover_task_predispatch(controller, args.task, args.run_id)
+                elif args.operation == "recover-wall-budget":
+                    result = recover_task_wall_budget(
+                        controller, args.task, args.run_id, args.attempt,
+                        args.predispatch_receipt_sha256, args.original_deadline_unix_ns)
                 elif args.operation == "contract":
                     result = preimplementation_contract(controller, args.task)
                 elif args.operation == "handoff":

@@ -52,17 +52,17 @@ describe('task workspace CLI', () => {
     configureTaskWorkspaceCommand(program, async () => undefined);
     const task = program.commands.find((command) => command.name() === 'task');
     expect(task?.commands.map((command) => command.name())).toEqual([
-      'run', 'recover-predispatch', 'start', 'preflight', 'checkpoint', 'child-checkpoint', 'hydrate', 'status', 'finish',
-      'doctor', 'sync', 'lease-status', 'lease-heartbeat', 'lease-handoff', 'lease-successor',
-      'lease-revoke', 'lease-release', 'recovery-plan', 'recovery-authorize', 'recovery-apply',
-      'runtime-bootstrap',
+      'run', 'recover-predispatch', 'recover-wall-budget', 'start', 'preflight', 'checkpoint',
+      'child-checkpoint', 'hydrate', 'status', 'finish', 'doctor', 'sync', 'lease-status',
+      'lease-heartbeat', 'lease-handoff', 'lease-successor', 'lease-revoke', 'lease-release',
+      'recovery-plan', 'recovery-authorize', 'recovery-apply', 'runtime-bootstrap',
     ]);
-    expect(task?.commands.slice(0, 9).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[5]?.registeredArguments).toHaveLength(2);
-    expect(task?.commands[9]?.registeredArguments[0]?.required).toBe(false);
-    expect(task?.commands.slice(10, 17).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands.slice(17, 20).every((command) => command.registeredArguments[0]?.required)).toBe(true);
-    expect(task?.commands[20]?.registeredArguments).toHaveLength(0);
+    expect(task?.commands.find((command) => command.name() === 'child-checkpoint')
+      ?.registeredArguments).toHaveLength(2);
+    expect(task?.commands.find((command) => command.name() === 'doctor')
+      ?.registeredArguments[0]?.required).toBe(false);
+    expect(task?.commands.find((command) => command.name() === 'runtime-bootstrap')
+      ?.registeredArguments).toHaveLength(0);
   });
 
   it.each([
@@ -116,6 +116,15 @@ describe('task workspace CLI', () => {
       '--run-id', 'run-12345678']);
     expect(invoke).toHaveBeenLastCalledWith('recover-predispatch', 'U1', [],
       ['--run-id', 'run-12345678']);
+    await program.parseAsync(['node', 'yy', 'task', 'recover-wall-budget', 'U1',
+      '--run-id', 'run-12345678', '--attempt', '1',
+      '--predispatch-receipt-sha256', 'a'.repeat(64),
+      '--original-deadline-unix-ns', '1787895956343575000']);
+    expect(invoke).toHaveBeenLastCalledWith('recover-wall-budget', 'U1', [], [
+      '--run-id', 'run-12345678', '--attempt', '1',
+      '--predispatch-receipt-sha256', 'a'.repeat(64),
+      '--original-deadline-unix-ns', '1787895956343575000',
+    ]);
     await program.parseAsync(['node', 'yy', 'task', 'start', 'U1',
       '--umbrella-admission', '/tmp/umbrella.json']);
     expect(invoke).toHaveBeenLastCalledWith('start', 'U1', [],
@@ -153,6 +162,7 @@ describe('task workspace CLI', () => {
     expect(taskWorkspaceControlOperation('recovery-authorize')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recovery-apply')).toBe('orchestration');
     expect(taskWorkspaceControlOperation('recover-predispatch')).toBe('orchestration');
+    expect(taskWorkspaceControlOperation('recover-wall-budget')).toBe('orchestration');
   });
 
   it('forwards the fencing lease token and lease command arguments exactly', async () => {

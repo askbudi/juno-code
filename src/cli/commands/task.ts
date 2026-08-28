@@ -11,6 +11,7 @@ export type TaskWorkspaceOperation =
   | 'start'
   | 'run'
   | 'recover-predispatch'
+  | 'recover-wall-budget'
   | 'status'
   | 'hydrate'
   | 'preflight'
@@ -191,6 +192,25 @@ export function configureTaskWorkspaceCommand(
     .action((taskId: string, options: { runId: string }) => invoke(
       'recover-predispatch', taskId, [], ['--run-id', options.runId],
     ));
+  task
+    .command('recover-wall-budget')
+    .description('Recover once the wall interval proven by an integrated no-provider receipt')
+    .argument('<task-id>', 'Canonical YYLO Ledger task ID')
+    .requiredOption('--run-id <run-id>', 'Exact active task-run identity')
+    .requiredOption('--attempt <index>', 'Exact worker attempt index')
+    .requiredOption('--predispatch-receipt-sha256 <sha256>', 'Exact controller pre-dispatch receipt digest')
+    .requiredOption('--original-deadline-unix-ns <unix-ns>', 'Immutable original task-run deadline')
+    .action((taskId: string, options: {
+      runId: string;
+      attempt: string;
+      predispatchReceiptSha256: string;
+      originalDeadlineUnixNs: string;
+    }) => invoke('recover-wall-budget', taskId, [], [
+      '--run-id', options.runId,
+      '--attempt', options.attempt,
+      '--predispatch-receipt-sha256', options.predispatchReceiptSha256,
+      '--original-deadline-unix-ns', options.originalDeadlineUnixNs,
+    ]));
   task
     .command('start')
     .argument('<task-id>', 'Canonical YYLO Ledger task ID')

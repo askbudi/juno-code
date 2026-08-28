@@ -4902,10 +4902,272 @@ steps:
             self.assertEqual(recovered["outcome"], "recovered")
             self.assertEqual(task_runtime.recover_task_predispatch(
                 self.controller.resolve(), task_id, run_id)["outcome"], "already_recovered")
-            journal = json.loads((run_dir / "journal.json").read_text())
+            journal_path = run_dir / "journal.json"
+            journal = json.loads(journal_path.read_text())
             self.assertEqual(journal["attempts"]["implementation"], 0)
             self.assertEqual(journal["attempts"]["worker_launches"], 1)
             self.assertFalse(journal["workers"][0]["model_budget_consumed"])
+
+            # Match the two preserved runs' next exact failure: only the frozen
+            # cumulative wall deadline is exhausted after pre-dispatch recovery.
+            deadline = journal["deadline_unix_ns"]
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 1_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "cumulative wall budget exhausted"):
+                    task_runtime.managed_task_run(self.controller.resolve(), task_id)
+            journal = json.loads(journal_path.read_text())
+            receipt_sha = journal["workers"][0]["predispatch_receipt"]["sha256"]
+            historical_deadline = journal["deadline_unix_ns"]
+            historical_events = json.loads(json.dumps(journal["events"]))
+
+            # Every caller-provided identity is exact and refusal is mutation-free.
+            refusals = [
+                (2, receipt_sha, deadline, "unsafe wall-budget recovery identity"),
+                (1, "0" * 64, deadline, "receipt identity mismatch"),
+                (1, receipt_sha, deadline + 1, "original deadline identity drifted"),
+            ]
+            for attempt_index, digest, original_deadline, message in refusals:
+                before = journal_path.read_bytes()
+                with mock.patch.object(task_runtime.time, "time_ns",
+                                       return_value=deadline + 2_000_000_000):
+                    with self.assertRaisesRegex(task_runtime.TaskWorkspaceError, message):
+                        task_runtime.recover_task_wall_budget(
+                            self.controller.resolve(), task_id, run_id, attempt_index,
+                            digest, original_deadline)
+                self.assertEqual(journal_path.read_bytes(), before)
+                self.assertFalse((run_dir / "wall-budget-recoveries").exists())
+            before = journal_path.read_bytes()
+            missing_task_root = self.controller / task_runtime.TASK_RUN_ROOT / "WrongTask"
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                for wrong_task, wrong_run in ((task_id, "wrong-run-12345678"),
+                                               ("WrongTask", run_id)):
+                    with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                                "unavailable or malformed"):
+                        task_runtime.recover_task_wall_budget(
+                            self.controller.resolve(), wrong_task, wrong_run, 1,
+                            receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            self.assertFalse(missing_task_root.exists())
+
+            inconsistent = json.loads(journal_path.read_text())
+            inconsistent["attempts"]["implementation"] = 1
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, inconsistent)
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "restored unused model attempt"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            inconsistent["attempts"]["implementation"] = 0
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, inconsistent)
+
+            attempt_dir = run_dir / "workers/implementation-0001"
+            managed = attempt_dir / "managed-agent"
+            managed.mkdir(exist_ok=True)
+            for evidence_name in ("launch.json", "receipt.json"):
+                (managed / evidence_name).write_text("{}\n")
+                before = journal_path.read_bytes()
+                with mock.patch.object(task_runtime.time, "time_ns",
+                                       return_value=deadline + 2_000_000_000):
+                    with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                                "provider or managed-agent evidence"):
+                        task_runtime.recover_task_wall_budget(
+                            self.controller.resolve(), task_id, run_id, 1,
+                            receipt_sha, deadline)
+                self.assertEqual(journal_path.read_bytes(), before)
+                (managed / evidence_name).unlink()
+
+            # A malformed interrupted content-addressed publication cannot be
+            # overwritten, adopted, or turned into deadline authority.
+            interrupted = run_dir / "wall-budget-recoveries" / f"{'1' * 64}.json"
+            interrupted.parent.mkdir()
+            interrupted.write_text("{}\n")
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "location/identity drifted"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            shutil.rmtree(interrupted.parent)
+
+            worktree = Path(task_runtime.read_state(self.controller)["tasks"][task_id]["worktree"])
+            dirty = worktree / "src/wall-recovery-dirty.txt"
+            dirty.write_text("dirty\n")
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "zero commits and dirty bytes"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            dirty.unlink()
+            state = task_runtime.read_state(self.controller)
+            original_tip = state["tasks"][task_id]["tip_sha"]
+            state["tasks"][task_id]["tip_sha"] = "f" * 40
+            task_runtime.write_state(self.controller, state)
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "zero commits and dirty bytes"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            state["tasks"][task_id]["tip_sha"] = original_tip
+            task_runtime.write_state(self.controller, state)
+
+            # Runtime/template policy drift and ordinary timeout shapes cannot
+            # acquire this narrow authority.
+            workflow = self.controller / ".juno_task/workflows/yy-task-run.yaml"
+            workflow_original = workflow.read_bytes()
+            workflow.write_bytes(workflow_original + b"\n")
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "runtime/policy identity drifted"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            workflow.write_bytes(workflow_original)
+            policy = self.controller / ".juno_task/config/task-workspace.json"
+            policy_original = policy.read_bytes()
+            policy.write_bytes(policy_original + b"\n")
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "runtime/policy identity drifted"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            policy.write_bytes(policy_original)
+
+            ordinary = json.loads(journal_path.read_text())
+            ordinary["events"][-2]["detail"]["classification"] = "ordinary_timeout"
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, ordinary)
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "failure identity is not exact"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            ordinary["events"] = historical_events
+            # Preserve the journal's post-timeout revision/timestamp while
+            # restoring only fixture corruption, not production evidence.
+            current = json.loads(journal_path.read_text())
+            ordinary["journal_revision"] = current["journal_revision"]
+            ordinary["updated_at_unix_ns"] = current["updated_at_unix_ns"]
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, ordinary)
+
+            chained = json.loads(journal_path.read_text())
+            chained["events"].append({
+                "schema_version": "juno_lifecycle_phase_checkpoint.v1",
+                "sequence": len(chained["events"]) + 1,
+                "phase": "wall-budget-recovery", "boundary": "RECOVERED",
+                "recorded_at_unix_ns": deadline + 2_000_000_000, "detail": {}})
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, chained)
+            before = journal_path.read_bytes()
+            with mock.patch.object(task_runtime.time, "time_ns",
+                                   return_value=deadline + 2_000_000_000):
+                with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                            "chained or malformed disposition"):
+                    task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(journal_path.read_bytes(), before)
+            chained["events"] = historical_events
+            current = json.loads(journal_path.read_text())
+            chained["journal_revision"] = current["journal_revision"]
+            chained["updated_at_unix_ns"] = current["updated_at_unix_ns"]
+            task_runtime.lifecycle_runtime.atomic_json(journal_path, chained)
+
+            recovery_now = deadline + 3_000_000_000
+            if task_id == "Vhc90c":
+                # Crash after immutable receipt publication but before event/
+                # pointer publication; replay adopts that exact content address.
+                real_checkpoint = task_runtime.lifecycle_runtime.lifecycle_checkpoint
+                with mock.patch.object(task_runtime.time, "time_ns", return_value=recovery_now), \
+                        mock.patch.object(task_runtime.lifecycle_runtime, "lifecycle_checkpoint",
+                                          side_effect=RuntimeError("fixture crash")):
+                    with self.assertRaisesRegex(RuntimeError, "fixture crash"):
+                        task_runtime.recover_task_wall_budget(
+                            self.controller.resolve(), task_id, run_id, 1,
+                            receipt_sha, deadline)
+                self.assertNotIn("wall_budget_recovery", json.loads(journal_path.read_text()))
+                self.assertEqual(len(list((run_dir / "wall-budget-recoveries").glob("*.json"))), 1)
+                with mock.patch.object(task_runtime.lifecycle_runtime, "lifecycle_checkpoint",
+                                       side_effect=real_checkpoint):
+                    wall = task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            else:
+                with mock.patch.object(task_runtime.time, "time_ns", return_value=recovery_now):
+                    wall = task_runtime.recover_task_wall_budget(
+                        self.controller.resolve(), task_id, run_id, 1,
+                        receipt_sha, deadline)
+            self.assertEqual(wall["outcome"], "recovered")
+            self.assertGreater(wall["recovered_deadline_unix_ns"], recovery_now)
+            replay = task_runtime.recover_task_wall_budget(
+                self.controller.resolve(), task_id, run_id, 1, receipt_sha, deadline)
+            self.assertEqual(replay["outcome"], "already_recovered")
+            self.assertEqual(replay["receipt"], wall["receipt"])
+            recovered_journal = json.loads(journal_path.read_text())
+            self.assertEqual(recovered_journal["deadline_unix_ns"], historical_deadline)
+            self.assertEqual(recovered_journal["events"][:len(historical_events)], historical_events)
+            self.assertEqual(len([event for event in recovered_journal["events"]
+                                  if event["phase"] == "wall-budget-recovery"]), 1)
+            receipt_value = json.loads(Path(wall["receipt"]["path"]).read_text())
+            self.assertLessEqual(receipt_value["remaining_budget_ns"],
+                                 receipt_value["frozen_total_wall_seconds"] * 1_000_000_000)
+            self.assertGreater(task_runtime._task_run_remaining_seconds(recovered_journal), 0)
+
+            # The recovered authority reaches the next typed implementation
+            # dispatch without changing ownership or bypassing the canonical runner.
+            class LaunchObserved(RuntimeError):
+                pass
+            launches: list[dict[str, object]] = []
+            def observe_launch(*_args: object, **kwargs: object) -> dict:
+                launches.append(kwargs)
+                raise LaunchObserved("next typed launch observed")
+            fencing_before = task_runtime.read_state(self.controller)["tasks"][task_id].get("fencing")
+            with mock.patch.object(task_runtime, "_launch_task_worker", side_effect=observe_launch):
+                with self.assertRaisesRegex(LaunchObserved, "next typed launch observed"):
+                    task_runtime.managed_task_run(self.controller.resolve(), task_id)
+            self.assertEqual(len(launches), 1)
+            self.assertGreater(int(launches[0]["timeout_seconds"]), 0)
+            self.assertEqual(task_runtime.read_state(self.controller)["tasks"][task_id].get("fencing"),
+                             fencing_before)
+
+    def test_task_wall_budget_recovery_refuses_malformed_and_chained_dispositions(self) -> None:
+        journal = {"task_id": "X", "run_id": "run-12345678", "deadline_unix_ns": 10,
+                   "events": [], "wall_budget_recovery": {"path": "/missing", "sha256": "0" * 64}}
+        with self.assertRaisesRegex(task_runtime.TaskWorkspaceError,
+                                    "unavailable or malformed"):
+            task_runtime._task_run_remaining_seconds(journal)
+        journal.pop("wall_budget_recovery")
+        with mock.patch.object(task_runtime.lifecycle_runtime, "lifecycle_remaining_seconds",
+                               side_effect=task_runtime.lifecycle_runtime.LifecycleContractError(
+                                   "lifecycle cumulative wall budget exhausted")):
+            with self.assertRaisesRegex(task_runtime.lifecycle_runtime.LifecycleContractError,
+                                        "cumulative wall budget exhausted"):
+                task_runtime._task_run_remaining_seconds(journal)
 
     def test_task_run_incomplete_terminal_blocks_and_replays_idempotently(self) -> None:
         self.install_task_run_assets()
