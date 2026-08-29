@@ -1523,6 +1523,7 @@ PHASE1_SUITE_TESTS = (
     "ReleaseTrainTests.test_bootstrap_repair_refuses_missing_causal_dependency",
     "ReleaseTrainTests.test_epoch_composes_history_validates_once_and_cas_once",
     "ReleaseTrainTests.test_three_member_terminal_projection_resumes_after_interruption_and_is_idempotent",
+    "ReleaseTrainTests.test_four_member_terminal_projection_preserves_exact_fifo_and_replays_idempotently",
     "ReleaseTrainTests.test_terminal_projection_tamper_and_target_drift_refuse_without_ledger_mutation",
     "ReleaseTrainTests.test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate",
     "ReleaseTrainTests.test_failed_aggregate_has_fenced_receipt_retry_without_duplicate_merge_or_cas",

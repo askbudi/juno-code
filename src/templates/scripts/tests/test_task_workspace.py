@@ -600,6 +600,10 @@ elif command == "update":
     if status is not None and status != task.get("status"):
         task["status"] = status
         changed.append("/status")
+    commit = option("--commit")
+    if commit is not None and commit != task.get("commit_hash"):
+        task["commit_hash"] = commit
+        changed.append("/commit_hash")
     fields = task.setdefault("fields", {})
     for index, token in enumerate(argv):
         if token == "--field":
@@ -610,8 +614,11 @@ elif command == "update":
                 changed.append("/fields/" + key)
     response = option("--response-file")
     if response is not None:
-        task["agent_response"] = pathlib.Path(response).read_text()
-        changed.append("/agent_response")
+        response_text = pathlib.Path(response).read_text()
+        if response_text != task.get("agent_response"):
+            task["agent_response"] = response_text
+            changed.append("/agent_response")
+    task["mutation_count"] = task.get("mutation_count", 0) + 1
     task["last_modified"] = "2026-01-01T00:00:00Z"
     event = append_event(task, "update", changed)
     board.write_text(json.dumps(value) + NL)
@@ -625,6 +632,9 @@ elif command == "update":
                                     "changed_paths": changed,
                                     "ledger_event_id": event["event_id"]}) + NL)
 elif command == "mark":
+    if "--expected-revision" in argv:
+        print("yylo-ledger: error: unrecognized arguments: --expected-revision", file=sys.stderr)
+        raise SystemExit(2)
     task = require(option("--id"))
     task["status"] = argv[argv.index("mark") + 1]
     commit = option("--commit")

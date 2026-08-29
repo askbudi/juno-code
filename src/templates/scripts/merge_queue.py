@@ -2391,8 +2391,11 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
             handle.write(response)
         wrapper = controller / ".juno_task/scripts/kanban.sh"
         result = subprocess.run([
-            str(wrapper), "mark", "done", "--id", task_id,
-            "--response-file", response_name, "--commit", candidate,
+            str(wrapper), "-f", "json", "update", task_id,
+            "--status", "done", "--response-file", response_name,
+            "--commit", candidate,
+            "--field", f"lifecycle_projection={json.dumps(task_runtime.KANBAN_LIFECYCLE_PROJECTION)}",
+            "--field", f"lifecycle_state={json.dumps('MERGED')}",
             *(["--expected-revision", expected_revision] if expected_revision else []),
             "--receipt-file", str(receipt_path),
         ], cwd=controller, stdin=subprocess.DEVNULL, text=True, capture_output=True)
@@ -2403,12 +2406,13 @@ def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str,
     readback = read_kanban_task(controller, task_id)
     if readback.get("status") != "done" or readback.get("commit_hash") != candidate:
         raise MergeQueueError("Kanban finalization readback mismatched")
-    lifecycle = task_runtime.project_kanban_lifecycle(
-        controller, task_id, "MERGED", allow_done=True,
-        phase="merge-finalized", record={"tip_sha": candidate})
+    fields = readback.get("fields") if isinstance(readback.get("fields"), dict) else {}
+    if (fields.get("lifecycle_state") != "MERGED"
+            or fields.get("lifecycle_projection") != task_runtime.KANBAN_LIFECYCLE_PROJECTION):
+        raise MergeQueueError("Kanban finalization lifecycle readback mismatched")
     return {"outcome": "completed", "commit_hash": candidate,
             "receipt": evidence_reference(receipt_path),
-            "lifecycle_projection": lifecycle.get("outcome")}
+            "lifecycle_projection": "completed"}
 
 
 def complete_post_integration(controller: Path, repository: Path,

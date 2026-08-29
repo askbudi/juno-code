@@ -2655,10 +2655,36 @@ steps:
         self.assertEqual(persisted["agent_response"], "reviewed implementation evidence")
         self.assertEqual(persisted["commit_hash"], self.base)
         self.assertEqual(persisted["status"], "done")
+        receipt = json.loads(Path(first["receipt"]["receipt_path"]).read_text())
+        self.assertEqual(receipt["operation"], "update")
+        self.assertIn("/commit_hash", receipt["changed_paths"])
+        self.assertIn("/fields/lifecycle_state", receipt["changed_paths"])
         # Verified merge finalization owns the terminal lifecycle identity.
         self.assertEqual(persisted["fields"]["lifecycle_state"], "MERGED")
         self.assertEqual(persisted["fields"]["lifecycle_projection"],
                          merge_runtime.task_runtime.KANBAN_LIFECYCLE_PROJECTION)
+
+    def test_kanban_finalization_stale_revision_refuses_without_terminal_mutation(self) -> None:
+        board = self.controller / ".juno_task/runtime/fake-board-stale.json"
+        board.parent.mkdir(parents=True, exist_ok=True)
+        board.write_text(json.dumps({"X": {
+            "id": "X", "status": "in_progress", "commit_hash": None,
+            "agent_response": "reviewed evidence", "fields": {},
+        }}) + "\n")
+        test_task_workspace.install_fake_kanban_wrapper(self.controller, board)
+        revision = merge_runtime.task_runtime.kanban_board_revision(self.controller, "X")
+        board.with_name(board.name + ".mutate-once").write_text("armed\n")
+        attempt = {"task_id": "X", "candidate_sha": self.base,
+                   "expected_kanban_revision": revision}
+        with self.assertRaisesRegex(merge_runtime.MergeQueueError, "stale task revision"):
+            merge_runtime.finalize_kanban_task(self.controller, attempt)
+        persisted = json.loads(board.read_text())["X"]
+        self.assertEqual("in_progress", persisted["status"])
+        self.assertIsNone(persisted["commit_hash"])
+        self.assertEqual({"owner_note": "manual"}, persisted["fields"])
+        receipt = (self.controller / ".juno_task/runtime/merge-queue/finalization"
+                   / "X" / f"{self.base}.json")
+        self.assertFalse(receipt.exists())
 
     def test_persist_attempt_projects_queue_states_onto_the_board(self) -> None:
         tip = self.commit_feature("X", "src/feature.txt", "feature\n")

@@ -97,6 +97,9 @@ if args[0] in {'mark','update'}:
         task['agent_response']=pathlib.Path(args[args.index('--response-file')+1]).read_text()
     else:
         if '--status' in args: task['status']=args[args.index('--status')+1]
+        if '--commit' in args: task['commit_hash']=args[args.index('--commit')+1]
+        if '--response-file' in args:
+            task['agent_response']=pathlib.Path(args[args.index('--response-file')+1]).read_text()
         fields=task.setdefault('fields',{})
         for index,value in enumerate(args):
             if value=='--field':
@@ -313,6 +316,31 @@ raise SystemExit(2)
         self.write_state(); self.write_board()
         self.write_declaration(["OLD", "REQ", "DEP"], [
             {"before": "OLD", "after": "REQ"}, {"before": "REQ", "after": "DEP"}])
+        return tips
+
+    def prepare_four_member_epoch(self) -> list[str]:
+        """Extend the stale projection fixture through a fourth exact FIFO member."""
+        tips = self.prepare_three_member_epoch()
+        task_id = "FOUR"
+        task_path = self.root / ".juno_task/tasks/fo/FOUR.md"
+        task_path.parent.mkdir(parents=True, exist_ok=True)
+        task_path.write_text("---\nid: FOUR\nstatus: in_progress\n---\n")
+        tree = run(self.root, "git", "rev-parse", f"{self.base}^{{tree}}")
+        tip = subprocess.check_output(["git", "commit-tree", tree, "-p", self.base], cwd=self.root,
+                                      text=True, input="FOUR candidate\n").strip()
+        tips.append(tip)
+        self.state["tasks"][task_id] = {"task_id": task_id, "state": "QUEUED",
+            "target_ref": "refs/heads/product", "changed_paths": ["src/four"],
+            "tip_sha": tip, "enqueue_sequence": 4,
+            "review_ready_closure": {"schema_version": "juno_task_review_ready_closure.v1",
+                "closure_sha256": "c" * 64, "tip_sha": tip, "tree_sha": tree},
+            "validation": [{"status": "passed", "receipt_id": task_id}]}
+        self.board[task_id] = {"id": task_id, "status": "in_progress", "blocked_by": [],
+                               "last_modified": "1"}
+        self.write_state(); self.write_board()
+        self.write_declaration(["OLD", "REQ", "DEP", "FOUR"], [
+            {"before": "OLD", "after": "REQ"}, {"before": "REQ", "after": "DEP"},
+            {"before": "DEP", "after": "FOUR"}])
         return tips
 
     def commit_files_tree(self, parent: str, paths: list[str], content: str, message: str) -> str:
@@ -1062,6 +1090,25 @@ raise SystemExit(2)
             self.assertEqual(tip, board[task_id]["commit_hash"])
             self.assertEqual("MERGED", board[task_id]["fields"]["lifecycle_state"])
         repeated = runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
+        self.assertIsNotNone(repeated["completed_receipt"])
+
+    def test_four_member_terminal_projection_preserves_exact_fifo_and_replays_idempotently(self) -> None:
+        tips = self.prepare_four_member_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas):
+            complete = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        self.assertEqual(["OLD", "REQ", "DEP", "FOUR"], complete["seal"]["order"])
+        board = json.loads(self.board_path.read_text())
+        for task_id, tip in zip(("OLD", "REQ", "DEP", "FOUR"), tips):
+            self.assertEqual(("done", tip, "MERGED"),
+                (board[task_id]["status"], board[task_id]["commit_hash"],
+                 board[task_id]["fields"]["lifecycle_state"]))
+        repeated = runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
+        self.assertEqual(complete["release_ready"]["required_members"],
+                         ["OLD", "REQ", "DEP", "FOUR"])
         self.assertIsNotNone(repeated["completed_receipt"])
 
     def test_terminal_projection_tamper_and_target_drift_refuse_without_ledger_mutation(self) -> None:
