@@ -2625,15 +2625,21 @@ steps:
         self.assertEqual((recovered["task_id"], recovered["outcome"]), ("X", "MERGED"))
         board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
         board = json.loads(board_path.read_text())
-        self.assertEqual((board["X"]["status"], board["X"]["mutation_count"]), ("done", 1))
+        self.assertEqual(board["X"]["status"], "done")
+        self.assertGreaterEqual(board["X"]["update_mutation_count"], 4)
+        self.assertEqual(board["X"]["terminal_done_mutation_count"], 1)
+        x_update_mutations = board["X"]["update_mutation_count"]
 
         successor = self.commit_feature("Y", "docs/policyless-successor.md", "advance\n")
         advanced = self.queue_payload("next")
         self.assertEqual((advanced["task_id"], advanced["outcome"]), ("Y", "MERGED"))
         self.assertEqual(git(self.repository, "rev-parse", "refs/heads/product"), successor)
         board = json.loads(board_path.read_text())
-        self.assertEqual((board["Y"]["status"], board["Y"]["mutation_count"]), ("done", 1))
-        self.assertEqual(board["X"]["mutation_count"], 1)
+        self.assertEqual(board["Y"]["status"], "done")
+        self.assertGreaterEqual(board["Y"]["update_mutation_count"], 1)
+        self.assertEqual(board["Y"]["terminal_done_mutation_count"], 1)
+        self.assertEqual(board["X"]["update_mutation_count"], x_update_mutations)
+        self.assertEqual(board["X"]["terminal_done_mutation_count"], 1)
 
     def test_kanban_finalization_is_readback_idempotent_and_preserves_response(self) -> None:
         board = self.controller / ".juno_task/runtime/fake-board.json"
