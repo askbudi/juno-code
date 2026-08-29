@@ -236,7 +236,7 @@ Safety invariants:
 1. `task start` freezes the protected target SHA, creates a dedicated branch/worktree, and completes configured dependency hydration before reporting `WORKING`.
 2. Product edits and focused tests occur only in that task worktree. Controller metadata and integration-owner product bytes are separate authorities.
 3. `preflight` is read-only and catches closure defects before expensive gates. `finish` requires a clean committed tip and queues it; it does not merge.
-4. The merge queue owns risk-based review and moved-target composition. Low risk has no semantic reviewer, normal risk at most one, and high risk two sequential reviewers on one frozen candidate.
+4. The merge queue owns risk-based review and moved-target composition. Low risk has no semantic reviewer, normal risk at most one, and high risk two sequential reviewers on one frozen candidate. After one repair candidate and one delta-review group, unresolved findings stop as `REVIEW_FINDINGS_EXHAUSTED` instead of starting an unbounded review loop.
 5. Target mutation is serialized under one fencing owner and expected-old-SHA CAS. Lease age alone never transfers authority.
 6. Conflicts and unrelated dirty bytes are preserved. Use the exact recovery packet and `yy merge resolve TASK_ID`; do not reset, stash, force, rebase, or squash to bypass it.
 
