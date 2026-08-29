@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildJunoExecutionEnvelope } from '../execution-envelope.js';
+import { buildJunoExecutionEnvelope, extractJunoExecutionResponse } from '../execution-envelope.js';
 import { ExecutionStatus, type ExecutionResult } from '../engine.js';
 
 function result(payload: Record<string, unknown>, status = ExecutionStatus.COMPLETED): ExecutionResult {
@@ -27,5 +27,11 @@ describe('public Juno execution envelope', () => {
     expect(buildJunoExecutionEnvelope(result({ session_id: 'S', provider: 'zai', model: 'glm-5.2' }), '2.1.3').cost)
       .toEqual({ completeness: 'unavailable', usd: null });
     expect(buildJunoExecutionEnvelope(result({}, ExecutionStatus.FAILED), '2.1.3').status).toBe('failure');
+  });
+
+  it('keeps assistant prose outside the public metadata envelope', () => {
+    const execution = result({ session_id: 'S', provider: 'zai', model: 'glm-5.2', result: 'answer' });
+    expect(extractJunoExecutionResponse(execution)).toBe('answer');
+    expect(buildJunoExecutionEnvelope(execution, '2.1.3')).not.toHaveProperty('response');
   });
 });

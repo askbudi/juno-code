@@ -48,7 +48,7 @@ import {
 import type { SubagentType } from '../../types/index.js';
 import type { ExecutionRequest, ExecutionResult } from '../../core/engine.js';
 import { ExecutionStatus } from '../../core/engine.js';
-import { buildJunoExecutionEnvelope } from '../../core/execution-envelope.js';
+import { buildJunoExecutionEnvelope, extractJunoExecutionResponse } from '../../core/execution-envelope.js';
 import type { ProgressEvent } from '../../types/execution.js';
 import {
   CONTINUE_SETTINGS_VERSION,
@@ -2003,6 +2003,12 @@ export async function mainCommandHandler(
       workingDirectory: config.workingDirectory,
       maxIterations: options.maxIterations ?? config.defaultMaxIterations,
       model: resolvedModel,
+      ...(options.executionEnvelope === true ? { sessionMetadata: {
+        executionControllerDirectory: resolveController(config.workingDirectory, 'diagnostic', {
+          ignoreEnvironmentAssertions: true,
+          trustedResolver: true,
+        }).path,
+      } } : {}),
       ...(options.agents !== undefined ? { agents: options.agents } : {}),
       ...(options.tools !== undefined ? { tools: options.tools } : {}),
       ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
@@ -2041,6 +2047,10 @@ export async function mainCommandHandler(
       observeActiveInvocationProviderResult(result);
       if (options.executionEnvelope === true) {
         process.stdout.write(`${JSON.stringify(buildJunoExecutionEnvelope(result, resolveJunoCodeVersion(_command)))}\n`);
+        const evidenceFd = Number(process.env['YYLO_EXECUTION_EVIDENCE_FD']);
+        if (Number.isInteger(evidenceFd) && evidenceFd >= 3) {
+          fs.writeSync(evidenceFd, extractJunoExecutionResponse(result));
+        }
       }
 
       await persistSessionHistory(result, effectiveVerbose);

@@ -2696,6 +2696,11 @@ Model shorthands:
             "session_id": self.session_id,
             "sub_agent_response": self._sanitize_sub_agent_response(event),
         }
+        if "/" in self.model_name:
+            provider, model = self.model_name.split("/", 1)
+            if provider and model:
+                result_event["provider"] = provider
+                result_event["model"] = model
 
         event_type = event.get("type") if isinstance(event, dict) else None
         if isinstance(event_type, str) and event_type.strip():
@@ -2720,6 +2725,11 @@ Model shorthands:
             "error": message,
             "session_id": self.session_id,
         }
+        if "/" in self.model_name:
+            provider, model = self.model_name.split("/", 1)
+            if provider and model:
+                result_event["provider"] = provider
+                result_event["model"] = model
 
         if isinstance(event, dict):
             result_event["sub_agent_response"] = self._sanitize_sub_agent_response(event)

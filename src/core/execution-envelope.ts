@@ -22,6 +22,22 @@ export const junoExecutionEnvelopeSchema = z.object({
 
 export type JunoExecutionEnvelope = z.infer<typeof junoExecutionEnvelopeSchema>;
 
+/** Extract the final assistant result for a caller-owned evidence channel. */
+export function extractJunoExecutionResponse(result: ExecutionResult): string {
+  const content = result.iterations.at(-1)?.toolResult?.content;
+  if (typeof content !== 'string') return '';
+  try {
+    const payload = JSON.parse(content) as Record<string, unknown>;
+    if (payload['type'] === 'result' && Object.prototype.hasOwnProperty.call(payload, 'result')) {
+      const value = payload['result'];
+      if (typeof value === 'string') return value;
+      if (value === null || value === undefined) return '';
+      return JSON.stringify(value);
+    }
+  } catch { /* ordinary unstructured result */ }
+  return content;
+}
+
 /** Build the sole public machine execution contract from backend observations, never assistant prose. */
 export function buildJunoExecutionEnvelope(result: ExecutionResult, junoVersion: string): JunoExecutionEnvelope {
   const normalized = normalizeProviderObservations(result);

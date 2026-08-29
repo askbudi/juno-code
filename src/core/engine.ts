@@ -115,6 +115,17 @@ export interface ExecutionRequest {
   readonly liveInteractiveSession?: boolean;
 }
 
+function resolveExecutionController(request: ExecutionRequest) {
+  const delegated = request.sessionMetadata?.['executionControllerDirectory'];
+  if (typeof delegated === 'string' && delegated.trim() !== '') {
+    return resolveController(delegated, 'orchestration', {
+      ignoreEnvironmentAssertions: true,
+      trustedResolver: true,
+    });
+  }
+  return resolveController(request.workingDirectory, 'orchestration');
+}
+
 /**
  * Execution result interface for completed executions
  */
@@ -734,7 +745,9 @@ export class ExecutionEngine extends EventEmitter {
     // A managed parent may cd from its dispatch root into a registered task
     // worktree. In that case only, derive authority from persisted identity;
     // same-boundary explicit assertion mismatches remain fail-closed.
-    const controller = changedManagedWorktree
+    const controller = typeof request.sessionMetadata?.['executionControllerDirectory'] === 'string'
+      ? resolveExecutionController(request)
+      : changedManagedWorktree
       ? resolveController(request.workingDirectory, 'orchestration', {
         ignoreEnvironmentAssertions: true, trustedResolver: true,
       })
@@ -930,7 +943,7 @@ export class ExecutionEngine extends EventEmitter {
 
     // Resolve once at the orchestration boundary. Explicit or registered
     // controller settings are authoritative and invalid settings fail closed.
-    resolveController(context.request.workingDirectory, 'orchestration');
+    resolveExecutionController(context.request);
 
     // Initialize backend for this execution request
     await this.initializeBackend(context.request);
@@ -1151,7 +1164,7 @@ export class ExecutionEngine extends EventEmitter {
         resolvePromptCommandSubstitutions(input, {
           workingDirectory: context.request.workingDirectory,
           environment: buildChildProcessEnvironment(process.env, {
-            JUNO_TASK_ROOT: resolveController(context.request.workingDirectory, 'orchestration').path,
+            JUNO_TASK_ROOT: resolveExecutionController(context.request).path,
           }),
         });
 
@@ -1983,6 +1996,7 @@ export function createExecutionRequest(options: {
   thinking?: string;
   live?: boolean;
   liveInteractiveSession?: boolean;
+  sessionMetadata?: Record<string, unknown>;
 }): ExecutionRequest {
   const result: ExecutionRequest = {
     requestId: options.requestId || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1995,6 +2009,10 @@ export function createExecutionRequest(options: {
 
   if (options.model !== undefined) {
     (result as any).model = options.model;
+  }
+
+  if (options.sessionMetadata !== undefined) {
+    (result as any).sessionMetadata = options.sessionMetadata;
   }
 
   if (options.agents !== undefined) {
