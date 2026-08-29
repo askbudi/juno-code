@@ -85,7 +85,8 @@ def revision(task):
 def receipt():
     if '--receipt-file' in args:
         path=pathlib.Path(args[args.index('--receipt-file')+1]); path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_text(json.dumps({'fixture':True,'revision':revision(board[task_id])})+'\\n')
+        path.write_text(json.dumps({'fixture':True,'task_id':task_id,'operation':'update',
+            'after_sha256':revision(board[task_id])})+'\\n')
 if args[0]=='get' and args[1] in board:
     task=dict(board[args[1]])
     task['_related_tasks_details']=[board[item] for item in task.get('related_tasks',[]) if item in board]
@@ -1165,13 +1166,73 @@ raise SystemExit(2)
         self.assertTrue(all(row["status"] == "pending"
                             for row in json.loads(predecessor_journal.read_text())["members"]))
 
+    def test_successor_replay_chains_across_two_more_target_advances_without_reapplying(self) -> None:
+        predecessor, first_target, tips = self.prepare_untouched_stale_finalization()
+        import merge_queue
+        actual_finalize = merge_queue.finalize_kanban_task
+        calls: list[str] = []
+
+        def stop_after_first(controller: Path, attempt: dict) -> dict:
+            calls.append(attempt["task_id"])
+            if len(calls) == 2:
+                raise runtime.ReleaseTrainError("first descendant interruption")
+            return actual_finalize(controller, attempt)
+
+        with mock.patch("merge_queue.finalize_kanban_task", side_effect=stop_after_first):
+            with self.assertRaisesRegex(runtime.ReleaseTrainError, "first descendant interruption"):
+                runtime.replay_epoch_finalization_successor(
+                    self.root, "rc-1", predecessor, first_target)
+        self.assertEqual(["OLD", "REQ"], calls)
+        first_journal = next((self.root / ".juno_task/runtime/release-epoch-finalization/rc-1/successors").glob("*/journal.json"))
+        first_partial = json.loads(first_journal.read_text())
+        old_receipt = first_partial["members"][0]["receipt"]
+
+        run(self.root, "git", "commit", "--allow-empty", "-m", "second descendant target")
+        second_target = run(self.root, "git", "rev-parse", "HEAD")
+        calls.clear()
+
+        def stop_after_second(controller: Path, attempt: dict) -> dict:
+            calls.append(attempt["task_id"])
+            if len(calls) == 2:
+                raise runtime.ReleaseTrainError("second descendant interruption")
+            return actual_finalize(controller, attempt)
+
+        with mock.patch("merge_queue.finalize_kanban_task", side_effect=stop_after_second):
+            with self.assertRaisesRegex(runtime.ReleaseTrainError, "second descendant interruption"):
+                runtime.replay_epoch_finalization_successor(
+                    self.root, "rc-1", first_target, second_target)
+        self.assertEqual(["REQ", "DEP"], calls)
+        second_journal = next((first_journal.parent / "successors").glob("*/journal.json"))
+        second_partial = json.loads(second_journal.read_text())
+        self.assertEqual(old_receipt, second_partial["members"][0]["receipt"])
+        self.assertEqual(old_receipt, second_partial["members"][0]["carried_receipt"])
+
+        run(self.root, "git", "commit", "--allow-empty", "-m", "third descendant target")
+        third_target = run(self.root, "git", "rev-parse", "HEAD")
+        calls.clear()
+        with mock.patch("merge_queue.finalize_kanban_task", side_effect=lambda c, a: (
+                calls.append(a["task_id"]) or actual_finalize(c, a))):
+            result = runtime.replay_epoch_finalization_successor(
+                self.root, "rc-1", second_target, third_target)
+        self.assertEqual(["DEP"], calls)
+        self.assertEqual(["complete", "complete", "complete"],
+                         [row["status"] for row in result["members"]])
+        self.assertEqual(result, runtime.replay_epoch_finalization_successor(
+            self.root, "rc-1", second_target, third_target))
+        board = json.loads(self.board_path.read_text())
+        for task_id, tip in zip(("OLD", "REQ", "DEP"), tips):
+            self.assertEqual(("done", tip, "MERGED"),
+                (board[task_id]["status"], board[task_id]["commit_hash"],
+                 board[task_id]["fields"]["lifecycle_state"]))
+        self.assertEqual([], runtime._unresolved_finalization_epochs(self.root))
+
     def test_successor_replay_refuses_partial_tamper_divergence_and_revision_drift(self) -> None:
         predecessor, current, _tips = self.prepare_untouched_stale_finalization()
         predecessor_root = self.root / ".juno_task/runtime/release-epoch-finalization/rc-1"
         members = predecessor_root / "members"; members.mkdir()
         (members / "0001-OLD.json").write_text("{}\n")
         before = self.board_path.read_bytes()
-        with self.assertRaisesRegex(runtime.ReleaseTrainError, "successful or partial"):
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "partial mutation without receipt"):
             runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, current)
         self.assertEqual(before, self.board_path.read_bytes())
         (members / "0001-OLD.json").unlink()
@@ -1187,7 +1248,7 @@ raise SystemExit(2)
             runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, unrelated)
         run(self.root, "git", "update-ref", "refs/heads/product", current, unrelated)
         self.board["OLD"]["last_modified"] = "revision-drift"; self.write_board()
-        with self.assertRaisesRegex(runtime.ReleaseTrainError, "mutation or revision drifted"):
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "pending member own identity drifted"):
             runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, current)
         self.assertNotEqual(before, self.board_path.read_bytes())
 
