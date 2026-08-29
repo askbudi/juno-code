@@ -649,30 +649,242 @@ print(json.dumps({'path':str(pathlib.Path.cwd().resolve()),'role':'controller',
         with self.assertRaisesRegex(runner.RunnerError, "capture is missing"):
             runner.finalize_managed_capture(capture, stdout, metadata, None, started_ns)
 
-    def test_conflict_worker_hydrates_exact_lock_before_launch_without_git_drift(self):
+    def prepare_receipt_bound_conflict(self):
+        scripts = self.controller / ".juno_task/scripts"; scripts.mkdir(parents=True, exist_ok=True)
+        helper = scripts / "worktree_hydration.py"
+        helper.write_bytes(RUNNER.with_name("worktree_hydration.py").read_bytes())
+        helper.chmod(0o755)
+        exclude = self.controller / ".git/info/exclude"
+        exclude.write_text(exclude.read_text()
+                           + "\n.juno_task/runtime/\n.juno_task/scripts/worktree_hydration.py\n")
+        managed = self.candidate / ".juno_task/managed-assets.json"
+        fixture = self.candidate / ".juno_task/scripts/tests/test_task_workspace.py"
+        managed.parent.mkdir(parents=True, exist_ok=True); managed.write_text('{"base":true}\n')
+        fixture.parent.mkdir(parents=True, exist_ok=True); fixture.write_text("base fixture\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", str(managed), str(fixture)], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "managed base"],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.candidate), "branch", "-f", "target", "HEAD"], check=True)
+        base = git(self.candidate, "rev-parse", "target")
+        managed.write_text('{"ours":true}\n')
+        subprocess.run(["git", "-C", str(self.candidate), "add", str(managed)], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "conflict ours"],
+                       check=True, stdout=subprocess.DEVNULL)
+        ours = git(self.candidate, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "-b", "receipt-theirs", "target"],
+                       check=True, stdout=subprocess.DEVNULL)
+        managed = self.candidate / ".juno_task/managed-assets.json"
+        fixture = self.candidate / ".juno_task/scripts/tests/test_task_workspace.py"
+        managed.parent.mkdir(parents=True, exist_ok=True); managed.write_text('{"theirs":true}\n')
+        fixture.write_text("theirs fixture\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", str(managed), str(fixture)], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "conflict theirs"],
+                       check=True, stdout=subprocess.DEVNULL)
+        theirs = git(self.candidate, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "task"],
+                       check=True, stdout=subprocess.DEVNULL)
+        merge = subprocess.run(["git", "-C", str(self.candidate), "merge", "--no-ff", "--no-commit",
+                                theirs], capture_output=True, text=True)
+        self.assertNotEqual(0, merge.returncode)
+        epoch_id = "receipt-bound-conflict"
+        authority = self.tmp / "conflict-authority.json"
+        runner.atomic_json(authority, {"fixture": "authority"})
+        authority_ref = runner.evidence(authority)
+        managed_path = ".juno_task/managed-assets.json"
+        logical = {"set_id": "managed", "ordered_task_ids": ["T1"],
+                   "permitted_paths": [managed_path], "classification": "authorization_neutral",
+                   "authority_sha256": authority_ref["sha256"]}
+        conflict = {"schema_version": "juno_release_epoch_conflict.v2", "task_id": "T1",
+                    "base_sha": base, "ours_sha": ours, "theirs_sha": theirs,
+                    "conflict_paths": [managed_path], "admitted_paths": [managed_path],
+                    "dependency_edges": [], "requirements_sha256": "1" * 64,
+                    "repair_budget": 1,
+                    "authority": "declaration_bound_authorization_neutral_logical_set",
+                    "logical_conflict_set": logical,
+                    "validation_root": {"cwd": "juno-code", "timeout_seconds": 30}}
+        manifest_body = {"authority_binding": {"path": str(authority),
+                         "sha256": authority_ref["sha256"]}}
+        manifest = {**manifest_body,
+                    "manifest_sha256": runner.sha(runner.canonical(manifest_body).rstrip(b"\n"))}
+        receipt_body = {"schema_version": "juno_release_epoch_receipt.v1",
+                        "epoch_id": epoch_id, "sequence": 1, "transition": "CONFLICT",
+                        "created_utc": "2026-08-29T00:00:00Z", "previous_state": "COMPOSING",
+                        "detail": conflict}
+        receipt_body["receipt_id"] = runner.sha(runner.canonical(receipt_body).rstrip(b"\n"))
+        receipt = (self.controller / ".juno_task/runtime/release-epochs" / epoch_id
+                   / "receipts/0001-conflict.json")
+        runner.atomic_json(receipt, receipt_body)
+        state = {"schema_version": "juno_release_epoch_state.v1", "epoch_id": epoch_id,
+                 "state": "RECOVERING", "seal": {"target_ref": "refs/heads/target",
+                 "base_sha": base, "fencing_token_sha256": "2" * 64,
+                 "members": [{"task_id": "T1", "changed_paths": [managed_path,
+                              ".juno_task/scripts/tests/test_task_workspace.py"]}],
+                 "conflict_manifest": manifest},
+                 "composition": {"worktree": str(self.candidate), "tip_sha": ours},
+                 "conflict": conflict, "receipts": [{"path": str(receipt),
+                 "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+                 "receipt_id": receipt_body["receipt_id"], "transition": "CONFLICT"}]}
+        state_path = receipt.parents[1] / "state.json"; runner.atomic_json(state_path, state)
+        args = runner.argparse.Namespace(
+            task_id="T1", candidate_sha=theirs, agent_root=str(self.candidate),
+            tool_id="managed_agent_runner", out_dir=str(self.tmp / "conflict-worker"),
+            prompt_file=str(self.prompt), create_receipt=None, verify_receipt=None,
+            edit_preflight_receipt=None)
+        return args, state_path, authority, receipt
+
+    def test_conflict_admission_binds_epoch_receipt_stages_index_target_and_worker(self):
+        args, state_path, authority, receipt = self.prepare_receipt_bound_conflict()
+        identity, before = runner.release_conflict_admission(
+            args, runner.controller_identity(self.controller))
+        self.assertEqual("sealed_release_epoch_conflict", identity["admission_kind"])
+        self.assertEqual([".juno_task/managed-assets.json"],
+                         identity["conflict_checkout"]["conflict_paths"])
+        self.assertEqual([".juno_task/scripts/tests/test_task_workspace.py"],
+                         [row["path"] for row in identity["applied_paths"]])
+        self.assertEqual({1, 2, 3}, {row["stage"] for row in
+                                     identity["conflict_checkout"]["unmerged_stages"]})
+        self.assertEqual(hashlib.sha256(receipt.read_bytes()).hexdigest(),
+                         identity["authority_receipt"]["sha256"])
+        self.assertEqual(hashlib.sha256(authority.read_bytes()).hexdigest(),
+                         identity["conflict_authority"]["sha256"])
+        self.assertEqual(before["head"], identity["composition_tip"])
+        self.assertEqual(str((self.tmp / "conflict-worker").resolve()),
+                         identity["worker_attempt"]["out_dir"])
+
+        original_state = state_path.read_bytes()
+        cases = []
+        (self.candidate / "unbound.txt").write_text("unbound\n")
+        cases.append(("unbound dirt", lambda: (self.candidate / "unbound.txt").unlink()))
+        for label, restore in cases:
+            with self.subTest(label=label), self.assertRaises(runner.RunnerError):
+                runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+            restore()
+        state = json.loads(original_state)
+        state["seal"]["fencing_token_sha256"] = "3" * 64
+        runner.atomic_json(state_path, state)
+        changed, _ = runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+        self.assertNotEqual(identity["epoch_fencing_token_sha256"],
+                            changed["epoch_fencing_token_sha256"])
+        state_path.write_bytes(original_state)
+        stale_args = runner.argparse.Namespace(**{**vars(args),
+            "out_dir": str(self.tmp / "stale-worker-attempt")})
+        stale, _ = runner.release_conflict_admission(
+            stale_args, runner.controller_identity(self.controller))
+        self.assertNotEqual(identity["worker_attempt"], stale["worker_attempt"])
+
+        (self.candidate / "unbound.txt").write_text("refuse before provider\n")
+        run_args = runner.argparse.Namespace(**{**vars(args), "mode": "worker",
+            "controller_root": str(self.controller), "controller_branch": "controller",
+            "candidate_root": None, "review_binding": None, "authority_map": None,
+            "external_side_effects": "forbidden", "lifecycle_hooks": "disabled",
+            "timeout_seconds": 30.0, "require_terminal_result": False})
+        with self.assertRaises(runner.RunnerError):
+            runner.run(run_args)
+        self.assertFalse((Path(run_args.out_dir) / "launch.json").exists())
+        self.assertFalse((Path(run_args.out_dir) / "stdout.log").exists())
+
+    def test_conflict_admission_refuses_resolution_before_admission(self):
+        args, *_ = self.prepare_receipt_bound_conflict()
+        path = self.candidate / ".juno_task/managed-assets.json"
+        path.write_text('{"resolved":true}\n')
+        subprocess.run(["git", "-C", str(self.candidate), "add", str(path)], check=True)
+        with self.assertRaises(runner.RunnerError):
+            runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+
+    def test_conflict_admission_refuses_changed_index_stage_and_symlink(self):
+        args, *_ = self.prepare_receipt_bound_conflict()
+        blob = subprocess.check_output(
+            ["git", "-C", str(self.candidate), "hash-object", "-w", "--stdin"],
+            input=b"substituted stage\n").decode().strip()
+        line = f"100644 {blob} 2\t.juno_task/managed-assets.json\n"
+        subprocess.run(["git", "-C", str(self.candidate), "update-index", "--index-info"],
+                       input=line, text=True, check=True)
+        with self.assertRaises(runner.RunnerError):
+            runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+
+    def test_conflict_admission_refuses_extra_conflict_and_target_drift(self):
+        args, *_ = self.prepare_receipt_bound_conflict()
+        stages = runner.git(self.candidate, "ls-files", "-u").splitlines()
+        blobs = [line.split()[1] for line in stages[:3]]
+        extra = "".join(f"100644 {blob} {stage}\textra.txt\n"
+                        for stage, blob in enumerate(blobs, 1))
+        subprocess.run(["git", "-C", str(self.candidate), "update-index", "--index-info"],
+                       input=extra, text=True, check=True)
+        (self.candidate / "extra.txt").write_text("extra conflict\n")
+        with self.assertRaises(runner.RunnerError):
+            runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+
+    def test_conflict_admission_refuses_symbolic_conflict_path(self):
+        args, *_ = self.prepare_receipt_bound_conflict()
+        path = self.candidate / ".juno_task/managed-assets.json"
+        path.unlink(); path.symlink_to(self.candidate / "allowed.txt")
+        with self.assertRaises(runner.RunnerError):
+            runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+
+    def test_conflict_admission_refuses_protected_target_drift(self):
+        args, *_ = self.prepare_receipt_bound_conflict()
+        subprocess.run(["git", "-C", str(self.candidate), "update-ref", "refs/heads/target",
+                        runner.git(self.candidate, "rev-parse", "HEAD")], check=True)
+        with self.assertRaises(runner.RunnerError):
+            runner.release_conflict_admission(args, runner.controller_identity(self.controller))
+
+    def test_conflict_worker_hydrates_exact_lock_against_identical_unmerged_snapshot(self):
         scripts = self.controller / ".juno_task/scripts"; scripts.mkdir(parents=True)
         helper = scripts / "worktree_hydration.py"
-        helper.write_text("#!/usr/bin/env python3\nraise SystemExit(0)\n"); helper.chmod(0o755)
+        helper.write_bytes(RUNNER.with_name("worktree_hydration.py").read_bytes())
+        helper.chmod(0o755)
         root = self.candidate / "juno-code"; root.mkdir()
-        lock = root / "package-lock.json"; lock.write_text('{"lockfileVersion":3}\n')
+        package = {"name": "fixture", "version": "1.0.0", "private": True}
+        lock_body = {"name": "fixture", "version": "1.0.0", "lockfileVersion": 3,
+                     "requires": True, "packages": {"": package}}
+        (root / "package.json").write_text(json.dumps(package) + "\n")
+        lock = root / "package-lock.json"; lock.write_text(json.dumps(lock_body) + "\n")
         (self.candidate / ".gitignore").write_text("juno-code/node_modules/\n")
+        (self.candidate / "allowed.txt").write_text("ours\n")
         subprocess.run(["git", "-C", str(self.candidate), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
-                        "-c", "user.email=t@t", "commit", "-m", "lock"],
+                        "-c", "user.email=t@t", "commit", "-m", "ours lock"],
                        check=True, stdout=subprocess.DEVNULL)
+        ours = git(self.candidate, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "-b", "hydration-theirs", "target"],
+                       check=True, stdout=subprocess.DEVNULL)
+        (self.candidate / "allowed.txt").write_text("theirs\n")
+        subprocess.run(["git", "-C", str(self.candidate), "add", "allowed.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.candidate), "-c", "user.name=T",
+                        "-c", "user.email=t@t", "commit", "-m", "theirs"],
+                       check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.candidate), "checkout", "task"],
+                       check=True, stdout=subprocess.DEVNULL)
+        merge = subprocess.run(["git", "-C", str(self.candidate), "merge", "--no-ff", "--no-commit",
+                                "hydration-theirs"], capture_output=True, text=True)
+        self.assertNotEqual(0, merge.returncode)
+        snapshot = runner._conflict_checkout_snapshot(
+            self.controller, self.candidate, "refs/heads/target")
         identity = {"admission_kind": "sealed_release_epoch_conflict",
-                    "validation_root": {"cwd": "juno-code", "timeout_seconds": 10}}
+                    "target_ref": "refs/heads/target", "conflict_checkout": snapshot,
+                    "validation_root": {"cwd": "juno-code", "timeout_seconds": 30}}
+        expectation = self.tmp / "conflict-expectation.json"
         first = runner.hydrate_conflict_validation_root(
-            self.controller, self.candidate, identity)
+            self.controller, self.candidate, identity, expectation)
         second = runner.hydrate_conflict_validation_root(
-            self.controller, self.candidate, identity)
-        self.assertEqual(first, second)
+            self.controller, self.candidate, identity, expectation)
         self.assertEqual("passed", first["decision"])
+        self.assertEqual(first["conflict_checkout_sha256"], second["conflict_checkout_sha256"])
         self.assertEqual(hashlib.sha256(lock.read_bytes()).hexdigest(), first["lock_sha256"])
-        self.assertEqual("", git(self.candidate, "status", "--porcelain=v1", "--untracked-files=all"))
-        lock.unlink()
-        with self.assertRaisesRegex(runner.RunnerError, "exact lock"):
-            runner.hydrate_conflict_validation_root(self.controller, self.candidate, identity)
+        self.assertEqual(ours, git(self.candidate, "rev-parse", "HEAD"))
+        self.assertEqual(["allowed.txt"], git(
+            self.candidate, "diff", "--name-only", "--diff-filter=U").splitlines())
+        before = runner.fingerprint(self.candidate)
+        (self.candidate / "allowed.txt").write_text("tampered\n")
+        tampered = (self.candidate / "allowed.txt").read_bytes()
+        with self.assertRaisesRegex(runner.RunnerError, "hydration/probe"):
+            runner.hydrate_conflict_validation_root(
+                self.controller, self.candidate, identity, expectation)
+        self.assertEqual(tampered, (self.candidate / "allowed.txt").read_bytes())
+        self.assertEqual(before, runner.fingerprint(self.candidate))
 
     def test_worker_capture_recovery_binds_failed_run_without_model_rerun(self):
         ours = git(self.candidate, "rev-parse", "HEAD")

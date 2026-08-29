@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
-import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 
 class HydrationError(RuntimeError):
@@ -105,6 +107,111 @@ def verify_clean(root: Path) -> None:
         raise HydrationError("hydration left tracked or unignored worktree drift")
 
 
+def git_bytes(root: Path, *args: str, check: bool = True) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if check and result.returncode:
+        raise HydrationError("conflict checkout Git identity is unreadable")
+    return result.stdout
+
+
+def git_text(root: Path, *args: str, check: bool = True) -> str:
+    return git_bytes(root, *args, check=check).decode("utf-8", errors="strict").strip()
+
+
+def regular_identity(path: Path, label: str, *, content: bool = True) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise HydrationError(f"{label} is missing, symbolic, or not regular")
+        data = path.read_bytes() if content else b""
+    except OSError as exc:
+        raise HydrationError(f"{label} is missing or unreadable") from exc
+    result = {"path": str(path), "mode": stat.S_IMODE(info.st_mode)}
+    if content:
+        result.update({"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+                       "sha256": hashlib.sha256(data).hexdigest()})
+    return result
+
+
+def conflict_checkout_snapshot(root: Path, target_ref: str) -> dict[str, Any]:
+    """Describe one intentionally conflicted checkout without normalizing it."""
+    if not target_ref.startswith("refs/") or "\x00" in target_ref:
+        raise HydrationError("conflict target ref is malformed")
+    git_dir = Path(git_text(root, "rev-parse", "--path-format=absolute", "--git-dir"))
+    common_dir = Path(git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    index = Path(git_text(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    root_info = root.lstat()
+    if root.is_symlink() or not root.is_dir() or git_dir.is_symlink() or common_dir.is_symlink():
+        raise HydrationError("conflict checkout root or Git directory is symbolic")
+    unmerged_raw = git_bytes(root, "ls-files", "-u", "-z")
+    stages: list[dict[str, Any]] = []
+    conflict_paths: set[str] = set()
+    for entry in unmerged_raw.split(b"\0"):
+        if not entry:
+            continue
+        metadata, separator, encoded_path = entry.partition(b"\t")
+        fields = metadata.decode("ascii").split()
+        if not separator or len(fields) != 3 or fields[2] not in {"1", "2", "3"}:
+            raise HydrationError("conflict checkout has an unreadable unmerged index")
+        try:
+            relative = encoded_path.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HydrationError("conflict checkout path is not UTF-8") from exc
+        pure = PurePosixPath(relative)
+        if pure.is_absolute() or ".." in pure.parts or ".git" in pure.parts:
+            raise HydrationError("conflict checkout contains an unsafe unmerged path")
+        target = root.joinpath(*pure.parts)
+        if any(parent.is_symlink() for parent in target.parents if parent != root.parent):
+            raise HydrationError("conflict checkout path contains a symbolic-link component")
+        stages.append({"path": relative, "mode": fields[0], "blob": fields[1],
+                       "stage": int(fields[2])})
+        conflict_paths.add(relative)
+    if not stages or any({row["stage"] for row in stages if row["path"] == path} != {1, 2, 3}
+                         for path in conflict_paths):
+        raise HydrationError("conflict checkout must retain every expected unmerged stage")
+    worktree = [{"relative_path": relative,
+                 **regular_identity(root.joinpath(*PurePosixPath(relative).parts),
+                                    f"conflict path {relative}")}
+                for relative in sorted(conflict_paths)]
+    return {"schema_version": "juno_conflict_checkout_hydration.v1",
+            "root": {"path": str(root), "device": root_info.st_dev, "inode": root_info.st_ino},
+            "git_dir": str(git_dir), "git_common_dir": str(common_dir),
+            "head": git_text(root, "rev-parse", "HEAD"),
+            "head_tree": git_text(root, "rev-parse", "HEAD^{tree}"),
+            "merge_head": git_text(root, "rev-parse", "MERGE_HEAD"),
+            "orig_head": git_text(root, "rev-parse", "ORIG_HEAD"),
+            "target_ref": target_ref, "target_sha": git_text(root, "rev-parse", target_ref),
+            "status_porcelain_v2": git_text(root, "status", "--porcelain=v2", "--untracked-files=all"),
+            "index": {**regular_identity(index, "conflict checkout index", content=False),
+                      "entries_sha256": hashlib.sha256(
+                          git_bytes(root, "ls-files", "--stage", "-z")).hexdigest()},
+            "conflict_paths": sorted(conflict_paths), "unmerged_stages": stages,
+            "conflict_worktree": worktree}
+
+
+def verify_conflict_checkout(root: Path, target_ref: str, expected_path: Path) -> None:
+    if expected_path.is_symlink() or not expected_path.is_file():
+        raise HydrationError("conflict hydration expectation is missing or symbolic")
+    try:
+        expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HydrationError("conflict hydration expectation is malformed") from exc
+    canonical = (json.dumps(expected, sort_keys=True, separators=(",", ":"),
+                            ensure_ascii=False) + "\n").encode()
+    if expected_path.read_bytes() != canonical:
+        raise HydrationError("conflict hydration expectation is not canonical")
+    current = conflict_checkout_snapshot(root, target_ref)
+    if expected != current:
+        changed = sorted(key for key in set(expected) | set(current)
+                         if expected.get(key) != current.get(key))
+        raise HydrationError("conflict checkout hydration identity drifted: "
+                             + ",".join(changed))
+    print(json.dumps(current, sort_keys=True, separators=(",", ":")))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", required=True)
@@ -116,6 +223,11 @@ def main() -> int:
         node = sub.add_parser(name)
         node.add_argument("--cwd", required=True)
     sub.add_parser("verify-clean")
+    snapshot = sub.add_parser("snapshot-conflict-checkout")
+    snapshot.add_argument("--target-ref", required=True)
+    conflict = sub.add_parser("verify-conflict-checkout")
+    conflict.add_argument("--target-ref", required=True)
+    conflict.add_argument("--expected-snapshot", required=True)
     args = parser.parse_args()
     root = Path(args.project_root).resolve()
     if not root.is_dir() or subprocess.run(
@@ -129,8 +241,14 @@ def main() -> int:
         hydrate_node(root, args.cwd)
     elif args.command == "verify-node-lock":
         verify_node_lock(root, args.cwd)
-    else:
+    elif args.command == "verify-clean":
         verify_clean(root)
+    elif args.command == "snapshot-conflict-checkout":
+        print(json.dumps(conflict_checkout_snapshot(root, args.target_ref),
+                         sort_keys=True, separators=(",", ":")))
+    else:
+        verify_conflict_checkout(root, args.target_ref,
+                                 Path(args.expected_snapshot).resolve())
     return 0
 
 
