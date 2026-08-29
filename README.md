@@ -1,119 +1,284 @@
-# yylo
+# YYLO CLI
 
-YYLO orchestrates AI coding agents and structured development workflows. It works alongside [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, and [YYLO Benchmark](https://github.com/yylo-dev/yylo-benchmark), the longitudinal evaluation and evidence system for agent runs.
+YYLO is a command-line orchestrator for coding agents, repeatable workflows, and receipt-backed repository changes. It is for developers who want a quick agent loop and for project operators who need typed task, validation, merge, and release-readiness boundaries.
 
-<p align="center">
-  <img src="./assets/yylo-logo-square-neon-green.png" alt="YYLO coding-agent orchestration logo" width="180" />
-</p>
+- npm package: [`@yylo/cli`](https://www.npmjs.com/package/%40yylo%2Fcli)
+- Commands: `yylo` and `yy` (equivalent); `ypl` is `yy pi --live`
+- Source: [yylo-dev/yylo](https://github.com/yylo-dev/yylo)
 
-<p align="center">
-  <strong>AI-powered code automation with structured task management</strong>
-</p>
+YYLO orchestrates work. [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger) is the independent Git-native Record/task store, and [YYLO Benchmark](https://github.com/yylo-dev/yylo-benchmark) is the independent evaluation/evidence package. `yy ledger` and `yy benchmark` delegate to those separately installed CLIs; they are not bundled alternate implementations.
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/%40yylo%2Fcli"><img src="https://img.shields.io/npm/v/%40yylo%2Fcli.svg" alt="npm version" /></a>
-  <a href="https://github.com/yylo-dev/yylo"><img src="https://img.shields.io/github/stars/yylo-dev/yylo?style=social" alt="GitHub stars" /></a>
-</p>
+## Quick start: install to first successful command
 
-<p align="center">
-  <img src="./assets/yylo-coding-agent-ecosystem-infographic.png" alt="YYLO coding-agent ecosystem connecting YYLO Ledger, YYLO, Git, and YYLO Benchmark" width="960" />
-</p>
-
-## Installation
-
-`yy` and `yylo` are equivalent launchers. Their `ledger` and `benchmark`
-subcommands are thin, fail-closed delegates to independently installed
-`yylo-ledger` and `yylo-benchmark` executables. Install `yylo-ledger==0.1.0rc1`
-and `@yylo/benchmark@0.1.0-rc.1` on the same `PATH`; delegates never discover
-checkout-local or legacy runtimes.
+**Prerequisites:** Node.js 20.10 or newer, npm, and Git.
 
 ```bash
-yylo-ledger --help
-yy ledger --help
-yylo-benchmark --help
-yy benchmark --help
+npm install --global '@yylo/cli@latest'
+yy --version
+
+mkdir yylo-demo
+cd yylo-demo
+git init
+yy init --task "Document the onboarding path" --subagent pi
+yy watch exec -- node --version
 ```
 
-Each standalone/delegated help/version pair is byte- and exit-equivalent; arguments,
-stdin, stdout, stderr, cwd, environment, nonzero exits, and signals are propagated. Release candidates
-verify this from packed npm artifacts with
-`npm run test:benchmark-release-artifacts`. That offline verifier also runs the fixed,
-timeout-bounded benchmark coverage and credential/leak-scan commands with closed stdin.
-Its readiness receipt binds the unchanged source tree, exact commands, exit results,
-measured outputs, log digests, and canonical evidence hashes; absent, failed, duplicate,
-stale, mismatched, or altered evidence fails closed.
+A successful run prints the installed YYLO version, initializes `.juno_task/`, then emits a watch receipt with `"state":"COMPLETED"`, `"exit_code":0`, and nonzero `log_bytes`. This canary does not contact a model provider.
 
-### Isolated Juno 2 source toolchain
-
-From a monorepo checkout containing `yylo/` and `juno_kanban/`:
+Inspect the initialized workspace and exact command surface:
 
 ```bash
-./yylo/scripts/juno-002-source-toolchain.sh install
-export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
-yy-juno-002 --version
-juno-kanban-juno-002 --version
-./yylo/scripts/juno-002-source-toolchain.sh status
+yy info --json
+yy doctor workspace
+yy --help
 ```
 
-The installer is idempotent, builds into the repository-local `.juno_toolchain/juno-002` npm prefix and Python venv, and never writes normal global `yy`. Both aliases validate the selected Kanban against the single `>=2.0.5,<3.0.0` policy before execution. `yy-juno-002 init` provisions the disposable controller's own `.venv_juno` from that selected Kanban source; it never adopts an unrelated active/global environment, and generated linked-worktree wrappers continue to execute only the controller runtime. Override source or state paths with `JUNO_002_CODE_SOURCE`, `JUNO_002_KANBAN_SOURCE`, or `JUNO_002_STATE_DIR`; spaces in paths are supported.
+`doctor workspace` is intentionally nonzero when it finds an actionable topology problem; it never fetches or changes the workspace.
 
-Adopt the isolated executables only in the intended shell, then inspect executable, source, and compatibility identities:
+### Stable and prerelease channels
+
+The stable npm channel is `@latest` (`0.2.0` when this README was audited). The current prerelease is on `@next` (`0.2.1-rc.1`), not `latest`:
 
 ```bash
-export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
-hash -r
-command -v yy-juno-002 juno-kanban-juno-002
-yy-juno-002 --version
-juno-kanban-juno-002 --version
-./yylo/scripts/juno-002-source-toolchain.sh status
-./yylo/scripts/juno-002-source-toolchain.sh controller-status
+# Stable
+npm install --global '@yylo/cli@latest'
+
+# Explicit prerelease
+npm install --global '@yylo/cli@next'
+
+npm view '@yylo/cli' version dist-tags --json
+yy --version
 ```
 
-Register a controller checkout from a linked task checkout when an environment override is not preferable:
+Pin an exact version in CI. Installing `@next` is an intentional prerelease choice.
+
+Next: [run an agent](#beginner-agent-workflow), [manage a typed task](#typed-task-and-merge-flow), or [build a managed workflow](#managed-workflows-and-evidence).
+
+## What YYLO owns
+
+| Need | Public surface | Boundary |
+| --- | --- | --- |
+| Agent run | `yy pi`, `yy claude`, `yy codex`, `yy gemini`, `yy cursor`, `yy start` | Provider credentials and model availability remain external. |
+| Session continuity | `continue`, `clone`, `branches`, `switch`, `continuity` | Scope state is isolated and explicit; cleanup is planned and reversible. |
+| Observable commands | `watch exec|status|await` | Bounded logs and terminal machine truth; no hidden background ownership. |
+| Validation evidence | `evidence run|status|await` | Content-addressed task evidence tied to exact inputs. |
+| Repository topology | `info`, `where`, `doctor workspace`, `integration` | Read-only discovery is separate from guarded sync/repair/push. |
+| Feature lifecycle | `task start|run|status|checkpoint|preflight|finish` | Implementation belongs in the returned exact-base task worktree. |
+| Protected delivery | `merge status|plan|arbiter|drive|next|resolve` | One fenced target owner and expected-old-SHA CAS; dirt is preserved. |
+| Release epoch | `release train ...` | Readiness only; tag, publish, push, deploy, and cleanup need separate authority. |
+| Records/evaluation | `ledger`, `benchmark` | Transparent delegation to independently installed canonical packages. |
+
+Run `yy --help` and `yy COMMAND --help` for the complete inventory of your installed version. The old `lifecycle` command is removed; use typed `task` and `merge` commands.
+
+## Beginner agent workflow
+
+Install the coding agent you intend to use and configure its provider credentials separately. Pi is optional and supports multiple providers:
 
 ```bash
-./yylo/scripts/juno-002-source-toolchain.sh register-controller /path/to/controller controller-branch
-./.juno_task/scripts/controller_resolver.py --cwd "$PWD" --operation diagnostic --format shell
+npm install --global '@mariozechner/pi-coding-agent'
+yy pi --help
+yy pi --no-session 'Summarize this repository and make no changes'
 ```
 
-Resolution is checkout-aware: explicit `JUNO_TASK_ROOT`, then repository-local controller registration, then the current project root. Canonical registration requires both the path and branch, establishes the controller's committed-audit base only when no base exists, and never advances it on re-registration. There is no public workspace-role assignment interface; exact task creation and protected integration own checkout-specific authority. A configured controller is branch-verified and invalid configuration fails closed. Juno and Kanban never switch, detach, stash, or update branches to manufacture compliance.
+The final command may contact the configured model provider. `--no-session` prevents Pi session persistence; it does not disable provider usage.
 
-Juno 2.1 controller cutover uses `yy migrate registration plan|apply|verify|rollback`. The plan freezes full refs/HEADs, paths, Git common directory, runtime bytes, and the reviewed policy bundle. Apply and rollback each require their own explicit authorization flag, persist intent before mutation, recover only known partial endpoint states, never move product/controller refs, and preserve the former controller. See `.juno_task/wiki/metadata_controller_boundary.md` after managed assets are installed.
-
-| Lane | Permitted | Forbidden |
-|---|---|---|
-| Controller | Kanban/Juno mutation, orchestration, prompts, and durable receipts; pass the product checkout as explicit `TASK_ROOT` | Product implementation or integration; implicit ref changes |
-| Task checkout | Implementation, focused tests, and coherent task commits against the declared base | Private Kanban/session state or integration-target mutation; route writes to the controller |
-| Integration owner | Reviewed candidate integration under the `(Git common directory, full target ref)` channel lock and expected-SHA CAS | Kanban/orchestration/session writes, unrelated edits, target rewind, or implicit push/deploy |
-| Small fix worktree | Exact-base named branch with the same review/candidate lifecycle as a feature | Controller-checkout product edits, bypassing review, or broad unrelated refactors |
-
-Choose the smallest lane that satisfies the work. The metadata-only linked controller tracks Kanban/task state, task specs, compact state, configuration, and final receipts, but no product code or tracked runtime copies. Generated controller runtime is ignored local state bound to an exact installed YYLO release. Controller commits never merge or synchronize to product history. Every product change uses a dedicated `yy task` worktree; `yy merge` serializes only target mutation. See `.juno_task/wiki/metadata_controller_boundary.md` and `.juno_task/wiki/git_worktree_lifecycle.md`.
-
-### Workspace routing and integration operations
-
-`yy` may be invoked from the registered controller, the integration owner, a
-task worktree, or any nested directory in those checkouts. The invocation
-checkout is never silently switched or cleaned. Before checkout-local bootstrap,
-the router resolves the shared Git registration and sends controller-owned
-operations to the exact registered controller.
-
-```text
-controller (metadata + Kanban + orchestration)
-    ^
-    | shared registration and exact controller ref
-    |
-    +--- yy from controller ------------------------------+
-    +--- yy from integration owner or nested directory ---+--> same controller
-    +--- yy from task worktree or nested directory -------+
-                              |
-                              +--> task worktree: product edits/tests/commits
-                              +--> integration owner: latest clean product read/server
-```
-
-Discover the topology without fetching or changing it:
+For a reusable prompt or shell-sensitive text, prefer a file:
 
 ```bash
-yy info
+printf '%s\n' 'Explain the test layout. Do not edit files.' > prompt.md
+yy pi --prompt-file prompt.md --no-session
+```
+
+Interactive Pi uses the `ypl` shortcut:
+
+```bash
+ypl 'Inspect the current task'
+```
+
+`ypl` expands to `yy pi --live`. Live mode requires an interactive terminal and enabled Pi extensions.
+
+### Controlled iterations
+
+```bash
+yy -s pi -m :gpt -i 3 -p 'Implement the next small verified increment'
+
+yy loop -n 2 \
+  --step 'yy pi "Implement the next increment"' \
+  --step 'npm test'
+```
+
+Quote prompts so the shell does not expand backticks or `$()` before YYLO receives them. `-i` bounds iterations inside an agent invocation; `yy loop -n` bounds the outer command workflow.
+
+## Models and project shortcuts
+
+`yy pi --help` is the source of truth for shipped aliases. Current Pi shortcuts include:
+
+| Shortcut | Resolved model |
+| --- | --- |
+| `:luna` | `openai-codex/gpt-5.6-luna` |
+| `:sol` | `openai-codex/gpt-5.6-sol` |
+| `:gpt` | `:sol` (Pi default) |
+| `:mini` | `openai-codex/gpt-5.6-terra` |
+| `:sonnet` | `anthropic/claude-sonnet-4-6` |
+| `:opus` | `anthropic/claude-opus-4-6` |
+
+Aliases are subagent-specific; for example, Pi and Codex do not share the same `:mini` mapping.
+
+Set a per-project default:
+
+```bash
+yy pi set-default-model :sol
+```
+
+Add project shortcuts in `.juno_task/config.json`:
+
+```json
+{
+  "modelShortcuts": {
+    "pi": {
+      ":team-default": ":sol"
+    }
+  }
+}
+```
+
+Project shortcuts are scoped to the selected subagent and can reference shipped or project shortcuts. Unknown targets, malformed data, and cycles fail with an actionable error. Managed Workflow Runner model authorization is separate: explicit selectors must be exact members of `workflowModels`; an unflagged `yy pi` continues to inherit the configured default.
+
+## Observable local commands
+
+`watch` owns bounded execution evidence for an ordinary local command:
+
+```bash
+yy watch exec -- npm test
+# Use the run ID printed above:
+yy watch status RUN_ID
+yy watch await RUN_ID
+```
+
+`RUN_ID` is a placeholder. Status is observation; it does not acquire task, merge, or release authority. Watch evidence includes terminal state and bounded logs rather than requiring terminal-scrollback reconstruction.
+
+## Managed workflows and evidence
+
+Fresh `yy init` installs managed scripts, prompts, and wiki guidance under `.juno_task/`. Update checksum-managed assets with:
+
+```bash
+yy scripts update
+```
+
+Locally customized files are preserved and a package candidate is written to a managed-conflict path. `--force` is an explicit replacement operation and creates backups; inspect conflicts before using it.
+
+### Workflow Runner
+
+Use a reviewed YAML workflow for ordered, repeatable steps:
+
+```bash
+./.juno_task/scripts/workflow_runner.sh \
+  --init-example agent-chain .juno_task/workflows/agent-chain.yaml
+./.juno_task/scripts/workflow_runner.sh lint \
+  --workflow .juno_task/workflows/agent-chain.yaml
+./.juno_task/scripts/workflow_runner.sh \
+  --workflow .juno_task/workflows/agent-chain.yaml --dry-run \
+  --print-output none --no-print-step-stdout
+```
+
+A workflow run retains rendered command identity, stdout/stderr, responses, session IDs, declared receipt hashes, attempts, and terminal manifests. `--tmux` creates an observer session; it does not detach the producer.
+
+If a producer was interrupted, diagnose before mutation:
+
+```bash
+./.juno_task/scripts/workflow_runner.sh recover-attempt RUN_DIRECTORY --dry-run
+./.juno_task/scripts/workflow_runner.sh doctor RUN_DIRECTORY
+```
+
+`RUN_DIRECTORY` is the printed durable run path. Recovery resumes only the first invalid step after verifying unchanged successful evidence. Never edit historical manifests to make them reusable.
+
+### Task validation evidence
+
+At a clean coherent task commit:
+
+```bash
+yy task checkpoint TASK_ID
+yy evidence run TASK_ID
+yy evidence status TASK_ID
+yy evidence await TASK_ID
+```
+
+These commands plan and retain exact-input validation evidence. They do not finish or merge the task.
+
+## Typed task and merge flow
+
+This section is for repositories initialized with the current controller/task policy. Run lifecycle commands from the registered metadata controller. Never edit the integration-owner checkout.
+
+### Managed path
+
+```bash
+yy task run TASK_ID
+yy merge drive --through TASK_ID
+```
+
+`TASK_ID` is a Ledger task ID. `task run` executes the controller-owned workflow through `QUEUED`; `merge drive` is an explicit fenced target mutation.
+
+### Manual implementation path
+
+```bash
+yy task start TASK_ID
+# Change directory to the worktree printed by start.
+# Read its AGENTS.md/CLAUDE.md, implement, run focused tests, and commit.
+yy task preflight TASK_ID
+yy task finish TASK_ID
+yy merge status
+yy merge arbiter status
+yy merge arbiter run --through TASK_ID
+```
+
+Safety invariants:
+
+1. `task start` freezes the protected target SHA, creates a dedicated branch/worktree, and completes configured dependency hydration before reporting `WORKING`.
+2. Product edits and focused tests occur only in that task worktree. Controller metadata and integration-owner product bytes are separate authorities.
+3. `preflight` is read-only and catches closure defects before expensive gates. `finish` requires a clean committed tip and queues it; it does not merge.
+4. The merge queue owns risk-based review and moved-target composition. Low risk has no semantic reviewer, normal risk at most one, and high risk two sequential reviewers on one frozen candidate.
+5. Target mutation is serialized under one fencing owner and expected-old-SHA CAS. Lease age alone never transfers authority.
+6. Conflicts and unrelated dirty bytes are preserved. Use the exact recovery packet and `yy merge resolve TASK_ID`; do not reset, stash, force, rebase, or squash to bypass it.
+
+Observation commands are safe to repeat:
+
+```bash
+yy task status TASK_ID
+yy task doctor TASK_ID
+yy merge plan TASK_ID --json
+yy merge status
+yy merge arbiter status
+```
+
+`yy merge next` and `yy merge resolve` are explicit recovery mutations, not polling commands.
+
+## Sealed release epochs
+
+A release wave can freeze all eligible pre-cutoff candidates, compose one private history-preserving train, run aggregate evidence once, and advance the protected target with one expected-old-SHA CAS.
+
+```bash
+yy release train inspect /absolute/path/to/train.json --json
+yy release train seal /absolute/path/to/train.json --json
+# Retain the epoch ID and one-time token returned by seal.
+yy release train drive EPOCH_ID --epoch-token TOKEN --json
+yy release train epoch-status EPOCH_ID --json
+```
+
+The declaration path, `EPOCH_ID`, and `TOKEN` are placeholders. `inspect`, `plan`, `status`, `epoch-status`, and `shadow` are observations. `seal`, `drive`, `eject`, `repair`, and `retry` are fenced mutations with command-specific authority.
+
+A successful epoch emits read-only release readiness after target CAS and member reconciliation. It does **not** authorize an RC, tag, push, npm/PyPI publication, deployment, production mutation, or worktree cleanup. Those remain separate explicit actions.
+
+## Workspace roles and recovery
+
+| Workspace | Use it for | Do not use it for |
+| --- | --- | --- |
+| Metadata controller | Ledger/task/merge/release orchestration and durable receipts | Product implementation or target integration edits |
+| Task worktree | Scoped implementation, focused tests, coherent commits | Private controller state or protected-target mutation |
+| Integration owner | Clean latest integrated reads and guarded target ownership | Feature edits, Kanban/session writes, or dirt cleanup |
+
+Discover routing without changing it:
+
+```bash
 yy info --json
 yy where controller
 yy where integration
@@ -122,1771 +287,94 @@ yy where task TASK_ID
 yy doctor workspace
 ```
 
-`yy info --json` is the stable script-facing report. It includes the invocation
-role, controller path/ref/HEAD, product target ref/SHA and owners, registered
-integration owner and health, task worktrees, submodules, runtime versions, and
-actionable findings. `yy where` prints exactly one resolved path and refuses
-missing or ambiguous owners. `yy doctor workspace` is read-only and exits
-non-zero when findings require attention. An unregistered checkout stays
-unmanaged; Juno never guesses a controller from a similarly named directory.
+Routing is registration-based and fail-closed; YYLO does not guess a nearby controller, switch branches, or clean a checkout to manufacture compliance.
 
-The integration owner is a clean, detached, full product checkout. It is the
-right place to inspect the latest integrated source or start local servers, but
-not to edit product files or write Kanban/session state. Refresh it through the
-controller-routed command:
-
-```text
-yy integration status [--fetch]     inspect local/remote drift
-             |
-             v
-yy integration sync                 guard -> fetch -> remote gitlink closure -> fast-forward -> submodules
-             |
-             +--> clean exact target + exact remotely fetchable gitlinks: ready for reads/server
-             +--> dirty/diverged/ambiguous/unpublished child: refuse with recovery guidance
-```
-
-Before moving the target or integration owner, sync recursively fetches each
-required gitlink SHA into isolated temporary repositories using only the remotes
-declared by committed `.gitmodules`. An object that exists only in another local
-worktree therefore fails as `nested_gitlink_unavailable`; the phased receipt
-records path, SHA, remote, failed check, and the child-first publication/retry
-instruction while the owner remains clean and unchanged.
-
-Every admitted `yy merge next|resolve` target transition and every target-moving
-`yy integration sync` also refreshes the ignored controller scripts from that
-exact target commit. The tracked task-workspace policy is updated by a top-level
-three-way merge: target additions are admitted, controller-specific unchanged
-fields survive, and overlapping or uncommitted policy edits refuse. A customized
-script is preserved when its packaged source is unchanged across the transition;
-a changed or retired customized source refuses before mutation. Fields from a
-completed local refresh receipt can identify a stale package/bootstrap generation
-only when an `exact` row's bytes equal immutable Git source from a commit in the
-admitted target ancestry. Failed or incomplete receipts, out-of-ancestry targets,
-and preserved-customization rows grant no replacement authority. This is local
-corroboration, not cryptographic or signature-based receipt authenticity.
-Generation and doctor receipts classify exact files separately from
-preserved customizations, bind both preserved actual and packaged-source hashes,
-and detect later drift. The operation announces a unique
-`/tmp/yy-managed-runtime-refresh-*.log`, records terminal timing in a local receipt
-and returns its content hash, then runs its doctor before returning terminal
-evidence. Inspect or recover an interrupted generation explicitly:
+For integration-owner inspection and guarded refresh:
 
 ```bash
-yy integration runtime-doctor [--target-sha FULL_SHA]
-yy integration runtime-refresh --previous-sha FULL_SHA [--target-sha FULL_SHA]
+yy integration status
+yy integration sync
 ```
 
-A receipt-bound controller generation is Git-target-owned. `yy scripts update`
-from a mismatched (especially older) package normally refuses instead of replacing
-those ignored scripts. When the routed installed release, immutable target package
-and declaration, complete exact generation receipt, and unchanged controller plus
-checkpoint policies all prove one identity, the tested post-integration recovery is:
+`integration status` observes. `integration sync` is a mutation: it refuses dirty/diverged/ambiguous state and verifies nested gitlink availability before moving anything. `yy integration push` is separate remote authority and must not be inferred from sync, merge, or release readiness.
 
-```bash
-yy scripts update --force
-```
+## Ledger and Benchmark delegates
 
-That explicit transaction installs the complete target-bound bundle, persists and
-reads back one coherent schema-2 receipt, or restores every update-owned path while
-retaining ignored interruption evidence. Without every exact proof the ordinary
-refusal remains. `scripts update` still refreshes only controller-local managed
-bytes; it does not repair a missing or stale target-tracked task runtime. For an ordinary
-consumer target (one containing neither the `yylo` package nor template source), use
-the explicit package-bound recovery instead:
+Install canonical packages independently:
 
 ```bash
-# Only when admission reports legacy bytes without managed-inventory provenance:
-yy migrate target-runtime-provenance plan --controller /exact/controller --output /external/provenance-plan.json
-# review the immutable plan, then detach any clean target-ref owner
-yy migrate target-runtime-provenance apply --plan /external/provenance-plan.json \
-  --output /external/provenance-apply.json --authorize-target-runtime-provenance
+python3 -m pip install 'yylo-ledger==0.2.0'
+npm install --global '@yylo/benchmark@0.1.0-rc.1'
 
-# Upgrade an admitted older generation when still required:
-yy task runtime-bootstrap --dry-run
-# review the printed immutable receipt
-yy task runtime-bootstrap --apply RECEIPT
+yylo-ledger --help
+yy ledger --help
+yylo-benchmark --help
+yy benchmark --help
 ```
 
-The provenance migration proves existing consumer runtime bytes against the
-controller identity's exact installed package before adding only the missing or
-legacy inventory entry through a commit/ref lease. Planning does not mutate any
-controller, target, ref, worktree, or Git administration byte. Apply revalidates
-the controller/repository common-dir, refs and trees, package executable and
-manifest, managed identity/inventory/generation, required runtime, and task policy
-under the controller and target locks; customized or ambiguous bytes refuse.
+Delegation preserves arguments, stdin/stdout/stderr, cwd, exit status, and signals. It never silently chooses a checkout-local or legacy executable. See the [Ledger repository](https://github.com/yylo-dev/yylo-ledger) and [Benchmark repository](https://github.com/yylo-dev/yylo-benchmark) for package-specific guidance and prerelease boundaries.
 
-The bootstrap command is restricted to the exact registered migrated sparse metadata
-controller. The plan binds controller class/identity, package version/runtime
-hash, full target ref and commit/tree, and the exact path's prior/proposed bytes.
-An absent consumer runtime is recoverable. Existing consumer bytes are
-replaceable only when their exact hash, prior package version, and template
-version agree in the committed managed inventory and that prior SemVer is older
-than the recovery package. The reviewed commit replaces the runtime and updates that inventory entry's
-template version and hashes together; it preserves the inventory-wide package
-version and every validated unrelated entry, retaining provenance for later upgrades.
-A Juno source repository is never repaired through this command: use a
-controller package/runtime matching a coherent newer target, or update an older
-source package, template, tracked runtime, and managed inventory atomically.
-Apply refuses moved refs, dirty
-worktrees, receipt tampering/completed replay, package mismatch, and customization;
-otherwise it creates a runtime recovery commit in an isolated clean worktree
-and durably records its apply intent. Before mutation it discovers exact target-ref
-holders under the merge queue's repository/target-ref lock. Every advancement uses
-expected-SHA CAS; with one exact clean unlocked holder, its planned-path index and
-files are prepared by a non-destructive Git merge and revalidated before CAS.
-Concurrent dirt refuses, and no post-CAS operation or reset can overwrite it. With
-no holder, a package-owned clean guard checkout holds the branch until immediately
-before durable completion. Dirty, locked, moved, or multiple holders refuse with explicit
-recovery guidance before mutation. If synchronization stops in an exact package-created partial state, the refusal
-prints a bounded `git restore --source=EXPECTED_SHA --staged --worktree` command
-for only the planned runtime/inventory paths; review and run it, then rerun the
-same receipt. A fully prepared holder or interrupted completion recovers directly
-from the same durable intent without another commit or unrelated ref advancement. `yy info` and `yy doctor workspace` report the invoker and
-registered controller executable versions separately from the receipt-bound
-script package/target; `yy scripts doctor` validates the receipt hashes rather
-than comparing them to the invoking package.
-
-If only the registered executable is stale, explicitly rebind it to an already
-installed `cli.mjs`; this changes controller-local identity and writes a receipt,
-but does not install, upgrade, or mutate any user package. The executable must
-be outside **every** Git worktree and Git ancestor:
+## Completion and help
 
 ```bash
-yy migrate runtime-rebind \
-  --root /absolute/controller --branch refs/heads/CONTROLLER \
-  --runtime /absolute/yylo/dist/bin/cli.mjs --runtime-version X.Y.Z \
-  --output /tmp/yy-runtime-rebind.json
+yy completion install
+yy completion status
+yy help
+yy COMMAND --help
 ```
 
-NVM itself is commonly a Git checkout, so an npm-global package below `~/.nvm`
-does not satisfy that immutable-path contract even when it is a released package.
-Use the supported exact-release installer instead of packing or copying files by
-hand. The prefix must be absent, outside all Git ancestors, and durable; a
-versioned location such as `~/.local/share/juno/runtimes/X.Y.Z` is recommended:
+Completion supports Bash, Zsh, and Fish. Use the nested help for your installed release rather than copying an option from a different channel.
 
-```bash
-yy migrate runtime-install-rebind \
-  --root /absolute/controller --branch refs/heads/CONTROLLER \
-  --runtime-version X.Y.Z \
-  --install-prefix "$HOME/.local/share/juno/runtimes/X.Y.Z" \
-  --output /tmp/yy-runtime-install-rebind.json
-```
+## Source-checkout toolchain (advanced)
 
-By default this resolves the exact `@yylo/cli@X.Y.Z` registry tarball. For an
-unpublished local RC, pass one previously created npm pack tarball with
-`--artifact /absolute/external/yylo-X.Y.Z.tgz`. The artifact must be a
-regular non-symlink file outside every Git worktree/ancestor. Juno authenticates
-its bounded bytes, SHA-256, package name, and exact version before mutation,
-installs an authenticated private snapshot in offline mode, and records the
-canonical artifact path/hash/size in the receipt.
-
-Both channels install with lifecycle scripts disabled, validate the installed
-package name/version and executable, then perform the same clean-controller
-transactional rebind. A failed install or rebind removes only the newly created
-prefix and records complete rollback checks. Existing prefixes, hash-drifted
-artifacts, and mutable source builds are never accepted or modified.
-
-If the installed controller launcher is itself an obsolete generation, use the
-runtime in the clean, detached, exact-target integration owner rather than editing
-ignored files directly:
+A monorepo checkout containing `juno-code/` and `juno_kanban/` can build isolated source aliases without replacing normal global `yy`:
 
 ```bash
-python3 /absolute/integration-owner/.juno_task/scripts/integration_workspace.py \
-  --controller /absolute/controller runtime-refresh \
-  --previous-sha FULL_PREVIOUS_SHA --target-sha FULL_TARGET_SHA
+./juno-code/scripts/juno-002-source-toolchain.sh install
+export PATH="$PWD/.juno_toolchain/juno-002/bin:$PATH"
+yy-juno-002 --version
+juno-kanban-juno-002 --version
+./juno-code/scripts/juno-002-source-toolchain.sh status
 ```
 
-The command applies the same receipt-field/Git-source corroboration, preserves
-unmatched owner customizations, writes a terminal receipt, and doctors the
-resulting generation. Supply the full previous and target SHAs from the pending
-merge evidence and use an exact-target runtime containing this recovery
-implementation. Use receipt-bound operations for topology repair and publication:
+Both aliases enforce the exact Ledger compatibility policy `>=2.0.5,<3.0.0`. Source selection, controller registration, and data history are separate boundaries:
 
 ```bash
-yy integration repair --dry-run
-yy integration repair --apply /absolute/path/to/repair-plan.json
-
-yy integration push
-# Optional reviewed/two-step mode:
-yy integration push --dry-run
-yy integration push --apply /absolute/path/to/push-plan.json
+./juno-code/scripts/juno-002-source-toolchain.sh register-controller /path/to/controller controller-branch
+./juno-code/scripts/juno-002-source-toolchain.sh controller-status
+./juno-code/scripts/juno-002-source-toolchain.sh rollback-selection
 ```
 
-Apply revalidates the plan digest, controller/owner/target identity, exact SHAs,
-and remote readiness under a lock. When a delivered target removes both the
-legacy checkout-local version-cache writer and tracked cache, repair can advance
-a clean stale protected owner only through its explicit receipt disposition. It
-requires those to be the only blockers, preserves recursive submodule paths,
-permits receipt-bound gitlink advances only from locally available objects, and
-hydrates with no fetch before exact final readback. Repair does not stash, reset,
-force, rewind, or discard dirty work. Push publishes submodules child-first and the root last,
-records every phase, refuses a remote race, and supports idempotent retry from
-truthful partial-failure receipts. A dry-run authorizes no mutation, and repair
-authority does not authorize push. Remote branch/tag push, npm/PyPI publication,
-deployment, production mutation, and post-deploy E2E remain separately explicit.
+The path and branch are placeholders. `rollback-selection` changes only isolated executable selection. Switching branches never downgrades or restores Ledger data. Back up and migrate a board through Ledger's reviewed data procedures.
 
-Agent guidance has two owners. The metadata controller receives ignored,
-installed `AGENTS.md`, `CLAUDE.md`, and core skills under `.agents/skills/`,
-`.claude/skills/`, and `.pi/skills/`; they guide orchestration without entering
-product history. Product/domain instructions and skills remain tracked with the
-product and become available inside each task worktree. Do not add a controller
-symlink to the integration owner: routing and `yy where controller` provide the
-link without making product search or staging cross the authority boundary.
+| Source lane | Owns | Must not do |
+| --- | --- | --- |
+| Controller | Metadata, orchestration, prompts, and receipts | Product implementation or implicit ref changes |
+| Task checkout | Scoped implementation and tests | Protected-target mutation |
+| Integration owner | Guarded candidate integration | Kanban/session writes or unrelated edits |
+| Small fix worktree | Exact-base small product repair | Bypass task/review/candidate boundaries |
 
-For a tiny fix, the process is intentionally short but still isolated:
-
-```text
-managed path        -> yy task run ID -> QUEUED -> yy merge drive --through ID
-observation         -> yy merge status | yy merge arbiter status
-recovery primitives -> yy task start ID -> edit + focused test + commit
-                    -> yy task preflight ID -> yy task finish ID
-                    -> explicit yy merge next|resolve
-```
-
-There is no size-based exception that permits product edits in the controller or
-integration owner. The worktree is the safety boundary; small fixes simply need
-small task scope and focused validation rather than a broad workflow or repeated
-full suites.
-
-### Bolt task and merge flow
+## Development
 
 ```bash
-# managed normal path
-yy task run TASK_ID
-yy merge drive --through TASK_ID
-
-# low-level recovery and diagnostics
-yy task start TASK_ID
-# implement, run focused tests, and commit in the returned worktree
-yy task preflight TASK_ID
-yy task finish TASK_ID
-
-# only when start reports a stale/absent consumer target runtime:
-yy task runtime-bootstrap --dry-run
-yy task runtime-bootstrap --apply RECEIPT
-# source targets use a matching controller runtime, or update source identities atomically
-
-yy merge status                         # read-only
-yy merge arbiter status                 # read-only
-yy merge arbiter run --through TASK_ID  # explicit fenced mutation
-yy merge drive --through TASK_ID        # explicit typed mutation
-yy merge plan TASK_ID --json            # read-only
-yy merge next                           # explicit recovery mutation
-# if a queued/reopen branch intentionally merged the current protected target:
-yy merge refresh plan TASK_ID
-# apply only the exact receipt path and SHA-256 returned by that plan:
-yy merge refresh apply TASK_ID --receipt PATH --receipt-sha256 SHA256
-# if a conflict is preserved, resolve only listed paths, then:
-yy merge resolve TASK_ID
-```
-
-Feature worktrees are independent, so X and Y can implement concurrently from
-recorded exact bases. One on-demand fenced arbiter owns target mutation and exits
-when idle or blocked; lease age alone never transfers ownership, and dirty bytes
-are preserved for bounded recovery. The queue reuses exact complete-input
-closures, applies bounded risk review, and advances by expected-old-SHA CAS.
-Post-CAS work verifies identity/readback only. Controller metadata never
-synchronizes into product history.
-
-A release wave is one explicit immutable epoch: close admission, include every
-eligible pre-cutoff candidate, compose a private train with one merge commit per
-task, run aggregate validation/review once, perform one target CAS, then emit
-read-only release readiness. `plan|status|inspect|epoch-status|shadow` observe;
-`seal|drive|eject|repair` mutate epoch state; RC/tag/push/publish/deploy/cleanup
-remain separate authorities. See the installed `sealed_release_epochs.md` wiki.
-An untouched incomplete terminal-finalization journal whose target later advanced
-only by descendant commits is recovered with `yy release train
-replay-finalization-successor EPOCH --predecessor-target OLD_SHA
---expected-target CURRENT_SHA`. The typed replay validates the immutable epoch,
-CAS/readiness and predecessor journal, requires exact `MERGED` queue truth and no
-prior member mutation, binds current Ledger revisions, then emits linked
-successor-complete and predecessor-superseded receipts after revision-CAS terminal
-projection. Partial/tampered/divergent predecessors fail closed and remain
-immutable. The legacy Git-flow helper retains only explicit status/sync/push for
-older disabled configurations; its controller reconciliation command refuses.
-
-Rollback operations are intentionally separate:
-
-1. **Source rollback:** use Git in the source worktrees to choose reviewed source commits; this does not select executables or alter Kanban data.
-2. **Executable selector rollback:** run `./yylo/scripts/juno-002-source-toolchain.sh rollback-selection`, then `status`; this swaps only the repository-local selected executable paths and does not replace normal global tools.
-3. **Kanban data rollback:** restore/migrate a separately backed-up board with Kanban's reviewed data procedures. Switching source branches—including switching to `master`—or selectors never downgrades, reverses conversion, or restores board data.
-
-These local commands authorize neither push/deploy nor production-board conversion or post-deploy E2E.
-
-The installation remains explicit and independent:
-
-```bash
-npm install -g @yylo/cli@0.2.0
-
-# For Pi agent support (optional - multi-provider coding agent)
-npm install -g @mariozechner/pi-coding-agent
-```
-
-After installation, initialize your project:
-
-```bash
-yylo init --task "Your task description" --subagent claude
-# Or with Pi (multi-provider agent)
-yylo init --task "Your task description" --subagent pi
-```
-
-### Shell Completion (Tab Autocomplete)
-
-```bash
-# Install completion for your current shell
-yylo completion install
-
-# Or explicitly target a shell
-yylo completion install bash
-yylo completion install zsh
-yylo completion install fish
-
-# Check status
-yylo completion status
-```
-
-After installation/reload, `yylo c<TAB><TAB>` suggests available subcommands.
-
----
-
-## The Ralph Method: Where It All Started
-
-![Ralph Wiggum - The Simpsons](https://ghuntley.com/content/images/size/w1200/2025/06/3ea367ed-cae3-454a-840f-134531dea1fd.jpg)
-
-> _"I'm in danger!"_ - Ralph Wiggum, every time you Ctrl+C a working AI loop too early
-
-[Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/) demonstrated something remarkable: AI can deliver production-quality software through iterative refinement. One engineer reportedly delivered a $50,000 project for $297 using this technique.
-
-The core insight is simple:
-
-```bash
-while :; do
-  claude
-done
-```
-
-Run the AI in a loop. Let it iterate. Watch it solve problems, fix bugs, and add features until you hit Ctrl+C.
-
-**But Ralph has problems:**
-
-| Problem             | What Happens                                              | Why It Matters                                         |
-| ------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
-| **One-time only**   | Ralph shines for single big tasks                         | Doesn't scale to iterative development with many tasks |
-| **Overcooking**     | Loop runs too long, AI adds features nobody asked for     | You get bloated code and wasted tokens                 |
-| **Undercooking**    | You Ctrl+C too early, work is incomplete                  | Features half-done, bugs half-fixed                    |
-| **Fragile state**   | Markdown files (TASKS.md, PLANNING.md) as source of truth | LLMs can corrupt format; no strict schema              |
-| **Vendor lock-in**  | Ralph was built for Claude Code                           | Can't easily switch to Codex, Gemini, Pi, or others    |
-| **No traceability** | Changes blend together                                    | Hard to debug, impossible to time-travel               |
-
-## yylo: Ralph, But Better
-
-yylo takes the Ralph insight—_AI works better in loops_—and adds the structure needed for real work:
-
-### Iteration Control: No More Overcooking
-
-```bash
-# Exactly 5 iterations - cooked perfectly
-yylo -b shell -s claude -m :opus -i 5 -v
-
-# Until kanban tasks complete - cooked exactly right
-./.juno_task/scripts/run_until_completion.sh -s claude -i 1 -v
-
-# Unlimited (like Ralph) - when you really want that
-yylo -b shell -s claude
-```
-
-### Task Tracking with YYLO Ledger: Structured, Not Prose
-
-Built-in task tracking uses **YYLO Ledger**, distributed as
-[`yylo-ledger`](https://pypi.org/project/yylo-ledger/). Hot current state uses
-safe Markdown plus hash-chained ledgers; explicitly archived terminal tasks use
-immutable NDJSON packs. `yy ledger` is the preferred command; `yy kanban`
-remains a behaviorally identical compatibility alias.
-
-Cross-project routing is disabled by default. Authorize it in `.juno_task/config.json` with `kanbanRegistry: { "enabled": true, "allowedProjects": ["alias"] }`, register an initialized destination with `yy ledger project add alias --path /absolute/project/path`, then route any read or write explicitly. Environment overrides are `JUNO_KANBAN_REGISTRY_ENABLED` and comma-separated `JUNO_KANBAN_REGISTRY_ALLOWED_PROJECTS`; enablement without allowed aliases remains deny-all.
-
-```bash
-yy ledger --project yylo create --body "Cross-project issue" --tags bug
-yy ledger --project yylo list --status todo
-```
-
-The destination wrapper/runtime remains authoritative, and invalid routing never falls back to the source board. This implementation boundary matters because direct foreign-storage access could bypass destination controller, virtualenv, stdin, or write guards; real two-project tests prove exact target and stdin behavior.
-
-Normal local usage remains unchanged:
-
-```bash
-# Query tasks programmatically - always parseable
-yy ledger list --status backlog todo in_progress
-
-# Each task is isolated; exact get transparently resolves hot or archived state
-yy ledger get TASK_ID
-
-# Scale to thousands of tasks without context bloat
-yy ledger list --limit 5  # Shows only hot work that matters
-```
-
-Cold archives never enter normal discovery. Owner-authorized maintenance uses a clean tree, an external revision-bound plan/receipt, `archive-pack create`, and both archive/global doctors. Never edit sealed packs, reopen an archived ID, infer production authorization, or combine implementation work with push/deploy/post-deploy E2E; create a new related hot task instead.
-
-```bash
-yy ledger archive-pack plan --status done,archive --older-than 90d --report /external/archive-plan.json
-yy ledger archive-pack create --plan /external/archive-plan.json --report /external/archive-create.json
-yy ledger archive-pack doctor
-yy ledger archive-search --tag backend --limit 20 --projection metadata
-```
-
-### Task Dependencies
-
-Declare what must be done first. The kanban system builds a dependency graph so agents work in the right order:
-
-```bash
-# Create a task that depends on another
-./.juno_task/scripts/kanban.sh create "Deploy API" --blocked-by A1b2C3
-
-# Or use body markup (4 synonym tags supported)
-./.juno_task/scripts/kanban.sh create "Deploy API [blocked_by]A1b2C3[/blocked_by]"
-
-# What's ready to work on right now?
-./.juno_task/scripts/kanban.sh ready
-
-# Dependency-aware execution order
-./.juno_task/scripts/kanban.sh order --scores
-
-# Inspect a task's dependency info
-./.juno_task/scripts/kanban.sh deps TASK_ID
-```
-
-### Backend Choice: Use Any AI
-
-Switch between Claude, Codex, Gemini, Pi, or Cursor with one flag:
-
-```bash
-# Stuck on a bug? Try different models
-yylo -b shell -s claude -m :opus -i 1 -v
-yylo -b shell -s codex -m :codex -i 1 -v
-yylo -b shell -s gemini -m :flash -i 1 -v
-yylo -b shell -s pi -m :sonnet -i 1 -v
-```
-
-### Parallel Execution
-
-Run multiple tasks simultaneously with the parallel runner:
-
-```bash
-# Run 3 kanban tasks in parallel
-./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
-
-# Visual monitoring in tmux
-./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 5
-
-# Process a CSV file with custom prompt
-./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file instructions.md --strict
-
-# Dependency-aware parallel execution
-./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
-```
-
-#### Tmux handoff for operator investigations
-
-Use tmux handoff when each item needs a stable pane for a human to inspect later. In `--tmux-handoff`, completed panes/windows are not reused; each task keeps its scrollback plus per-task JSON result containing the session ID and final response. If there are more tasks than the cap, `--max-panes-per-session N` splits the work into auditable child sessions and writes a manifest.
-
-```bash
-./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/prod_triage.yaml
-./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/prod_triage.yaml
-# later
-tmux attach -t pc-prod-triage-1
-yy continue <session_id>
-```
-
-Inspect `{{ out_dir }}/parallel` (or the printed parallel runner artifact path) for `parallel_runner_status.json`, per-task `*.json`, `aggregation_*.json`, and `tmux_handoff_manifest.json` when capped splitting is used. These artifacts matter because aggregation avoids reconstructing work from scratch, manifests make multi-session handoff auditable, and tests protect the no-reuse contract so handoff panes are not accidentally overwritten before `yy continue <session_id>`.
-
-### Workflow Runner
-
-Use Workflow Runner when the work is not just one prompt, but a repeatable multi-step process: gather context, run one or more agents, validate output, summarize artifacts, and hand off the final session for follow-up. Workflows run from YAML or stdin with durable artifacts, so teams can turn ad-hoc operator playbooks into reviewed, repeatable automation instead of rebuilding context from terminal scrollback.
-
-```bash
-./.juno_task/scripts/workflow_runner.sh --init-example agent-chain .juno_task/workflows/agent_chain.yaml
-./.juno_task/scripts/workflow_runner.sh --init-example production-triage-handoff .juno_task/workflows/prod_triage.yaml
-./.juno_task/scripts/workflow_runner.sh --init-example parallel-kanban-review .juno_task/workflows/parallel_kanban_review.yaml
-./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/agent_chain.yaml --dry-run
-./.juno_task/scripts/workflow_runner.sh --workflow .juno_task/workflows/agent_chain.yaml --tmux --no-print-step-stdout
-cat workflow.yaml | ./.juno_task/scripts/workflow_runner.sh --workflow - --print-output summary
-./.juno_task/scripts/workflow_runner.sh lint --workflow .juno_task/workflows/agent_chain.yaml
-./.juno_task/scripts/workflow_runner.sh doctor .juno_task/specs/workflows/<workflow_id>/<run_id>
-```
-
-Use `production-triage-handoff` when production discovery should fan out into capped tmux handoff panes (`--tmux panes --tmux-handoff --max-panes-per-session 4`) with a fixed `{{ out_dir }}/parallel` artifact root. Use `parallel-kanban-review` when a planning agent creates kanban tasks, parallel workers write aggregation artifacts, and a master review reads the latest `aggregation_*.json`. Use raw command YAML mode in `parallel_runner.sh` when the fan-out items are complete commands or multiple workflow files that should run concurrently. These examples matter because aggregation artifacts preserve final agent responses, session IDs, commits, and statuses; later review/`yy continue` handoff should not reconstruct history from tmux scrollback.
-
-Managed nested execution derives authority at each registered worktree boundary. When a controller-dispatched agent changes into a task worktree, Workflow Runner and nested `yy pi` discard the stale dispatch-root role assertion and use the task worktree's persisted registration; an explicit mismatch at the current dispatch root still fails closed. Version cache, failure, and lock state for task invocations is stored under the registered controller's ignored `.juno_task/runtime/managed-controller/version-checks/` tree, never in product output. Inherited cache-path overrides cannot redirect registered task diagnostics into the task worktree; an authoritative cached-version mismatch that cannot be repaired is reported with bounded hook evidence and blocks agent dispatch with a nonzero exit.
-
-By default, generic step failures are recorded in the manifest/report but do not make the process exit non-zero; set `fail_workflow: true` on a generic step when automation should fail fast. Typed `managed_agent` workflows are different and fail closed. They require the exact top-level policy `managed_agent_policy: {external_side_effects: forbidden, lifecycle_hooks: disabled}` and every managed step requires `stage_boundary: {root: /absolute/git/worktree, admitted_paths: [exact/relative/path, ...]}`. Lint validates the declarations, dry-run resolves the exact worktree boundary, and runtime hashes tracked and untracked content before and after dispatch. Any mutation outside that step's paths writes `stage_boundary.json`, fails the step before its successor, and performs no cleanup. Managed-agent receipts also record the effective `yy pi --no-hooks` policy, so prompt text is never the enforcement boundary for project lifecycle hooks. Declare `mode`, absolute controller/agent/prompt/output roots, and worker admission or reviewer candidate identity. Set `require_terminal_result: true` to require the provider capture to declare a typed `completed`, `blocked`, `incomplete`, or `failed` result; Workflow Runner verifies its receipt-bound step digest, session, candidate identity, and response hash, and only `completed` can succeed. Top-level `final_worktree: {path: /absolute/worktree, head: <40-hex-sha>}` adds a clean exact-HEAD terminal equality gate. They always fail the workflow on transport or semantic failure and delegate fresh configured-default `yy pi` execution to `managed_agent_runner.py`; outer capture is disabled while live `stdout.log`, `stderr.log`, labelled `combined.log`, and the hash-bound launcher receipt remain available without tmux. Managed `yy pi` commands inherit project model/provider defaults. A project may approve exact explicit selectors with `workflowModels`; model-only spelling must match exactly, while `--provider P --model M` is checked as `P/M`. Missing or empty `workflowModels` rejects explicit selection. Workflow Runner applies this to steps, summary, and every review surface, and rejects provider-only, inline environment, `--additional-args`, and alternate-config bypasses. Policy/config hashes and normalized selections are bound into run and recovery evidence. Workflow and parallel subprocesses inherit the canonical `JUNO_TASK_ROOT` plus an isolated session metadata destination. Durable run artifacts retain selected session IDs even though mutable history, branch, and runtime-marker files stay outside product worktrees. Add `--tmux` to create a dedicated detached observer session; it does **not** detach the producer, so the invoking command must remain alive. The runner prints the attach command and streams step stdout/stderr into `workflow.live.log` for that session even when `--no-print-step-stdout` keeps the invoking console quiet. The observer remains available after completion for review, and `manifest.json` records its session, live log, and attach command; use `--tmux-session NAME` for a stable custom name. Steps that invoke `yylo`, `yy`, or `ypl` automatically capture session metadata for later `{{ steps.<id>.session_id }}` templates unless `capture_session: false` is set. For agent steps, use `{{ steps.<id>.response }}` as the final answer. The runner does not inject `--quiet`; it keeps successful stderr logs in artifacts instead of echoing them to the operator console, and detected agent commands that exit 0 with an empty response are marked failed. Use `workflow_runner.sh lint` before cron runs to catch noisy `stdout`/`stderr` templates, and `workflow_runner.sh doctor`/`dr` after runs to diagnose manifest/artifact response issues. `--print-output all` emits every completed step response on either success or failure and is validated by the same early selector path as `summary`, `none`, and explicit step IDs. At the end, detected agent step session ids are printed and the last session is persisted to the same continue-scope env file and main branch registry used by yylo, so `yy cc` can continue the last workflow agent session. Set top-level `continue_from_step: <step-id-or-name>` when a workflow should hand off a specific agent step instead; explicit selection is strict and fails if that step does not produce a session id. The runner is backed by subprocess tests because cron workflows depend on real process boundaries for command rendering, failure continuation, artifacts, stdout controls, live observer visibility, response capture, session visibility, and continue handoff.
-
-Cron owners should wrap a launch with `orchestration_guard.py --key <stable-name> -- <command>`. The guard requires the controller role, rejects a concurrent live owner, reclaims a stale marker, and never changes Git refs. A workflow singleton is **not** integration authority: research/report cron may produce reports and proposed tasks only. Automatic implementation follow-up requires an explicit reviewed policy, and advancing a target still requires the separate integration-owner lease and receipt described below.
-
-For mutation or integration workflows, declare `frozen_inputs`, typed `receipts`, `requires_receipts`, and a `terminal_gate`. Receipt contracts can require dotted fields and bind semantic values with `expected_fields`. A receipt declaration is the path source of truth: prompts and commands use `{{ receipts.<id>.path }}` or the injected `JUNO_WORKFLOW_RECEIPT_<ID>` environment variable instead of repeating a literal path. IDs are lowercase and unambiguous after environment-key normalization. Lint detects identifiable hardcoded paths that contradict a declaration.
-
-A step that composes a product candidate can declare `candidate_composition: {manifest_path: "{{ route_manifest }}", receipt_path_field: candidate_receipt_path, changed_paths_field: changed_paths}`. After the producer has written the receipt, Workflow Runner replaces `changed_paths` with Git's tracked-plus-untracked worktree paths. This post-write reconciliation necessarily includes an in-worktree candidate receipt itself and records hash-bound `candidate_composition.json` evidence; malformed declarations or an in-worktree receipt absent from Git fail closed.
-
-The first attempt writes `run_contract.json`, the single checkpoint and attempt index. A successful step becomes reusable only after stdout, stderr, response, optional capture, and every declared receipt are atomically persisted and hash-bound with command/run/attempt identity. If the producer is interrupted before terminal metadata, run `workflow_runner.sh recover-attempt RUN_DIR --dry-run`, then `recover-attempt RUN_DIR`; recovery refuses active, partial, non-contiguous, cross-run, or drifted evidence, appends an `interrupted` manifest, and never infers semantic completion. Resume exactly at its reported first invalid step. `workflow_runner.sh doctor`, workflow review packets, and `task_workflow_helper.py finalize-review` all use the same `workflow_run_evidence.py` resolver, preferring the newest hash-bound contract attempt while retaining root `manifest.json` only as the legacy fallback. Resuming the same output directory with `--from-step` verifies the unchanged workflow, variables, rendered commands, frozen inputs, producer digests, and receipt hashes before marking predecessors `reused_verified`. A harness-only correction instead uses a fresh output directory, `amendment_mode: harness_only_validation`, and `--amends-run PRIOR_RUN`. Add `--from-step STEP` to make that amendment selective: before dispatch, the runner hash-verifies the prior successful prefix, exact attempt/manifest lineage, completed command identity, frozen inputs/templates/variables, and receipt bytes/contracts. Only receipt-path relocation is allowed; missing, tampered, ambiguous, added, removed, reassigned, or weakened evidence fails closed. The printed execution plan and `manifest.json.amendment_plan` list revalidated/reused and executed steps; imported steps are recorded as `amendment_revalidated`. Omit `--from-step` when a full fresh amendment replay is intended. Never edit a historical run to make evidence reusable.
-
-Product mutation uses the Bolt task and merge interfaces rather than Workflow Runner integration choreography:
-
-```bash
-yy task run TASK_ID
-yy task start TASK_ID
-yy task status TASK_ID
-yy task preflight TASK_ID
-yy task finish TASK_ID
-yy merge status
-yy merge drive --through TASK_ID
-yy merge next
-yy merge resolve TASK_ID
-```
-
-The project-owned task and risk policies name the exact product target, allowed paths, focused validation, worktree naming, and objective risk. Controller-owned committed task/merge YAML and lifecycle prompts compile only to typed engine operations; active attempts bind their exact commit and digests, and automatic model-authored template mutation is refused. Inert configured text produces an exact zero-command proof, active product documentation runs only the cheap identity/link/schema/coherence audit, and mixed or unknown paths fall back. Verified command closures cross finish, refresh, and merge with executed/reused/invalidated counters; grouped coherence and parsed test-result integrity gate suites and review. Task start freezes the target SHA; read-only task preflight reports closure defects before expensive final gates; task finish queues a clean committed tip. Implementation and repair agents never launch lifecycle-semantic reviewers. The merge queue solely owns moved-target composition, conflict preservation, affected validation, bounded risk evidence, expected-SHA CAS, deterministic target readback, and reachability-safe cleanup. It permits one repair candidate and one delta review group, then stops as `REVIEW_FINDINGS_EXHAUSTED`. Release remains outside this reusable flow.
-
-Low risk uses no semantic reviewer. Normal risk uses at most one fresh read-only reviewer. High risk preserves Reviewer A then Reviewer B sequentially on the same frozen tip. After cheap gates, Reviewer A overlaps the complete suite; B launches only after A PASS while the suite may remain in flight, and a blocking A safely cancels the suite with immutable evidence. A replacement tip invalidates prior evidence. Byte-identical post-CAS delivery does not trigger another semantic review.
-
-`workflow_class: local_integration` is hard-rejected for lint/start/resume/recovery/amendment. Existing artifacts remain immutable and doctor-readable, and generic non-lifecycle workflows remain supported. There is no adapter or dual integration runtime. Why tests and implementation both matter: the state machine enforces phase/ref/review/cleanup boundaries, while real-Git, exact-tip clone, package-parity, and medium/high canary tests prove installed users receive those guarantees.
-
-Some historical local `vX.Y.Z` tags in the development repository do not match the package metadata at their tagged commits. They are retained as immutable history, not accepted as release truth and never rewritten by lifecycle automation. Every new package release must bind one exact SemVer across `package.json`, the lockfile, generated frontend facts, the built and linked CLI `--version`, the release commit, and the newly created `vVERSION` tag before any publication; local feature automation uses only `juno-feature/...` and cannot create or repair release tags. Package release commits use the exact-path `controller_checkpoint.py release-commit` authority, which verifies an installed managed hook while leaving the ordinary integration-owner commit boundary as a hard deny.
-
-The first YYLO checkpoint uses the explicit `--set v0.1.0-rc.1` identity; stable `v0.1.0` requires a separate post-observation decision. The helper accepts exact SemVer prereleases but rejects build metadata, malformed or non-increasing versions, existing tags, and partial identities before release mutation. From the canonical clean detached exact-target integration owner, use matching arguments with `--plan /outside/repository/release-plan.json`, review the hash-bound commands, identities, Node matrix, and publication exclusions, then use `--apply` with that plan. Apply revalidates the exact target/ref lease and advances it by CAS while the owner remains detached and healthy. These checkpoints do not relax the dedicated strict integration-owner/controller topology, clean checkout, locked dependency, multi-Node link, bounded release-commit, or no-publication gates.
-
-Controller checkpoints remain local orchestration durability only. They are not product inputs or integration gates. `controller_checkpoint.py plan --json` is read-only; configured commits remain bounded to explicit controller paths. Ordinary/workflow/parallel outer finalizers may checkpoint after terminal writes, but target integration never requires an unrelated controller checkout to become clean or idle.
-
-### Full Traceability: Every Change Tracked
-
-- Every task links to a git commit
-- Jump to any point in development history
-- High token efficiency—AI can search git history instead of re-reading everything
-
-### Hooks Without Lock-in
-
-Run scripts at any lifecycle point. Works with ANY backend, not just Claude:
-
-```json
-{
-  "hooks": {
-    "START_ITERATION": { "commands": ["./scripts/lint.sh"] },
-    "END_ITERATION": { "commands": ["npm test"] }
-  }
-}
-```
-
-### Human-Readable Logs
-
-`-v` gives you structured output instead of raw JSON dumps:
-
-```bash
-yylo -b shell -s claude -i 5 -v
-# Clean, readable progress instead of wall of JSON
-```
-
-### Quota Limit Handling
-
-Auto-wait when you hit API rate limits instead of failing:
-
-```bash
-# Wait automatically when hitting hourly limits
-yylo -b shell -s claude -i 10 --on-hourly-limit wait
-
-# Or exit immediately (default)
-yylo -b shell -s claude -i 10 --on-hourly-limit raise
-```
-
-## Quick Start
-
-```bash
-# Install the current release
-npm install -g @yylo/cli@0.2.0
-
-# Initialize project
-yylo init --task "Add user authentication..." --subagent claude
-
-# Start execution - uses .juno_task/init.md (optimized Ralph prompt)
-yylo start -b shell -s claude -i 1 -v
-
-# Or with a custom prompt
-yylo -b shell -s claude -i 5 -p 'Fix the login bug'
-
-# Default Ralph based on kanban , without -p , yylo uses .juno_task/prompt.md as prompt
-yylo -b shell -s claude -i 5 -v
-```
-
-**Key insight**: Running `yylo start` without `-p` uses `.juno_task/prompt.md`—a production-ready prompt template that implements the Ralph method with guard rails.
-
-### Shell safety for prompts
-
-When prompt text contains shell metacharacters (especially backticks `` `...` `` or `$()`), prefer one of these patterns so your shell does not execute substitutions before yylo receives the prompt:
-
-```bash
-yylo -s claude -p 'literal text with `backticks` and $(dollar-parens)'
-yylo -s claude -f prompt.md
-yylo -s claude << 'EOF'
-literal text with `backticks`
-EOF
-```
-
-### Oversized prompt transport
-
-`yylo` protects shell-backend runs from OS `E2BIG` spawn failures by switching large prompts away from argv/env transport. The threshold is controlled by `JUNO_PROMPT_ARG_MAX_BYTES` (default `65536` bytes / 64 KiB). Prompts at or below the threshold may use normal argv/env paths; larger prompts are sent through managed prompt files or stdin so wrappers do not copy huge payloads into `JUNO_INSTRUCTION` or vendor CLI arguments.
-
-You do not need to create temp files yourself. When file transport is required, yylo manages prompt files under `/tmp/yylo/` and cleans internal handoff files where safe. The tests assert argv/env/stdin/file behavior because this backing implementation is what prevents regressions where a safe CLI stdin/heredoc entry point later becomes a huge Python wrapper argv or environment variable.
-
-### Prompt-time command substitution (per iteration)
-
-`yylo` also supports explicit prompt-time shell substitutions that run inside the working directory on **every engine iteration**:
-
-- `!'command'`
-- `!\`\`\`command\`\`\``
-
-Examples:
-
-````bash
-yylo claude -i 3 -p "Summarize git status: !'git status --short'"
-yylo claude -i 2 -p "Recent commits:\n!```git log -n 5 --oneline```"
-````
-
-This avoids relying on your shell’s one-time backtick expansion and keeps command output fresh across retries/iterations.
-
-## CLI Reference
-
-### Core Commands
-
-```bash
-# Initialize - sets up .juno_task/ directory structure
-yylo init --task "description" --subagent claude
-yylo init --interactive  # wizard mode
-
-# Start execution (uses .juno_task/prompt.md by default)
-yylo start -b shell -s claude -i 5 -v
-yylo start -b shell -s codex -m :codex -i 10
-
-# Direct prompt execution
-yylo -b shell -s claude -i 3 -p 'your prompt'
-
-# Quick subagent shortcuts
-yylo claude 'your task'
-yylo codex 'your task'
-yylo gemini 'your task'
-yylo pi 'your task'
-
-# Pi live interactive run (auto-exits on non-aborted completion)
-yylo pi --live -p '/skill:ralph-loop' -i 1
-
-# Installed shortcuts
-# yy is the short binary alias for yylo.
-# ypl is shorthand for yy pi --live and forwards all remaining args.
-yy pi --live 'hello'
-ypl 'hello'
-ypl '/skill:ralph-loop' -i 1
-
-# AI-powered test generation
-yylo test --generate --framework vitest
-yylo test --run
-
-# View and parse log files
-yylo view-log .juno_task/logs/claude_shell_*.log --output json-only --limit 50
-```
-
-### Iterative command workflows with `yylo loop`
-
-`yylo loop` (also available through the short `yy` alias) repeats arbitrary shell commands sequentially. Its `-n/--iterations`
-flag bounds the **outer command workflow**; the existing global and agent
-`-i/--max-iterations` flag still bounds iterations inside an agent invocation.
-The loop does not parse or rewrite `yy pi`, `yy cc`, clone, switch, or other
-provider commands.
-
-Inline steps are repeatable:
-
-```bash
-yylo loop -n 5 \
-  --step 'yy pi "Implement the next increment"' \
-  --step 'yy cc "Inspect and improve your work"' \
-  --step 'npm test'
-```
-
-For a reusable workflow, save the same contract as YAML:
-
-```yaml
-iterations: 5
-continuity: iteration
-on_error: continue
-steps:
-  - run: yy pi "Implement the next increment"
-  - run: yy cc "Inspect and improve your work"
-  - run: npm test
-```
-
-```bash
-yylo loop --workflow flow.yaml
-```
-
-CLI values override YAML top-level defaults, for example
-`yylo loop --workflow flow.yaml -n 2 --continuity run --on-error stop`.
-The workflow accepts only `iterations`, `continuity`, `on_error`, and a nonempty
-ordered `steps` list. Every step requires nonempty `run` text and may set its own
-`on_error: continue|stop`.
-
-Continuity controls which existing YYLO continue scope child commands share:
-
-- `iteration` (default): every iteration gets a new scope. `yy pi`, `yy cc`,
-  `yy clone`, and `yy switch` steps in that iteration share it; the next
-  iteration is isolated.
-- `run`: all iterations share one scope, enabling explicit continuation or
-  cloning across iteration boundaries.
-- `shell`: the loop injects no scope and preserves the caller's inherited
-  `YYLO_CONTINUE_SCOPE` behavior.
-
-The default failure policy is `continue`: a failed step is recorded, remaining
-steps in that iteration are skipped, and the next iteration starts. With
-`--on-error stop` (or a YAML step override of `on_error: stop`), nothing further
-is launched. Any failed command makes the final loop exit nonzero even if later
-iterations run. SIGINT/SIGTERM stop the active child and prevent later launches.
-The terminal summary reports the loop ID and completed, failed, and skipped work.
-
-Every step receives one-based loop metadata through `YYLO_LOOP_ID`,
-`YYLO_ITERATION`, `YYLO_ITERATION_COUNT`, `YYLO_STEP`, and `YYLO_STEP_COUNT`.
-
-### Global Options
-
-| Flag                         | Description                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| `-b, --backend <type>`       | Backend: `shell`                                                                 |
-| `-s, --subagent <name>`      | Service: `claude`, `codex`, `gemini`, `pi`, `cursor`                             |
-| `-m, --model <name>`         | Model (supports shorthands like `:opus`, `:haiku`)                               |
-| `-i, --max-iterations <n>`   | Iteration limit (-1 for unlimited)                                               |
-| `-p, --prompt <text>`        | Prompt text (if omitted with `start`, uses prompt.md)                            |
-| `-f, --prompt-file <path>`   | Read prompt from a file instead of `-p`                                          |
-| `-v, --verbose`              | Human-readable verbose output                                                    |
-| `-r, --resume <id>`          | Resume specific session                                                          |
-| `--continue`                 | Continue most recent session                                                     |
-| `--clone [prompt]`           | Pi-only: fork a clone from `--resume <id>` or the current shell continue scope   |
-| `--live`                     | Pi-only: run Pi in interactive TUI mode with auto-exit on non-aborted completion |
-| `--no-hooks`, `--no-hook`    | Skip lifecycle hooks (equivalent spellings)                                      |
-| `--on-hourly-limit <action>` | Quota limit behavior: `wait` (auto-retry) or `raise` (exit)                      |
-| `--force-update`             | Force reinstall all scripts and services                                         |
-| `--til-completion`           | Loop until all kanban tasks are done                                             |
-| `--pre-run-hook <name>`      | Execute named hooks before loop                                                  |
-
-### Session Management
-
-```bash
-yylo session list                # View all sessions
-yylo session info abc123         # Session details
-yylo --resume abc123 -p 'continue'   # Resume session
-yylo --continue -p 'keep going'      # Continue most recent (backend-native)
-yylo continue 'next prompt'          # Reuse last session id + runtime settings snapshot
-yylo clone 'Explore approach A'      # Fork current shell continue-scope Pi session
-yylo clone --name C 'Explore C'      # Clone main into named branch C
-yylo clone --from C --name M 'Explore M'  # Clone branch C into branch M
-yylo branches                        # List this shell's named branches
-yylo switch C                        # Make C active for future continue runs
-yylo continue --clone 'Explore approach B'
-yylo --resume abc123 --clone 'Explore approach C'  # Fork explicit session id
-yylo pi --resume abc123 'Continue work'             # Resume explicit session id
-```
-
-Each `yylo` run also appends execution history to `session_history.json` under the shared Git-common-dir Juno state root (unlimited, newest-first). `session_branches.json` and `continue_scope_runtime.json` use the same resolver, so linked worktrees cannot dirty tracked product paths or overwrite another repository's state. Non-Git directories use an identity-keyed user state directory. Set `YYLO_SESSION_METADATA_DIRECTORY` for an explicit location; existing project-local metadata is left untouched until the user explicitly adopts or migrates it.
-
-Per-run entries include: initial prompt + timestamp, subagent/model/settings, total cost, turn/message counts, session IDs, and last-message timestamp.
-
-CLI run summaries also surface these fields live in the terminal:
-
-- `Statistics -> Total Cost`
-- `Statistics -> Completed At`
-- `Statistics -> Average Duration` (humanized unit: ms/s/m/h)
-- `Session ID(s)` entries with per-session cost when available
-
-For `yylo continue`, automatic session routing, validated execution settings, and named branches live in one versioned `session_continuity.v2.json` document under Git-common session metadata. Each shell-scoped record includes its source, creation/last-use timestamps, pin state, active branch, and branch sessions. One TypeScript service validates, locks, re-reads, and atomically replaces this document; `.env.yylo` remains user configuration and is not rewritten during normal continuity operation.
-
-Legacy continuity cleanup is explicit and reversible:
-
-```bash
-yylo continuity doctor --json
-yylo continuity clean                         # dry-run inventory only
-yylo migrate inventory --project . --output /durable/inventory.json
-yylo migrate owner-template --inventory /durable/inventory.json --output /durable/answers.json
-yylo migrate generate-policy --inventory /durable/inventory.json --answers /durable/answers.json --output /durable/policies.json
-yylo migrate evacuation-plan --inventory /durable/inventory.json --policy /durable/policies.json --project /absolute/source --output /durable/evacuation-plan.json
-yylo migrate evacuation-apply --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-apply.json --allow-disposable-mutation
-yylo migrate evacuation-verify --plan /durable/evacuation-plan.json --candidate /absolute/disposable-worktree --output /durable/evacuation-verify.json
-yylo continuity clean --plan /tmp/review.json # redacted reviewed plan; no state change
-yylo continuity clean --apply /tmp/review.json
-yylo continuity rollback <receipt-path>
-yylo continuity pin [SCOPE_0123456789ABCDEF]
-yylo continuity unpin [SCOPE_0123456789ABCDEF]
-```
-
-Metadata evacuation is bound to the exact reviewed inventory, policy, product
-ref/commit/tree, and independent controller rollback identity. Apply is restricted to
-a clean disposable linked worktree and never stages, commits, moves the product ref,
-registers a controller, or removes the rollback controller. Unclassified paths and
-nested repository/gitlink boundary crossings fail closed.
-
-Apply rechecks default/custom env and metadata hashes under the shared lock, writes mode-600 backups and a value-free receipt, imports retained legacy state once, and removes only recognized continuity assignments. Unknown env bytes remain exact. Automatic retention runs under that same lock after successful continuation reads and state writes: unprotected implicit lookup metadata expires after 30 days, then only the 128 most recently used inactive scopes remain. Current, proven-live, explicitly pinned, and non-main named-branch scopes are protected. An explicit `YYLO_CONTINUE_SCOPE` selects identity but does not pin it; use `continuity pin` for owner protection. If protected records alone exceed the limit, Juno emits a value-free count warning and retains them. Rollback is hash-guarded and refuses concurrent changes; retention, cleanup, and rollback never inspect or delete Pi session files.
-
-Expiration removes only automatic lookup metadata. A missing Pi session fails without deleting its continuity record or trying another scope, and the error directs the operator to an explicit `--resume <session-id>` or a new run. Deterministic clock/TTL/LRU/live/pin/named/concurrency/missing-session tests plus the persisted 2,500-scope structural regression matter because prose or cleanup commands cannot enforce the hard bound, prove lost-update safety, or prove that explicit recovery remains available without cross-scope routing.
-
-Scope detection prefers terminal markers (for example `TMUX_PANE`, `WEZTERM_PANE`, `TERM_SESSION_ID`) and falls back to the parent shell PID. You can override scope resolution explicitly with `YYLO_CONTINUE_SCOPE=<name>`. `YYLO_SESSION_METADATA_DIRECTORY` still selects a custom metadata root.
-
-Continuation is resolved in the parent before dispatch. Resolver, hook, prompt-substitution, Kanban, backend/service/provider, workflow, and parallel children preserve ordinary credentials/configuration plus controller routing, but do not inherit legacy or historical scoped session/settings keys. Resume and execution settings instead travel through typed execution requests. Concurrency, malformed-document, stale-lock, routing, and deterministic 2,500-pair boundary tests matter because only the locked backing service prevents lost updates, while routing tests prove no caller silently restores the retired env/branch stores.
-
-Script endpoint for hash/status lookups:
-
-```bash
-yylo continue-scope --json                    # current scope hash + status
-yylo continue-scope A1B2C3 --json             # lookup by short hash prefix (5-6 chars)
-yylo continue-scope --json --parent-pid 1234  # scope seen by a child of PID 1234
-```
-
-`continue-scope` returns `status` as one of: `running`, `finished`, `not_found`, `error`. Script runners use `--parent-pid` for caller/child handoff scopes; descriptor selection, hashing, and environment-key generation remain owned exclusively by TypeScript rather than being mirrored in runner code.
-
-### Pi Session Cloning and Named Branches
-
-Pi session cloning lets one root session branch into independent experiments without branches overwriting each other. `yylo` uses Pi native `--fork`, so every clone receives a dedicated Pi session id that can be continued independently.
-
-```bash
-ypl 'init'
-yy clone 'research auto-branch'   # auto-names b1, b2, ...
-yy clone C 'research C'
-yy clone D 'research D'
-yy --resume <session-id> --clone '@@close_loop'  # fork an explicit session id (not named)
-ypl --resume <session-id> '@@close_loop'         # resume an explicit session id live
-yy cc 'continue main'
-yy switch C
-yy switch +                 # next branch, wraps at end
-yy switch -                 # previous branch, wraps at start
-yy cc 'continue C'
-yy switch C 'continue C immediately'
-
-# Equivalent long forms:
-yylo branches
-yylo switch C
-yylo switch C 'Continue C immediately'
-yylo clone 'Explore auto-branch'
-yylo clone C 'Explore C'
-yylo clone --name C 'Explore C'
-yylo clone --from C --name M 'Explore M'
-```
-
-Named branch behavior:
-
-- `yylo branches` shows named branches for the current shell/pane and marks the active branch.
-- `yylo switch C` makes `C` active for future `yylo continue` / `yy cc` in that shell; `yylo switch +` and `yylo switch -` cycle to the next/previous listed branch with wraparound; `yylo switch C 'prompt'` switches first and then runs the prompt immediately as a continue on `C`.
-- `yylo clone 'prompt'` auto-assigns the first available generated branch name (`b1`, `b2`, ...) when a branch registry exists for the current shell, clones from `main`, runs the prompt immediately, and does **not** switch the active branch.
-- `yylo clone C 'prompt'` is shorthand for `yylo clone --name C 'prompt'`; both clone from `main` by default, run the prompt immediately in `C`, overwrite `C` if it exists, and do **not** switch the active branch.
-- `yylo clone --from C --name M ...` clones from branch `C` into branch `M`; `--name main` is rejected because `main` is reserved.
-- Each shell/pane has its own active branch registry; normal use does not require manually naming scopes.
-- If a new terminal tab reports `No named session branches found for this shell scope`, that tab has a different continue scope. Run `ypl 'init'` in that tab, run from the original tab, or set a shared `YYLO_CONTINUE_SCOPE=<name>` before starting runs that should share branch state.
-- A new root/main run resets that shell's branches to only `main`; explicit `--resume <session-id> ...` without `--clone` also resets branches and makes `main` point at the resulting session.
-
-Explicit session-id resume/clone behavior:
-
-- `yylo pi --resume <session-id> 'prompt'` or `ypl --resume <session-id> 'prompt'` resumes that exact Pi session. Because `ypl` expands to `yy pi --live`, do **not** run `ypl clone C ...`; `clone C` would be treated as prompt text.
-- `yylo --resume <session-id> --clone 'prompt'` forks the explicit session id as a non-named clone.
-- `yylo clone C --resume <session-id> 'prompt'` is not the named-branch syntax; named clones source from the branch registry (`main` by default, or `--from C`). Use `yylo --resume <session-id> --clone 'prompt'` for an explicit session id, or initialize/register `main` first and then use `yylo clone C 'prompt'`.
-- `yylo clone ...` and `yylo continue --clone ...` fork the current shell session and then future `yylo continue` in that shell follows the clone.
-
-The backing command-routing and branch-registry tests are important because they protect the user flow: clone, switch, and continue must target the intended session id so users do not accidentally continue `main` when they meant branch `C`, pass `clone C` through `ypl` as prompt text, drop an inline `switch C 'prompt'` request after switching, lose an unnamed clone because no branch name was recorded, or expect clone to switch branches automatically.
-
-### Feedback System
-
-```bash
-# While yylo is running, provide feedback
-yylo feedback "found a bug in the auth flow"
-yylo feedback --interactive
-
-# Or enable inline feedback
-yylo start -b shell -s claude --enable-feedback -i 10
-```
-
-### Skills Management
-
-Skills are Markdown instruction files (with YAML frontmatter) installed into agent-specific directories so each coding agent reads them as context. yylo auto-provisions skills on every CLI run.
-
-```bash
-# List installed skills
-yylo skills list
-
-# Install/update skills
-yylo skills install
-yylo skills install --force
-
-# Check skill status
-yylo skills status
-```
-
-**Skill groups by agent:**
-
-| Agent  | Directory         | Skills                                                                     |
-| ------ | ----------------- | -------------------------------------------------------------------------- |
-| Claude | `.claude/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-| Codex  | `.agents/skills/` | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-| Pi     | `.pi/skills/`     | `kanban-workflow`, `ralph-loop`, `plan-kanban-tasks`, `understand-project` |
-
-### Service Management
-
-```bash
-# View installed services
-yylo services list
-
-# Check service status
-yylo services status
-
-# Force reinstall (get latest)
-yylo services install --force
-```
-
-### Auth Management (Codex → Pi)
-
-```bash
-# Import default Codex auth into Pi auth store
-yylo auth import-codex
-
-# Use explicit input/output paths (useful for account switching/backup files)
-yylo auth import-codex --input ~/.codex/auth.json --output ~/.pi/agent/auth.json
-```
-
-This command translates Codex CLI credentials to Pi's `auth.json` format (`type: "oauth"`) and writes/updates the `openai-codex` provider entry.
-
-## Backends & Services
-
-### Supported Services
-
-| Service | Default Model                 | Shorthands                                                                                                                                                  |
-| ------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| claude  | `claude-sonnet-4-6`           | `:haiku`, `:sonnet`, `:opus`                                                                                                                                |
-| codex   | `gpt-5.3-codex`               | `:codex`, `:codex-mini`, `:gpt-5`, `:mini`                                                                                                                  |
-| gemini  | `gemini-2.5-pro`              | `:pro`, `:flash`, `:pro-3`, `:flash-3`                                                                                                                      |
-| pi      | `:gpt` → `openai-codex/gpt-5.6-sol` | `:pi`, `:default`, `:sonnet`, `:opus`, `:luna`, `:sol`, `:gpt`, `:gpt5.5`, `:mini`, `:gpt-5`, `:codex`, `:api-codex`, `:codex-spark`, `:api-codex-spark`, `:gemini-pro` |
-
-Pi's Codex-provider shortcuts include:
-
-| Shortcut  | Resolved Pi model                   |
-| --------- | ----------------------------------- |
-| `:luna`   | `openai-codex/gpt-5.6-luna`         |
-| `:sol`    | `openai-codex/gpt-5.6-sol`          |
-| `:gpt`    | `:sol` → `openai-codex/gpt-5.6-sol` |
-| `:gpt5.5` | `openai-codex/gpt-5.5`              |
-| `:mini`   | `openai-codex/gpt-5.6-terra`        |
-
-These aliases are subagent-specific: Pi's `:mini` selects Terra, while the Codex service keeps its existing `:mini` mapping.
-
-> **Pi** is a multi-provider coding agent that supports Anthropic, OpenAI, Google, Groq, xAI, and more.
-> It requires separate installation: `npm install -g @mariozechner/pi-coding-agent`
-
-### Pi Live Mode (`--live`)
-
-Use live mode when you want Pi's interactive TUI while keeping yylo iteration hooks/statistics.
-
-```bash
-# Canonical live flow
-yylo pi --live -p '/skill:ralph-loop' -i 1
-
-# Override the :gpt default when a different provider or model is required
-yylo pi --live -m :sonnet -p '/skill:ralph-loop' -i 1
-
-# GPT-5.6 models support Pi's max thinking level
-yylo pi -m :gpt --thinking max -p 'Analyze and implement this task' -i 1
-```
-
-Notes:
-
-- Pi accepts `--thinking off|minimal|low|medium|high|xhigh|max`; use `max` for GPT-5.6 models when maximum supported reasoning effort is desired. `PI_THINKING=max` provides the equivalent environment default.
-- `--live` is validated as **Pi-only** (`yylo pi ...`).
-- `--live` requires extensions enabled (`--no-extensions` is incompatible).
-- Live auto-exit is triggered on non-aborted `agent_end` only. Pressing `Esc` to interrupt the current run keeps Pi open so you can continue interacting.
-- To manually leave Pi and return control to yylo hooks/loop, use Pi's normal exit keys (for example `Ctrl+C` twice quickly or `Ctrl+D` on an empty editor).
-- Best experience is an interactive terminal (TTY) so Pi TUI can manage screen state cleanly.
-- Pi TUI depends on the Node runtime used to launch Pi; use a modern Node version (Node 20+) in PATH.
-
-### Custom Backends
-
-Service scripts live in `~/.yylo/services/`. Each is a Python script that accepts standard args (`-p/--prompt`, `-m/--model`, `-v/--verbose`) and outputs JSON events to stdout.
-
-For audited automation, `yy pi --execution-envelope --model PROVIDER/MODEL PROMPT`
-emits one `juno_execution_envelope.v1` JSON object as the sole stdout payload. Its
-provider/model/session/version/cost fields come from marked backend terminal evidence,
-not assistant text; missing cost remains unavailable and reported zero remains zero.
-
-## Hook System
-
-Hooks allow user-defined shell commands at execution lifecycle points. Configure in `.juno_task/config.json`:
-
-| Hook              | When                     | Example Use                   |
-| ----------------- | ------------------------ | ----------------------------- |
-| `START_RUN`       | Before all iterations    | Environment setup             |
-| `START_ITERATION` | Each iteration start     | File size monitoring, linting |
-| `END_ITERATION`   | Each iteration end       | Test execution                |
-| `END_RUN`         | After all iterations     | Cleanup, reports              |
-| `ON_STALE`        | Stale iteration detected | Alert, auto-create task       |
-
-**Default hooks** (set up by `yylo init`):
-
-- `START_ITERATION`: CLAUDE.md / AGENTS.md file size checks, feedback cleanup
-- `ON_STALE`: Creates a kanban warning task when no progress detected
-
-Example config:
-
-```json
-{
-  "hooks": {
-    "START_ITERATION": {
-      "commands": [
-        "test ! -f CLAUDE.md || [ $(wc -c < CLAUDE.md) -lt 40000 ] || echo 'WARNING: CLAUDE.md exceeds 40KB'",
-        "./.juno_task/scripts/cleanup_feedback.sh"
-      ]
-    },
-    "END_ITERATION": {
-      "commands": ["npm test"]
-    }
-  }
-}
-```
-
-## Autonomous Execution
-
-Use these runners as the core automation layer around `yylo`:
-
-| Need                                           | Use                                                        |
-| ---------------------------------------------- | ---------------------------------------------------------- |
-| One AI loop over project/kanban context        | `yylo start` or `yylo -p ...`                    |
-| Keep looping until kanban is done              | `run_until_completion.sh`                                  |
-| Many independent kanban tasks                  | `parallel_runner.sh --kanban ...` or `--kanban-filter ...` |
-| Many complete shell commands or workflow files | `parallel_runner.sh --commands-file ...`                   |
-| Ordered multi-step operator/team process       | `workflow_runner.sh --workflow ...`                        |
-| Human inspection after parallel work           | `parallel_runner.sh --tmux-handoff ...`                    |
-| Continue the final workflow agent session      | workflow handoff + `yy cc`                                 |
-
-The runner tests exercise real subprocess boundaries because this is where production failures usually hide: command rendering, stdout/stderr handling, artifact capture, session IDs, and continue handoff all need to work outside an in-process unit-test harness.
-
-### run_until_completion.sh
-
-Continuously runs yylo until all kanban tasks are completed. Uses a do-while loop: yylo runs at least once, then continues while tasks remain in backlog, todo, or in_progress status.
-
-```bash
-# Run until all tasks complete
-./.juno_task/scripts/run_until_completion.sh -s claude -i 5 -v
-
-# With custom backend and model
-./.juno_task/scripts/run_until_completion.sh -b shell -s codex -m :codex -i 10
-```
-
-#### Stale Detection
-
-Tracks kanban state between iterations. After 3 consecutive iterations with no task changes (configurable), executes `ON_STALE` hook and exits.
-
-```bash
-# Custom stale threshold
-./.juno_task/scripts/run_until_completion.sh -s claude -i 5 --stale-threshold 5
-
-# Disable stale checking
-./.juno_task/scripts/run_until_completion.sh -s claude -i 5 --no-stale-check
-```
-
-#### Pre-run Commands & Hooks
-
-Execute commands or named hooks before the main loop:
-
-```bash
-# Single pre-run command
-./.juno_task/scripts/run_until_completion.sh --pre-run "./scripts/lint.sh" -s claude -i 5
-
-# Named hooks from config.json
-./.juno_task/scripts/run_until_completion.sh --pre-run-hook SLACK_SYNC -s claude -i 5
-
-# Multiple pre-run commands (executed in order)
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run "./scripts/sync.sh" \
-  --pre-run "npm run build" \
-  -s claude -i 5 -v
-```
-
-**Execution order** when both hooks and commands are specified:
-
-1. Hooks from `JUNO_PRE_RUN_HOOK` env var
-2. Hooks from `--pre-run-hook` flags (in order)
-3. Commands from `JUNO_PRE_RUN` env var
-4. Commands from `--pre-run` flags (in order)
-5. Main yylo loop begins
-
-### Parallel Runner
-
-Orchestrate N concurrent yylo processes with queue management, structured output, and optional tmux visualization.
-
-#### Input Modes
-
-| Input                                  | Description                                                        |
-| -------------------------------------- | ------------------------------------------------------------------ |
-| `--kanban T1,T2,T3`                    | Kanban task IDs                                                    |
-| `--kanban-filter '--tag X --status Y'` | Query kanban, auto-extract IDs                                     |
-| `--kanban-filter 'ready'`              | Dependency-aware: only unblocked tasks                             |
-| `--items "a,b,c"`                      | Generic item list                                                  |
-| `--items-file data.csv`                | File input (JSONL, CSV, TSV, XLSX)                                 |
-| `--commands-file workflows.yaml`       | Raw command YAML mode: fan out complete commands or workflow files |
-
-#### Execution Modes
-
-| Mode         | Flag           | Description                             |
-| ------------ | -------------- | --------------------------------------- |
-| Headless     | (default)      | ThreadPoolExecutor, output to log files |
-| Tmux Windows | `--tmux`       | Each worker = tmux window               |
-| Tmux Panes   | `--tmux panes` | Workers as split panes                  |
-
-```bash
-# Headless parallel execution
-./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,T3 --parallel 3
-
-# Tmux visualization with 5 workers (interactive attach)
-./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 5
-
-# Explicit background launch for nohup, CI, cron, or a non-TTY remote shell
-./.juno_task/scripts/parallel_runner.sh --tmux tabs --no-attach --kanban T1,T2,T3
-# The runner exits after launch and prints concrete attach, tail/follow, wait, and stop commands.
-
-# Process file with extraction
-./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file crawl.md --strict
-
-# Generate, lint, then run raw command/workflow batches
-./.juno_task/scripts/parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
-./.juno_task/scripts/parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
-./.juno_task/scripts/parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
-
-# Use different AI backend
-./.juno_task/scripts/parallel_runner.sh -s codex -m :codex --kanban T1,T2
-
-# Session control
-./.juno_task/scripts/parallel_runner.sh --stop --name my-batch
-./.juno_task/scripts/parallel_runner.sh --stop-all
-```
-
-#### Raw command YAML mode
-
-Use raw command YAML mode when each parallel item is already a complete command, such as several `workflow_runner.sh --workflow ...` invocations. This composes with Workflow Runner: `workflow_runner.sh` owns ordered steps and per-run artifacts, while `parallel_runner.sh --commands-file` owns concurrent fan-out, queueing, and aggregate status.
-
-```bash
-./.juno_task/scripts/parallel_runner.sh --init-commands-example .juno_task/commands/workflows.yaml
-./.juno_task/scripts/parallel_runner.sh --lint-commands-file .juno_task/commands/workflows.yaml
-./.juno_task/scripts/parallel_runner.sh --commands-file .juno_task/commands/workflows.yaml --parallel 3
-```
-
-The command file supports schema `v1`; command entries may be shell command strings or argv lists. Run the lint command before unattended batches so YAML/schema mistakes fail before expensive agents launch. The implementation is backed by command-file parser and runner tests because command-string-vs-argv behavior, schema validation, and aggregation artifacts are the safety net for repeatable team automation.
-
-#### Dedicated Example: SEO landing-page batch in tmux panes
-
-Use this pattern when you want to generate many related content tasks in parallel while keeping live visibility per worker pane:
-
-```bash
-./.juno_task/scripts/parallel_runner.sh \
-  -s pi \
-  -m zai/glm-5 \
-  --kanban-filter "--tag SEO_LANDING_PAGES --limit 200 --status backlog,in_progress,todo" \
-  --parallel 5 \
-  --tmux panes \
-  --prompt-file ./tmp_prompt/content_gen.md
-```
-
-What each flag does:
-
-- `-s pi -m zai/glm-5`: run workers with Pi on a specific model.
-- `--kanban-filter "..."`: dynamically pull task IDs from kanban (here: only `SEO_LANDING_PAGES`, up to 200, only open statuses).
-- `--parallel 5`: execute up to 5 tasks concurrently.
-- `--tmux panes`: split workers into panes for side-by-side monitoring.
-- `--prompt-file ./tmp_prompt/content_gen.md`: keep a reusable, versioned instruction template instead of long inline prompts.
-
-Tip: keep the filter string quoted so it is passed as one argument to `parallel_runner.sh` and then correctly forwarded to `kanban.sh`.
-
-#### Output & Extraction
-
-- **Per-task JSON**: `{output_dir}/{task_id}.json` with exit code, wall time, extracted response
-- **Aggregation JSON**: All tasks merged into one file
-- **Code block extraction**: Finds last fenced code block in output. `--strict` fails the task if not found
-- **Pause/resume**: `touch .juno_task/scripts/logs/.pause_{name}` / remove to resume
-
-## Slack Integration
-
-yylo includes built-in Slack integration for team collaboration. The system monitors Slack channels and creates kanban tasks from messages, then posts agent responses as threaded replies.
-
-### How It Works
-
-1. **Fetch**: `slack_fetch.sh` monitors a Slack channel and creates kanban tasks from new messages
-2. **Process**: The AI agent processes tasks and records responses in the kanban
-3. **Respond**: `slack_respond.sh` sends agent responses back to Slack as threaded replies
-
-### Setup
-
-1. **Create a Slack App**:
-   - Go to https://api.slack.com/apps and create a new app
-   - Under "OAuth & Permissions", add these scopes:
-     - `channels:history`, `channels:read` (public channels)
-     - `groups:history`, `groups:read` (private channels)
-     - `users:read` (user info)
-     - `chat:write` (send messages)
-   - Install the app to your workspace
-   - Copy the "Bot User OAuth Token" (starts with `xoxb-`)
-
-2. **Configure Environment**:
-
-   ```bash
-   # In project root .env file
-   SLACK_BOT_TOKEN=xoxb-your-token-here
-   SLACK_CHANNEL=bug-reports
-   ```
-
-3. **Usage**:
-
-   ```bash
-   # Fetch messages from Slack and create tasks
-   ./.juno_task/scripts/slack_fetch.sh --channel bug-reports
-
-   # Continuous monitoring mode
-   ./.juno_task/scripts/slack_fetch.sh --channel feature-requests --continuous
-
-   # Send completed task responses back to Slack
-   ./.juno_task/scripts/slack_respond.sh --tag slack-input
-
-   # Dry run to preview what would be sent
-   ./.juno_task/scripts/slack_respond.sh --dry-run --verbose
-   ```
-
-### Automated Slack Workflow with Hooks
-
-```bash
-# Fetch Slack messages before starting work
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run "./.juno_task/scripts/slack_fetch.sh --channel bug-reports" \
-  -s claude -i 5 -v
-```
-
-Or configure hooks in `.juno_task/config.json`:
-
-```json
-{
-  "hooks": {
-    "SLACK_SYNC": {
-      "commands": [
-        "./.juno_task/scripts/slack_fetch.sh --channel bug-reports",
-        "./.juno_task/scripts/slack_respond.sh --tag slack-input"
-      ]
-    }
-  }
-}
-```
-
-Then run with the hook:
-
-```bash
-./.juno_task/scripts/run_until_completion.sh --pre-run-hook SLACK_SYNC -s claude -i 5 -v
-```
-
-## GitHub Integration
-
-yylo includes built-in GitHub integration for issue tracking and automated responses. The system monitors GitHub repositories, creates kanban tasks from issues, and posts agent responses as threaded comments with automatic issue closure.
-
-### How It Works
-
-1. **Fetch**: `github.py fetch` monitors a GitHub repository and creates kanban tasks from new issues
-2. **Process**: The AI agent processes tasks and records responses in the kanban
-3. **Respond**: `github.py respond` posts agent responses as comments on GitHub issues and closes them
-
-### Setup
-
-1. **Create a GitHub Personal Access Token**:
-   - Go to https://github.com/settings/tokens and create a new token (classic)
-   - Grant these permissions:
-     - `repo` (full control of private repositories)
-     - `public_repo` (access to public repositories)
-   - Copy the token (starts with `ghp_`)
-
-2. **Configure Environment**:
-
-   ```bash
-   # In project root .env file
-   GITHUB_TOKEN=ghp_your_token_here
-   GITHUB_REPO=owner/repo  # Optional default repository
-   GITHUB_LABELS=bug,priority  # Optional label filter
-   ```
-
-3. **Usage**:
-
-   ```bash
-   # Fetch issues from GitHub and create tasks
-   ./.juno_task/scripts/github.py fetch --repo owner/repo
-
-   # Filter by labels
-   ./.juno_task/scripts/github.py fetch --repo owner/repo --labels bug,priority
-
-   # Post completed task responses back to GitHub
-   ./.juno_task/scripts/github.py respond --tag github-issue
-
-   # Bidirectional sync (fetch + respond)
-   ./.juno_task/scripts/github.py sync --repo owner/repo
-
-   # Continuous sync mode with interval
-   ./.juno_task/scripts/github.py sync --repo owner/repo --continuous --interval 600
-
-   # Dry run to preview what would be posted
-   ./.juno_task/scripts/github.py respond --dry-run --verbose
-   ```
-
-### Automated GitHub Workflow with Hooks
-
-```bash
-./.juno_task/scripts/run_until_completion.sh --pre-run-hook GITHUB_SYNC -s claude -i 5 -v
-```
-
-## Log Scanner
-
-Proactive error detection that scans log files and auto-creates kanban bug reports:
-
-```bash
-# Scan for errors and create tasks
-./.juno_task/scripts/log_scanner.sh
-
-# Dry run (report only)
-./.juno_task/scripts/log_scanner.sh --dry-run --verbose
-
-# Check scan status
-./.juno_task/scripts/log_scanner.sh --status
-
-# Reset scan state (re-scan everything)
-./.juno_task/scripts/log_scanner.sh --reset
-```
-
-Detects Python errors (Traceback, ValueError, TypeError), Node.js errors (UnhandledPromiseRejection, ECONNREFUSED), and general patterns (FATAL, CRITICAL, PANIC, OOM). Uses ripgrep for high-performance scanning with grep fallback.
-
-Use as a pre-run hook so the agent finds and fixes errors automatically:
-
-```json
-{
-  "hooks": {
-    "START_ITERATION": {
-      "commands": ["./.juno_task/scripts/log_scanner.sh"]
-    }
-  }
-}
-```
-
-## YYLO Ledger Commands
-
-Use `yy ledger` for task operations. Existing `yy kanban`, `kanban.sh`, and
-`juno-kanban` invocations remain supported for backward compatibility.
-
-```bash
-# Task CRUD
-yy ledger create "Task body" --tags feature,backend
-yy ledger get TASK_ID
-yy ledger update TASK_ID --response "Fixed it" --commit abc123
-yy ledger mark done --id TASK_ID --response "Completed, tests pass"
-yy ledger archive TASK_ID
-
-# List & search
-yy ledger list --limit 5 --status backlog todo in_progress
-yy ledger search --tag backend --status todo
-
-# Dependencies
-yy ledger create "Deploy" --blocked-by A1b2C3,X4y5Z6
-yy ledger deps TASK_ID                    # Show blockers & dependents
-yy ledger deps add --id T1 --blocked-by T2  # Add dependency
-yy ledger deps remove --id T1 --blocked-by T2
-yy ledger ready                           # Tasks with no unmet blockers
-yy ledger order --scores                  # Topological execution order
-
-# Merge (monorepo support)
-yy ledger merge source/ --into target/ --strategy keep-newer
-```
-
-**Task schema**: `{id, status, body, commit_hash, agent_response, created_date, last_modified, feature_tags[], related_tasks[], blocked_by[]}`
-
-**Status lifecycle**: `backlog → todo → in_progress → done → archive`
-
-**Body markup** (auto-parsed on create):
-
-- `[task_id]ID1, ID2[/task_id]` → `related_tasks`
-- `[blocked_by]ID1, ID2[/blocked_by]` → `blocked_by` (synonyms: `block_by`, `block`, `parent_task`)
-
-## Configuration
-
-### Hierarchy (highest to lowest priority)
-
-1. CLI arguments
-2. Environment variables (`YYLO_*`)
-3. Project config (`.juno_task/config.json`)
-4. Global config files
-5. Hardcoded defaults
-
-### Per-subagent default models
-
-Set model defaults per subagent without changing your global default:
-
-```bash
-yylo pi set-default-model :api-codex
-yylo claude set-default-model :opus
-yylo codex set-default-model :gpt-5
-```
-
-This writes to `.juno_task/config.json`:
-
-```json
-{
-  "defaultModels": {
-    "pi": ":api-codex",
-    "claude": ":opus",
-    "codex": ":gpt-5"
-  }
-}
-```
-
-`yylo` resolves models in this order: CLI `--model` → configured subagent default (`defaultModels` / legacy `defaultModel`) → built-in default.
-
-### Per-project model shortcuts
-
-Define subagent-specific shortcuts in `.juno_task/config.json`:
-
-```json
-{
-  "modelShortcuts": {
-    "claude": { ":fav": "zai/glm-5.3" },
-    "cursor": { ":fav": ":opus" },
-    "codex": { ":fav": "openai/gpt-5.3-codex" },
-    "gemini": { ":fav": "google/gemini-3.0-pro" },
-    "pi": { ":fav": ":sol" }
-  }
-}
-```
-
-Shortcut lookup is scoped to the selected subagent. A project entry overrides the same shipped shortcut; otherwise the shipped shortcut remains available. Targets are opaque non-empty model strings and may reference project or shipped shortcuts. Shortcut chains resolve recursively. Cycles, unknown shortcuts, and malformed externally supplied shortcut data fail with an actionable error. Cursor uses the Claude service wrapper but reads the separate `cursor` shortcut map.
-
-For managed Workflow Runner calls, separately allow exact explicit Pi selectors:
-
-```json
-{
-  "workflowModels": [":luna", "openai/gpt-4o"]
-}
-```
-
-`yy pi` without model/provider flags still inherits the configured default. `yy pi -m :luna` requires exact `:luna` membership; aliases are not expanded for authorization. `yy pi --provider openai --model gpt-4o` normalizes to `openai/gpt-4o`. The persisted additive default is `[]`, which rejects explicit selectors.
-
-### Prompt Macros config (`@@key`)
-
-Use the shipped `@@life_cycle TASK_IDS_OR_GOAL` macro for the versioned,
-observable Bolt orchestration contract. It discovers topology, preserves the
-caller payload exactly once, requires private task-ID `mktemp -d` evidence with
-atomic PID and strict versioned footer publication, resolves the canonical
-controller watcher with `yy where controller`, and keeps review, finish, merge,
-release, push, publish, and deploy authorities separate. JSONL/framed-payload
-observation is documented in `.juno_task/wiki/watching_progress.md`; broader
-lifecycle boundaries remain in `.juno_task/wiki/git_worktree_lifecycle.md`.
-
-Define prompt macro dictionaries in `.juno_task/config.json` using `promptMacros`:
-
-```json
-{
-  "promptMacros": {
-    "enabled": true,
-    "order": "before_command_substitution",
-    "maxDepth": 10,
-    "global": {
-      "git": "commit your changes",
-      "spec": { "path": "prompts/spec.md" }
-    },
-    "local": {
-      "ship": "run tests then @@git",
-      "inline": { "text": "run !'npm test' before @@git" }
-    }
-  }
-}
-```
-
-Notes:
-
-- `local` overrides `global` on key collisions.
-- `maxDepth` defaults to `10` and must be a positive integer.
-- `order` supports `before_command_substitution` (default) or `after_command_substitution`.
-- Dictionary values can be strings or objects with exactly one non-empty `path` or `text` field.
-- `path` loads UTF-8 text/markdown from an absolute path or a path relative to the project working directory where `yylo` is executed.
-- Loaded/inline macro text still flows through normal `@@key` macro expansion and `!'cmd'` prompt command substitution according to `order`.
-
-#### Managed Bolt prompts
-
-Fresh `yylo init` installs portable, file-backed Bolt prompts and guidance. Existing projects install or refresh the same assets with:
-
-```bash
-yy scripts update
-# Destructive replacement is explicit and backed up:
-yy scripts update --force
-```
-
-The public mappings are `@@clean_worktree`, `@@new_task_workflow`, `@@run_workflow`, `@@migrate_juno_code_v1_to_v2`, and `@@migrate_juno_kanban_v1_to_v2`. Their files live under `.juno_task/prompts/`; operator guidance lives under `.juno_task/wiki/`.
-
-Safe updates are checksum-based through `.juno_task/managed-assets.json`. Missing and unchanged managed files update automatically. Locally customized files are preserved, while the package candidate is written under `.juno_task/managed-conflicts/<version>/`. `--force` archives every replaced or retired file first. Upgrades archive and remove pre-Bolt executors, tests, configuration, and generated specialization receipts before installing the Bolt prompt; customized retired state requires explicit `--force`. Existing local macro overrides remain authoritative.
-
-Why tests and backing implementation matter: prose alone cannot prove npm packaging, detect whether a file still matches its managed base, or ensure retired executors are absent after upgrade. Build/pack parity, clean-install macro expansion, update-conflict, and disposable old-generation upgrade fixtures exercise those runtime boundaries.
-
-### Project Env Bootstrap (`.env.yylo`)
-
-`yylo` now bootstraps a project env file automatically:
-
-- On `yylo init`: creates an empty `.env.yylo` in project root
-- On any `yylo` run: ensures `.env.yylo` exists (creates if missing)
-- Loads env values before execution so hooks and subagent processes receive them
-- Supports custom env file path via `.juno_task/config.json`
-
-Example config:
-
-```json
-{
-  "envFilePath": ".env.local",
-  "envFileCopied": true
-}
-```
-
-Notes:
-
-- `envFilePath`: env file to load (relative to project root or absolute path)
-- `envFileCopied`: tracks one-time initialization from `.env.yylo` to custom env path
-- Load order: `.env.yylo` first, then `envFilePath` (custom file overrides defaults)
-
-### Project Structure
-
-After `yylo init`:
-
-```
-your-project/
-├── .env.yylo            # Project env file auto-created and loaded on startup
-├── .juno_task/
-│   ├── init.md           # Task breakdown (your input)
-│   ├── prompt.md         # AI instructions (Ralph-style prompt)
-│   ├── plan.md           # Progress tracking
-│   ├── USER_FEEDBACK.md  # Issue tracking (write here while agent runs)
-│   ├── config.json       # Hooks, agent config, project settings
-│   ├── scripts/          # Auto-installed utilities
-│   │   ├── kanban.sh
-│   │   ├── run_until_completion.sh
-│   │   ├── parallel_runner.sh
-│   │   ├── log_scanner.sh
-│   │   ├── install_requirements.sh
-│   │   ├── slack_fetch.sh / slack_fetch.py
-│   │   ├── slack_respond.sh / slack_respond.py
-│   │   ├── github.py
-│   │   └── hooks/session_counter.sh
-│   ├── tasks/            # Kanban tasks (NDJSON)
-│   └── logs/             # Agent session logs
-├── .claude/skills/       # Claude agent skills (auto-provisioned)
-├── .agents/skills/       # Codex agent skills (auto-provisioned)
-├── CLAUDE.md             # Session learnings
-└── AGENTS.md             # Agent performance
-```
-
-## Environment Variables
-
-```bash
-# Primary
-export YYLO_BACKEND=shell
-export YYLO_SUBAGENT=claude
-export YYLO_MODEL=:sonnet
-export YYLO_MAX_ITERATIONS=10
-
-# Service-specific
-export CODEX_HIDE_STREAM_TYPES="turn_diff,token_count"
-export GEMINI_API_KEY=your-key
-
-# Execution control
-export JUNO_STALE_THRESHOLD=3            # Stale iteration limit
-export JUNO_PRE_RUN="./scripts/sync.sh"  # Pre-run command
-export JUNO_PRE_RUN_HOOK="SLACK_SYNC"    # Pre-run hook name
-export JUNO_RUN_UNTIL_MAX_ITERATIONS=0   # Max iterations (0=unlimited)
-export JUNO_SESSION_COUNTER_THRESHOLD=100 # Session length warning threshold
-
-# Integration
-export SLACK_BOT_TOKEN=xoxb-your-token
-export SLACK_CHANNEL=bug-reports
-export GITHUB_TOKEN=ghp_your-token
-export GITHUB_REPO=owner/repo
-
-# Debug
-export JUNO_DEBUG=true                   # Enable [DEBUG] output
-export JUNO_VERBOSE=true                 # Enable [INFO] output
-
-# Pi requires the pi-coding-agent CLI installed globally
-# npm install -g @mariozechner/pi-coding-agent
-```
-
-## Examples
-
-### The Ralph Workflow (Modernized)
-
-```bash
-# Initialize
-yylo init --task "Migrate JavaScript to TypeScript"
-
-# Run until done (not forever)
-./.juno_task/scripts/run_until_completion.sh -s claude -i 20 -v
-
-# Check progress anytime
-./.juno_task/scripts/kanban.sh list --status in_progress done
-```
-
-### Bug Investigation
-
-```bash
-# Try with Claude opus
-yylo -b shell -s claude -m :opus -p "Investigate CI failures" -i 3
-
-# Stuck? Try Codex perspective
-yylo -b shell -s codex -p "Same investigation" -i 3
-
-# Or use Pi with any provider's model
-yylo -b shell -s pi -m :sonnet -p "Same investigation" -i 3
-```
-
-### Parallel Batch Processing
-
-```bash
-# Process 100 kanban tasks with 5 workers
-./.juno_task/scripts/parallel_runner.sh --kanban T1,T2,...,T100 --parallel 5
-
-# Visual monitoring
-./.juno_task/scripts/parallel_runner.sh --tmux --kanban T1,T2,T3 --parallel 3
-
-# Process a CSV dataset
-./.juno_task/scripts/parallel_runner.sh --items-file data.csv --prompt-file process.md --strict --file-format csv
-```
-
-### Dependency-Aware Workflow
-
-```bash
-# Create tasks with dependencies
-./.juno_task/scripts/kanban.sh create "Setup database" --tags infra
-./.juno_task/scripts/kanban.sh create "Build API [blocked_by]DBID[/blocked_by]" --tags backend
-./.juno_task/scripts/kanban.sh create "Build UI [blocked_by]APIID[/blocked_by]" --tags frontend
-
-# See what's ready to work on
-./.juno_task/scripts/kanban.sh ready
-
-# Execution order respecting dependencies
-./.juno_task/scripts/kanban.sh order --scores
-
-# Run only unblocked tasks in parallel
-./.juno_task/scripts/parallel_runner.sh --kanban-filter 'ready' --parallel 3
-```
-
-### Slack-Driven Development
-
-```bash
-# Full automated loop: Slack → Agent → Slack
-./.juno_task/scripts/run_until_completion.sh \
-  --pre-run-hook SLACK_SYNC \
-  -s claude -i 5 -v
-```
-
-## Comparison: Ralph vs yylo
-
-| Feature              | Ralph                                  | yylo                                        |
-| -------------------- | -------------------------------------- | ------------------------------------------------ |
-| **Design Focus**     | One-time tasks (migrations, rewrites)  | Iterative development (scales to 1000s of tasks) |
-| **Core Loop**        | `while :; do claude; done`             | Controlled iterations                            |
-| **Stopping**         | Ctrl+C (guesswork)                     | `-i N` or "until tasks done"                     |
-| **Source of Truth**  | Markdown files (TASKS.md, PLANNING.md) | Structured kanban over bash                      |
-| **Format Integrity** | Relies on LLM instruction-following    | Strict NDJSON, always parseable                  |
-| **Multiple AIs**     | Claude only                            | Claude, Codex, Gemini, Pi, Cursor                |
-| **Dependencies**     | None                                   | blocked_by, ready, topological sort              |
-| **Parallelism**      | None                                   | parallel_runner with N workers                   |
-| **Traceability**     | None                                   | Every task → git commit                          |
-| **Integrations**     | None                                   | Slack, GitHub Issues                             |
-| **Hooks**            | Claude-specific                        | Works with any backend                           |
-| **Error Detection**  | None                                   | Log scanner with auto bug reports                |
-| **Verbose**          | Raw JSON                               | Human-readable + jq-friendly                     |
-| **Feedback**         | None                                   | Real-time during execution                       |
-
-## Troubleshooting
-
-### Service scripts not updating
-
-```bash
-yylo services install --force
-```
-
-### Model passthrough issues
-
-```bash
-# Verify with verbose
-yylo -v -b shell -s codex -m :codex -p "test"
-# Check stderr for: "Executing: python3 ~/.yylo/services/codex.py ... -m gpt-5.3-codex"
-```
-
-### Kanban not finding tasks
-
-```bash
-./.juno_task/scripts/kanban.sh list --status backlog todo in_progress
-```
-
-### Skills not appearing
-
-```bash
-yylo skills list
-yylo skills install --force
-```
-
-### Python environment issues
-
-```bash
-# Force reinstall Python dependencies
-./.juno_task/scripts/install_requirements.sh --force-update
-```
-
-## Build from Source
-
-```bash
+git clone https://github.com/yylo-dev/yylo.git
 cd yylo
-
-# Build
-npm run build
-
-# Build as exp-yylo (local testing)
-npm run build:exp
-
-# Remove exp-yylo
-npm run uninstall:exp
-
-# Run tests
-npm test              # Fast tests
-npm run test:full     # Full suite
-npm run test:coverage # With coverage
-
-# Lint & format
-npm run lint
-npm run format:check
+npm ci
+npm test
 npm run typecheck
+npm run build
+node dist/bin/cli.mjs --help
 ```
 
-## Credits
+The monorepo may embed YYLO CLI alongside Benchmark and a Ledger submodule, but each public package has its own manifest, version, release contract, and registry channel. A source checkout version is not evidence that the same version was published.
 
-yylo is inspired by [Geoffrey Huntley's Ralph Method](https://ghuntley.com/ralph/)—the insight that AI delivers production software through iterative refinement. yylo adds the structure that makes Ralph sustainable for real development work.
+## Help and links
 
----
-
-## Get Started Now
-
-```bash
-# Install the current release globally
-npm install -g @yylo/cli@0.2.0
-
-# Initialize in your project
-cd your-project
-yylo init --task "Your task description" --subagent claude
-
-# Start coding with AI
-yylo start -b shell -s claude -i 5 -v
-```
-
-**Links:**
-
-- [npm package](https://www.npmjs.com/package/%40yylo%2Fcli)
-- [GitHub repository](https://github.com/yylo-dev/yylo)
-- [Report issues](https://github.com/yylo-dev/yylo/issues)
+- npm: [@yylo/cli](https://www.npmjs.com/package/%40yylo%2Fcli)
+- Source/issues: [yylo-dev/yylo](https://github.com/yylo-dev/yylo)
+- Ledger: [yylo-dev/yylo-ledger](https://github.com/yylo-dev/yylo-ledger)
+- Benchmark: [yylo-dev/yylo-benchmark](https://github.com/yylo-dev/yylo-benchmark)
 
 ## License
 
-MIT
+MIT.
