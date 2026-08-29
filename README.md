@@ -20,7 +20,7 @@ mkdir yylo-demo
 cd yylo-demo
 git init
 yy init --task "Document the onboarding path" --subagent pi
-yy watch exec -- node --version
+yy watch exec pwd
 ```
 
 A successful run prints the installed YYLO version, initializes `.juno_task/`, then emits a watch receipt with `"state":"COMPLETED"`, `"exit_code":0`, and nonzero `log_bytes`. This canary does not contact a model provider.
@@ -58,7 +58,7 @@ Next: [run an agent](#beginner-agent-workflow), [manage a typed task](#typed-tas
 
 | Need | Public surface | Boundary |
 | --- | --- | --- |
-| Agent run | `yy pi`, `yy claude`, `yy codex`, `yy gemini`, `yy cursor`, `yy start` | Provider credentials and model availability remain external. |
+| Agent run | `yy pi`, `yy start`, and the agent aliases listed by `yy --help` | Provider credentials and model availability remain external. |
 | Session continuity | `continue`, `clone`, `branches`, `switch`, `continuity` | Scope state is isolated and explicit; cleanup is planned and reversible. |
 | Observable commands | `watch exec|status|await` | Bounded logs and terminal machine truth; no hidden background ownership. |
 | Validation evidence | `evidence run|status|await` | Content-addressed task evidence tied to exact inputs. |
@@ -68,7 +68,7 @@ Next: [run an agent](#beginner-agent-workflow), [manage a typed task](#typed-tas
 | Release epoch | `release train ...` | Readiness only; tag, publish, push, deploy, and cleanup need separate authority. |
 | Records/evaluation | `ledger`, `benchmark` | Transparent delegation to independently installed canonical packages. |
 
-Run `yy --help` and `yy COMMAND --help` for the complete inventory of your installed version. The old `lifecycle` command is removed; use typed `task` and `merge` commands.
+Run `yy --help` and a real nested help command such as `yy task --help` for the complete inventory of your installed version. The old `lifecycle` command is removed; use typed `task` and `merge` commands.
 
 ## Beginner agent workflow
 
@@ -149,7 +149,7 @@ Project shortcuts are scoped to the selected subagent and can reference shipped 
 `watch` owns bounded execution evidence for an ordinary local command:
 
 ```bash
-yy watch exec -- npm test
+yy watch exec npm test
 # Use the run ID printed above:
 yy watch status RUN_ID
 yy watch await RUN_ID
@@ -320,7 +320,7 @@ Delegation preserves arguments, stdin/stdout/stderr, cwd, exit status, and signa
 yy completion install
 yy completion status
 yy help
-yy COMMAND --help
+yy task --help
 ```
 
 Completion supports Bash, Zsh, and Fish. Use the nested help for your installed release rather than copying an option from a different channel.
