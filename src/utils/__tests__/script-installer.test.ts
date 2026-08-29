@@ -25,6 +25,7 @@ describe('ScriptInstaller', {
   useSharedHeavyWorkloadLock('Vitest ScriptInstaller managed script installation suite');
   let testDir: string;
   let fixtureController: string;
+  let pythonExecutable: string;
 
   beforeEach(async () => {
     // Create temporary test directory and a strict fixture-owned controller so
@@ -39,9 +40,21 @@ describe('ScriptInstaller', {
       path.resolve(process.cwd(), 'src/templates/scripts/controller_resolver.py'),
       path.join(scripts, 'controller_resolver.py'),
     );
-    const python = spawnSync('sh', ['-c', 'command -v python3'], {
-      encoding: 'utf8',
-    }).stdout.trim();
+    const pythonCandidates = [
+      process.env.JUNO_TEST_PYTHON,
+      path.resolve(process.cwd(), '..', '.venv_juno', 'bin', 'python'),
+      'python3.13',
+      'python3.12',
+      'python3.11',
+      'python3.10',
+      'python3',
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    const python = pythonCandidates.find((candidate) => spawnSync(candidate, [
+      '-c',
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)',
+    ]).status === 0);
+    if (python === undefined) throw new Error('ScriptInstaller tests require Python 3.10 or newer');
+    pythonExecutable = python;
     await fs.symlink(python, path.join(bin, 'python'));
     spawnSync('git', ['init', '-b', 'fixture-controller'], {
       cwd: fixtureController,
@@ -692,7 +705,7 @@ describe('ScriptInstaller', {
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
       const result = spawnSync(
-        'python3',
+        pythonExecutable,
         [scriptPath, '--commands-file', commandsFile, '--parallel', '2', '--output-dir', outputDir],
         {
           cwd: fixtureController,
@@ -744,7 +757,7 @@ describe('ScriptInstaller', {
 
       const scriptPath = path.resolve(process.cwd(), 'src/templates/scripts/parallel_runner.sh');
       const result = spawnSync(
-        'python3',
+        pythonExecutable,
         [scriptPath, '--commands-file', commandsFile, '--parallel', '1'],
         {
           cwd: fixtureController,
