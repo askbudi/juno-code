@@ -546,6 +546,11 @@ def revision(task):
 def append_event(task, operation, changed):
     before = revision(task)
     previous = task["_events"][-1].get("event_sha256")
+    if operation == "update":
+        task["update_mutation_count"] = task.get("update_mutation_count", 0) + 1
+    if operation in {"update", "mark"} and task.get("status") == "done" and "/status" in changed:
+        task["terminal_done_mutation_count"] = task.get(
+            "terminal_done_mutation_count", 0) + 1
     after = canon(task)
     event = {"event_id": str(uuid.uuid4()), "task_id": task["id"], "operation": operation,
              "source": "cli", "before_sha256": before, "after_sha256": after,
