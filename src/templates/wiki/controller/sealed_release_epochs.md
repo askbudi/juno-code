@@ -180,8 +180,12 @@ yy release train reconcile-members EPOCH_ID --expected-target TARGET_SHA --json
 ```
 
 Recovery verifies the seal, complete receipt chain, CAS/readiness, ordered member
-tips and ancestry, queue/task identities, and current Ledger revisions. It refuses
-target/replay drift and never substitutes direct Ledger mutation. Readiness grants
+tips and ancestry, queue/task identities, and each hot task's canonical own-record
+revision plus immutable Ledger event hash through the supported history API. It
+excludes relation/dependency-expanded `get` details that can change when another
+member finalizes, while own fields and authority-bearing relation topology remain
+revision-bound. It refuses target/replay drift and never substitutes direct Ledger
+mutation. Readiness grants
 no tag, package release, push, publication, deployment, production mutation, or
 cleanup authority.
 

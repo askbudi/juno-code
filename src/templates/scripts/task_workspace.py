@@ -2581,8 +2581,13 @@ def read_kanban_task(controller: Path, task_id: str) -> dict[str, Any]:
     return decoded
 
 
-def kanban_board_revision(controller: Path, task_id: str) -> str:
-    """Current normalized task revision from the append-only ledger chain."""
+def kanban_board_identity(controller: Path, task_id: str) -> dict[str, str]:
+    """Canonical self identity from the task's append-only Ledger event chain.
+
+    Unlike ``get``, history contains no relation-expanded task projections.  Its
+    latest after hash is the normalized hot task record revision, while the
+    immutable event hash binds that revision to this task's chain.
+    """
     payload = _run_kanban(controller, ["-f", "json", "--raw", "history", task_id])
     try:
         events = json.loads(payload)
@@ -2591,10 +2596,24 @@ def kanban_board_revision(controller: Path, task_id: str) -> str:
                               {"task_id": task_id}) from exc
     if not isinstance(events, list) or not events:
         raise KanbanSyncError("Kanban ledger history is empty", {"task_id": task_id})
-    revision = events[-1].get("after_sha256")
+    event = events[-1]
+    revision = event.get("after_sha256") if isinstance(event, dict) else None
+    event_sha256 = event.get("event_sha256") if isinstance(event, dict) else None
+    event_id = event.get("event_id") if isinstance(event, dict) else None
+    event_task_id = event.get("task_id") if isinstance(event, dict) else None
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{16,128}", revision):
         raise KanbanSyncError("Kanban ledger revision is malformed", {"task_id": task_id})
-    return revision
+    if not isinstance(event_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", event_sha256):
+        raise KanbanSyncError("Kanban ledger event hash is malformed", {"task_id": task_id})
+    if not isinstance(event_id, str) or not event_id or event_task_id != task_id:
+        raise KanbanSyncError("Kanban ledger event identity mismatched", {"task_id": task_id})
+    return {"task_sha256": revision, "revision": revision,
+            "event_sha256": event_sha256, "event_id": event_id}
+
+
+def kanban_board_revision(controller: Path, task_id: str) -> str:
+    """Current normalized hot task revision from the append-only Ledger chain."""
+    return kanban_board_identity(controller, task_id)["revision"]
 
 
 def _kanban_sync_receipt_path(controller: Path, task_id: str, identity: dict[str, Any]) -> Path:

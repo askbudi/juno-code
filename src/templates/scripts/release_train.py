@@ -2218,9 +2218,14 @@ def _ledger_terminal(task: dict[str, Any], member: dict[str, Any]) -> bool:
 
 
 def _epoch_finalization_plan_id(journal: dict[str, Any]) -> str:
-    static_members = [{key: row.get(key) for key in ("task_id", "tip_sha", "tree_sha",
-        "expected_ledger_revision", "expected_task_sha256", "expected_queue")}
-        for row in journal.get("members", []) if isinstance(row, dict)]
+    members = [row for row in journal.get("members", []) if isinstance(row, dict)]
+    keys = ["task_id", "tip_sha", "tree_sha", "expected_ledger_revision",
+            "expected_task_sha256", "expected_queue"]
+    # Event binding was added after v1 journals existed.  Include it in new plan
+    # identities without changing the identity of immutable legacy journals.
+    if any("expected_ledger_event_sha256" in row for row in members):
+        keys += ["expected_ledger_event_sha256", "expected_ledger_event_id"]
+    static_members = [{key: row.get(key) for key in keys} for row in members]
     identity = {**{key: journal.get(key) for key in
         ("epoch_id", "observed_target_sha", "member_order", "cas_receipt", "readiness_receipt")},
         "members": static_members}
@@ -2334,12 +2339,14 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
             for member in members:
                 queue = _queue_member_identity(controller, member, state["seal"]["target_ref"])
                 task = kanban_task(controller, member["task_id"])
-                revision = task_runtime.kanban_board_revision(controller, member["task_id"])
+                ledger = task_runtime.kanban_board_identity(controller, member["task_id"])
                 if not _ledger_terminal(task, member) and digest(task) != member.get("task_sha256"):
                     raise ReleaseTrainError(f"release epoch Ledger revision drifted: {member['task_id']}")
                 planned.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
-                    "tree_sha": member["tree_sha"], "expected_ledger_revision": revision,
-                    "expected_task_sha256": digest(task), "expected_queue": queue,
+                    "tree_sha": member["tree_sha"], "expected_ledger_revision": ledger["revision"],
+                    "expected_task_sha256": ledger["task_sha256"],
+                    "expected_ledger_event_sha256": ledger["event_sha256"],
+                    "expected_ledger_event_id": ledger["event_id"], "expected_queue": queue,
                     "status": "pending", "receipt": None})
             journal = {"schema_version": EPOCH_FINALIZATION_SCHEMA, "epoch_id": epoch_id,
                 "observed_target_sha": target, "member_order": [row["task_id"] for row in members],
@@ -2365,6 +2372,7 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
                     member_receipt = None
                 unsigned = ({key: value for key, value in member_receipt.items() if key != "receipt_id"}
                             if isinstance(member_receipt, dict) else {})
+                ledger = task_runtime.kanban_board_identity(controller, member["task_id"])
                 if (not isinstance(reference, dict) or file_hash(Path(reference.get("path", ""))) != reference.get("sha256")
                         or not isinstance(member_receipt, dict)
                         or member_receipt.get("schema_version") != EPOCH_FINALIZATION_MEMBER_SCHEMA
@@ -2373,14 +2381,23 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
                         or member_receipt.get("tip_sha") != member["tip_sha"]
                         or digest(unsigned) != member_receipt.get("receipt_id")
                         or reference.get("receipt_id") != member_receipt.get("receipt_id")
+                        or member_receipt.get("ledger_revision") != ledger["revision"]
+                        or (member_receipt.get("ledger_event_sha256") is not None
+                            and member_receipt.get("ledger_event_sha256") != ledger["event_sha256"])
                         or not _ledger_terminal(kanban_task(controller, member["task_id"]), member)):
                     raise ReleaseTrainError("release-epoch completed member evidence drifted")
                 _queue_member_identity(controller, member, state["seal"]["target_ref"])
                 continue
             task = kanban_task(controller, member["task_id"])
-            revision = task_runtime.kanban_board_revision(controller, member["task_id"])
-            if not _ledger_terminal(task, member) and (revision != planned["expected_ledger_revision"]
-                    or digest(task) != planned["expected_task_sha256"]):
+            ledger = task_runtime.kanban_board_identity(controller, member["task_id"])
+            expected_event = planned.get("expected_ledger_event_sha256")
+            expected_event_id = planned.get("expected_ledger_event_id")
+            if not _ledger_terminal(task, member) and (
+                    ledger["revision"] != planned["expected_ledger_revision"]
+                    or (expected_event is not None and ledger["event_sha256"] != expected_event)
+                    or (expected_event_id is not None and ledger["event_id"] != expected_event_id)
+                    or (expected_event is not None
+                        and ledger["task_sha256"] != planned["expected_task_sha256"])):
                 raise ReleaseTrainError(f"release epoch Ledger revision drifted: {member['task_id']}")
             queue_before = _queue_member_identity(controller, member, state["seal"]["target_ref"])
             attempt = {"schema_version": "juno_merge_attempt.v1", "task_id": member["task_id"],
@@ -2399,11 +2416,13 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
             if not _ledger_terminal(task_after, member):
                 raise ReleaseTrainError("release epoch terminal Ledger readback mismatched")
             queue_after = _queue_member_identity(controller, member, state["seal"]["target_ref"])
+            ledger_after = task_runtime.kanban_board_identity(controller, member["task_id"])
             body = {"schema_version": EPOCH_FINALIZATION_MEMBER_SCHEMA, "epoch_id": epoch_id,
                 "plan_id": journal["plan_id"], "sequence": journal["member_order"].index(member["task_id"]) + 1,
                 "task_id": member["task_id"], "tip_sha": member["tip_sha"],
                 "expected_ledger_revision": planned["expected_ledger_revision"],
-                "ledger_revision": task_runtime.kanban_board_revision(controller, member["task_id"]),
+                "ledger_revision": ledger_after["revision"],
+                "ledger_event_sha256": ledger_after["event_sha256"],
                 "queue_before": queue_before, "queue_after": queue_after,
                 "finalization": finalization, "cas_receipt_id": receipt_refs["CAS_COMPLETE"]["receipt_id"]}
             body["receipt_id"] = digest(body)
@@ -2508,11 +2527,40 @@ def replay_epoch_finalization_successor(controller: Path, epoch_id: str,
         successor_root, candidate = existing[0]
         if (candidate.get("plan_id") != successor_root.name
                 or candidate.get("plan_id") != _epoch_finalization_plan_id(candidate)
-                or not isinstance(candidate.get("supersession_receipts"), dict)):
+                or (candidate.get("supersession_receipts") is not None
+                    and not isinstance(candidate.get("supersession_receipts"), dict))):
             raise ReleaseTrainError("release-epoch successor terminal identity drifted")
         completed = reconcile_epoch_members(controller, epoch_id, target, successor_root)
         references = completed.get("supersession_receipts") or {}
         superseded_ref = references.get("predecessor_superseded")
+        if superseded_ref is None:
+            completion_ref = completed.get("completed_receipt")
+            if not isinstance(completion_ref, dict):
+                raise ReleaseTrainError("release-epoch successor completion is missing")
+            supersession = {"schema_version": EPOCH_FINALIZATION_SUPERSESSION_SCHEMA,
+                "transition": "PREDECESSOR_SUPERSEDED", "epoch_id": epoch_id,
+                "predecessor_journal": predecessor_ref,
+                "predecessor_target_sha": predecessor_target,
+                "successor_target_sha": target, "successor_plan_id": completed["plan_id"],
+                "successor_completion": completion_ref, "member_order": completed["member_order"]}
+            supersession["receipt_id"] = digest(supersession)
+            supersession_path = successor_root / "predecessor-superseded.json"
+            if supersession_path.exists():
+                try: existing_supersession = json.loads(supersession_path.read_text())
+                except json.JSONDecodeError as exc:
+                    raise ReleaseTrainError("release-epoch predecessor supersession receipt drifted") from exc
+                if existing_supersession != supersession:
+                    raise ReleaseTrainError("release-epoch predecessor supersession receipt drifted")
+            else:
+                atomic_json(supersession_path, supersession, exclusive=True)
+            superseded_ref = {"path": str(supersession_path.resolve()),
+                "sha256": file_hash(supersession_path), "receipt_id": supersession["receipt_id"]}
+            latest = json.loads((successor_root / "journal.json").read_text())
+            latest["supersession_receipts"] = {
+                "successor_complete": completion_ref, "predecessor_superseded": superseded_ref}
+            atomic_json(successor_root / "journal.json", latest)
+            _assert_protected_target(repository, state["seal"]["target_ref"], target)
+            return latest
         try:
             superseded = json.loads(Path(superseded_ref.get("path", "")).read_text())
         except (AttributeError, OSError, json.JSONDecodeError) as exc:
@@ -2535,14 +2583,23 @@ def replay_epoch_finalization_successor(controller: Path, epoch_id: str,
         if queue.get("state") != "MERGED" or queue != prior.get("expected_queue"):
             raise ReleaseTrainError(f"release epoch successor queue truth drifted: {member['task_id']}")
         task = kanban_task(controller, member["task_id"])
-        revision = task_runtime.kanban_board_revision(controller, member["task_id"])
-        if (_ledger_terminal(task, member) or digest(task) != prior.get("expected_task_sha256")
-                or revision != prior.get("expected_ledger_revision")):
+        ledger = task_runtime.kanban_board_identity(controller, member["task_id"])
+        # Legacy journals stored a digest of `get`, which can contain changing
+        # relation-expanded details.  Their immutable own-record binding is the
+        # stored Ledger revision; new journals additionally bind the event hash.
+        prior_event = prior.get("expected_ledger_event_sha256")
+        if (_ledger_terminal(task, member)
+                or ledger["revision"] != prior.get("expected_ledger_revision")
+                or (prior_event is not None and ledger["event_sha256"] != prior_event)
+                or (prior_event is not None
+                    and ledger["task_sha256"] != prior.get("expected_task_sha256"))):
             raise ReleaseTrainError(
                 f"release epoch predecessor Ledger mutation or revision drifted: {member['task_id']}")
         planned.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
-            "tree_sha": member["tree_sha"], "expected_ledger_revision": revision,
-            "expected_task_sha256": digest(task), "expected_queue": queue,
+            "tree_sha": member["tree_sha"], "expected_ledger_revision": ledger["revision"],
+            "expected_task_sha256": ledger["task_sha256"],
+            "expected_ledger_event_sha256": ledger["event_sha256"],
+            "expected_ledger_event_id": ledger["event_id"], "expected_queue": queue,
             "status": "pending", "receipt": None})
     successor = {"schema_version": EPOCH_FINALIZATION_SUCCESSOR_SCHEMA,
         "epoch_id": epoch_id, "observed_target_sha": target,

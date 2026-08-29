@@ -68,7 +68,8 @@ class ReleaseTrainTests(unittest.TestCase):
             task_path.write_text(f"---\nid: {task_id}\nstatus: todo\n---\n")
         self.board = {
             "OLD": {"id": "OLD", "status": "in_progress", "blocked_by": [], "last_modified": "1"},
-            "REQ": {"id": "REQ", "status": "in_progress", "blocked_by": [], "last_modified": "1"},
+            "REQ": {"id": "REQ", "status": "in_progress", "blocked_by": [],
+                    "related_tasks": ["OLD"], "last_modified": "1"},
             "DEP": {"id": "DEP", "status": "todo", "blocked_by": ["REQ"], "last_modified": "1"},
         }
         self.write_board()
@@ -85,9 +86,14 @@ def receipt():
     if '--receipt-file' in args:
         path=pathlib.Path(args[args.index('--receipt-file')+1]); path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text(json.dumps({'fixture':True,'revision':revision(board[task_id])})+'\\n')
-if args[0]=='get' and args[1] in board: print(json.dumps([board[args[1]]])); raise SystemExit(0)
+if args[0]=='get' and args[1] in board:
+    task=dict(board[args[1]])
+    task['_related_tasks_details']=[board[item] for item in task.get('related_tasks',[]) if item in board]
+    print(json.dumps([task])); raise SystemExit(0)
 if args[0]=='history' and args[1] in board:
-    print(json.dumps([{'after_sha256':revision(board[args[1]])}])); raise SystemExit(0)
+    task_id=args[1]; after=revision(board[task_id])
+    print(json.dumps([{'event_id':'event-'+after[:12], 'task_id':task_id,
+        'after_sha256':after, 'event_sha256':hashlib.sha256(('event:'+after).encode()).hexdigest()}])); raise SystemExit(0)
 if args[0] in {'mark','update'}:
     task_id=args[args.index('--id')+1] if args[0]=='mark' else args[1]; task=board[task_id]
     if '--expected-revision' in args and args[args.index('--expected-revision')+1] != revision(task):
@@ -1120,6 +1126,25 @@ raise SystemExit(2)
         self.assertEqual(["rc-1"], runtime._unresolved_finalization_epochs(self.root))
         self.assertEqual("FINALIZATION_INCOMPLETE",
                          runtime.epoch_status_projection(self.root, "rc-1")["state"])
+        req_projection_before = runtime.digest(runtime.kanban_task(self.root, "REQ"))
+        req_identity_before = runtime.task_runtime.kanban_board_identity(self.root, "REQ")
+        import merge_queue
+        actual_finalize = merge_queue.finalize_kanban_task
+        calls = 0
+        def interrupt_after_first(controller: Path, attempt: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise runtime.ReleaseTrainError("seeded successor interruption")
+            return actual_finalize(controller, attempt)
+        with mock.patch("merge_queue.finalize_kanban_task", side_effect=interrupt_after_first):
+            with self.assertRaisesRegex(runtime.ReleaseTrainError, "seeded successor interruption"):
+                runtime.replay_epoch_finalization_successor(
+                    self.root, "rc-1", predecessor, current)
+        self.assertNotEqual(req_projection_before,
+                            runtime.digest(runtime.kanban_task(self.root, "REQ")))
+        self.assertEqual(req_identity_before,
+                         runtime.task_runtime.kanban_board_identity(self.root, "REQ"))
         result = runtime.replay_epoch_finalization_successor(
             self.root, "rc-1", predecessor, current)
         self.assertEqual("SUCCESSOR_COMPLETE", json.loads(

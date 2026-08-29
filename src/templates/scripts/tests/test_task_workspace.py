@@ -536,9 +536,11 @@ def canon(task):
 def revision(task):
     chain = task.setdefault("_events", [])
     if not chain:
+        after = canon(task)
         chain.append({"event_id": "seed", "task_id": task["id"], "operation": "create",
                       "source": "cli", "before_sha256": None,
-                      "after_sha256": canon(task), "previous_event_sha256": None,
+                      "after_sha256": after, "previous_event_sha256": None,
+                      "event_sha256": hashlib.sha256(("seed:" + after).encode()).hexdigest(),
                       "changed_paths": []})
     return chain[-1]["after_sha256"]
 
