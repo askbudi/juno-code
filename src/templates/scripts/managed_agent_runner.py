@@ -700,12 +700,61 @@ def verify_compatible_config(contract: dict[str, Any]) -> None:
             raise RunnerError(f"configured source file identity drifted: {expected['setting']}")
 
 
+def _conflict_checkout_snapshot(controller_root: Path, root: Path,
+                                target_ref: str) -> dict[str, Any]:
+    helper = controller_root / ".juno_task/scripts/worktree_hydration.py"
+    if helper.is_symlink() or not helper.is_file():
+        raise RunnerError("conflict checkout hydration verifier is missing")
+    completed = subprocess.run(
+        [sys.executable, str(helper), "--project-root", str(root),
+         "snapshot-conflict-checkout", "--target-ref", target_ref],
+        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=30, text=True,
+    )
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        value = None
+    if completed.returncode or not isinstance(value, dict):
+        raise RunnerError("conflict checkout hydration identity is invalid")
+    return value
+
+
+def _verified_conflict_receipt(controller_root: Path, state: dict[str, Any],
+                               conflict: dict[str, Any]) -> dict[str, Any]:
+    matches = [row for row in state.get("receipts", []) if isinstance(row, dict)
+               and row.get("transition") == "CONFLICT"]
+    if len(matches) != 1 or matches[0] != state.get("receipts", [])[-1]:
+        raise RunnerError("conflict worker authority receipt is missing or ambiguous")
+    reference = matches[0]
+    path = Path(str(reference.get("path", ""))).resolve()
+    expected_root = (controller_root / ".juno_task/runtime/release-epochs"
+                     / str(state.get("epoch_id")) / "receipts").resolve()
+    try:
+        data = path.read_bytes()
+        receipt = json.loads(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunnerError("conflict worker authority receipt is unreadable") from exc
+    unsigned = {key: value for key, value in receipt.items() if key != "receipt_id"}
+    if (path.is_symlink() or path.parent != expected_root
+            or sha(data) != reference.get("sha256")
+            or receipt.get("schema_version") != "juno_release_epoch_receipt.v1"
+            or receipt.get("epoch_id") != state.get("epoch_id")
+            or receipt.get("transition") != "CONFLICT"
+            or receipt.get("detail") != conflict
+            or sha(canonical(unsigned).rstrip(b"\n")) != receipt.get("receipt_id")
+            or receipt.get("receipt_id") != reference.get("receipt_id")):
+        raise RunnerError("conflict worker authority receipt identity drifted")
+    return {**evidence(path), "receipt_id": receipt["receipt_id"]}
+
+
 def release_conflict_admission(args: argparse.Namespace, controller: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     root = Path(args.agent_root).resolve()
+    controller_root = Path(controller["root"]).resolve()
     if not args.candidate_sha or not SHA_RE.fullmatch(args.candidate_sha):
         raise RunnerError("conflict worker requires the sealed candidate SHA")
     states = []
-    epoch_root = Path(controller["root"]) / ".juno_task/runtime/release-epochs"
+    epoch_root = controller_root / ".juno_task/runtime/release-epochs"
     for path in sorted(epoch_root.glob("*/state.json")):
         try:
             state = json.loads(path.read_text())
@@ -722,31 +771,102 @@ def release_conflict_admission(args: argparse.Namespace, controller: dict[str, A
     if len(states) != 1:
         raise RunnerError("conflict worker requires one exact frozen release-epoch packet")
     state_path, state, conflict = states[0]
+    seal = state.get("seal") if isinstance(state.get("seal"), dict) else {}
+    composition = state.get("composition") if isinstance(state.get("composition"), dict) else {}
+    target_ref, base_sha = seal.get("target_ref"), seal.get("base_sha")
     mark = fingerprint(root)
-    merge_head = git(root, "rev-parse", "MERGE_HEAD", check=False)
-    unresolved = sorted(filter(None, git(
-        root, "diff", "--name-only", "--diff-filter=U").splitlines()))
-    admitted = sorted(conflict.get("admitted_paths") or [])
-    changed = sorted(filter(None, git(root, "diff", "--name-only").splitlines()))
-    if (mark["head"] != conflict.get("ours_sha") or merge_head != args.candidate_sha
-            or not unresolved or unresolved != sorted(conflict.get("conflict_paths") or [])
-            or not set(changed).issubset(set(admitted))):
+    if (state_path.is_symlink() or not state_path.is_file()
+            or state_path.read_bytes() != canonical(state)
+            or not isinstance(target_ref, str) or git(root, "rev-parse", target_ref) != base_sha
+            or composition.get("tip_sha") != conflict.get("ours_sha")
+            or mark["head"] != conflict.get("ours_sha")
+            or git(root, "rev-parse", "MERGE_HEAD", check=False) != args.candidate_sha
+            or git(root, "rev-parse", "ORIG_HEAD", check=False) != conflict.get("ours_sha")):
         raise RunnerError("conflict worker checkout does not match the frozen repair packet")
+    admitted = sorted(conflict.get("admitted_paths") or [])
     logical_set = conflict.get("logical_conflict_set")
     validation_root = conflict.get("validation_root")
+    manifest = seal.get("conflict_manifest")
+    authority = (manifest or {}).get("authority_binding") if isinstance(manifest, dict) else None
+    authority_path = Path(str((authority or {}).get("path", ""))).resolve()
+    member = next((row for row in seal.get("members", []) if isinstance(row, dict)
+                   and row.get("task_id") == args.task_id), None)
+    expected_changed = sorted((member or {}).get("changed_paths") or [])
+    observed_changed = sorted(filter(None, git(root, "diff", "--name-only",
+                                               conflict["ours_sha"]).splitlines()))
     if (conflict.get("schema_version") != "juno_release_epoch_conflict.v2"
             or not isinstance(logical_set, dict)
             or logical_set.get("classification") != "authorization_neutral"
             or logical_set.get("ordered_task_ids", [None])[0] != args.task_id
             or sorted(logical_set.get("permitted_paths") or []) != admitted
-            or not isinstance(validation_root, dict)):
+            or not isinstance(validation_root, dict) or not isinstance(member, dict)
+            or observed_changed != expected_changed
+            or not isinstance(authority, dict) or authority_path.is_symlink()
+            or not authority_path.is_file() or sha(authority_path.read_bytes()) != authority.get("sha256")
+            or authority.get("sha256") != logical_set.get("authority_sha256")
+            or (manifest or {}).get("manifest_sha256") != sha(canonical({
+                key: value for key, value in manifest.items() if key != "manifest_sha256"
+            }).rstrip(b"\n"))):
         raise RunnerError("conflict worker requires one declaration-bound logical conflict set")
+    conflict_paths = sorted(conflict.get("conflict_paths") or [])
+    applied_paths = []
+    for relative in sorted(set(expected_changed) - set(conflict_paths)):
+        lexical = root.joinpath(*Path(relative).parts)
+        try:
+            info = lexical.lstat()
+            content = lexical.read_bytes()
+        except OSError as exc:
+            raise RunnerError("conflict checkout applied path is missing") from exc
+        index_fields = git(root, "ls-files", "--stage", "--", relative).split()
+        candidate_fields = git(root, "ls-tree", conflict["theirs_sha"], "--", relative).split()
+        if (lexical.is_symlink() or not lexical.is_file()
+                or any(parent.is_symlink() for parent in lexical.parents if parent != root.parent)
+                or len(index_fields) < 3 or index_fields[2] != "0"
+                or len(candidate_fields) < 3
+                or index_fields[:2] != [candidate_fields[0], candidate_fields[2]]
+                or sha(content) != sha(subprocess.check_output(
+                    ["git", "-C", str(root), "cat-file", "blob", index_fields[1]]))):
+            raise RunnerError("conflict checkout applied path identity drifted")
+        applied_paths.append({"path": relative, "mode": info.st_mode,
+                              "blob": index_fields[1], "sha256": sha(content)})
+    snapshot = _conflict_checkout_snapshot(controller_root, root, target_ref)
+    if (any(line.startswith("? ") for line in
+            str(snapshot.get("status_porcelain_v2", "")).splitlines())
+            or snapshot.get("conflict_paths") != conflict_paths
+            or snapshot.get("head") != conflict.get("ours_sha")
+            or snapshot.get("merge_head") != conflict.get("theirs_sha")
+            or snapshot.get("orig_head") != conflict.get("ours_sha")
+            or snapshot.get("target_sha") != base_sha):
+        raise RunnerError("conflict checkout hydration identity is not receipt-bound")
+    stage_by_path = {path: {row["stage"]: row for row in snapshot["unmerged_stages"]
+                            if row["path"] == path}
+                     for path in snapshot["conflict_paths"]}
+    merge_base = git(root, "merge-base", conflict["ours_sha"], conflict["theirs_sha"])
+    for path, stages in stage_by_path.items():
+        expected_blobs = {stage: git(root, "rev-parse", f"{commit}:{path}") for stage, commit in
+                          ((1, merge_base), (2, conflict["ours_sha"]),
+                           (3, conflict["theirs_sha"]))}
+        if set(stages) != {1, 2, 3} or any(stages[stage]["blob"] != blob
+                                           for stage, blob in expected_blobs.items()):
+            raise RunnerError("conflict checkout unmerged stages drifted")
+    authority_receipt = _verified_conflict_receipt(controller_root, state, conflict)
+    worker_attempt = {"tool_id": args.tool_id, "out_dir": str(Path(args.out_dir).resolve()),
+                      "prompt_sha256": sha(Path(args.prompt_file).resolve().read_bytes()),
+                      "candidate_sha": args.candidate_sha, "task_id": args.task_id}
     admission = {"task_id": args.task_id, "expected_paths": admitted,
                  "admission_kind": "sealed_release_epoch_conflict",
-                 "epoch_id": state.get("epoch_id"), "epoch_state": evidence(state_path),
-                 "conflict_sha256": sha(canonical(conflict)), "before": mark,
+                 "epoch_id": state.get("epoch_id"),
+                 "epoch_fencing_token_sha256": seal.get("fencing_token_sha256"),
+                 "epoch_state": evidence(state_path), "authority_receipt": authority_receipt,
+                 "conflict_manifest_sha256": (manifest or {}).get("manifest_sha256"),
+                 "conflict_authority": evidence(authority_path),
+                 "conflict_sha256": sha(canonical(conflict).rstrip(b"\n")), "before": mark,
+                 "conflict_checkout": snapshot, "applied_paths": applied_paths,
+                 "target_ref": target_ref,
+                 "base_sha": base_sha, "composition_tip": composition.get("tip_sha"),
                  "ours_sha": conflict["ours_sha"], "theirs_sha": conflict["theirs_sha"],
-                 "logical_conflict_set": logical_set, "validation_root": validation_root}
+                 "logical_conflict_set": logical_set, "validation_root": validation_root,
+                 "worker_attempt": worker_attempt}
     return admission, mark
 
 
@@ -982,7 +1102,8 @@ def clean_environment(args: argparse.Namespace, capture: Path, metadata: Path,
 
 
 def hydrate_conflict_validation_root(controller_root: Path, agent_root: Path,
-                                       identity: dict[str, Any]) -> dict[str, Any]:
+                                       identity: dict[str, Any],
+                                       expectation_path: Path | None = None) -> dict[str, Any]:
     """Probe/hydrate one exact-lock conflict-worker validation root before model launch."""
     if identity.get("admission_kind") != "sealed_release_epoch_conflict":
         return {"schema_version": "juno_managed_worker_hydration.v1",
@@ -994,26 +1115,41 @@ def hydrate_conflict_validation_root(controller_root: Path, agent_root: Path,
         raise RunnerError("conflict validation root is malformed")
     lock = agent_root / cwd / "package-lock.json"
     helper = controller_root / ".juno_task/scripts/worktree_hydration.py"
-    if not helper.is_file() or not lock.is_file():
-        raise RunnerError("conflict validation exact lock or hydration helper is missing")
-    before = git(agent_root, "status", "--porcelain=v1", "--untracked-files=all")
+    snapshot = identity.get("conflict_checkout")
+    if (not helper.is_file() or not lock.is_file() or not isinstance(snapshot, dict)
+            or expectation_path is None):
+        raise RunnerError("conflict validation exact lock or hydration authority is missing")
+    atomic_json(expectation_path, snapshot)
     base = [sys.executable, str(helper), "--project-root", str(agent_root)]
+    verify = [*base, "verify-conflict-checkout", "--target-ref", identity["target_ref"],
+              "--expected-snapshot", str(expectation_path)]
     output = bytearray()
     timeout = int(validation.get("timeout_seconds", 3600))
-    for command in ([*base, "verify-node-lock", "--cwd", cwd],
-                    [*base, "hydrate-node", "--cwd", cwd],
-                    [*base, "verify-clean"]):
+    def execute(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         completed = subprocess.run(command, cwd=agent_root, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         output.extend(completed.stdout[-65536:])
-        if completed.returncode:
-            raise RunnerError("conflict validation exact-lock hydration/probe failed")
-    after = git(agent_root, "status", "--porcelain=v1", "--untracked-files=all")
-    if after != before:
-        raise RunnerError("conflict validation hydration left unadmitted Git drift")
+        return completed
+    initial = execute(verify)
+    if initial.returncode:
+        detail = initial.stdout.decode("utf-8", errors="replace")[-512:].strip()
+        raise RunnerError("conflict validation exact-lock hydration/probe failed: " + detail)
+    probe = execute([*base, "verify-node-lock", "--cwd", cwd])
+    if probe.returncode:
+        hydrated = execute([*base, "hydrate-node", "--cwd", cwd])
+        if hydrated.returncode:
+            detail = hydrated.stdout.decode("utf-8", errors="replace")[-512:].strip()
+            raise RunnerError("conflict validation exact-lock hydration/probe failed: " + detail)
+    final = execute(verify)
+    if final.returncode:
+        detail = final.stdout.decode("utf-8", errors="replace")[-512:].strip()
+        raise RunnerError("conflict validation exact-lock hydration/probe failed: " + detail)
     return {"schema_version": "juno_managed_worker_hydration.v1", "decision": "passed",
             "cwd": cwd, "lock_sha256": sha(lock.read_bytes()),
-            "output_sha256": sha(bytes(output)), "git_status_sha256": sha(after.encode())}
+            "conflict_checkout_sha256": sha(canonical(snapshot).rstrip(b"\n")),
+            "expectation": evidence(expectation_path),
+            "output_sha256": sha(bytes(output)),
+            "git_status_sha256": sha(str(snapshot["status_porcelain_v2"]).encode())}
 
 
 def finalize_managed_capture(capture: Path, stdout_path: Path, metadata: Path,
@@ -1379,7 +1515,11 @@ def run(args: argparse.Namespace) -> int:
     env, env_contract = clean_environment(
         args, capture, metadata, binding, controller_before, identity)
     validation_hydration = hydrate_conflict_validation_root(
-        controller_root, agent_root, identity)
+        controller_root, agent_root, identity, out / "conflict-checkout-hydration.json")
+    if identity.get("admission_kind") == "sealed_release_epoch_conflict":
+        revalidated, _ = release_conflict_admission(args, controller_before)
+        if revalidated != identity:
+            raise RunnerError("conflict worker authority drifted before provider dispatch")
     argv = [env_contract["node_runtime"]["yy_executable"], "pi", "--no-hooks", "--config",
             compatible_config["derived"]["path"], "-w", str(agent_root), "-f", str(prompt)]
     prompt_evidence = evidence(prompt)
