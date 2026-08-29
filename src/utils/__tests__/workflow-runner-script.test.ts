@@ -13,6 +13,7 @@ const runtimeScript = path.resolve(repoRoot, '.juno_task/scripts/workflow_runner
 // tolerate shared-host contention or every lane fails together under load.
 const WORKFLOW_CHILD_TIMEOUT_MS = contentionBudgetMs(120_000);
 let workflowFixtureController: string | undefined;
+let workflowFixturePythonExecutable: string | undefined;
 
 type FixtureDiscoveryResult = {
   error?: Error;
@@ -346,6 +347,7 @@ describe('workflow_runner.sh template script', () => {
     // not depend on user-site packages.
     const fixturePython = discoverFixturePython(process.cwd(), nativeSpawnSync);
     const realPythonExecutable = fixturePython.executable;
+    workflowFixturePythonExecutable = realPythonExecutable;
     await fs.symlink(realPythonExecutable, path.join(fixtureBin, 'python'));
     const pythonVersion = fixturePython.version;
     await fs.writeFile(
@@ -364,6 +366,7 @@ describe('workflow_runner.sh template script', () => {
 
   afterEach(async () => {
     workflowFixtureController = undefined;
+    workflowFixturePythonExecutable = undefined;
     await fs.remove(testDir);
   }, 30_000);
 
@@ -1427,8 +1430,8 @@ summary:
     });
 
     expect(result.status, result.stderr).toBe(0);
-    const effectiveAmbientPython = spawnSync('python3', ['-c', 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())'], { encoding: 'utf8' }).stdout.trim();
-    expect(await fs.realpath(python)).toBe(effectiveAmbientPython);
+    expect(workflowFixturePythonExecutable).toBeDefined();
+    expect(await fs.realpath(python)).toBe(await fs.realpath(workflowFixturePythonExecutable!));
     expect(result.stderr).toContain(`[DEBUG] workflow_runner.sh Python runtime: ${python}`);
     expect(result.stderr).toContain(`prefix: ${venv}`);
     expect(result.stderr).toContain(`PyYAML:`);
