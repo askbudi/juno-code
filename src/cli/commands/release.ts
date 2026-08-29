@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { Command } from 'commander';
 import { routeControlPlane } from '../../utils/control-plane-router.js';
 
-export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'reconcile-members' | 'drive' | 'eject' | 'repair' | 'replay-repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
+export type ReleaseTrainOperation = 'plan' | 'status' | 'inspect' | 'seal' | 'epoch-status' | 'reconcile-members' | 'replay-finalization-successor' | 'drive' | 'eject' | 'repair' | 'replay-repair' | 'retry' | 'shadow' | 'bootstrap-inspect' | 'bootstrap-seal' | 'bootstrap-status' | 'bootstrap-drive';
 export type ReleaseTrainInvoker = (
   operation: ReleaseTrainOperation, declaration: string, extraArgs?: string[],
 ) => Promise<void>;
@@ -68,6 +68,18 @@ export function configureReleaseTrainCommand(
       'reconcile-members', epochId,
       ['--expected-target', options.expectedTarget, ...(options.json ? ['--json'] : [])],
     ));
+  train.command('replay-finalization-successor')
+    .description('Typed descendant-target replay of one untouched incomplete terminal-finalization journal')
+    .argument('<epoch-id>', 'Receipt-proven integrated epoch identity')
+    .requiredOption('--predecessor-target <sha>', 'Exact target bound by the untouched predecessor journal')
+    .requiredOption('--expected-target <sha>', 'Exact current protected-target readback')
+    .option('--json', 'Emit stable versioned JSON')
+    .action((epochId: string, options: {
+      predecessorTarget: string; expectedTarget: string; json?: boolean;
+    }) => invoke('replay-finalization-successor', epochId, [
+      '--predecessor-target', options.predecessorTarget,
+      '--expected-target', options.expectedTarget, ...(options.json ? ['--json'] : []),
+    ]));
   train.command('drive')
     .description('Fenced epoch mutation through composition, aggregate gates, terminal member projection, and one target CAS')
     .argument('<epoch-id>', 'Sealed epoch identity')

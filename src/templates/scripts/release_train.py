@@ -45,8 +45,10 @@ BOOTSTRAP_SEAL_SCHEMA = "juno_bootstrap_repair_seal.v1"
 BOOTSTRAP_STATE_SCHEMA = "juno_bootstrap_repair_state.v1"
 BOOTSTRAP_RECEIPT_SCHEMA = "juno_bootstrap_repair_receipt.v1"
 EPOCH_FINALIZATION_SCHEMA = "juno_release_epoch_terminal_finalization.v1"
+EPOCH_FINALIZATION_SUCCESSOR_SCHEMA = "juno_release_epoch_terminal_finalization_successor.v1"
 EPOCH_FINALIZATION_MEMBER_SCHEMA = "juno_release_epoch_terminal_member.v1"
 EPOCH_FINALIZATION_RECEIPT_SCHEMA = "juno_release_epoch_terminal_finalization_receipt.v1"
+EPOCH_FINALIZATION_SUPERSESSION_SCHEMA = "juno_release_epoch_terminal_finalization_supersession.v1"
 EXTERNAL_ACTIONS = {"release", "tag", "push", "publish", "deploy", "cleanup"}
 EPOCH_TERMINAL_STATES = {"RELEASE_READY", "CLOSED", "PAUSED_REQUIRED", "NEEDS_OPERATOR", "STALE"}
 ACTIVE_QUEUE_STATES = {"QUEUED", "MERGING", "CONFLICT", "CONFLICT_RESOLVED", "AWAITING_RISK",
@@ -358,6 +360,11 @@ def build_plan(controller: Path, declaration_path: Path,
     runtime_hashes = {str(path.relative_to(controller)): file_hash(path) for path in runtime_paths}
     if any(value is None for value in runtime_hashes.values()):
         blockers.append({"code": "runtime.missing", "repair_command": "yy scripts update --force"})
+    unresolved_finalization = _unresolved_finalization_epochs(controller)
+    if unresolved_finalization:
+        blockers.append({"code": "release.finalization_incomplete",
+            "epochs": unresolved_finalization,
+            "repair_command": "use only the typed finalization successor replay"})
     bad_feasibility = [task_id for task_id, value in feasibility.items() if not value["ready"]]
     if bad_feasibility:
         blockers.append({"code": "candidate.infeasible", "tasks": sorted(bad_feasibility),
@@ -1523,6 +1530,8 @@ PHASE1_SUITE_TESTS = (
     "ReleaseTrainTests.test_bootstrap_repair_refuses_missing_causal_dependency",
     "ReleaseTrainTests.test_epoch_composes_history_validates_once_and_cas_once",
     "ReleaseTrainTests.test_three_member_terminal_projection_resumes_after_interruption_and_is_idempotent",
+    "ReleaseTrainTests.test_successor_replay_projects_untouched_stale_journal_and_is_idempotent",
+    "ReleaseTrainTests.test_successor_replay_refuses_partial_tamper_divergence_and_revision_drift",
     "ReleaseTrainTests.test_four_member_terminal_projection_preserves_exact_fifo_and_replays_idempotently",
     "ReleaseTrainTests.test_terminal_projection_tamper_and_target_drift_refuse_without_ledger_mutation",
     "ReleaseTrainTests.test_aggregate_exact_lock_hydrates_missing_dependencies_before_gate",
@@ -2212,14 +2221,90 @@ def _epoch_finalization_plan_id(journal: dict[str, Any]) -> str:
     static_members = [{key: row.get(key) for key in ("task_id", "tip_sha", "tree_sha",
         "expected_ledger_revision", "expected_task_sha256", "expected_queue")}
         for row in journal.get("members", []) if isinstance(row, dict)]
-    return digest({**{key: journal.get(key) for key in
+    identity = {**{key: journal.get(key) for key in
         ("epoch_id", "observed_target_sha", "member_order", "cas_receipt", "readiness_receipt")},
-        "members": static_members})
+        "members": static_members}
+    if journal.get("schema_version") == EPOCH_FINALIZATION_SUCCESSOR_SCHEMA:
+        identity.update({key: journal.get(key) for key in
+            ("predecessor_journal", "predecessor_target_sha", "successor_target_sha")})
+    return digest(identity)
 
 
-def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: str) -> dict[str, Any]:
+def _valid_finalization_successor(predecessor_path: Path,
+                                  predecessor: dict[str, Any]) -> bool:
+    predecessor_ref = {"path": str(predecessor_path.resolve()),
+        "sha256": file_hash(predecessor_path), "plan_id": predecessor.get("plan_id")}
+    candidates = []
+    for path in (predecessor_path.parent / "successors").glob("*/journal.json"):
+        try: candidate = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (candidate.get("schema_version") == EPOCH_FINALIZATION_SUCCESSOR_SCHEMA
+                and candidate.get("predecessor_journal") == predecessor_ref):
+            candidates.append((path, candidate))
+    if len(candidates) != 1:
+        return False
+    path, candidate = candidates[0]
+    if (candidate.get("plan_id") != path.parent.name
+            or candidate.get("plan_id") != _epoch_finalization_plan_id(candidate)
+            or candidate.get("member_order") != [row.get("task_id") for row in candidate.get("members", [])]
+            or any(row.get("status") != "complete" or not isinstance(row.get("receipt"), dict)
+                   for row in candidate.get("members", []))):
+        return False
+    references = candidate.get("supersession_receipts")
+    completion_ref = candidate.get("completed_receipt")
+    if (not isinstance(references, dict)
+            or references.get("successor_complete") != completion_ref
+            or not isinstance(completion_ref, dict)):
+        return False
+    try:
+        completion_path = Path(completion_ref["path"]); completion = json.loads(completion_path.read_text())
+        superseded_ref = references["predecessor_superseded"]
+        superseded_path = Path(superseded_ref["path"]); superseded = json.loads(superseded_path.read_text())
+    except (KeyError, TypeError, OSError, json.JSONDecodeError):
+        return False
+    completion_unsigned = {key: value for key, value in completion.items() if key != "receipt_id"}
+    superseded_unsigned = {key: value for key, value in superseded.items() if key != "receipt_id"}
+    return (file_hash(completion_path) == completion_ref.get("sha256")
+        and completion.get("schema_version") == EPOCH_FINALIZATION_RECEIPT_SCHEMA
+        and completion.get("transition") == "SUCCESSOR_COMPLETE"
+        and completion.get("predecessor_journal") == predecessor_ref
+        and digest(completion_unsigned) == completion.get("receipt_id")
+        and completion_ref.get("receipt_id") == completion.get("receipt_id")
+        and file_hash(superseded_path) == superseded_ref.get("sha256")
+        and superseded.get("schema_version") == EPOCH_FINALIZATION_SUPERSESSION_SCHEMA
+        and superseded.get("transition") == "PREDECESSOR_SUPERSEDED"
+        and superseded.get("predecessor_journal") == predecessor_ref
+        and superseded.get("successor_completion") == completion_ref
+        and digest(superseded_unsigned) == superseded.get("receipt_id")
+        and superseded_ref.get("receipt_id") == superseded.get("receipt_id"))
+
+
+def _unresolved_finalization_epochs(controller: Path) -> list[str]:
+    root = controller / ".juno_task/runtime/release-epoch-finalization"
+    unresolved = []
+    for path in root.glob("*/journal.json"):
+        try: journal = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (journal.get("schema_version") == EPOCH_FINALIZATION_SCHEMA
+                and journal.get("completed_receipt") is None
+                and not _valid_finalization_successor(path, journal)):
+            unresolved.append(str(journal.get("epoch_id") or path.parent.name))
+    return sorted(set(unresolved))
+
+
+def _assert_protected_target(repository: Path, target_ref: str, expected_target: str) -> None:
+    if git(repository, "rev-parse", target_ref) != expected_target:
+        raise ReleaseTrainError("release-epoch protected target moved during finalization")
+
+
+def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: str,
+                            operation_root: Optional[Path] = None,
+                            prepared_journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Revision-CAS every integrated member to Ledger done/MERGED, resumably."""
-    root = _epoch_finalization_root(controller, epoch_id); root.mkdir(parents=True, exist_ok=True)
+    root = operation_root or _epoch_finalization_root(controller, epoch_id)
+    root.mkdir(parents=True, exist_ok=True)
     lock_path = root / "operation.lock"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -2230,11 +2315,20 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
         if journal_path.exists():
             try: journal = json.loads(journal_path.read_text())
             except json.JSONDecodeError as exc: raise ReleaseTrainError("release-epoch finalization journal is malformed") from exc
-            if (journal.get("schema_version") != EPOCH_FINALIZATION_SCHEMA
+            if (journal.get("schema_version") not in
+                    {EPOCH_FINALIZATION_SCHEMA, EPOCH_FINALIZATION_SUCCESSOR_SCHEMA}
                     or journal.get("epoch_id") != epoch_id or journal.get("observed_target_sha") != target
                     or journal.get("member_order") != [row["task_id"] for row in members]
-                    or journal.get("plan_id") != _epoch_finalization_plan_id(journal)):
+                    or journal.get("plan_id") != _epoch_finalization_plan_id(journal)
+                    or (prepared_journal is not None
+                        and _epoch_finalization_plan_id(prepared_journal) != journal.get("plan_id"))):
                 raise ReleaseTrainError("release-epoch finalization replay identity drifted")
+        elif prepared_journal is not None:
+            journal = prepared_journal
+            if (journal.get("schema_version") != EPOCH_FINALIZATION_SUCCESSOR_SCHEMA
+                    or journal.get("plan_id") != _epoch_finalization_plan_id(journal)):
+                raise ReleaseTrainError("release-epoch successor journal identity drifted")
+            atomic_json(journal_path, journal, exclusive=True)
         else:
             planned = []
             for member in members:
@@ -2258,6 +2352,7 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
             raise ReleaseTrainError("release-epoch finalization member journal is partial")
         import merge_queue
         for member, planned in zip(members, journal["members"]):
+            _assert_protected_target(repository, state["seal"]["target_ref"], target)
             if planned.get("task_id") != member["task_id"] or planned.get("tip_sha") != member["tip_sha"]:
                 raise ReleaseTrainError("release-epoch finalization member replay drifted")
             member_path = root / "members" / f"{len([p for p in journal['members'] if p.get('status') == 'complete']) + 1:04d}-{member['task_id']}.json"
@@ -2321,6 +2416,7 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
                 "path": str(member_path.resolve()), "sha256": file_hash(member_path),
                 "receipt_id": body["receipt_id"]}
             atomic_json(journal_path, journal)
+        _assert_protected_target(repository, state["seal"]["target_ref"], target)
         if journal.get("completed_receipt"):
             reference = journal["completed_receipt"]
             try: completion = json.loads(Path(reference.get("path", "")).read_text())
@@ -2339,12 +2435,156 @@ def reconcile_epoch_members(controller: Path, epoch_id: str, expected_target: st
             "plan_id": journal["plan_id"], "observed_target_sha": target,
             "cas_receipt_id": receipt_refs["CAS_COMPLETE"]["receipt_id"],
             "members": [row["receipt"] for row in journal["members"]], "completed_utc": utc_now()}
+        if journal.get("schema_version") == EPOCH_FINALIZATION_SUCCESSOR_SCHEMA:
+            completion.update({"transition": "SUCCESSOR_COMPLETE",
+                "predecessor_journal": journal["predecessor_journal"],
+                "predecessor_target_sha": journal["predecessor_target_sha"],
+                "successor_target_sha": journal["successor_target_sha"]})
         completion["receipt_id"] = digest(completion)
         completion_path = root / "receipt.json"; atomic_json(completion_path, completion, exclusive=True)
         journal["completed_receipt"] = {"path": str(completion_path.resolve()),
             "sha256": file_hash(completion_path), "receipt_id": completion["receipt_id"]}
         atomic_json(journal_path, journal)
         return journal
+
+
+def replay_epoch_finalization_successor(controller: Path, epoch_id: str,
+                                        predecessor_target: str,
+                                        expected_target: str) -> dict[str, Any]:
+    """Replay one untouched stale finalization journal at an exact descendant target."""
+    predecessor_root = _epoch_finalization_root(controller, epoch_id)
+    predecessor_path = predecessor_root / "journal.json"
+    try:
+        predecessor_bytes = predecessor_path.read_bytes()
+        predecessor = json.loads(predecessor_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseTrainError("release-epoch predecessor journal is unreadable") from exc
+    if (predecessor_bytes != (canonical(predecessor) + "\n").encode()
+            or predecessor.get("schema_version") != EPOCH_FINALIZATION_SCHEMA
+            or predecessor.get("epoch_id") != epoch_id
+            or predecessor.get("observed_target_sha") != predecessor_target
+            or predecessor.get("plan_id") != _epoch_finalization_plan_id(predecessor)):
+        raise ReleaseTrainError("release-epoch predecessor journal identity drifted")
+    predecessor_members = predecessor.get("members")
+    if (not isinstance(predecessor_members, list) or not predecessor_members
+            or predecessor.get("member_order") != [row.get("task_id") for row in predecessor_members
+                                                     if isinstance(row, dict)]
+            or predecessor.get("completed_receipt") is not None
+            or any(not isinstance(row, dict) or row.get("status") != "pending"
+                   or row.get("receipt") is not None for row in predecessor_members)
+            or (predecessor_root / "receipt.json").exists()
+            or any((predecessor_root / "members").glob("*.json"))):
+        raise ReleaseTrainError("release-epoch predecessor journal has a successful or partial mutation")
+
+    state = read_epoch(controller, epoch_id)
+    repository, target, members, receipt_refs = _terminal_epoch_identity(
+        controller, state, expected_target)
+    if target != expected_target or subprocess.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+             predecessor_target, target], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL).returncode:
+        raise ReleaseTrainError("release-epoch successor target is not a descendant of predecessor target")
+    if ([row["task_id"] for row in members] != predecessor["member_order"]
+            or predecessor.get("cas_receipt") != receipt_refs["CAS_COMPLETE"]
+            or predecessor.get("readiness_receipt") != receipt_refs.get("RELEASE_READY")):
+        raise ReleaseTrainError("release-epoch predecessor member or receipt identity drifted")
+
+    predecessor_ref = {"path": str(predecessor_path.resolve()),
+        "sha256": hashlib.sha256(predecessor_bytes).hexdigest(),
+        "plan_id": predecessor["plan_id"]}
+    existing = []
+    for path in (predecessor_root / "successors").glob("*/journal.json"):
+        try: candidate = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (candidate.get("schema_version") == EPOCH_FINALIZATION_SUCCESSOR_SCHEMA
+                and candidate.get("predecessor_journal") == predecessor_ref
+                and candidate.get("predecessor_target_sha") == predecessor_target
+                and candidate.get("successor_target_sha") == target):
+            existing.append((path.parent, candidate))
+    if len(existing) > 1:
+        raise ReleaseTrainError("release-epoch successor coverage is ambiguous")
+    if existing:
+        successor_root, candidate = existing[0]
+        if (candidate.get("plan_id") != successor_root.name
+                or candidate.get("plan_id") != _epoch_finalization_plan_id(candidate)
+                or not isinstance(candidate.get("supersession_receipts"), dict)):
+            raise ReleaseTrainError("release-epoch successor terminal identity drifted")
+        completed = reconcile_epoch_members(controller, epoch_id, target, successor_root)
+        references = completed.get("supersession_receipts") or {}
+        superseded_ref = references.get("predecessor_superseded")
+        try:
+            superseded = json.loads(Path(superseded_ref.get("path", "")).read_text())
+        except (AttributeError, OSError, json.JSONDecodeError) as exc:
+            raise ReleaseTrainError("release-epoch predecessor supersession receipt drifted") from exc
+        unsigned = {key: value for key, value in superseded.items() if key != "receipt_id"}
+        if (file_hash(Path(superseded_ref["path"])) != superseded_ref.get("sha256")
+                or superseded.get("schema_version") != EPOCH_FINALIZATION_SUPERSESSION_SCHEMA
+                or superseded.get("predecessor_journal") != predecessor_ref
+                or superseded.get("successor_completion") != completed.get("completed_receipt")
+                or digest(unsigned) != superseded.get("receipt_id")
+                or superseded_ref.get("receipt_id") != superseded.get("receipt_id")):
+            raise ReleaseTrainError("release-epoch predecessor supersession receipt drifted")
+        return completed
+
+    planned = []
+    for member, prior in zip(members, predecessor_members):
+        if any(prior.get(key) != member.get(key) for key in ("task_id", "tip_sha", "tree_sha")):
+            raise ReleaseTrainError("release-epoch predecessor member identity drifted")
+        queue = _queue_member_identity(controller, member, state["seal"]["target_ref"])
+        if queue.get("state") != "MERGED" or queue != prior.get("expected_queue"):
+            raise ReleaseTrainError(f"release epoch successor queue truth drifted: {member['task_id']}")
+        task = kanban_task(controller, member["task_id"])
+        revision = task_runtime.kanban_board_revision(controller, member["task_id"])
+        if (_ledger_terminal(task, member) or digest(task) != prior.get("expected_task_sha256")
+                or revision != prior.get("expected_ledger_revision")):
+            raise ReleaseTrainError(
+                f"release epoch predecessor Ledger mutation or revision drifted: {member['task_id']}")
+        planned.append({"task_id": member["task_id"], "tip_sha": member["tip_sha"],
+            "tree_sha": member["tree_sha"], "expected_ledger_revision": revision,
+            "expected_task_sha256": digest(task), "expected_queue": queue,
+            "status": "pending", "receipt": None})
+    successor = {"schema_version": EPOCH_FINALIZATION_SUCCESSOR_SCHEMA,
+        "epoch_id": epoch_id, "observed_target_sha": target,
+        "predecessor_journal": predecessor_ref,
+        "predecessor_target_sha": predecessor_target, "successor_target_sha": target,
+        "member_order": [row["task_id"] for row in members],
+        "cas_receipt": receipt_refs["CAS_COMPLETE"],
+        "readiness_receipt": receipt_refs.get("RELEASE_READY"), "members": planned,
+        "completed_receipt": None, "supersession_receipts": None}
+    successor["plan_id"] = _epoch_finalization_plan_id(successor)
+    successor_root = predecessor_root / "successors" / successor["plan_id"]
+    completed = reconcile_epoch_members(controller, epoch_id, target,
+                                        successor_root, successor)
+    _assert_protected_target(repository, state["seal"]["target_ref"], target)
+    journal_path = successor_root / "journal.json"
+    completion_ref = completed.get("completed_receipt")
+    if not isinstance(completion_ref, dict):
+        raise ReleaseTrainError("release-epoch successor completion is missing")
+    supersession = {"schema_version": EPOCH_FINALIZATION_SUPERSESSION_SCHEMA,
+        "transition": "PREDECESSOR_SUPERSEDED", "epoch_id": epoch_id,
+        "predecessor_journal": predecessor_ref, "predecessor_target_sha": predecessor_target,
+        "successor_target_sha": target, "successor_plan_id": completed["plan_id"],
+        "successor_completion": completion_ref, "member_order": completed["member_order"]}
+    supersession["receipt_id"] = digest(supersession)
+    supersession_path = successor_root / "predecessor-superseded.json"
+    if supersession_path.exists():
+        if json.loads(supersession_path.read_text()) != supersession:
+            raise ReleaseTrainError("release-epoch predecessor supersession receipt drifted")
+    else:
+        atomic_json(supersession_path, supersession, exclusive=True)
+    supersession_ref = {"path": str(supersession_path.resolve()),
+        "sha256": file_hash(supersession_path), "receipt_id": supersession["receipt_id"]}
+    latest = json.loads(journal_path.read_text())
+    expected_receipts = {"successor_complete": completion_ref,
+                         "predecessor_superseded": supersession_ref}
+    if latest.get("supersession_receipts") not in (None, expected_receipts):
+        raise ReleaseTrainError("release-epoch successor terminal receipt set drifted")
+    if latest.get("supersession_receipts") is None:
+        latest["supersession_receipts"] = expected_receipts
+        atomic_json(journal_path, latest)
+    _assert_protected_target(repository, state["seal"]["target_ref"], target)
+    return latest
 
 
 def eject_epoch_member(controller: Path, epoch_id: str, task_id: str, reason: str,
@@ -3303,6 +3543,9 @@ def parser() -> argparse.ArgumentParser:
     reconcile = subs.add_parser("reconcile-members"); reconcile.add_argument("epoch_id")
     reconcile.add_argument("--expected-target", required=True)
     reconcile.add_argument("--json", action="store_true")
+    successor = subs.add_parser("replay-finalization-successor"); successor.add_argument("epoch_id")
+    successor.add_argument("--predecessor-target", required=True)
+    successor.add_argument("--expected-target", required=True); successor.add_argument("--json", action="store_true")
     drive = subs.add_parser("drive"); drive.add_argument("epoch_id")
     drive.add_argument("--epoch-token", required=True); drive.add_argument("--json", action="store_true")
     eject = subs.add_parser("eject"); eject.add_argument("epoch_id"); eject.add_argument("task_id")
@@ -3368,8 +3611,14 @@ def epoch_status_projection(controller: Path, epoch_id: str) -> dict[str, Any]:
         "READY_CAS": "continue fenced drive for the single expected-SHA CAS",
         "RELEASE_READY": "delivery is separate; do not infer release authority"}
     last = receipts[-1] if receipts and isinstance(receipts[-1], dict) else None
+    unresolved = state.get("epoch_id") in _unresolved_finalization_epochs(controller)
+    projected_state = "FINALIZATION_INCOMPLETE" if unresolved else state.get("state")
+    projected_action = ("use only replay-finalization-successor with both exact targets"
+                        if unresolved else actions.get(state.get("state"),
+                                                       "inspect immutable epoch evidence"))
     return {"schema_version": "juno_release_epoch_status_projection.v1",
-        "epoch_id": state.get("epoch_id"), "state": state.get("state"),
+        "epoch_id": state.get("epoch_id"), "state": projected_state,
+        "epoch_state": state.get("state"),
         "target": {"ref": seal.get("target_ref"), "base_sha": seal.get("base_sha")},
         "plan_id": seal.get("plan_id"), "member_count": len(seal.get("members") or []),
         "conflict": ({"task_id": conflict.get("task_id"),
@@ -3380,8 +3629,8 @@ def epoch_status_projection(controller: Path, epoch_id: str) -> dict[str, Any]:
         "receipt_count": len(receipts),
         "last_receipt": ({key: last.get(key) for key in ("transition", "sha256")}
                          if last else None), "history_truncated": len(receipts) > 1,
-        "reason_code": reason_code,
-        "next_action": actions.get(state.get("state"), "inspect immutable epoch evidence"),
+        "reason_code": "finalization_incomplete" if unresolved else reason_code,
+        "next_action": projected_action,
         "excluded_actions": ["release", "tag", "push", "publish", "deploy", "cleanup"]}
 
 
@@ -3401,6 +3650,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not SHA_RE.fullmatch(args.expected_target):
                 raise ReleaseTrainError("expected target must be an exact commit")
             result = reconcile_epoch_members(controller, args.epoch_id, args.expected_target)
+        elif args.operation == "replay-finalization-successor":
+            if (not SHA_RE.fullmatch(args.predecessor_target)
+                    or not SHA_RE.fullmatch(args.expected_target)):
+                raise ReleaseTrainError("predecessor and expected targets must be exact commits")
+            result = replay_epoch_finalization_successor(
+                controller, args.epoch_id, args.predecessor_target, args.expected_target)
         elif args.operation == "drive":
             result = drive_epoch(controller, args.epoch_id, args.epoch_token)
         elif args.operation == "eject":

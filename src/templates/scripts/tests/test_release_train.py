@@ -1092,6 +1092,80 @@ raise SystemExit(2)
         repeated = runtime.reconcile_epoch_members(self.root, "rc-1", complete["cas"]["readback"])
         self.assertIsNotNone(repeated["completed_receipt"])
 
+    def prepare_untouched_stale_finalization(self) -> tuple[str, str, list[str]]:
+        tips = self.prepare_three_member_epoch()
+        sealed = runtime.seal_epoch(self.root, self.declaration)
+        def fixture_cas(repository: Path, target_ref: str, tip: str, expected: str) -> dict:
+            run(repository, "git", "update-ref", target_ref, tip, expected)
+            return {"fixture": "exact-owner-readback"}
+        with mock.patch("merge_queue.cas_target", side_effect=fixture_cas), \
+             mock.patch.object(runtime, "reconcile_epoch_members", return_value={}):
+            complete = runtime.drive_epoch(self.root, "rc-1", sealed["lease_token"])
+        predecessor_target = complete["cas"]["readback"]
+        for task_id, tip in zip(("OLD", "REQ", "DEP"), tips):
+            record = self.state["tasks"][task_id]
+            record.update({"state": "MERGED", "queue_attempt": {
+                "task_id": task_id, "feature_sha": tip, "outcome": "ALREADY_IN_TARGET"}})
+        self.write_state()
+        with mock.patch("merge_queue.finalize_kanban_task",
+                        side_effect=runtime.ReleaseTrainError("seeded untouched interruption")):
+            with self.assertRaisesRegex(runtime.ReleaseTrainError, "seeded untouched interruption"):
+                runtime.reconcile_epoch_members(self.root, "rc-1", predecessor_target)
+        run(self.root, "git", "commit", "--allow-empty", "-m", "descendant target")
+        current_target = run(self.root, "git", "rev-parse", "HEAD")
+        return predecessor_target, current_target, tips
+
+    def test_successor_replay_projects_untouched_stale_journal_and_is_idempotent(self) -> None:
+        predecessor, current, tips = self.prepare_untouched_stale_finalization()
+        self.assertEqual(["rc-1"], runtime._unresolved_finalization_epochs(self.root))
+        self.assertEqual("FINALIZATION_INCOMPLETE",
+                         runtime.epoch_status_projection(self.root, "rc-1")["state"])
+        result = runtime.replay_epoch_finalization_successor(
+            self.root, "rc-1", predecessor, current)
+        self.assertEqual("SUCCESSOR_COMPLETE", json.loads(
+            Path(result["completed_receipt"]["path"]).read_text())["transition"])
+        superseded = json.loads(Path(
+            result["supersession_receipts"]["predecessor_superseded"]["path"]).read_text())
+        self.assertEqual("PREDECESSOR_SUPERSEDED", superseded["transition"])
+        board = json.loads(self.board_path.read_text())
+        for task_id, tip in zip(("OLD", "REQ", "DEP"), tips):
+            self.assertEqual(("done", tip, "MERGED"),
+                (board[task_id]["status"], board[task_id]["commit_hash"],
+                 board[task_id]["fields"]["lifecycle_state"]))
+        self.assertEqual(result, runtime.replay_epoch_finalization_successor(
+            self.root, "rc-1", predecessor, current))
+        self.assertEqual([], runtime._unresolved_finalization_epochs(self.root))
+        self.assertEqual("RELEASE_READY", runtime.epoch_status_projection(self.root, "rc-1")["state"])
+        predecessor_journal = self.root / ".juno_task/runtime/release-epoch-finalization/rc-1/journal.json"
+        self.assertTrue(all(row["status"] == "pending"
+                            for row in json.loads(predecessor_journal.read_text())["members"]))
+
+    def test_successor_replay_refuses_partial_tamper_divergence_and_revision_drift(self) -> None:
+        predecessor, current, _tips = self.prepare_untouched_stale_finalization()
+        predecessor_root = self.root / ".juno_task/runtime/release-epoch-finalization/rc-1"
+        members = predecessor_root / "members"; members.mkdir()
+        (members / "0001-OLD.json").write_text("{}\n")
+        before = self.board_path.read_bytes()
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "successful or partial"):
+            runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, current)
+        self.assertEqual(before, self.board_path.read_bytes())
+        (members / "0001-OLD.json").unlink()
+        journal = predecessor_root / "journal.json"; original = journal.read_bytes()
+        journal.write_bytes(original + b" ")
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "identity drifted|unreadable"):
+            runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, current)
+        journal.write_bytes(original)
+        unrelated = subprocess.check_output(["git", "commit-tree", f"{self.base}^{{tree}}", "-p", self.base],
+            cwd=self.root, text=True, input="divergent\n").strip()
+        run(self.root, "git", "update-ref", "refs/heads/product", unrelated, current)
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "protected target moved|not a descendant|not in current target ancestry"):
+            runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, unrelated)
+        run(self.root, "git", "update-ref", "refs/heads/product", current, unrelated)
+        self.board["OLD"]["last_modified"] = "revision-drift"; self.write_board()
+        with self.assertRaisesRegex(runtime.ReleaseTrainError, "mutation or revision drifted"):
+            runtime.replay_epoch_finalization_successor(self.root, "rc-1", predecessor, current)
+        self.assertNotEqual(before, self.board_path.read_bytes())
+
     def test_four_member_terminal_projection_preserves_exact_fifo_and_replays_idempotently(self) -> None:
         tips = self.prepare_four_member_epoch()
         sealed = runtime.seal_epoch(self.root, self.declaration)

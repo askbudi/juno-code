@@ -36,6 +36,7 @@ describe('release train CLI', () => {
     }
     expect(command('epoch-status')?.description()).toContain('Read-only');
     expect(command('reconcile-members')?.description()).toContain('Receipt-bound');
+    expect(command('replay-finalization-successor')?.description()).toContain('Typed descendant-target replay');
     expect(command('shadow')?.description()).toContain('Read-only');
     expect(command('seal')?.description()).toContain('Explicitly close admission');
     expect(command('drive')?.description()).toContain('one target CAS');
@@ -85,6 +86,17 @@ describe('release train CLI', () => {
       '--expected-target', 'a'.repeat(40), '--json']);
     expect(invoke).toHaveBeenLastCalledWith('reconcile-members', 'epoch-1',
       ['--expected-target', 'a'.repeat(40), '--json']);
+  });
+
+  it('forwards typed stale-finalization successor with both exact target identities', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const program = new Command().exitOverride();
+    configureReleaseTrainCommand(program, invoke);
+    await program.parseAsync(['node', 'yy', 'release', 'train', 'replay-finalization-successor', 'epoch-1',
+      '--predecessor-target', 'a'.repeat(40), '--expected-target', 'b'.repeat(40), '--json']);
+    expect(invoke).toHaveBeenLastCalledWith('replay-finalization-successor', 'epoch-1', [
+      '--predecessor-target', 'a'.repeat(40), '--expected-target', 'b'.repeat(40), '--json',
+    ]);
   });
 
   it('forwards fenced aggregate retry without weakening token identity', async () => {

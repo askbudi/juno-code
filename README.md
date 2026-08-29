@@ -393,7 +393,16 @@ eligible pre-cutoff candidate, compose a private train with one merge commit per
 task, run aggregate validation/review once, perform one target CAS, then emit
 read-only release readiness. `plan|status|inspect|epoch-status|shadow` observe;
 `seal|drive|eject|repair` mutate epoch state; RC/tag/push/publish/deploy/cleanup
-remain separate authorities. See the installed `sealed_release_epochs.md` wiki. The legacy Git-flow helper retains only explicit status/sync/push for
+remain separate authorities. See the installed `sealed_release_epochs.md` wiki.
+An untouched incomplete terminal-finalization journal whose target later advanced
+only by descendant commits is recovered with `yy release train
+replay-finalization-successor EPOCH --predecessor-target OLD_SHA
+--expected-target CURRENT_SHA`. The typed replay validates the immutable epoch,
+CAS/readiness and predecessor journal, requires exact `MERGED` queue truth and no
+prior member mutation, binds current Ledger revisions, then emits linked
+successor-complete and predecessor-superseded receipts after revision-CAS terminal
+projection. Partial/tampered/divergent predecessors fail closed and remain
+immutable. The legacy Git-flow helper retains only explicit status/sync/push for
 older disabled configurations; its controller reconciliation command refuses.
 
 Rollback operations are intentionally separate:
