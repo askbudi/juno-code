@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { verifyInstalledExecutionEnvelope } from './verify-benchmark-installed-envelope.mjs';
+import { runBoundedReleaseCommand } from './bounded-release-command.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const junoCodeRoot = resolve(scriptDirectory, '..');
@@ -17,14 +17,11 @@ const packDirectory = join(fixtureRoot, 'packs');
 const prefix = join(fixtureRoot, 'prefix');
 
 function runRaw(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = runBoundedReleaseCommand(command, args, {
     cwd: options.cwd ?? repositoryRoot,
     env: options.env ?? process.env,
-    encoding: 'utf8',
     input: options.input ?? '',
-    timeout: options.timeout ?? 300_000,
-    killSignal: 'SIGKILL',
-    maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout,
   });
   if (result.error) {
     throw new Error(`${command} ${args.join(' ')} failed (${result.error.code ?? 'spawn'}): ${result.error.message}`);

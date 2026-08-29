@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { useSharedHeavyWorkloadLock } from '../../test-utils/resource-lock.js';
 import packageJson from '../../../package.json';
 import { inspect, inspectPackedTarball, runSyntheticLeakageCanaries } from '../../../scripts/scan-benchmark-release-artifacts.mjs';
+import { MAX_BENCHMARK_RELEASE_COMMAND_TIMEOUT_MS, runBoundedReleaseCommand } from '../../../scripts/bounded-release-command.mjs';
 import {
   BENCHMARK_VERSION_RANGE,
   BenchmarkDelegateError,
@@ -338,15 +339,26 @@ describe('packed tarball leakage scanning', () => {
 });
 
 describe('benchmark delegate', () => {
+  it('hard-kills a genuinely hung bounded release child and refuses an unbounded budget', () => {
+    const result = runBoundedReleaseCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 50 });
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+    expect(result.signal).toBe('SIGKILL');
+    expect(() => runBoundedReleaseCommand(process.execPath, ['--version'], {
+      timeout: MAX_BENCHMARK_RELEASE_COMMAND_TIMEOUT_MS + 1,
+    })).toThrow(/timeout must be an integer/u);
+  });
+
   it('packs, installs, and verifies standalone/delegate equivalence from tracked sources', async () => {
     const result = await execa(process.execPath, ['scripts/verify-benchmark-release-artifacts.mjs'], {
       cwd: projectRoot,
       reject: false,
-      timeout: 300_000,
+      // Setup/pack time is bounded separately from the exact 300s coverage
+      // child deadline encoded in RELEASE_VERIFICATION_COMMANDS.
+      timeout: 600_000,
     });
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain('benchmark release artifact smoke passed');
-  }, 310_000);
+  }, 610_000);
 
   it('discovers only PATH executables and preserves argument order, cwd, and caller environment', async () => {
     const { root, bin, record } = await fixture();
