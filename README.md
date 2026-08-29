@@ -68,7 +68,7 @@ Next: [run an agent](#beginner-agent-workflow), [manage a typed task](#typed-tas
 | Release epoch | `release train ...` | Readiness only; tag, publish, push, deploy, and cleanup need separate authority. |
 | Records/evaluation | `ledger`, `benchmark` | Transparent delegation to independently installed canonical packages. |
 
-Run `yy --help` and a real nested help command such as `yy task --help` for the complete inventory of your installed version. The old `lifecycle` command is removed; use typed `task` and `merge` commands.
+Run `yy --help` for the complete top-level inventory of your installed version; each listed command prints its own usage when invoked with `-h`. The old `lifecycle` command is removed; use typed `task` and `merge` commands.
 
 ## Beginner agent workflow
 
@@ -320,7 +320,7 @@ Delegation preserves arguments, stdin/stdout/stderr, cwd, exit status, and signa
 yy completion install
 yy completion status
 yy help
-yy task --help
+yy --help
 ```
 
 Completion supports Bash, Zsh, and Fish. Use the nested help for your installed release rather than copying an option from a different channel.
