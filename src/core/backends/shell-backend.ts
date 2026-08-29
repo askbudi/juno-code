@@ -1039,6 +1039,15 @@ export class ShellBackend implements Backend {
           }
         }
       };
+      const awaitOwnedGroupExit = async (timeoutMs: number): Promise<boolean> => {
+        const deadline = Date.now() + timeoutMs;
+        while (ownedGroupIsActive() && Date.now() < deadline) {
+          // Yield to process-exit delivery without guessing at a fixed reap delay.
+          // kill(-pgid, 0) remains the authoritative whole-group liveness check.
+          await new Promise<void>((done) => setImmediate(done));
+        }
+        return !ownedGroupIsActive();
+      };
       const cancelOwnedGroup = (signal: NodeJS.Signals): void => {
         signalOwnedGroup(signal);
         setTimeout(() => signalOwnedGroup('SIGKILL'), 250);
@@ -1128,9 +1137,14 @@ export class ShellBackend implements Backend {
           removeSignalOwners();
           if (ownedGroupIsActive()) {
             signalOwnedGroup('SIGTERM');
-            await new Promise((done) => setTimeout(done, 500));
-            if (ownedGroupIsActive()) signalOwnedGroup('SIGKILL');
-            await new Promise((done) => setTimeout(done, 25));
+            if (!await awaitOwnedGroupExit(500)) {
+              signalOwnedGroup('SIGKILL');
+              if (!await awaitOwnedGroupExit(5000)) {
+                await cleanupPromptFile();
+                reject(new Error(`Failed to terminate shell process group ${child.pid ?? 'unknown'}`));
+                return;
+              }
+            }
           }
           const duration = Date.now() - startTime;
           const success = exitCode === 0;
