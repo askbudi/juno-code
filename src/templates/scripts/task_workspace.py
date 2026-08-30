@@ -4178,6 +4178,7 @@ def standing_evidence_run(controller: Path, task_id: str,
     lane.parent.mkdir(parents=True, exist_ok=True)
     decision_log: list[dict[str, Any]] = []
     executed = reused = invalidated = 0
+    active_wall_ms = 0
     failure: Optional[tuple[dict[str, Any], dict[str, Any]]] = None
     readiness_sha256 = _standing_readiness_identity(record, worktree, config)
     with lane.open("a+b") as lock:
@@ -4268,6 +4269,9 @@ def standing_evidence_run(controller: Path, task_id: str,
                            "readiness_sha256": readiness_sha256,
                            "result": evidence, "recorded_at_unix_ns": time.time_ns()}
                 _standing_atomic(receipt_path, receipt); executed += 1
+                active_wall_ms += max(0, int(
+                    evidence.get("timing", {}).get("wall_duration_ms",
+                                                     evidence.get("duration_ms", 0))))
                 decision_log.append(lifecycle_runtime.evidence_decision(
                     row["id"], "executed", closure=closure,
                     source={"path": str(receipt_path)}))
@@ -4287,6 +4291,7 @@ def standing_evidence_run(controller: Path, task_id: str,
                    "plan_sha256": plan["plan_sha256"], "tip_sha": head,
                    "outcome": "FAILED" if failure else "PASSED",
                    "executed": executed, "reused": reused, "invalidated": invalidated,
+                   "active_wall_ms": active_wall_ms,
                    "decisions": decision_log,
                    "counters": lifecycle_runtime.evidence_counters(decision_log),
                    "replay_trace": lifecycle_runtime.evidence_replay_trace(
@@ -4441,6 +4446,7 @@ def _finish_once(controller: Path, task_id: str,
         "plan_sha256": standing["plan_sha256"], "tip_sha": standing["tip_sha"],
         "outcome": standing["outcome"], "receipts": standing["receipts"],
         "decisions": standing["decisions"], "counters": standing["counters"],
+        "active_wall_ms": standing["active_wall_ms"],
         "documentation_route": standing["documentation_route"],
         "grouped_coherence": standing["grouped_coherence"],
         "summary_sha256": stable_sha256(standing),

@@ -4137,6 +4137,40 @@ steps:
         self.assertEqual(self.task("status", "Y")["state"], "REOPENING")
         self.assertTrue(marker.exists()); self.assertFalse(checkout.exists())
 
+    def test_current_baseline_exact_lifecycle_executes_one_invocation_and_reports_replay_facts(self) -> None:
+        self.task("start", "X")
+        worktree = self.workspaces / "X"
+        path = worktree / "src/exact.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("exact\n")
+        git(worktree, "add", "src/exact.txt")
+        git(worktree, "commit", "-m", "exact lifecycle fixture")
+
+        checkpoint = self.task("checkpoint", "X")
+        first = self.task("evidence-run", "X")
+        warm = self.task("evidence-run", "X")
+        queued = self.task("finish", "X")
+        merged = self.queue_payload("next")
+
+        self.assertEqual(first["counters"]["executed"], 1)
+        self.assertEqual(first["counters"]["reused"], 0)
+        receipt = json.loads(Path(first["receipts"][0]["path"]).read_text())
+        self.assertEqual(first["active_wall_ms"],
+                         receipt["result"]["timing"]["wall_duration_ms"])
+        self.assertEqual(warm["counters"]["executed"], 0)
+        self.assertEqual(warm["counters"]["reused"], 1)
+        self.assertEqual(warm["active_wall_ms"], 0)
+        self.assertEqual(queued["review_ready_closure"]["standing_validation"]
+                         ["active_wall_ms"], 0)
+        self.assertEqual(merged["command_evidence"]["counters"]["executed"], 0)
+        self.assertEqual(merged["command_evidence"]["counters"]["reused"], 1)
+        self.assertEqual(merged["command_evidence"]["active_wall_ms"], 0)
+        self.assertEqual(self.counter.read_text().splitlines(), ["run"])
+        self.assertEqual(checkpoint["plan_sha256"], first["plan_sha256"])
+        for reference in first["receipts"]:
+            self.assertEqual(hashlib.sha256(Path(reference["path"]).read_bytes()).hexdigest(),
+                             reference["sha256"])
+
     def test_out_of_cwd_candidate_change_invalidates_reused_command_evidence(self) -> None:
         # A validation command with a configured cwd can still observe tracked
         # inputs outside that cwd, so reusable evidence binds the whole tree:
@@ -4149,6 +4183,7 @@ steps:
         self.assertEqual(first["strategy"], "direct")
         self.assertEqual(first["command_evidence"]["counters"]["executed"], 0)
         self.assertEqual(first["command_evidence"]["counters"]["reused"], 1)
+        self.assertEqual(first["command_evidence"]["active_wall_ms"], 0)
         second = self.queue_payload("next")
         self.assertEqual(second["task_id"], "Z")
         # The moved target added docs/x.txt outside the focused row's src cwd;
@@ -4157,6 +4192,8 @@ steps:
         self.assertEqual(second["command_evidence"]["counters"]["reused"], 0)
         self.assertEqual(second["command_evidence"]["counters"]["invalidated"], 1)
         self.assertEqual(second["command_evidence"]["counters"]["executed"], 1)
+        self.assertEqual(second["command_evidence"]["active_wall_ms"],
+                         second["validation"][0]["timing"]["wall_duration_ms"])
         invalidation = next(row for row in second["command_evidence"]["decisions"]
                             if row["decision"] == "invalidated")
         self.assertIn("observable_tree",

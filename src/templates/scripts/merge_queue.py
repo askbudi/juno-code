@@ -3970,6 +3970,10 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                      for row in validations]
         return validations, {"decisions": decisions,
                              "counters": lifecycle_runtime.evidence_counters(decisions),
+                             "active_wall_ms": sum(max(0, int(
+                                 row.get("timing", {}).get("wall_duration_ms",
+                                                           row.get("duration_ms", 0))))
+                                                   for row in validations),
                              "source": "legacy_conservative_execution"}
     route = standing.get("documentation_route", {})
     changed = record.get("changed_paths") or []
@@ -3998,6 +4002,7 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                 reason="recomputed inert zero-command proof"))
         return [], {"decisions": decisions,
                     "counters": lifecycle_runtime.evidence_counters(decisions),
+                    "active_wall_ms": 0,
                     "coherence": coherence, "source": "standing_zero_command"}
     rows = ([lifecycle_runtime.active_documentation_row()]
             if route.get("mode") == "active_audit"
@@ -4015,6 +4020,7 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
         repository, task_runtime.ref_sha(repository, config["target_ref"]))
     validations: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
+    active_wall_ms = 0
     for row in rows:
         current = task_runtime._command_input_closure(
             repository, candidate_sha, row, config, runtime)
@@ -4051,6 +4057,8 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
             with validation_dependencies(candidate, cwd, dependency_source):
                 result = task_runtime.run_validation(row, cwd)
         validations.append(result)
+        active_wall_ms += max(0, int(
+            result.get("timing", {}).get("wall_duration_ms", result.get("duration_ms", 0))))
         decisions.append(lifecycle_runtime.evidence_decision(
             row["id"], "executed", closure=current,
             reason="no exact reusable PASS closure"))
@@ -4060,6 +4068,7 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                 f"affected validation failed ({row['id']}): {detail}", validations)
     return validations, {"decisions": decisions,
                          "counters": lifecycle_runtime.evidence_counters(decisions),
+                         "active_wall_ms": active_wall_ms,
                          "replay_trace": lifecycle_runtime.evidence_replay_trace(
                              decisions, phase="merge_validation"),
                          "coherence": coherence, "source": "authoritative_cross_stage"}
