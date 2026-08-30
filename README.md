@@ -406,6 +406,7 @@ The monorepo may embed YYLO CLI alongside Benchmark and a Ledger submodule, but 
 - npm: [@yylo/cli](https://www.npmjs.com/package/%40yylo%2Fcli)
 - Source/issues: [yylo-dev/yylo](https://github.com/yylo-dev/yylo)
 - Ledger: [yylo-dev/yylo-ledger](https://github.com/yylo-dev/yylo-ledger)
+- Ledger package: [yylo-ledger on PyPI](https://pypi.org/project/yylo-ledger/)
 - Benchmark: [yylo-dev/yylo-benchmark](https://github.com/yylo-dev/yylo-benchmark)
 
 ## License
