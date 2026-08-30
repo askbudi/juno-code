@@ -45,12 +45,15 @@ npm install --global '@yylo/cli@latest'
 
 # Explicit prerelease
 npm install --global '@yylo/cli@next'
+# Exact prerelease for reproducible installs
+npm install -g @yylo/cli@0.2.1-rc.1
 
 npm view '@yylo/cli' version dist-tags --json
 yy --version
 ```
 
 Pin an exact version in CI. Installing `@next` is an intentional prerelease choice.
+The first guarded release-helper checkpoint is exact `--set v0.1.0-rc.1`; later releases must use their separately authorized exact SemVer.
 
 Next: [run an agent](#beginner-agent-workflow), [manage a typed task](#typed-task-and-merge-flow), or [build a managed workflow](#managed-workflows-and-evidence).
 
