@@ -112,6 +112,36 @@ yy loop -n 2 \
 
 Quote prompts so the shell does not expand backticks or `$()` before YYLO receives them. `-i` bounds iterations inside an agent invocation; `yy loop -n` bounds the outer command workflow.
 
+The loop's `-n/--iterations` bounds the outer command workflow; agent
+`-i/--max-iterations` still bounds iterations inside an agent invocation.
+Inline steps are repeatable:
+
+```bash
+yylo loop -n 5 \
+  --step 'yy pi "Implement the next increment"' \
+  --step 'yy cc "Inspect and improve your work"' \
+  --step 'npm test'
+```
+
+For a reusable workflow, save the same contract as `flow.yaml`:
+
+```yaml
+iterations: 5
+continuity: iteration
+on_error: continue
+steps:
+  - run: yy pi "Implement the next increment"
+  - run: yy cc "Inspect and improve your work"
+  - run: npm test
+```
+
+```bash
+yylo loop --workflow flow.yaml
+```
+
+Every step receives one-based loop metadata through `YYLO_LOOP_ID`,
+`YYLO_ITERATION`, `YYLO_ITERATION_COUNT`, `YYLO_STEP`, and `YYLO_STEP_COUNT`.
+
 ## Models and project shortcuts
 
 `yy pi --help` is the source of truth for shipped aliases. Current Pi shortcuts include:
