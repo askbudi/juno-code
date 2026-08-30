@@ -48,6 +48,7 @@ RELEASE_PATHS = (
     "juno-benchmark/package.json",
     "juno-benchmark/package-lock.json",
     "frontend/generated/package-facts.json",
+    "frontend/public/workflows/manifest.json",
     "juno-code/README.md",
     "scripts/release-juno-code.sh",
 )
