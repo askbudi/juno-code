@@ -135,9 +135,11 @@ try {
   // governed rejudge without granting a product-specific command.
   const workflowProject = join(fixtureRoot, 'workflow-live'); await mkdir(join(workflowProject, '.juno_task'), { recursive: true });
   await writeFile(join(workflowProject, 'workflow.yaml'), 'schema_version: 2\nworkflow_id: packed-live\nsteps:\n  - id: analyze\n    command: [yy, pi, "Synthetic installed lifecycle"]\n');
+  const packedRubric = 'Score the retained synthetic candidate truth against the governed workflow outcome.';
   await writeFile(join(workflowProject, 'policy.yaml'), JSON.stringify({
     schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'packed-governed', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+    judge: { judge_id: 'packed-governed', judge_version: '1', model: 'openai-codex/gpt-5.6-sol',
+      rubric: packedRubric, rubric_hash: sha256(packedRubric) },
     authorization: { authorization_id: 'packed-live', production: true, spend: true },
     recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 }, redaction: { secret_patterns: [], retain_prompts: false },
     steps: [{ step_id: 'analyze', scoring_id: 'packed-analyze', side_effect: 'production',
@@ -167,7 +169,13 @@ if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_p
 else if (operation === 'preflight') output = { ok: true, provider: input.provider, model: input.model.split('/').slice(1).join('/'), juno_version: input.juno_version };
 else if (operation === 'dispatch' || operation === 'resume') output = terminal();
 else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
-else if (operation === 'judge') output = { resolved: true, evidence: 'packed governed judgement' };
+else if (operation === 'judge') { const [provider, ...model] = input.judge.model.split('/');
+  output = { schema_version: 'juno_benchmark_governed_judge_envelope.v1', judge_dispatch_id: input.judge_dispatch_id,
+    requested: { provider, model: model.join('/'), juno_version: input.requested_juno_version },
+    observed: { provider, model: model.join('/'), juno_version: input.requested_juno_version }, session_id: 'judge-packed',
+    started_at: '2026-08-12T00:00:01.000Z', ended_at: '2026-08-12T00:00:02.000Z', runtime_ms: 1000,
+    cost: { completeness: 'complete', usd: 0.01 }, exit_status: { code: 0, signal: null }, dispatched: true,
+    dispatch_proof: 'terminal', verdict: 'pass', justification: 'packed governed judgement', terminal_class: 'judge_acceptance' }; }
 else throw new Error('unsupported operation'); process.stdout.write(JSON.stringify(output));\n`;
   await writeFile(boundaryPath, boundarySource);
   const canonicalBoundary = await realpath(boundaryPath); const boundaryHash = sha256(boundarySource).slice(7);
