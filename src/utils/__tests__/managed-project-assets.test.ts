@@ -91,6 +91,22 @@ describe('ManagedProjectAssets', {
     ]) expect(surfaces).toContain(required);
   });
 
+  it('admits canonical controller runtime twins for coherent template changes', async () => {
+    const declaration = await fs.readJson(
+      path.join(process.cwd(), 'src/templates/managed-assets.json'),
+    );
+    expect(declaration.admissionOutputs).toEqual(expect.arrayContaining([
+      {
+        source: 'scripts/juno-toolchain-policy.sh',
+        destination: '.juno_task/scripts/juno-toolchain-policy.sh',
+      },
+      {
+        source: 'scripts/kanban.sh',
+        destination: '.juno_task/scripts/kanban.sh',
+      },
+    ]));
+  });
+
   it('installs and receipts the complete metadata-controller bundle while preserving customization', async () => {
     const configPath = path.join(projectDir, '.juno_task', 'config.json');
     const config = await fs.readJson(configPath);

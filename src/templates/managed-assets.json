@@ -43,6 +43,14 @@
       "destination": ".juno_task/scripts/controller_checkpoint.py"
     },
     {
+      "source": "scripts/juno-toolchain-policy.sh",
+      "destination": ".juno_task/scripts/juno-toolchain-policy.sh"
+    },
+    {
+      "source": "scripts/kanban.sh",
+      "destination": ".juno_task/scripts/kanban.sh"
+    },
+    {
       "source": "skills/codex/kanban-workflow/SKILL.md",
       "destination": ".agents/skills/kanban-workflow/SKILL.md"
     },
