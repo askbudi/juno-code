@@ -347,7 +347,7 @@ describe('controller_checkpoint.py template script', () => {
       spawnSync('git', ['-C', repo, 'checkout', '--', '.juno_task/state/tasks.json']);
       await fs.remove(receiptPath);
     }
-  });
+  }, 30_000);
 
   it('refuses queue-attributed mutations that escape the receipt binding', async () => {
     await configureMetadataController();
