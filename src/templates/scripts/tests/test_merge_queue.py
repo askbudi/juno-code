@@ -1697,6 +1697,23 @@ class MergeQueueTests(unittest.TestCase):
             self.controller.resolve(), self.repository.resolve(), config["target_ref"])
         self.assertFalse((root / "state.json").exists())
 
+    def test_target_arbiter_cli_uses_status_and_drive_control_audits(self) -> None:
+        observed = json.loads(self.command(QUEUE, ["arbiter", "status"]).stdout)
+        driven = json.loads(self.command(QUEUE, ["arbiter", "run"]).stdout)
+
+        self.assertEqual(observed["reason_code"], "queue_idle")
+        self.assertEqual(driven["outcome"], "IDLE")
+        for result, expected_operation, expected_policy in (
+                (observed, "status", "kanban"),
+                (driven, "drive", "orchestration")):
+            reference = result["control_audit"]
+            receipt = json.loads(Path(reference["path"]).read_text())
+            self.assertEqual(
+                (receipt["surface"], receipt["operation"], receipt["policy_operation"],
+                 receipt["task_id"]),
+                ("merge", expected_operation, expected_policy, None),
+            )
+
     def test_target_arbiter_is_one_on_demand_owner_and_exits_idle(self) -> None:
         self.install_merge_drive_assets()
         tip = self.commit_feature("X", "src/arbiter.txt", "once\n")

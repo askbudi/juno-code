@@ -6572,8 +6572,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                     controller, Path(train_plan), "merge", getattr(args, "task_id", None))
             except release_train.ReleaseTrainError as exc:
                 raise MergeQueueError(str(exc)) from exc
+        audit_operation = args.operation
+        if args.operation == "arbiter":
+            audit_operation = "status" if args.arbiter_operation == "status" else "drive"
         audit = task_runtime.record_control_audit(
-            controller, "merge", args.operation, getattr(args, "task_id", None))
+            controller, "merge", audit_operation, getattr(args, "task_id", None))
         if args.operation == "status":
             result = status(controller)
         elif args.operation == "drive":
