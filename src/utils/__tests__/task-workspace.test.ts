@@ -185,24 +185,35 @@ describe('Bolt task workspace managed runtime', () => {
         destination: '.pi/extensions/juno-skill-preprocessor.ts',
       },
     ];
+    const nonSkillOutputs = [
+      {
+        source: 'scripts/controller_workspace.py',
+        destination: '.juno_task/scripts/controller_workspace.py',
+      },
+      {
+        source: 'scripts/migration_inventory.py',
+        destination: '.juno_task/scripts/migration_inventory.py',
+      },
+      {
+        source: 'scripts/controller_checkpoint.py',
+        destination: '.juno_task/scripts/controller_checkpoint.py',
+      },
+      {
+        source: 'scripts/juno-toolchain-policy.sh',
+        destination: '.juno_task/scripts/juno-toolchain-policy.sh',
+      },
+      {
+        source: 'scripts/kanban.sh',
+        destination: '.juno_task/scripts/kanban.sh',
+      },
+    ];
     expect(managed.admissionOutputs).toEqual(
       expect.arrayContaining([
-        {
-          source: 'scripts/controller_workspace.py',
-          destination: '.juno_task/scripts/controller_workspace.py',
-        },
-        {
-          source: 'scripts/migration_inventory.py',
-          destination: '.juno_task/scripts/migration_inventory.py',
-        },
-        {
-          source: 'scripts/controller_checkpoint.py',
-          destination: '.juno_task/scripts/controller_checkpoint.py',
-        },
+        ...nonSkillOutputs,
         ...skillOutputs,
       ]),
     );
-    expect(managed.admissionOutputs).toHaveLength(3 + skillOutputs.length);
+    expect(managed.admissionOutputs).toHaveLength(nonSkillOutputs.length + skillOutputs.length);
     expect(policy.allowed_paths).not.toEqual(
       expect.arrayContaining(['.agents', '.claude', '.pi', '.juno_task/scripts']),
     );
