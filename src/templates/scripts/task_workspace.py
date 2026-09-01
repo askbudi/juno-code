@@ -46,6 +46,7 @@ path_within = decisions.path_within
 validation_profile_selection = decisions.validation_profile_selection
 selected_full_suite_commands = decisions.selected_full_suite_commands
 selected_focused_rows = decisions.selected_focused_rows
+selected_standing_rows = decisions.selected_standing_rows
 _QUEUE_MISSING = decisions.QUEUE_MISSING
 _shared_queue_delta = decisions.shared_queue_delta
 
@@ -4062,7 +4063,7 @@ def standing_checkpoint(controller: Path, task_id: str,
     elif documentation["mode"] == "active_audit":
         rows, selection_reason = [lifecycle_runtime.active_documentation_row()], "exact active-documentation audit"
     else:
-        rows = selected_focused_rows(config, changed)
+        rows = selected_standing_rows(config, changed)
         selection_reason = ("single registered package profile" if routing["mode"] == "profile"
                             else "conservative focused fallback")
     planned = [{"command": row,

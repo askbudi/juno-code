@@ -346,6 +346,19 @@ class ValidationRoutingTables(unittest.TestCase):
                 self.CONFIG, ["juno-benchmark/a.ts"])
         self.assertEqual([row["id"] for row in rows], ["benchmark-lint"])
 
+    def test_standing_rows_execute_package_gates_with_default_union(self) -> None:
+        with poisoned_surface():
+            rows = decisions.selected_standing_rows(
+                self.CONFIG, ["juno-benchmark/a.ts"])
+        self.assertEqual([row["id"] for row in rows],
+                         ["benchmark-test", "benchmark-build"])
+        with poisoned_surface():
+            rows = decisions.selected_standing_rows(
+                self.CONFIG, ["juno-benchmark/a.ts", "juno-code/src/a.ts"])
+        self.assertEqual([row["id"] for row in rows], [
+            "benchmark-test", "benchmark-build", "task-workspace",
+            "integration-workspace", "benchmark-lint"])
+
     def test_non_string_paths_are_ignored_rather_than_routed(self) -> None:
         selection = self.selection([None, 3, "juno-benchmark/a.ts"])
         self.assertEqual(selection["authored_path_count"], 1)
@@ -519,6 +532,7 @@ class ShellWiringCharacterization(unittest.TestCase):
         self.assertIs(shell.selected_full_suite_commands,
                       decisions.selected_full_suite_commands)
         self.assertIs(shell.selected_focused_rows, decisions.selected_focused_rows)
+        self.assertIs(shell.selected_standing_rows, decisions.selected_standing_rows)
         self.assertIs(shell._handoff_phase, decisions.handoff_phase)
 
     def test_shell_gates_call_the_planner(self) -> None:

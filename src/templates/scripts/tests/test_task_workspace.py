@@ -6829,10 +6829,10 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
                   "validation_profiles": [{"id": "benchmark-suite", "path_roots": ["juno-benchmark"],
                                             "commands": [{"id": name, "cwd": "juno-benchmark", "argv": ["npm", name]}
                                                          for name in ("benchmark-test", "benchmark-typecheck", "benchmark-build")]}]}
-        pure = task_runtime.selected_focused_rows(config, ["juno-benchmark/src/index.ts"])
+        pure = task_runtime.selected_standing_rows(config, ["juno-benchmark/src/index.ts"])
         self.assertEqual([row["id"] for row in pure],
                          ["benchmark-test", "benchmark-typecheck", "benchmark-build"])
-        mixed = task_runtime.selected_focused_rows(
+        mixed = task_runtime.selected_standing_rows(
             config, ["juno-benchmark/src/index.ts", "juno-code/src/index.ts"])
         self.assertEqual([row["id"] for row in mixed],
                          ["benchmark-test", "benchmark-typecheck", "benchmark-build", "juno"])
