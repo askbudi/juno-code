@@ -441,9 +441,9 @@ def load_config(controller: Path) -> dict[str, Any]:
         raise TaskWorkspaceError("focused_validation must contain at least one command")
     def validate_row(row: Any, label: str) -> None:
         required_row = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes"}
-        if not isinstance(row, dict) or not required_row.issubset(row) or set(row) - required_row - {"resource"}:
+        if not isinstance(row, dict) or not required_row.issubset(row) or set(row) - required_row - {"resource", "input_paths"}:
             raise TaskWorkspaceError(
-                f"{label} requires id, cwd, argv, timeout_seconds, max_output_bytes, and optional resource")
+                f"{label} requires id, cwd, argv, timeout_seconds, max_output_bytes, and optional resource/input_paths")
         normalized_relative(row["cwd"], f"{label} cwd")
         if (not isinstance(row["timeout_seconds"], int)
                 or isinstance(row["timeout_seconds"], bool)
@@ -459,6 +459,15 @@ def load_config(controller: Path) -> dict[str, Any]:
                 or isinstance(row["max_output_bytes"], bool)
                 or not 1024 <= row["max_output_bytes"] <= 1048576):
             raise TaskWorkspaceError(f"{label} bounds or argv are invalid")
+        input_paths = row.get("input_paths")
+        if input_paths is not None:
+            if (not isinstance(input_paths, list) or not input_paths or len(input_paths) > 64
+                    or any(not isinstance(path, str) for path in input_paths)):
+                raise TaskWorkspaceError(f"{label} input_paths must be a bounded nonempty list")
+            row["input_paths"] = [normalized_relative(path, f"{label} input path")
+                                  for path in input_paths]
+            if len(set(row["input_paths"])) != len(row["input_paths"]):
+                raise TaskWorkspaceError(f"{label} input_paths contains duplicates")
         resource = row.get("resource")
         if resource is not None:
             if (not isinstance(resource, dict)
@@ -549,6 +558,10 @@ def _validated_validation_profiles(value: dict[str, Any], full_suite_id: str,
             if not path_within(row["cwd"], profile["path_roots"]):
                 raise TaskWorkspaceError(
                     f"validation profile {profile_id!r} command cwd escapes its package roots: {row['cwd']}")
+            if row.get("input_paths") is not None and any(
+                    not path_within(path, profile["path_roots"]) for path in row["input_paths"]):
+                raise TaskWorkspaceError(
+                    f"validation profile {profile_id!r} input path escapes its package roots")
         command_ids = [row["id"] for row in commands]
         if (any(command_id in seen_ids for command_id in command_ids)
                 or len(set(command_ids)) != len(command_ids)):
@@ -4002,11 +4015,16 @@ def _git_blob(repository: Path, head: str, relative: str) -> Optional[str]:
 def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
                            config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     policy_path = repository / ".juno_task/config/risk-policy.json"
+    owned_roots: Optional[list[str]] = None
+    for profile in config.get("validation_profiles") or []:
+        if any(command.get("id") == row.get("id") for command in profile.get("commands") or []):
+            owned_roots = profile["path_roots"]
+            break
     return lifecycle_runtime.command_closure(
         repository, head, row, config_sha256=stable_sha256(config),
         policy_sha256=(hashlib.sha256(policy_path.read_bytes()).hexdigest()
                        if policy_path.is_file() else None),
-        runtime_sha256=runtime["running_sha256"],
+        runtime_sha256=runtime["running_sha256"], owned_roots=owned_roots,
     )
 
 

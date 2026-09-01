@@ -4469,7 +4469,7 @@ finished = time.monotonic()
         git(worktree, "commit", "-m", "package feature")
         finished = self.payload("finish", "X")
         self.assertEqual(finished["state"], "QUEUED")
-        self.assertEqual(finished["validation"], [])
+        self.assertEqual([row["id"] for row in finished["validation"]], ["pkg-test"])
         self.assertEqual(finished["validation_routing"],
                          {"mode": "profile", "profile_ids": ["pkg-suite"],
                           "authored_path_count": 1})
@@ -6743,6 +6743,99 @@ class MinimumRcLifecycleContractTests(unittest.TestCase):
             phase="successor_attempt")
         self.assertEqual(trace["restart_stage"], "VALIDATING")
         self.assertEqual(trace["counters"]["invalidated"], 1)
+
+    def test_profile_closure_is_package_local_deterministic_and_attributes_changed_inputs(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            origin = Path(temporary) / "origin"
+            origin.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=origin, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=origin, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=origin, check=True)
+            files = {"pkg/package.json": "{}\n", "pkg/package-lock.json": "{}\n",
+                     "pkg/tsconfig.json": "{}\n", "pkg/src/index.ts": "export const x = 1;\n",
+                     "pkg/test/index.test.ts": "import '../src/index';\n", "other/README.md": "one\n"}
+            for relative, content in files.items():
+                target = origin / relative; target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+            subprocess.run(["git", "add", "."], cwd=origin, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=origin, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=origin,
+                                           text=True).strip()
+            row = {"id": "pkg-test", "cwd": "pkg", "argv": [sys.executable, "-c", "pass"],
+                   "timeout_seconds": 10, "max_output_bytes": 4096,
+                   "input_paths": ["pkg/package.json", "pkg/package-lock.json",
+                                   "pkg/tsconfig.json", "pkg/src", "pkg/test"]}
+            kwargs = {"config_sha256": "a" * 64, "policy_sha256": None,
+                      "runtime_sha256": "b" * 64, "environment": {"PATH": os.environ["PATH"]},
+                      "owned_roots": ["pkg"]}
+            first = lifecycle.command_closure(origin, head, row, **kwargs)
+            clone = Path(temporary) / "clone"
+            subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+            repeated = lifecycle.command_closure(clone, head, row, **kwargs)
+            self.assertEqual(first["observation_scope"], "declared_inputs")
+            self.assertEqual(first["input_closure_sha256"], repeated["input_closure_sha256"])
+
+            (origin / "other/README.md").write_text("two\n")
+            subprocess.run(["git", "add", "."], cwd=origin, check=True)
+            subprocess.run(["git", "commit", "-m", "unrelated"], cwd=origin, check=True,
+                           stdout=subprocess.DEVNULL)
+            unrelated = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=origin,
+                                                text=True).strip()
+            self.assertEqual(first["input_closure_sha256"],
+                             lifecycle.command_closure(origin, unrelated, row, **kwargs)["input_closure_sha256"])
+            (origin / "pkg/test/index.test.ts").write_text("throw new Error('changed');\n")
+            subprocess.run(["git", "add", "."], cwd=origin, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=origin, check=True,
+                           stdout=subprocess.DEVNULL)
+            changed_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=origin,
+                                                   text=True).strip()
+            changed = lifecycle.command_closure(origin, changed_head, row, **kwargs)
+            reasons = lifecycle.closure_invalidation(first, changed)
+            inputs = next(reason for reason in reasons if reason["field"] == "local_inputs")
+            self.assertEqual(inputs["changed_inputs"], ["pkg/test/index.test.ts"])
+
+    def test_profile_closure_falls_back_with_typed_unknown_for_escaping_symlink(self) -> None:
+        lifecycle = task_runtime.lifecycle_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "pkg").mkdir(); (root / "outside.txt").write_text("outside\n")
+            (root / "pkg/link").symlink_to("../outside.txt")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "links"], cwd=root, check=True,
+                           stdout=subprocess.DEVNULL)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                           text=True).strip()
+            row = {"id": "pkg", "cwd": "pkg", "argv": [sys.executable, "-c", "pass"],
+                   "timeout_seconds": 10, "max_output_bytes": 4096,
+                   "input_paths": ["pkg"]}
+            closure = lifecycle.command_closure(
+                root, head, row, config_sha256="a" * 64, policy_sha256=None,
+                runtime_sha256="b" * 64, environment={"PATH": os.environ["PATH"]},
+                owned_roots=["pkg"])
+            self.assertEqual(closure["observation_scope"], "whole_tree")
+            self.assertEqual(closure["closure_unknown"]["code"], "closure_unknown")
+            self.assertEqual(closure["closure_unknown"]["reason"], "symlink_escapes_owned_roots")
+
+    def test_benchmark_profile_commands_are_mandatory_standing_gates_with_union_routing(self) -> None:
+        config = {"focused_validation": [{"id": "juno", "cwd": "juno-code", "argv": ["npm", "test"]}],
+                  "full_suite_validation": {"id": "full", "cwd": "juno-code", "argv": ["npm", "test"]},
+                  "validation_profiles": [{"id": "benchmark-suite", "path_roots": ["juno-benchmark"],
+                                            "commands": [{"id": name, "cwd": "juno-benchmark", "argv": ["npm", name]}
+                                                         for name in ("benchmark-test", "benchmark-typecheck", "benchmark-build")]}]}
+        pure = task_runtime.selected_focused_rows(config, ["juno-benchmark/src/index.ts"])
+        self.assertEqual([row["id"] for row in pure],
+                         ["benchmark-test", "benchmark-typecheck", "benchmark-build"])
+        mixed = task_runtime.selected_focused_rows(
+            config, ["juno-benchmark/src/index.ts", "juno-code/src/index.ts"])
+        self.assertEqual([row["id"] for row in mixed],
+                         ["benchmark-test", "benchmark-typecheck", "benchmark-build", "juno"])
 
     def test_command_closure_binds_allowlisted_environment_and_npm_toolchain_fieldwise(self) -> None:
         lifecycle = task_runtime.lifecycle_runtime

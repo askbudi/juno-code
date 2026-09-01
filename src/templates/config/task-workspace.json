@@ -159,7 +159,18 @@
             "test"
           ],
           "timeout_seconds": 900,
-          "max_output_bytes": 32768
+          "max_output_bytes": 32768,
+          "input_paths": [
+            "juno-benchmark/package.json",
+            "juno-benchmark/package-lock.json",
+            "juno-benchmark/tsconfig.json",
+            "juno-benchmark/vitest.config.ts",
+            "juno-benchmark/src",
+            "juno-benchmark/test",
+            "juno-benchmark/boundary",
+            "juno-benchmark/scripts",
+            "juno-benchmark/workflows"
+          ]
         },
         {
           "id": "benchmark-typecheck",
@@ -170,7 +181,13 @@
             "typecheck"
           ],
           "timeout_seconds": 900,
-          "max_output_bytes": 32768
+          "max_output_bytes": 32768,
+          "input_paths": [
+            "juno-benchmark/package.json",
+            "juno-benchmark/package-lock.json",
+            "juno-benchmark/tsconfig.json",
+            "juno-benchmark/src"
+          ]
         },
         {
           "id": "benchmark-build",
@@ -181,7 +198,14 @@
             "build"
           ],
           "timeout_seconds": 900,
-          "max_output_bytes": 32768
+          "max_output_bytes": 32768,
+          "input_paths": [
+            "juno-benchmark/package.json",
+            "juno-benchmark/package-lock.json",
+            "juno-benchmark/tsconfig.json",
+            "juno-benchmark/tsup.config.ts",
+            "juno-benchmark/src"
+          ]
         }
       ]
     }

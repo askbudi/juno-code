@@ -1149,7 +1149,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
-COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v4"
+COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v5"
+COMMAND_CLOSURE_DECLARATION_SCHEMA = "juno_validation_input_declaration.v1"
+COMMAND_OUTCOME_SCHEMA = "juno_standing_validation_evidence.v1"
+CHANGED_INPUT_ATTRIBUTION_LIMIT = 64
 COMPLETE_INPUT_IDENTITY_SCHEMA = "juno_complete_input_closure_identity.v1"
 REPLAY_TRACE_SCHEMA = "juno_evidence_replay_trace.v1"
 COMMAND_DECISION_SCHEMA = "juno_command_evidence_decision.v1"
@@ -1319,19 +1322,20 @@ def _stream_sha256(path: Path) -> str:
 def _executable_identity(name: str, environment: dict[str, str]) -> dict[str, Any]:
     resolved = shutil.which(name, path=environment.get("PATH"))
     if not resolved:
-        return {"name": name, "resolved": None, "available": False}
+        return {"name": name, "available": False, "_host_path": None}
     path = Path(resolved).resolve()
     try:
         stat_result = path.stat()
-        return {"name": name, "resolved": str(path), "available": path.is_file(),
+        return {"name": name, "available": path.is_file(),
                 "mode": stat_result.st_mode & 0o7777, "bytes": stat_result.st_size,
-                "sha256": _stream_sha256(path) if path.is_file() else None}
+                "sha256": _stream_sha256(path) if path.is_file() else None,
+                "_host_path": str(path)}
     except OSError:
-        return {"name": name, "resolved": str(path), "available": False}
+        return {"name": name, "available": False, "_host_path": str(path)}
 
 
 def _bounded_version(executable: dict[str, Any], environment: dict[str, str]) -> Optional[str]:
-    path = executable.get("resolved")
+    path = executable.get("_host_path")
     if not executable.get("available") or not isinstance(path, str):
         return None
     try:
@@ -1348,36 +1352,104 @@ def command_execution_environment() -> dict[str, str]:
     return admitted_command_environment()
 
 
+def _within_declared(path: str, roots: list[str]) -> bool:
+    return any(path == root or path.startswith(root + "/") for root in roots)
+
+
+def _compile_declared_inputs(repository: Path, head: str, input_paths: list[str],
+                             owned_roots: list[str]) -> tuple[dict[str, str], list[dict[str, str]], Optional[dict[str, str]]]:
+    """Compile tracked declared roots; ambiguity is a typed whole-tree fallback."""
+    local_inputs: dict[str, str] = {}
+    gitlinks: list[dict[str, str]] = []
+    for declared in input_paths:
+        pure = PurePosixPath(declared)
+        if (pure.is_absolute() or pure.as_posix() != declared or ".." in pure.parts
+                or not _within_declared(declared, owned_roots)):
+            return {}, [], {"code": "closure_unknown", "reason": "unsafe_or_unowned_input",
+                            "path": declared}
+        output = _git(repository, "ls-tree", "-r", "-z", head, "--", declared)
+        entries = [entry for entry in output.split("\0") if entry]
+        if not entries:
+            return {}, [], {"code": "closure_unknown", "reason": "missing_declared_input",
+                            "path": declared}
+        for entry in entries:
+            metadata, separator, relative = entry.partition("\t")
+            fields = metadata.split()
+            if not separator or len(fields) != 3:
+                return {}, [], {"code": "closure_unknown", "reason": "malformed_git_input",
+                                "path": declared}
+            mode, kind, oid = fields
+            if not _within_declared(relative, owned_roots):
+                return {}, [], {"code": "closure_unknown", "reason": "input_escapes_owned_roots",
+                                "path": relative}
+            if mode == "160000" or kind == "commit":
+                gitlinks.append({"path": relative, "commit": oid})
+                local_inputs[relative] = oid
+                continue
+            if mode == "120000":
+                target = _git(repository, "show", f"{head}:{relative}").rstrip("\n")
+                resolved = (PurePosixPath(relative).parent / target)
+                normalized_parts: list[str] = []
+                escaped = resolved.is_absolute()
+                for part in resolved.parts:
+                    if part in {"", "."}: continue
+                    if part == "..":
+                        if not normalized_parts: escaped = True
+                        else: normalized_parts.pop()
+                    else: normalized_parts.append(part)
+                normalized = "/".join(normalized_parts)
+                if escaped or not _within_declared(normalized, owned_roots):
+                    return {}, [], {"code": "closure_unknown",
+                                    "reason": "symlink_escapes_owned_roots", "path": relative}
+                if not any(normalized == item or normalized.startswith(item + "/")
+                           for item in input_paths):
+                    return {}, [], {"code": "closure_unknown",
+                                    "reason": "symlink_target_not_declared", "path": relative}
+                if _blob(repository, head, normalized) is None and not _git(
+                        repository, "ls-tree", head, "--", normalized).strip():
+                    return {}, [], {"code": "closure_unknown",
+                                    "reason": "symlink_target_missing", "path": relative}
+            local_inputs[relative] = oid
+    return dict(sorted(local_inputs.items())), sorted(gitlinks, key=lambda row: row["path"]), None
+
+
 def command_closure(repository: Path, head: str, row: dict[str, Any], *,
                     config_sha256: str, policy_sha256: Optional[str],
                     runtime_sha256: str, environment: Optional[dict[str, str]] = None,
-                    producer: str = "task_workspace.run_validation.v3") -> dict[str, Any]:
-    """Build one stage-neutral behavioral closure for a validation command."""
+                    producer: str = "task_workspace.run_validation.v3",
+                    owned_roots: Optional[list[str]] = None) -> dict[str, Any]:
+    """Build a deterministic command closure, narrowing only from declarations."""
     cwd = str(row.get("cwd", "")).strip("/")
-    # Reusable command evidence binds to the whole candidate tree. Configured
-    # argv is unrestricted and may read tracked inputs outside the configured
-    # cwd (parent or sibling files), so a cwd-only observable tree could reuse
-    # a stale PASS after out-of-cwd candidate changes (for example target
-    # movement). A narrower hermetic observation closure would have to prove
-    # every readable tracked input before it could narrow this scope.
-    revision = f"{head}^{{tree}}"
-    tree = _git(repository, "rev-parse", revision).strip()
-    observation_scope = "whole_tree"
+    tree = _git(repository, "rev-parse", f"{head}^{{tree}}").strip()
     if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
         raise RuntimeError("command closure cannot resolve the candidate tree")
-    locks: dict[str, str] = {}
-    for name in ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock",
-                 "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt", ".npmrc"):
-        relative = f"{cwd}/{name}" if cwd else name
-        identity = _blob(repository, head, relative)
-        if identity:
-            locks[relative] = identity
-    gitlinks = []
-    for line in _git(repository, "ls-tree", "-r", head).splitlines():
-        metadata, separator, relative = line.partition("\t")
-        fields = metadata.split()
-        if separator and len(fields) == 3 and fields[0] == "160000":
-            gitlinks.append({"path": relative, "commit": fields[2]})
+    roots = sorted(set(owned_roots or []))
+    declared = row.get("input_paths")
+    closure_unknown: Optional[dict[str, str]] = None
+    local_inputs: dict[str, str] = {}
+    gitlinks: list[dict[str, str]] = []
+    if roots and isinstance(declared, list) and declared:
+        local_inputs, gitlinks, closure_unknown = _compile_declared_inputs(
+            repository, head, declared, roots)
+    else:
+        closure_unknown = {"code": "closure_unknown", "reason": "inputs_not_declared"}
+    observation_scope = "declared_inputs" if closure_unknown is None else "whole_tree"
+    manifest_names = {
+        "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+        "yarn.lock", "pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt",
+        ".npmrc", "tsconfig.json", "vitest.config.ts", "tsup.config.ts"}
+    locks = {path: oid for path, oid in local_inputs.items()
+             if PurePosixPath(path).name in manifest_names}
+    if observation_scope == "whole_tree":
+        for name in sorted(manifest_names):
+            relative = f"{cwd}/{name}" if cwd else name
+            identity = _blob(repository, head, relative)
+            if identity: locks[relative] = identity
+        for line in _git(repository, "ls-tree", "-r", head).splitlines():
+            metadata, separator, relative = line.partition("\t")
+            fields = metadata.split()
+            if separator and len(fields) == 3 and fields[0] == "160000":
+                gitlinks.append({"path": relative, "commit": fields[2]})
     command = {key: row.get(key) for key in
                ("id", "cwd", "argv", "timeout_seconds", "max_output_bytes", "resource")
                if key in row}
@@ -1386,20 +1458,27 @@ def command_closure(repository: Path, head: str, row: dict[str, Any], *,
     executable_names = [str(argv[0])] if argv else []
     if argv and Path(str(argv[0])).name.lower() in {"npm", "npm.cmd", "npx", "npx.cmd"}:
         executable_names.append("node")
-    executables = [_executable_identity(name, admitted_environment)
-                   for name in dict.fromkeys(executable_names)]
+    executable_facts = [_executable_identity(name, admitted_environment)
+                        for name in dict.fromkeys(executable_names)]
     command_runtime = {item["name"]: {"version": _bounded_version(item, admitted_environment),
-                                              "executable_sha256": item.get("sha256")}
-                       for item in executables}
+                                      "executable_sha256": item.get("sha256")}
+                       for item in executable_facts}
+    executables = [{key: value for key, value in item.items() if key != "_host_path"}
+                   for item in executable_facts]
     body = {
         "schema_version": COMMAND_CLOSURE_SCHEMA,
-        "repository_identity": repository_identity(repository),
+        "declaration_schema": COMMAND_CLOSURE_DECLARATION_SCHEMA,
+        "outcome_schema": COMMAND_OUTCOME_SCHEMA,
         "command": command,
         "command_sha256": digest(command),
         "observation_scope": observation_scope,
-        "observable_tree": tree,
+        "observable_tree": tree if observation_scope == "whole_tree" else None,
+        "declared_owned_roots": roots,
+        "declared_input_paths": list(declared) if isinstance(declared, list) else [],
+        "local_inputs": local_inputs,
         "dependency_locks": locks,
         "gitlinks": gitlinks,
+        "closure_unknown": closure_unknown,
         "routing_config_sha256": config_sha256,
         "risk_policy_sha256": policy_sha256,
         "runtime_sha256": runtime_sha256,
@@ -1467,9 +1546,16 @@ def closure_invalidation(previous: Any, current: Any) -> list[dict[str, Any]]:
     rows = []
     for key in sorted((set(previous) | set(current)) - ignored):
         if previous.get(key) != current.get(key):
-            rows.append({"code": "CLOSURE_DRIFT_" + key.upper(), "field": key,
-                         "old_sha256": digest(previous.get(key)),
-                         "new_sha256": digest(current.get(key))})
+            row = {"code": "CLOSURE_DRIFT_" + key.upper(), "field": key,
+                   "old_sha256": digest(previous.get(key)),
+                   "new_sha256": digest(current.get(key))}
+            if key == "local_inputs" and isinstance(previous.get(key), dict) and isinstance(current.get(key), dict):
+                changed = sorted(path for path in set(previous[key]) | set(current[key])
+                                 if previous[key].get(path) != current[key].get(path))
+                row["changed_inputs"] = changed[:CHANGED_INPUT_ATTRIBUTION_LIMIT]
+                row["changed_input_count"] = len(changed)
+                row["changed_inputs_truncated"] = len(changed) > CHANGED_INPUT_ATTRIBUTION_LIMIT
+            rows.append(row)
     if not rows and previous.get("input_closure_sha256") != current.get("input_closure_sha256"):
         rows.append({"code": "CLOSURE_DIGEST_MISMATCH", "field": "input_closure_sha256",
                      "old": previous.get("input_closure_sha256"),
@@ -1483,6 +1569,8 @@ _RESTART_STAGE_BY_FIELD = {
     "closure": "VALIDATING", "signature": "VALIDATING",
     "schema_version": "VALIDATING", "observable_tree": "VALIDATING",
     "dependency_locks": "VALIDATING", "gitlinks": "VALIDATING",
+    "local_inputs": "VALIDATING", "declared_input_paths": "VALIDATING",
+    "declared_owned_roots": "VALIDATING", "closure_unknown": "VALIDATING",
     "routing_config_sha256": "VALIDATING", "risk_policy_sha256": "VALIDATING",
     "runtime_sha256": "VALIDATING", "runner": "VALIDATING",
     "command": "VALIDATING", "command_sha256": "VALIDATING",
