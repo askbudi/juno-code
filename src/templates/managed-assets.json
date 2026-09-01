@@ -482,6 +482,18 @@
       "type": "script"
     },
     {
+      "source": "scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "destination": ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "destination": ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/tests/test_workflow_runner_resume_contract.py",
       "destination": ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py",
       "installClass": "script",

@@ -1,0 +1,46 @@
+{
+  "schema_version": "juno_lifecycle_evidence_reuse_matrix.v1",
+  "task_id": "v9Jcwn",
+  "historical_baseline": {
+    "executed_commands": 12,
+    "wall_ms": 265000,
+    "source": "canonical task v9Jcwn historical observed 12/265 baseline"
+  },
+  "semantic_cases": [
+    {"id": "task-standing-to-merge", "mutation": "none", "expected": "hit"},
+    {"id": "exact-candidate-resume", "mutation": "none", "expected": "hit"},
+    {"id": "cold-start", "mutation": "absent", "expected": "cold_miss"},
+    {"id": "benchmark-config-drift", "mutation": "input", "expected": "input_changed"},
+    {"id": "reviewer-prompt-drift", "mutation": "prompt", "expected": "input_changed"},
+    {"id": "policy-drift", "mutation": "policy", "expected": "policy_changed"},
+    {"id": "runtime-drift", "mutation": "runtime", "expected": "runtime_changed"},
+    {"id": "authority-withdrawal", "mutation": "authority", "expected": "authority_changed"},
+    {"id": "authority-blocker", "mutation": "authority", "expected": "authority_changed"},
+    {"id": "authority-fifo", "mutation": "authority", "expected": "authority_changed"},
+    {"id": "authority-ownership", "mutation": "authority", "expected": "authority_changed"},
+    {"id": "managed-destination-collision", "mutation": "collision", "expected": "write_collision"},
+    {"id": "malformed-evidence", "mutation": "malformed", "expected": "malformed_evidence"},
+    {"id": "tampered-lineage", "mutation": "tampered", "expected": "malformed_evidence"},
+    {"id": "unknown-closure", "mutation": "unknown", "expected": "closure_unknown"}
+  ],
+  "expected_decision_distribution": {
+    "authority_changed": 4,
+    "closure_unknown": 1,
+    "cold_miss": 1,
+    "hit": 2,
+    "input_changed": 2,
+    "malformed_evidence": 2,
+    "policy_changed": 1,
+    "runtime_changed": 1,
+    "write_collision": 1
+  },
+  "expected_aggregate": {
+    "avoided_commands": 24,
+    "baseline_normalized_wall_ms_avoided": 530000,
+    "false_reuse": 0,
+    "phase_reruns": 8,
+    "reuse_eligible_cases": 2,
+    "reused_cases": 2,
+    "whole_tree_fallbacks": 1
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": "juno_validation_dogfood_receipt.v1",
+  "task_id": "v9Jcwn",
+  "candidate_base_sha": "39c1b37b5230dc6368b7ea7842de7e03349a2034",
+  "superseded_evidence_commits": [
+    "6580130cf8a6eac5ca75f6d67488e36ea0d5b1e5",
+    "a8446bad69c38605728dc4426ece24f5ef545a3a"
+  ],
+  "command": [
+    "python3",
+    "juno-code/src/templates/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+    "-v"
+  ],
+  "tdd": {
+    "red_exit_code": 2,
+    "red_reason": "requirement-specific template test was absent before replay",
+    "green_exit_code": 0
+  },
+  "duration_ms": 120,
+  "result": "passed",
+  "assertions": 4,
+  "captured_output_sha256": "882307b0fa2ff60f6609c7d701cd9580d91b9721e064806081b6db344fcb6080",
+  "artifacts": {
+    "template_matrix": {
+      "path": "juno-code/src/templates/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "sha256": "abe6098fd59f3fd9bd04a1b19ef840e6b5cc173fb40ae31e4b189a173ebe3b66"
+    },
+    "runtime_matrix": {
+      "path": ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "sha256": "abe6098fd59f3fd9bd04a1b19ef840e6b5cc173fb40ae31e4b189a173ebe3b66"
+    },
+    "template_test": {
+      "path": "juno-code/src/templates/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "sha256": "fa2ec13e4122a9e8a06f9b5aa4c3e1b92c7853df818c67e453d5960a0a841e34"
+    },
+    "runtime_test": {
+      "path": ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "sha256": "fa2ec13e4122a9e8a06f9b5aa4c3e1b92c7853df818c67e453d5960a0a841e34"
+    }
+  }
+}

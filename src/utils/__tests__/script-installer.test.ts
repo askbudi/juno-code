@@ -259,8 +259,10 @@ describe('ScriptInstaller', {
         'target_runtime_provenance.py',
         'task_workspace.py',
         'task_workspace_decisions.py',
+        'tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json',
         'tests/test_controller_registration.py',
         'tests/test_integration_workspace.py',
+        'tests/test_lifecycle_evidence_reuse_matrix.py',
         'tests/test_managed_agent_runner.py',
         'tests/test_merge_queue.py',
         'tests/test_metadata_controller.py',
@@ -406,6 +408,8 @@ describe('ScriptInstaller', {
         { name: 'tests/test_integration_workspace.py', installed: false },
         { name: 'tests/test_merge_queue.py', installed: false },
         { name: 'tests/test_operation_snapshot.py', installed: false },
+        { name: 'tests/test_lifecycle_evidence_reuse_matrix.py', installed: false },
+        { name: 'tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json', installed: false },
         { name: 'tests/test_workflow_runner_resume_contract.py', installed: false },
         { name: 'task_workflow_helper.py', installed: false },
         { name: 'workflow_run_evidence.py', installed: false },
@@ -611,6 +615,15 @@ describe('ScriptInstaller', {
         path.join(scriptsDir, 'tests/test_workflow_runner_resume_contract.py'),
         '#!/usr/bin/env python3\nprint("resume contract")',
       );
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/test_lifecycle_evidence_reuse_matrix.py'),
+        '#!/usr/bin/env python3\nprint("evidence reuse matrix")',
+      );
+      await fs.ensureDir(path.join(scriptsDir, 'tests/fixtures'));
+      await fs.writeFile(
+        path.join(scriptsDir, 'tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json'),
+        '{}\n',
+      );
       await fs.writeFile(path.join(scriptsDir, 'git-flow.sh'), '#!/bin/sh\n');
       await fs.writeFile(path.join(scriptsDir, 'git_flow.py'), '#!/usr/bin/env python3\n');
       await fs.writeFile(path.join(scriptsDir, 'worktree_hydration.py'), '#!/usr/bin/env python3\n');
@@ -682,6 +695,8 @@ describe('ScriptInstaller', {
         { name: 'tests/test_integration_workspace.py', installed: true },
         { name: 'tests/test_merge_queue.py', installed: true },
         { name: 'tests/test_operation_snapshot.py', installed: true },
+        { name: 'tests/test_lifecycle_evidence_reuse_matrix.py', installed: true },
+        { name: 'tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json', installed: true },
         { name: 'tests/test_workflow_runner_resume_contract.py', installed: true },
         { name: 'task_workflow_helper.py', installed: true },
         { name: 'workflow_run_evidence.py', installed: true },
