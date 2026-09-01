@@ -207,6 +207,43 @@ class MergeQueueTests(unittest.TestCase):
         modules.mkdir(exist_ok=True)
         (modules / ".package-lock.json").write_text("hydrated\n")
 
+    def test_live_authority_reread_rejects_blocker_drift_without_rerunning_validation(self) -> None:
+        self.commit_feature("X", "docs/authority.txt", "authority\n")
+        config = task_runtime.load_config(self.controller)
+        snapshot = merge_runtime.compile_live_authority_snapshot(
+            self.controller.resolve(), config, self.repository.resolve(), "X")
+        validation_before = self.counter.read_bytes() if self.counter.exists() else b""
+        board_path = self.controller / ".juno_task/runtime/fake-kanban.json"
+        board = json.loads(board_path.read_text())
+        board["X"]["blocked_by"] = ["A"]
+        board_path.write_text(json.dumps(board) + "\n")
+
+        with self.assertRaises(merge_runtime.AuthorityDriftError) as caught:
+            merge_runtime.require_live_authority(
+                self.controller.resolve(), config, self.repository.resolve(),
+                "X", snapshot, boundary="before_review_dispatch")
+
+        self.assertIn("BLOCKERS_DRIFT", {row["code"] for row in caught.exception.reasons})
+        self.assertEqual(self.counter.read_bytes() if self.counter.exists() else b"",
+                         validation_before)
+
+    def test_live_authority_ignores_unrelated_controller_commit_and_dirt(self) -> None:
+        self.commit_feature("X", "docs/authority-unrelated.txt", "authority\n")
+        config = task_runtime.load_config(self.controller)
+        snapshot = merge_runtime.compile_live_authority_snapshot(
+            self.controller.resolve(), config, self.repository.resolve(), "X")
+        unrelated = self.controller / "unrelated-controller.txt"
+        unrelated.write_text("committed\n")
+        git(self.controller, "add", "unrelated-controller.txt")
+        git(self.controller, "commit", "-m", "unrelated controller work")
+        (self.controller / "unrelated-dirt.txt").write_text("dirty\n")
+
+        reread = merge_runtime.require_live_authority(
+            self.controller.resolve(), config, self.repository.resolve(),
+            "X", snapshot, boundary="before_target_cas")
+
+        self.assertEqual(reread["authority_sha256"], snapshot["authority_sha256"])
+
     def test_guarded_cas_advances_exact_registered_integration_owner_role_base(self) -> None:
         owner = self.root / "integration-owner"
         git(self.repository, "worktree", "add", "--detach", str(owner), self.base)

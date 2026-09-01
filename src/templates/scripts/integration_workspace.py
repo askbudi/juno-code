@@ -34,6 +34,9 @@ MANAGED_POLICY_PATH = ".juno_task/config/task-workspace.json"
 MANAGED_GENERATION_PATH = ".juno_task/runtime/managed-controller/generation.json"
 MANAGED_RECEIPT_ROOT = ".juno_task/runtime/managed-controller/receipts"
 MANAGED_BACKUP_ROOT = ".juno_task/runtime/managed-controller/backups"
+MANAGED_COLLISION_ROOT = ".juno_task/runtime/managed-controller/collisions"
+MANAGED_COLLISION_SCHEMA = "juno_managed_controller_collision.v1"
+MANAGED_WRITE_SET_SCHEMA = "juno_managed_controller_write_set.v1"
 MANAGED_REPAIR_SCHEMA = "juno_managed_runtime_repair.v1"
 MANAGED_SHA_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 MANAGED_HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -49,6 +52,18 @@ class ManagedRuntimeError(RuntimeError):
     def __init__(self, message: str, receipt: dict[str, str] | None = None):
         super().__init__(message)
         self.receipt = receipt
+
+
+class ManagedWriteCollision(ManagedRuntimeError):
+    """A destination changed after its expected-old write set was compiled."""
+
+    def __init__(self, path: Path, expected_exists: bool,
+                 expected_sha256: str | None, observed: bytes | None):
+        super().__init__(f"managed destination changed before overwrite: {path}")
+        self.path = path
+        self.expected_exists = expected_exists
+        self.expected_sha256 = expected_sha256
+        self.observed = observed
 
 
 def managed_run(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -428,7 +443,8 @@ def managed_canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=False) + "\n").encode()
 
 
-def managed_atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
+def managed_atomic_write(path: Path, data: bytes, mode: int | None = None, *,
+                         expected_old: tuple[bool, str | None] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -436,6 +452,14 @@ def managed_atomic_write(path: Path, data: bytes, mode: int | None = None) -> No
             handle.write(data); handle.flush(); os.fsync(handle.fileno())
         if mode is not None:
             os.chmod(temporary, mode)
+        if expected_old is not None:
+            expected_exists, expected_sha256 = expected_old
+            observed = path.read_bytes() if path.is_file() else None
+            if ((observed is not None) != expected_exists
+                    or (managed_sha256(observed) if observed is not None else None)
+                    != expected_sha256):
+                raise ManagedWriteCollision(path, expected_exists,
+                                            expected_sha256, observed)
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
@@ -443,9 +467,62 @@ def managed_atomic_write(path: Path, data: bytes, mode: int | None = None) -> No
 
 
 def managed_receipt_write(path: Path, value: dict[str, Any]) -> dict[str, str]:
+    """Create one immutable receipt; byte-identical retries are read-only."""
     data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    managed_atomic_write(path, data, 0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        if path.is_file() and path.read_bytes() == data:
+            return {"path": str(path.resolve()), "sha256": managed_sha256(data)}
+        raise ManagedRuntimeError(f"immutable managed receipt collision: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return {"path": str(path.resolve()), "sha256": managed_sha256(data)}
+
+
+def managed_preserve_collision_bytes(controller: Path, data: bytes) -> dict[str, str]:
+    identity = managed_sha256(data)
+    path = managed_safe_path(controller, f"{MANAGED_COLLISION_ROOT}/bytes/{identity}.bin")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        if path.is_file() and path.read_bytes() == data:
+            return {"path": str(path), "sha256": identity}
+        raise ManagedRuntimeError("immutable managed collision byte-set identity collided") from exc
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    return {"path": str(path), "sha256": identity}
+
+
+def compile_managed_write_set(controller: Path,
+                              writes: list[tuple[Path, bytes | None, int | None]]) -> dict[str, Any]:
+    """Bind every exact destination to the bytes observed before mutation."""
+    rows: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for destination, data, mode in writes:
+        destination = destination.resolve()
+        if destination in seen:
+            raise ManagedRuntimeError("managed destination write set is duplicated")
+        destination.relative_to(controller.resolve())
+        before = destination.read_bytes() if destination.is_file() else None
+        rows.append({"path": str(destination.relative_to(controller.resolve())),
+                     "expected_exists": before is not None,
+                     "expected_old_sha256": managed_sha256(before) if before is not None else None,
+                     "intended_sha256": managed_sha256(data) if data is not None else None,
+                     "mode": mode, "_expected_bytes": before})
+        seen.add(destination)
+    public = [{key: value for key, value in row.items() if not key.startswith("_")}
+              for row in rows]
+    identity = managed_sha256((json.dumps(public, sort_keys=True,
+                                           separators=(",", ":")) + "\n").encode())
+    return {"schema_version": MANAGED_WRITE_SET_SCHEMA, "write_set_sha256": identity,
+            "destinations": rows}
 
 
 def managed_allocate_log(workflow: str, task_id: str) -> tuple[Path, Any]:
@@ -900,6 +977,8 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
                               "outcome": "running", "previous_sha": previous_sha,
                               "target_sha": target_sha, "task_id": task_id}
     backups: dict[Path, tuple[bool, bytes, int]] = {}
+    mutated: list[tuple[Path, bytes | None]] = []
+    write_set: dict[str, Any] | None = None
     reference: dict[str, str] | None = None
     try:
         previous_sha = managed_exact_commit(repository, previous_sha, "previous generation")
@@ -941,15 +1020,29 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
                       } for row in operation["scripts"] if row["source_sha256"] is not None},
                       "policy_sha256": operation["policy"]["after_sha256"]}
         writes.append((generation_path, managed_canonical_json(generation), 0o600))
+        write_set = compile_managed_write_set(controller.resolve(), writes)
+        rows_by_path = {str((controller.resolve() / row["path"]).resolve()): row
+                        for row in write_set["destinations"]}
         for destination, _, _ in writes:
-            backups[destination] = (destination.exists(), destination.read_bytes() if destination.exists() else b"",
-                                    destination.stat().st_mode & 0o777 if destination.exists() else 0)
+            row = rows_by_path[str(destination.resolve())]
+            before = row["_expected_bytes"]
+            backups[destination] = (before is not None, before or b"",
+                                    destination.stat().st_mode & 0o777
+                                    if before is not None else 0)
         for destination, data, mode in writes:
+            row = rows_by_path[str(destination.resolve())]
+            expected = (row["expected_exists"], row["expected_old_sha256"])
             if data is None:
+                observed = destination.read_bytes() if destination.is_file() else None
+                if ((observed is not None) != expected[0]
+                        or (managed_sha256(observed) if observed is not None else None) != expected[1]):
+                    raise ManagedWriteCollision(destination, expected[0], expected[1], observed)
                 destination.unlink(missing_ok=True)
+                mutated.append((destination, None))
                 log.write(f"remove {destination}\n")
             else:
-                managed_atomic_write(destination, data, mode)
+                managed_atomic_write(destination, data, mode, expected_old=expected)
+                mutated.append((destination, data))
                 log.write(f"write {destination} sha256={managed_sha256(data)}\n")
             log.flush()
         doctor = managed_runtime_inspect(controller, repository, target_sha)
@@ -963,13 +1056,51 @@ def managed_runtime_refresh(controller: Path, repository: Path, previous_sha: st
                         "policy": {key: value for key, value in operation["policy"].items() if key != "bytes"},
                         "doctor": doctor})
     except BaseException as exc:
-        for destination, (existed, data, mode) in reversed(list(backups.items())):
+        # Roll back only writes proven to be ours. A concurrent byte set that
+        # appears after one of our writes is never overwritten by recovery.
+        for destination, intended in reversed(mutated):
+            existed, data, mode = backups[destination]
             try:
-                if existed: managed_atomic_write(destination, data, mode)
-                else: destination.unlink(missing_ok=True)
-            except OSError:
+                current = destination.read_bytes() if destination.is_file() else None
+                intended_identity = managed_sha256(intended) if intended is not None else None
+                if ((current is not None) != (intended is not None)
+                        or (managed_sha256(current) if current is not None else None)
+                        != intended_identity):
+                    continue
+                if existed:
+                    managed_atomic_write(
+                        destination, data, mode,
+                        expected_old=(current is not None,
+                                      managed_sha256(current) if current is not None else None))
+                else:
+                    destination.unlink(missing_ok=True)
+            except (OSError, ManagedRuntimeError):
                 pass
-        receipt.update({"outcome": "failed", "error": str(exc),
+        if isinstance(exc, ManagedWriteCollision) and write_set is not None:
+            row = next(item for item in write_set["destinations"]
+                       if (controller.resolve() / item["path"]).resolve() == exc.path.resolve())
+            expected_bytes = row["_expected_bytes"]
+            preserved = []
+            if expected_bytes is not None:
+                preserved.append(managed_preserve_collision_bytes(
+                    controller.resolve(), expected_bytes))
+            if exc.observed is not None:
+                observed_ref = managed_preserve_collision_bytes(
+                    controller.resolve(), exc.observed)
+                if observed_ref not in preserved:
+                    preserved.append(observed_ref)
+            receipt.update({"outcome": "collision", "collision": {
+                "schema_version": MANAGED_COLLISION_SCHEMA,
+                "write_set_sha256": write_set["write_set_sha256"],
+                "destinations": [{"path": row["path"],
+                                  "expected_exists": exc.expected_exists,
+                                  "expected_old_sha256": exc.expected_sha256,
+                                  "observed_sha256": (managed_sha256(exc.observed)
+                                                      if exc.observed is not None else None),
+                                  "preserved_byte_sets": preserved}]}})
+        else:
+            receipt["outcome"] = "failed"
+        receipt.update({"error": str(exc),
                         "termination": "interrupted" if isinstance(exc, KeyboardInterrupt)
                         else "failure"})
     finally:

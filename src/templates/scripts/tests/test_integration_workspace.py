@@ -1285,6 +1285,43 @@ class ManagedRuntimeTests(unittest.TestCase):
                         runtime.ManagedRuntimeError, "asset entry is invalid"):
                     runtime.managed_target_provenance(self.repo, commit)
 
+    def test_managed_destination_race_refuses_overwrite_and_preserves_both_byte_sets(self) -> None:
+        destination = self.controller / ".juno_task/scripts/one.py"
+        expected = destination.read_bytes()
+        racer = b"concurrent controller writer\n"
+        original_write = runtime.managed_atomic_write
+        raced = False
+
+        def race_before_first_managed_write(path: Path, data: bytes,
+                                            mode: int | None = None, **kwargs: object) -> None:
+            nonlocal raced
+            if path.resolve() == destination.resolve() and not raced:
+                raced = True
+                path.write_bytes(racer)
+            original_write(path, data, mode, **kwargs)
+
+        with mock.patch.object(runtime, "managed_atomic_write",
+                               side_effect=race_before_first_managed_write):
+            with self.assertRaises(runtime.ManagedRuntimeError) as caught:
+                runtime.managed_runtime_refresh(
+                    self.controller, self.repo, self.previous, self.target,
+                    task_id="managed-destination-race")
+
+        self.assertEqual(destination.read_bytes(), racer)
+        self.assertIsNotNone(caught.exception.receipt)
+        receipt = json.loads(Path(caught.exception.receipt["path"]).read_text())
+        self.assertEqual(receipt["outcome"], "collision")
+        self.assertEqual(receipt["collision"]["schema_version"],
+                         runtime.MANAGED_COLLISION_SCHEMA)
+        collision = receipt["collision"]["destinations"][0]
+        self.assertEqual(collision["expected_old_sha256"], runtime.managed_sha256(expected))
+        self.assertEqual(collision["observed_sha256"], runtime.managed_sha256(racer))
+        for byte_set in collision["preserved_byte_sets"]:
+            preserved = Path(byte_set["path"])
+            self.assertTrue(preserved.is_file())
+            self.assertEqual(runtime.managed_sha256(preserved.read_bytes()),
+                             byte_set["sha256"])
+
     def test_refresh_uses_exact_target_preserves_policy_customization_and_receipts_log(self) -> None:
         result = runtime.managed_runtime_refresh(self.controller, self.repo, self.previous, self.target,
                                  task_id="UOsd11")

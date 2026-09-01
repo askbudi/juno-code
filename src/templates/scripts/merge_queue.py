@@ -38,6 +38,7 @@ RECONCILE_SCHEMA = "juno_merge_terminal_reconciliation_plan.v1"
 RECONCILE_ID_SCHEMA = "juno_merge_terminal_reconciliation_identity.v1"
 RECONCILE_REFERENCE_SCHEMA = "juno_merge_terminal_reconciliation_reference.v1"
 WITHDRAW_SCHEMA = "juno_merge_queue_withdraw_receipt.v1"
+AUTHORITY_SCHEMA = "juno_merge_live_authority.v1"
 WITHDRAWABLE_STATES = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE", "REVIEW_FINDINGS",
                        "REVIEW_FINDINGS_EXHAUSTED", "CONFLICT", "CONFLICT_RESOLVED",
                        "REOPENING", "REQUEUING_STALE"}
@@ -70,6 +71,16 @@ def verify_merge_operation_snapshot(snapshot: Any) -> dict[str, Any]:
         raise MergeQueueError("operation snapshot is missing, tampered, or ambiguous: "
                               + json.dumps(verification["reasons"], sort_keys=True))
     return snapshot
+
+
+class AuthorityDriftError(MergeQueueError):
+    """Live task/queue/target authority no longer matches the admitted attempt."""
+
+    def __init__(self, boundary: str, reasons: list[dict[str, Any]]) -> None:
+        super().__init__(f"live authority drift at {boundary}: "
+                         + ", ".join(row["code"] for row in reasons))
+        self.boundary = boundary
+        self.reasons = reasons
 
 
 class PostIntegrationError(MergeQueueError):
@@ -342,12 +353,19 @@ def _project_queue_board_state(controller: Path, task_id: str, state_name: str) 
 
 
 def persist_attempt(controller: Path, attempt: dict[str, Any], *, state_name: Optional[str] = None,
-                    conflict: Optional[dict[str, Any]] = None, remove_conflict: bool = False) -> None:
+                    conflict: Optional[dict[str, Any]] = None, remove_conflict: bool = False,
+                    expected_record_sha256: Optional[str] = None) -> None:
+    """Apply one short task/queue transaction, optionally revision-CAS bound."""
+    if (expected_record_sha256 is not None
+            and not re.fullmatch(r"[0-9a-f]{64}", expected_record_sha256)):
+        raise MergeQueueError("expected queue record revision is malformed")
     with task_runtime.state_lock(controller):
         state = task_runtime.read_state(controller)
         current = state["tasks"].get(attempt["task_id"])
         if not isinstance(current, dict) or current.get("tip_sha") != attempt["feature_sha"]:
             raise MergeQueueError("task record changed while merge candidate was active")
+        if expected_record_sha256 is not None and digest(current) != expected_record_sha256:
+            raise MergeQueueError("task/queue revision compare-and-swap refused stale transition")
         if state_name:
             state["tasks"][attempt["task_id"]] = {
                 **current, "state": state_name, "queue_attempt": attempt,
@@ -2166,6 +2184,10 @@ def resume_awaiting(controller: Path, config: dict[str, Any], repository: Path,
         persist_attempt(controller, attempt, state_name=decision["status"])
         return attempt
     persist_attempt(controller, attempt, state_name="MERGING")
+    authority = compile_live_authority_snapshot(
+        controller, config, repository, record["task_id"])
+    require_live_authority(controller, config, repository, record["task_id"], authority,
+                           boundary="before_target_cas")
     assert_target_unchecked_out(repository, config["target_ref"])
     attempt["integration_owner_authority"] = cas_target(
         repository, config["target_ref"], candidate_sha, expected
@@ -2242,6 +2264,148 @@ def read_kanban_task(controller: Path, task_id: str) -> dict[str, Any]:
     if not isinstance(payload, dict) or payload.get("id") != task_id:
         raise MergeQueueError("Kanban task readback identity mismatched")
     return payload
+
+
+def _authority_task_projection(task: dict[str, Any]) -> dict[str, Any]:
+    fields = task.get("fields") if isinstance(task.get("fields"), dict) else {}
+    blockers = task.get("blocked_by") or fields.get("blocked_by") or []
+    if not isinstance(blockers, list):
+        blockers = ["<malformed>"]
+    withdrawal = {
+        key: value for key, value in {
+            "status": task.get("status"),
+            "withdrawn": fields.get("withdrawn"),
+            "withdrawn_at": fields.get("withdrawn_at"),
+            "superseded_by_task_id": fields.get("superseded_by_task_id"),
+            "continuation_task_id": fields.get("continuation_task_id"),
+        }.items() if value is not None
+    }
+    canonical_task = {key: value for key, value in task.items()
+                      if not key.startswith("_")}
+    return {"revision_sha256": digest(canonical_task),
+            "status": task.get("status"),
+            "withdrawal_supersession": withdrawal,
+            "blockers": sorted(str(value) for value in blockers)}
+
+
+def _authority_fifo(state: dict[str, Any], target_ref: str,
+                    task_id: str) -> dict[str, Any]:
+    eligible_states = {"QUEUED", "AWAITING_RISK", "AWAITING_RELEASE",
+                       "REVIEW_FINDINGS", "CONFLICT_RESOLVED", "REQUEUING_STALE",
+                       "MERGING"}
+    rows = sorted((row for row in state.get("tasks", {}).values()
+                   if isinstance(row, dict) and row.get("target_ref") == target_ref
+                   and row.get("state") in eligible_states
+                   and isinstance(row.get("enqueue_sequence"), int)),
+                  key=lambda row: (row["enqueue_sequence"], row.get("task_id", "")))
+    current = next((index for index, row in enumerate(rows)
+                    if row.get("task_id") == task_id), None)
+    return {"ordered_task_ids": [row.get("task_id") for row in rows],
+            "predecessors": ([row.get("task_id") for row in rows[:current]]
+                             if current is not None else []),
+            "tail": rows[-1].get("task_id") if rows else None,
+            "current_index": current}
+
+
+def compile_live_authority_snapshot(controller: Path, config: dict[str, Any],
+                                    repository: Path, task_id: str) -> dict[str, Any]:
+    """Reread only live mutation authority; controller HEAD/dirt are excluded."""
+    with task_runtime.state_lock(controller):
+        state = task_runtime.read_state(controller)
+        record = state.get("tasks", {}).get(task_id)
+        if not isinstance(record, dict):
+            raise MergeQueueError("live authority task record is missing")
+        fifo = _authority_fifo(state, config["target_ref"], task_id)
+        entry = state.get("queues", {}).get(target_key(repository, config["target_ref"]))
+    task = read_kanban_task(controller, task_id)
+    target_sha = task_runtime.ref_sha(repository, config["target_ref"])
+    owner_raw = task_runtime.git(repository, "config", "--local", "--get",
+                                 INTEGRATION_OWNER_CONFIG, check=False)
+    if owner_raw:
+        try:
+            owner = Path(owner_raw).expanduser().resolve()
+            observed = integration_owner_readback(owner)
+            owner_authority = {"registered": True, "path": str(owner),
+                               "observed": observed,
+                               "ready": (observed["head"] == target_sha
+                                         and observed["role_base"] == target_sha
+                                         and observed["role"] == "integration-owner"
+                                         and observed["authority"] == INTEGRATION_OWNER_AUTHORITY
+                                         and observed["clean"] and observed["detached"]
+                                         and observed["full_checkout"]
+                                         and all(row["state"] == "exact"
+                                                 for row in observed["submodules"]))}
+        except (OSError, KeyError, MergeQueueError) as exc:
+            owner_authority = {"registered": True, "path": owner_raw,
+                               "ready": False, "error": str(exc)[:512]}
+    else:
+        owner_authority = {"registered": False, "path": None, "ready": True}
+    creation = record.get("creation_receipt") if isinstance(
+        record.get("creation_receipt"), dict) else {}
+    record_blockers = record.get("blocked_by") or record.get("unmet_blockers") or []
+    body = {
+        "schema_version": AUTHORITY_SCHEMA, "task_id": task_id,
+        "task": _authority_task_projection(task),
+        "record": {"state": record.get("state"), "base_sha": record.get("base_sha"),
+                   "tip_sha": record.get("tip_sha"), "branch_ref": record.get("branch_ref"),
+                   "enqueue_sequence": record.get("enqueue_sequence"),
+                   "blockers": sorted(str(value) for value in record_blockers),
+                   "ownership_handoff_sha256": digest({
+                       "fencing": record.get("fencing"),
+                       "fencing_history": record.get("fencing_history"),
+                       "handoff": record.get("handoff"),
+                       "owner": record.get("owner"),
+                   })},
+        "admission": {"allowed_paths": sorted(creation.get("allowed_paths") or []),
+                      "changed_paths": sorted(record.get("changed_paths") or []),
+                      "creation_receipt_sha256": digest(creation)},
+        "fifo": fifo, "queue_entry_sha256": digest(entry),
+        "target": {"ref": config["target_ref"], "expected_sha": target_sha},
+        "integration_owner": owner_authority,
+    }
+    return {**body, "authority_sha256": digest(body)}
+
+
+def require_live_authority(controller: Path, config: dict[str, Any], repository: Path,
+                           task_id: str, expected: dict[str, Any], *,
+                           boundary: str) -> dict[str, Any]:
+    """Fail closed at dispatch/CAS without invalidating behavioral evidence."""
+    current = compile_live_authority_snapshot(
+        controller, config, repository, task_id)
+    comparisons = {
+        "TASK_REVISION_DRIFT": "task", "QUEUE_RECORD_DRIFT": "record",
+        "ADMITTED_PATHS_DRIFT": "admission", "FIFO_DRIFT": "fifo",
+        "QUEUE_AUTHORITY_DRIFT": "queue_entry_sha256", "TARGET_DRIFT": "target",
+        "INTEGRATION_OWNER_DRIFT": "integration_owner",
+    }
+    reasons = [{"code": code, "boundary": boundary}
+               for code, key in comparisons.items()
+               if expected.get(key) != current.get(key)]
+    if expected.get("task", {}).get("status") != current.get("task", {}).get("status"):
+        reasons.append({"code": "STATUS_DRIFT", "boundary": boundary})
+    if (expected.get("task", {}).get("withdrawal_supersession")
+            != current.get("task", {}).get("withdrawal_supersession")):
+        reasons.append({"code": "WITHDRAWAL_SUPERSESSION_DRIFT", "boundary": boundary})
+    if (expected.get("task", {}).get("blockers") != current.get("task", {}).get("blockers")
+            or expected.get("record", {}).get("blockers")
+            != current.get("record", {}).get("blockers")):
+        reasons.append({"code": "BLOCKERS_DRIFT", "boundary": boundary})
+    if current.get("task", {}).get("status") != "in_progress":
+        reasons.append({"code": "TASK_NOT_IN_PROGRESS", "boundary": boundary})
+    withdrawal = current.get("task", {}).get("withdrawal_supersession", {})
+    if (withdrawal.get("withdrawn") or withdrawal.get("superseded_by_task_id")
+            or current.get("record", {}).get("state") == "WITHDRAWN"):
+        reasons.append({"code": "TASK_WITHDRAWN_OR_SUPERSEDED", "boundary": boundary})
+    if current.get("task", {}).get("blockers") or current.get("record", {}).get("blockers"):
+        reasons.append({"code": "BLOCKERS_PRESENT", "boundary": boundary})
+    if not current.get("integration_owner", {}).get("ready"):
+        reasons.append({"code": "INTEGRATION_OWNER_NOT_READY", "boundary": boundary})
+    # Keep bounded deterministic typed attribution and do not write queue state.
+    unique = {(row["code"], row["boundary"]): row for row in reasons}
+    reasons = [unique[key] for key in sorted(unique)]
+    if reasons:
+        raise AuthorityDriftError(boundary, reasons[:32])
+    return current
 
 
 def consolidate_review_findings(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2369,11 +2533,16 @@ def persist_advisory_followups(controller: Path, task_id: str, candidate_sha: st
 
 def finalize_kanban_task(controller: Path, attempt: dict[str, Any]) -> dict[str, Any]:
     task_id, candidate = attempt["task_id"], attempt["candidate_sha"]
+    task = read_kanban_task(controller, task_id)
+    # The final external mutation is always revision-CAS bound. A supplied
+    # revision is retained for crash/resume; otherwise bind the fresh live
+    # ledger revision immediately before constructing the update.
     expected_revision = attempt.get("expected_kanban_revision")
-    if expected_revision is not None and (not isinstance(expected_revision, str)
+    if expected_revision is None:
+        expected_revision = task_runtime.kanban_board_revision(controller, task_id)
+    if (not isinstance(expected_revision, str)
             or not re.fullmatch(r"[0-9a-f]{16,128}", expected_revision)):
         raise MergeQueueError("Kanban finalization expected revision is malformed")
-    task = read_kanban_task(controller, task_id)
     if task.get("status") == "done":
         if task.get("commit_hash") != candidate:
             raise MergeQueueError("Kanban task is already done with a different commit")
@@ -2681,6 +2850,11 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
                         controller, repository, checkout, attempt["candidate_token"]
                     )
                 raise
+            authority = compile_live_authority_snapshot(
+                controller, config, repository, record["task_id"])
+            require_live_authority(
+                controller, config, repository, record["task_id"], authority,
+                boundary="before_target_cas")
             assert_target_unchecked_out(repository, config["target_ref"])
             attempt["integration_owner_authority"] = cas_target(
                 repository, config["target_ref"], candidate_sha, target_sha
@@ -2694,6 +2868,8 @@ def merge_next(controller: Path, task_id: Optional[str] = None,
                 rollback_unadmitted_candidate(controller, repository, checkout, attempt["candidate_token"])
                 attempt.update({"candidate_checkout": None, "candidate_token": None})
             persist_attempt(controller, attempt, state_name="QUEUED")
+            raise
+        except AuthorityDriftError:
             raise
         except PostIntegrationError:
             raise
@@ -2856,6 +3032,10 @@ def merge_resolve(controller: Path, task_id: str,
                                 conflict=resolved_conflict)
                 return attempt
             persist_attempt(controller, attempt, state_name="MERGING")
+            authority = compile_live_authority_snapshot(
+                controller, config, repository, task_id)
+            require_live_authority(controller, config, repository, task_id, authority,
+                                   boundary="before_target_cas")
             assert_target_unchecked_out(repository, config["target_ref"])
             attempt["integration_owner_authority"] = cas_target(
                 repository, config["target_ref"], candidate_sha,
@@ -2872,6 +3052,8 @@ def merge_resolve(controller: Path, task_id: str,
             attempt["outcome"] = "STALE_TARGET"
             attempt["dependency_lock_refusal"] = exc.evidence
             persist_attempt(controller, attempt, state_name="CONFLICT_RESOLVED", conflict=resolved_conflict)
+            raise
+        except AuthorityDriftError:
             raise
         except PostIntegrationError:
             raise
@@ -4106,6 +4288,10 @@ def _overlapped_review_and_suite(
     def reviewer_callback(sequence: int, reviewer: str) -> Any:
         def run_reviewer() -> dict[str, Any]:
             nonlocal predecessor
+            authority = compile_live_authority_snapshot(
+                controller, config, repository, task_id)
+            require_live_authority(controller, config, repository, task_id, authority,
+                                   boundary="before_review_dispatch")
             reference = dispatch_reviewer(
                 controller, candidate_root, plan, task_id, reviewer, sequence,
                 predecessor, review_attempt_number)
@@ -4521,6 +4707,11 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
                 predecessor = Path(step["reference"]["runner_receipt_path"])
             for sequence, reviewer in enumerate(
                     plan["reviewer_sequence"][len(reviews):], len(reviews) + 1):
+                authority = compile_live_authority_snapshot(
+                    controller, config, repository, task_id)
+                require_live_authority(
+                    controller, config, repository, task_id, authority,
+                    boundary="before_review_dispatch")
                 reference = dispatch_reviewer(
                     controller, candidate_root, plan, task_id, reviewer,
                     sequence, predecessor, review_attempt_number,
@@ -4596,7 +4787,7 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
             failed = {**attempt, "outcome": "FAILED_FULL_SUITE"}
             persist_attempt(controller, failed, state_name="AWAITING_RISK")
             raise
-        except AdmissionStateError:
+        except (AdmissionStateError, AuthorityDriftError):
             raise
         except (risk_runtime.RiskPolicyError, MergeQueueError) as exc:
             if "queue admission canonical path already exists" in str(exc) \
