@@ -58,6 +58,21 @@ describe('Bolt task workspace managed runtime', () => {
     }
   });
 
+  it('freezes only the exact operation-snapshot destinations into new task receipts', () => {
+    const testName =
+      'TaskWorkspaceTests.test_fresh_receipt_admits_exact_operation_snapshot_destinations_only';
+    for (const tests of [
+      resolve(repository, '.juno_task/scripts/tests/test_task_workspace.py'),
+      resolve(repository, 'juno-code/src/templates/scripts/tests/test_task_workspace.py'),
+    ]) {
+      execFileSync('python3', [tests, testName], {
+        cwd: repository,
+        env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-operation-snapshot-admission-pycache' },
+        stdio: 'pipe',
+      });
+    }
+  }, 30_000);
+
   it('hydrates the private monorepo directory rather than a public brand path', () => {
     for (const workflowPath of [
       resolve(repository, '.juno_task/config/worktree-hydration.yaml'),

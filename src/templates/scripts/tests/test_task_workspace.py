@@ -2187,6 +2187,23 @@ class TaskWorkspaceTests(TaskWorkspaceFixture):
         self.assertEqual(git(worktree, "status", "--porcelain=v1", "--untracked-files=all"), "")
         self.assertEqual(started["creation_receipt"]["materialization"]["mode"], "full")
 
+    def test_fresh_receipt_admits_exact_operation_snapshot_destinations_only(self) -> None:
+        canonical_policy = json.loads(
+            (SCRIPT.parent.parent / "config/task-workspace.json").read_text())
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["allowed_paths"] = canonical_policy["allowed_paths"]
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        admitted = self.payload("start", "X")["creation_receipt"]["allowed_paths"]
+        self.assertTrue({
+            ".juno_task/scripts/operation_snapshot.py",
+            ".juno_task/scripts/tests/test_operation_snapshot.py",
+        }.issubset(admitted))
+        self.assertNotIn(".juno_task/scripts", admitted)
+        for private_path in canonical_policy["controller_private_paths"]:
+            self.assertFalse(task_runtime.path_within(private_path, admitted), private_path)
+
     def test_start_freezes_explicit_policy_admitted_paths(self) -> None:
         started = task_runtime.start(self.controller, "X", ["optional"])
         self.assertEqual(started["creation_receipt"]["requested_paths"], ["optional"])
