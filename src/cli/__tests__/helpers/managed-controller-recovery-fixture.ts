@@ -9,45 +9,45 @@ import { ManagedProjectAssets } from '../../../utils/managed-project-assets.js';
 const sha256 = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 
 export const REAL_METADATA_CONTROLLER_TARGET_REF =
-  'd7c3d01101ded32f4f14f3a55dead0f0979418e7';
+  'a0442019d8cc0c80de11682a6b1f1e742a26a3cf';
 export const REAL_STALE_CONTROLLER_SCRIPTS = {
   'managed_agent_runner.py': {
-    targetSha256: '701d1b732ef2304c252e7cbf98fe6901b59f8994f3b42229fdb70f336b2ffd58',
+    targetSha256: '01cd94c975de13c4b7744317fb6b1083c62f154328cea2c8cda2f783044fc17b',
     staleBlob: 'b1bbfa5e8a0220f2d60b1d162b91055ea64f686f',
     staleSha256: '506451eb01ab720bdfe6e32fa4ff435fde53ede01c2fc6c123d4884da83eead5',
   },
   'merge_queue.py': {
-    targetSha256: '2ee450976c4cf5b3c171b7c2223c4925ebe21741d37a31e5b9be36767357b75d',
+    targetSha256: 'b440e0a3e26bcf3c62d11463906f701f3e6e57b26efe50f5e76744b7e661865b',
     staleBlob: '52c166d2ef414ca84547a5bcb42b99fdf9d5e2d6',
     staleSha256: 'd46dca5d1309d3069480ad5b2cdfe67e581925fbe23e127437424a59da05e862',
   },
   'release_train.py': {
-    targetSha256: '326d67881609ce63c603c5233c2058b52f041b8462d7376dccfa3bbc89f7f681',
+    targetSha256: '943a64576f6808137491d9eef8e419eefd21596b171ef36f27fd0968b593ed88',
     staleBlob: '17eac999bf505e5c83d5660d912a8dae88d150c7',
     staleSha256: '4a7a3e916d816057453d6aeb049cbd83a5ed2e86594527afcadcad1a9683119c',
   },
   'task_workspace.py': {
-    targetSha256: '62ff0bc6dc25fa593abaaaa4df75edf318262566b040c3d25edc44bb3f4b23fe',
+    targetSha256: '48ea8d25055ca5aa1db930637dcdde0b9fb56f8c10618dbccb9a3719e57f41d0',
     staleBlob: '989dfd43547c646d6e88478cfe47a27f7f997d8e',
     staleSha256: '861abba186bc8f87e76c3c1204e50eed8f07b6797bd6f38a582f6c6560e95c48',
   },
   'tests/test_managed_agent_runner.py': {
-    targetSha256: '39dbb68f160e0e3850ad93d65ca4d66c5ae373764fb27441c81deb6fe7802926',
+    targetSha256: '2d4856ad3e06f1f8c7cddb5885a3c8ce8379568c68b0f3cee4db43a9b902c9ec',
     staleBlob: 'f2fa9ecc94b14342d1591fb5b6326f29609e77bb',
     staleSha256: '30652580f93cb4150b4435c868e1b750cdfaa7a2e9b188d124fd3668f3d902f4',
   },
   'tests/test_merge_queue.py': {
-    targetSha256: '11d9c3fb56f00346ae3756b676c9b9be7fe73463f560ed32afb7cc8f1b38e9b8',
+    targetSha256: '9e792f6cc12c664ffe0f48e79892bb6707b5ccf984d9625dc02b9124bd6e3ed4',
     staleBlob: '842f255e1d93470af02b068c5171657e5090f8ec',
     staleSha256: 'a7d3f9619943537660cab3741096aeb51c60d71f7215ece6cf796e798c41d41f',
   },
   'tests/test_release_train.py': {
-    targetSha256: '8ca4d2857177b47a58ec1bf124b40dc182247ff89c83d2cbd980acb6f4ade45c',
+    targetSha256: 'af813530596ecec54f49996b399f19563ac84ceaaf8bd7f1658ba8d769c53b09',
     staleBlob: '8d7684b67957283e4ec418d59df317533fcbb955',
     staleSha256: '05e50092027419bf747fd864ab987c9d30e0f2975f43110e20627bbb757f11f3',
   },
   'tests/test_task_workspace.py': {
-    targetSha256: '8e12a2c861d542b39f44bcc0ba9ede0b512fc47880ea820e134ed9a8ec711a93',
+    targetSha256: 'dc868b4c4690c6af590f1742c6328a84c0a9629193f6005fda5402cb4ad964ab',
     staleBlob: '8eb5516fbcd6d71da53cc74b424078a304c55561',
     staleSha256: '1a12eee625de2f2f2b81fa4a5ff931a08b64807d8afab3b501a0c4f009791051',
   },
@@ -77,15 +77,27 @@ async function copyTargetPackageGeneration(
   await fs.outputFile(
     path.join(root, 'juno-code/src/templates/managed-assets.json'), manifestBytes,
   );
-  const sources = new Set([
+  const templateRoot = 'juno-code/src/templates/';
+  const targetTemplatePaths = sourceGitBytes(
+    'ls-tree', '-rz', '--name-only', targetRef, '--', templateRoot,
+  ).toString('utf8').split('\0').filter(Boolean);
+  if (!targetTemplatePaths.length || targetTemplatePaths.some((entry) =>
+    !entry.startsWith(templateRoot) || entry.includes('\\') || entry.split('/').includes('..'))) {
+    throw new Error('Immutable target template inventory is missing or unsafe');
+  }
+  for (const targetPath of targetTemplatePaths) {
+    await fs.outputFile(
+      path.join(root, targetPath),
+      sourceGitBytes('show', `${targetRef}:${targetPath}`),
+    );
+  }
+  const declaredSources = new Set([
     ...manifest.assets.map((asset) => asset.source),
     ...manifest.controllerOutputs.map((asset) => asset.source),
   ]);
-  for (const source of sources) {
-    await fs.outputFile(
-      path.join(root, 'juno-code/src/templates', source),
-      sourceGitBytes('show', `${targetRef}:juno-code/src/templates/${source}`),
-    );
+  if ([...declaredSources].some((source) =>
+    !targetTemplatePaths.includes(`${templateRoot}${source}`))) {
+    throw new Error('Immutable target managed declaration references a missing template');
   }
   const targetPackage = JSON.parse(
     sourceGitBytes('show', `${targetRef}:juno-code/package.json`).toString('utf8'),
@@ -104,6 +116,7 @@ async function createInstalledPackage(
   root: string,
   fixtureVersion: string,
   routedCurrentPackage: boolean,
+  packageTemplatesDir = path.resolve(process.cwd(), 'src/templates'),
 ): Promise<{ executable: string; scriptsDir: string }> {
   if (routedCurrentPackage) {
     return {
@@ -118,7 +131,7 @@ async function createInstalledPackage(
   await fs.writeJson(path.join(packageRoot, 'package.json'), {
     name: '@yylo/cli', version: fixtureVersion,
   });
-  await fs.copy(path.resolve(process.cwd(), 'src/templates'), templates);
+  await fs.copy(packageTemplatesDir, templates);
   return { executable, scriptsDir: path.join(templates, 'scripts') };
 }
 
@@ -168,6 +181,12 @@ export async function createTargetBoundMetadataController(
   git(root, 'commit', '-qm', 'target package source generation');
   const targetSha = git(root, 'rev-parse', 'HEAD');
   git(root, 'branch', 'customer/product', targetSha);
+  const installedPackage = await createInstalledPackage(
+    root,
+    fixtureVersion,
+    Boolean(options.routedCurrentPackage),
+    options.exactTargetRef ? targetTemplates : undefined,
+  );
   git(root, 'rm', '-q', '-r', 'juno-code');
 
   const configDir = path.join(root, '.juno_task/config');
@@ -234,9 +253,6 @@ export async function createTargetBoundMetadataController(
       classification: 'exact', source_sha256: sha256(target), actual_sha256: sha256(target),
     };
   }
-  const installedPackage = await createInstalledPackage(
-    root, fixtureVersion, Boolean(options.routedCurrentPackage),
-  );
   await fs.outputJson(path.join(root, '.juno_task/runtime/identity.json'), {
     package: '@yylo/cli', version: fixtureVersion, executable: installedPackage.executable,
     executable_sha256: sha256(await fs.readFile(installedPackage.executable)),
