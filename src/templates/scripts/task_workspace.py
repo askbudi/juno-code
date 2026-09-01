@@ -134,6 +134,7 @@ VALIDATION_TIMING_SCHEMA = "juno_validation_timing.v1"
 VALIDATION_PHASES = ("WAITING_FOR_RESOURCE", "SETUP", "RUNNING", "TEARDOWN")
 VALIDATION_TERMINALS = {"PASSED", "FAILED", "TIMED_OUT", "INTERRUPTED", "SETUP_FAILED"}
 STANDING_EVIDENCE_SCHEMA = "juno_standing_validation_evidence.v1"
+CANONICAL_VALIDATION_RECEIPT_SCHEMA = "juno_canonical_validation_receipt.v1"
 STANDING_PLAN_SCHEMA = "juno_standing_validation_plan.v1"
 STANDING_ROOT = ".juno_task/runtime/standing-evidence"
 
@@ -4275,7 +4276,8 @@ def standing_evidence_run(controller: Path, task_id: str,
                     receipt.get("input_closure") if isinstance(receipt, dict) else None,
                     closure,
                     receipt.get("complete_input_identity") if isinstance(receipt, dict) else None)
-                if (not isinstance(receipt, dict) or receipt.get("schema_version") != STANDING_EVIDENCE_SCHEMA
+                if (not isinstance(receipt, dict) or receipt.get("schema_version") not in {
+                            STANDING_EVIDENCE_SCHEMA, CANONICAL_VALIDATION_RECEIPT_SCHEMA}
                         or not verification["valid"] or receipt.get("command") != row
                         or not isinstance(receipt.get("result"), dict)):
                     raise TaskWorkspaceError("standing command receipt is malformed: "
@@ -4335,13 +4337,40 @@ def standing_evidence_run(controller: Path, task_id: str,
                                 config["documentation_validation"])
                             if row["argv"] == lifecycle_runtime.ACTIVE_DOC_ARGV
                             else run_validation(row, cwd))
-                receipt = {"schema_version": STANDING_EVIDENCE_SCHEMA,
-                           "task_id": task_id, "plan_sha256": plan["plan_sha256"],
-                           "tip_sha": head, "command_index": index, "command": row,
-                           "input_closure": closure,
-                           "complete_input_identity": lifecycle_runtime.complete_input_identity(closure),
-                           "readiness_sha256": readiness_sha256,
-                           "result": evidence, "recorded_at_unix_ns": time.time_ns()}
+                policy_identity = {
+                    "routing_config_sha256": closure.get("routing_config_sha256"),
+                    "risk_policy_sha256": closure.get("risk_policy_sha256"),
+                    "runtime_sha256": closure.get("runtime_sha256")}
+                snapshot_sha = plan["operation_snapshot"]["snapshot_sha256"]
+                outcome_identity = {
+                    "schema_version": closure.get("outcome_schema"),
+                    "result_sha256": stable_sha256(evidence),
+                    "verdict": ("PASSED" if not evidence["timed_out"]
+                                and evidence["exit_code"] == 0 else "FAILED")}
+                index_identity = {
+                    "command_closure_sha256": closure["input_closure_sha256"],
+                    "policy_identity": policy_identity,
+                    "outcome_identity": outcome_identity,
+                    "repository_identity": lifecycle_runtime.repository_identity(repository),
+                    "snapshot_lineage": {"producer_snapshot_sha256": snapshot_sha,
+                                         "consuming_snapshot_sha256": snapshot_sha}}
+                receipt = {
+                    "schema_version": CANONICAL_VALIDATION_RECEIPT_SCHEMA,
+                    "receipt_kind": "executed", "phase": "task_closure",
+                    "task_id": task_id, "plan_sha256": plan["plan_sha256"],
+                    "tip_sha": head, "command_index": index, "command_id": row["id"],
+                    "command": row, "input_closure": closure,
+                    "complete_input_identity": lifecycle_runtime.complete_input_identity(closure),
+                    "policy_identity": policy_identity, "outcome_identity": outcome_identity,
+                    "index_identity": index_identity,
+                    "index_sha256": stable_sha256(index_identity),
+                    "consuming_candidate": {"candidate_sha": head,
+                                             "candidate_tree": plan["tree_sha"]},
+                    "snapshot_lineage": index_identity["snapshot_lineage"],
+                    "source": None,
+                    "decision_reason": "supported registered validation command execution",
+                    "readiness_sha256": readiness_sha256,
+                    "result": evidence, "recorded_at_unix_ns": time.time_ns()}
                 _standing_atomic(receipt_path, receipt); executed += 1
                 active_wall_ms += max(0, int(
                     evidence.get("timing", {}).get("wall_duration_ms",

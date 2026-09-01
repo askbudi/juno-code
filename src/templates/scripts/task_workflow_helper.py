@@ -1151,7 +1151,7 @@ from typing import Any, Callable, Optional
 
 COMMAND_CLOSURE_SCHEMA = "juno_command_input_closure.v5"
 COMMAND_CLOSURE_DECLARATION_SCHEMA = "juno_validation_input_declaration.v1"
-COMMAND_OUTCOME_SCHEMA = "juno_standing_validation_evidence.v1"
+COMMAND_OUTCOME_SCHEMA = "juno_canonical_validation_receipt.v1"
 CHANGED_INPUT_ATTRIBUTION_LIMIT = 64
 COMPLETE_INPUT_IDENTITY_SCHEMA = "juno_complete_input_closure_identity.v1"
 REPLAY_TRACE_SCHEMA = "juno_evidence_replay_trace.v1"

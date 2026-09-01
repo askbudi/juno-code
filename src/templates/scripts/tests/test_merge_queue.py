@@ -4225,6 +4225,37 @@ steps:
             self.assertEqual(hashlib.sha256(Path(reference["path"]).read_bytes()).hexdigest(),
                              reference["sha256"])
 
+    def test_merge_reuse_emits_immutable_candidate_bound_derived_receipt(self) -> None:
+        """Canonical task evidence reused by merge is materialized, not relabelled."""
+        self.commit_feature("X", "docs/derived.txt", "derived\n")
+        merged = self.queue_payload("next")
+
+        decision = next(row for row in merged["command_evidence"]["decisions"]
+                        if row["decision"] == "reused")
+        reference = decision["derived_receipt"]
+        path = Path(reference["path"])
+        payload = path.read_bytes()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), reference["sha256"])
+        receipt = json.loads(payload)
+        self.assertEqual(receipt["schema_version"],
+                         merge_runtime.CANONICAL_VALIDATION_RECEIPT_SCHEMA)
+        self.assertEqual(receipt["receipt_kind"], "derived")
+        self.assertEqual(receipt["phase"], "merge_validation")
+        self.assertEqual(receipt["consuming_candidate"]["candidate_sha"],
+                         merged["candidate_sha"])
+        self.assertEqual(receipt["source"]["sha256"], decision["source"]["sha256"])
+        source_receipt = json.loads(Path(decision["source"]["path"]).read_text())
+        self.assertEqual(source_receipt["schema_version"],
+                         merge_runtime.CANONICAL_VALIDATION_RECEIPT_SCHEMA)
+        self.assertEqual((source_receipt["receipt_kind"], source_receipt["phase"]),
+                         ("executed", "task_closure"))
+        self.assertEqual(source_receipt["decision_reason"],
+                         "supported registered validation command execution")
+        self.assertEqual(receipt["decision_reason"], "exact command closure reuse")
+        self.assertIn("producer_snapshot_sha256", receipt["snapshot_lineage"])
+        self.assertIn("consuming_snapshot_sha256", receipt["snapshot_lineage"])
+        self.assertFalse(self.counter.exists(), "merge reuse must not execute validation")
+
     def test_out_of_cwd_candidate_change_invalidates_reused_command_evidence(self) -> None:
         # A validation command with a configured cwd can still observe tracked
         # inputs outside that cwd, so reusable evidence binds the whole tree:
