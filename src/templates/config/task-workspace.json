@@ -31,6 +31,8 @@
     ".juno_task/scripts/task_workspace_decisions.py",
     ".juno_task/scripts/tests/test_controller_registration.py",
     ".juno_task/scripts/tests/test_integration_workspace.py",
+    ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+    ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
     ".juno_task/scripts/tests/test_managed_agent_runner.py",
     ".juno_task/scripts/tests/test_merge_queue.py",
     ".juno_task/scripts/tests/test_metadata_controller.py",

@@ -2204,6 +2204,21 @@ class TaskWorkspaceTests(TaskWorkspaceFixture):
         for private_path in canonical_policy["controller_private_paths"]:
             self.assertFalse(task_runtime.path_within(private_path, admitted), private_path)
 
+    def test_fresh_receipt_admits_lifecycle_evidence_dogfood_paths(self) -> None:
+        canonical_policy = json.loads(
+            (SCRIPT.parent.parent / "config/task-workspace.json").read_text())
+        policy_path = self.controller / ".juno_task/config/task-workspace.json"
+        policy = json.loads(policy_path.read_text())
+        policy["allowed_paths"] = canonical_policy["allowed_paths"]
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        admitted = self.payload("start", "X")["creation_receipt"]["allowed_paths"]
+        self.assertTrue({
+            ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+            ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+        }.issubset(admitted))
+        self.assertNotIn(".juno_task/scripts", admitted)
+
     def test_start_freezes_explicit_policy_admitted_paths(self) -> None:
         started = task_runtime.start(self.controller, "X", ["optional"])
         self.assertEqual(started["creation_receipt"]["requested_paths"], ["optional"])
