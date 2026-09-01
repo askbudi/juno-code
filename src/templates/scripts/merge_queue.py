@@ -1863,6 +1863,102 @@ def evidence_reference(path: Path) -> dict[str, str]:
             "receipt_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def semantic_snapshot(controller: Path, record: dict[str, Any], plan: dict[str, Any],
+                      authority: dict[str, Any], *, commands: int = 0,
+                      wall_ms: int = 0, write_collision: bool = False) -> dict[str, Any]:
+    """Compile the bounded phase identities that may authorize semantic reuse."""
+    closure = record.get("review_ready_closure")
+    known = (isinstance(closure, dict)
+             and closure.get("schema_version") == "juno_task_review_ready_closure.v1"
+             and isinstance(closure.get("closure_sha256"), str))
+    inputs = {"candidate_product": plan["candidate"]["product_digest"]}
+    if known:
+        for key in ("closure_sha256", "changed_paths_sha256", "allowed_paths_sha256",
+                    "creation_receipt_sha256", "generated_output_admission_sha256"):
+            value = closure.get(key)
+            if isinstance(value, str) and risk_runtime.DIGEST_RE.fullmatch(value):
+                inputs[key] = value
+    try:
+        prompt_identity = hashlib.sha256(managed_review_prompt(controller).read_bytes()).hexdigest()
+        prompt_unknown = False
+    except MergeQueueError:
+        # Missing diagnostics may only disable reuse; ordinary execution still
+        # reaches the canonical reviewer resolver when a review is required.
+        prompt_identity = digest({"review_prompt": "unavailable"})
+        prompt_unknown = True
+    authority_projection = {
+        "target": authority.get("target"), "fifo": authority.get("fifo"),
+        "task": authority.get("task"), "owner_ready": (authority.get("integration_owner") or {}).get("ready"),
+    }
+    runtime_identity = (closure.get("runtime_sha256") if known else None)
+    if not isinstance(runtime_identity, str) or not risk_runtime.DIGEST_RE.fullmatch(runtime_identity):
+        runtime_identity = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return {"schema_version": risk_runtime.SEMANTIC_SNAPSHOT_SCHEMA,
+            "input_identity": dict(sorted(inputs.items())),
+            "policy_identity": plan["policy_identity"],
+            "runtime_identity": runtime_identity,
+            "authority_identity": digest(authority_projection),
+            "review_prompt_identity": prompt_identity,
+            "closure_unknown": not known or prompt_unknown, "write_collision": write_collision,
+            "executed": {"commands": max(0, int(commands)),
+                         "wall_ms": max(0, int(wall_ms))}}
+
+
+def semantic_sidecar_path(receipt_path: Path) -> Path:
+    return receipt_path.with_name(receipt_path.name + ".semantic.json")
+
+
+def write_semantic_sidecar(receipt_path: Path, snapshot: dict[str, Any]) -> dict[str, Any]:
+    reference = evidence_reference(receipt_path)
+    lineage = {**reference, "candidate_sha": json.loads(receipt_path.read_text())["candidate"]["candidate_sha"],
+               "snapshot_sha256": risk_runtime.digest(snapshot)}
+    body = {"schema_version": "juno_merge_semantic_lineage.v1",
+            "snapshot": snapshot, "source_lineage": lineage,
+            "risk_evidence": reference}
+    path = semantic_sidecar_path(receipt_path); data = risk_runtime.canonical(body)
+    try:
+        with path.open("xb") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    except FileExistsError:
+        if path.read_bytes() != data:
+            raise MergeQueueError("semantic reuse decision: write_collision")
+    return {"path": str(path.resolve()), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def select_predecessor_semantic_evidence(controller: Path, task_id: str,
+                                         plan: dict[str, Any]) -> tuple[Any, Any]:
+    root = controller / ".juno_task/runtime/merge-queue/evidence" / task_id
+    if not root.is_dir():
+        return None, None
+    eligible: list[tuple[str, dict[str, Any]]] = []
+    malformed_seen = False
+    for path in sorted(root.glob("*.semantic.json")):
+        try:
+            raw = path.read_bytes(); sidecar = json.loads(raw)
+            if (set(sidecar) != {"schema_version", "snapshot", "source_lineage", "risk_evidence"}
+                    or sidecar.get("schema_version") != "juno_merge_semantic_lineage.v1"):
+                malformed_seen = True
+                continue
+            receipt = json.loads(Path(sidecar["risk_evidence"]["receipt_path"]).read_text())
+            prior = receipt.get("candidate", {})
+            same_predecessor = (prior.get("candidate_sha") == plan["candidate"]["candidate_sha"]
+                                or prior.get("source_feature_tip")
+                                == plan["candidate"]["source_feature_tip"])
+            if same_predecessor:
+                eligible.append((path.name, sidecar))
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            malformed_seen = True
+            continue
+    if malformed_seen:
+        return {"snapshot": {"malformed": True}, "source_lineage": {}}, None
+    if not eligible:
+        return None, None
+    sidecar = eligible[-1][1]
+    previous = {"snapshot": sidecar["snapshot"],
+                "source_lineage": sidecar["source_lineage"]}
+    return previous, sidecar["risk_evidence"]
+
+
 def verify_risk_evidence(policy: dict[str, Any], request: dict[str, str], flags: Any,
                          reference: Any) -> dict[str, Any]:
     try:
@@ -2101,9 +2197,18 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
     canonical_path = evidence_path(controller, record["task_id"], candidate_sha)
     if reference is None and canonical_path.is_file():
         reference = evidence_reference(canonical_path)
+    authority = compile_live_authority_snapshot(
+        controller, task_runtime.load_config(controller), repository, record["task_id"])
+    snapshot = semantic_snapshot(controller, record, plan, authority)
+    semantic_previous, semantic_reference = select_predecessor_semantic_evidence(
+        controller, record["task_id"], plan)
+    semantic_decision = risk_runtime.semantic_reuse_decision(semantic_previous, snapshot)
     risk = {"schema_version": RISK_STATE_SCHEMA, "candidate_sha": candidate_sha,
             "policy_identity": plan["policy_identity"], "plan": plan,
-            "evidence": reference}
+            "evidence": reference, "semantic_reuse_decision": semantic_decision,
+            "semantic_previous_evidence": semantic_reference}
+    if semantic_decision["stop"]:
+        raise MergeQueueError("semantic reuse authority stop: " + semantic_decision["code"])
     if reference is not None:
         try:
             verified = verify_risk_evidence(policy, request, flags, reference)
@@ -2137,17 +2242,20 @@ def review_candidate(controller: Path, record: dict[str, Any], candidate_sha: st
             return {**risk, "status": "ELIGIBLE", "evidence": reference}
     if plan["release_gate_required"]:
         return {**risk, "status": "AWAITING_RELEASE"}
-    if plan["min_reviews"] or plan["full_suite_required"]:
+    if semantic_decision["code"] != "hit" and (plan["min_reviews"] or plan["full_suite_required"]):
         return {**risk, "status": "AWAITING_RISK"}
     try:
         receipt = risk_runtime.finalize(
             plan, request, affected_tests_passed=True, full_suite_admission=None,
-            reviews=[], metrics={"model_calls": 0, "affected_test_runs": 1,
+            reviews=[], metrics={"model_calls": 0,
+                                 "affected_test_runs": 0 if semantic_reference else 1,
                                  "full_suite_runs": 0}, policy=policy,
+            previous=semantic_reference,
         )
         path = canonical_path
         risk_runtime.atomic_receipt(path, receipt, policy)
         reference = evidence_reference(path)
+        write_semantic_sidecar(path, snapshot)
         verified = risk_runtime.verify_candidate_evidence(policy, request, flags, reference)
     except risk_runtime.RiskPolicyError as exc:
         raise MergeQueueError(f"candidate zero-review evidence refused: {exc}") from exc
@@ -4499,6 +4607,13 @@ def _overlapped_review_and_suite(
     if evidence_file.exists():
         raise MergeQueueError("review evidence attempt path already exists")
     risk_runtime.atomic_receipt(evidence_file, receipt, policy)
+    final_authority = compile_live_authority_snapshot(
+        controller, config, repository, task_id)
+    final_snapshot = semantic_snapshot(
+        controller, record, plan, final_authority,
+        commands=len(references) + (1 if plan["full_suite_required"] else 0),
+        wall_ms=int(overlap.get("elapsed_ms", 0)))
+    write_semantic_sidecar(evidence_file, final_snapshot)
     reference = evidence_reference(evidence_file)
     verified = risk_runtime.verify_candidate_evidence(
         policy, request, risk_flags(record), reference)
@@ -4557,10 +4672,23 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
                 raise MergeQueueError("release candidate cannot use semantic review as release authority")
             progress = stored.get("review_progress")
             if progress is None:
+                prior_admission = None
+                semantic_decision = stored.get("semantic_reuse_decision")
+                prior_reference = stored.get("semantic_previous_evidence")
+                if (isinstance(semantic_decision, dict)
+                        and semantic_decision.get("restart_phase") == "review"
+                        and isinstance(prior_reference, dict)):
+                    try:
+                        prior_receipt = json.loads(Path(prior_reference["receipt_path"]).read_text())
+                        prior_admission = prior_receipt.get("validation", {}).get(
+                            "full_suite_admission")
+                    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                        raise MergeQueueError(
+                            "malformed_evidence: prior phase-local admission is unavailable") from exc
                 progress = {"schema_version": "juno_merge_queue_review_progress.v4",
                             "attempt_counter": 0, "review_attempt_counter": 0,
                             "collision_floor": 0,
-                            "full_suite_admission": None,
+                            "full_suite_admission": prior_admission,
                             "steps": []}
             if isinstance(progress, dict) and progress.get("schema_version") in {
                     "juno_merge_queue_review_progress.v2", "juno_merge_queue_review_progress.v3"}:
@@ -4832,6 +4960,12 @@ def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False)
             if path.exists():
                 raise MergeQueueError("review evidence attempt path already exists")
             risk_runtime.atomic_receipt(path, receipt, policy)
+            final_authority = compile_live_authority_snapshot(
+                controller, config, repository, task_id)
+            final_snapshot = semantic_snapshot(
+                controller, record, plan, final_authority,
+                commands=len(reviews) + (1 if plan["full_suite_required"] else 0))
+            write_semantic_sidecar(path, final_snapshot)
             reference = evidence_reference(path)
             verified = risk_runtime.verify_candidate_evidence(
                 policy, request, risk_flags(record), reference)

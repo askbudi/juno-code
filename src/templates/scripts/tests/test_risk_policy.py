@@ -518,6 +518,75 @@ class RiskPolicyTest(unittest.TestCase):
             rp.verify_candidate_evidence(
                 self.policy, request, [], self.evidence_ref(boolean_only, "boolean-only.json"))
 
+    def test_semantic_reuse_decision_codes_phase_local_restart_and_metrics(self) -> None:
+        def snapshot(**changes: object) -> dict:
+            value = {
+                "schema_version": "juno_semantic_input_snapshot.v1",
+                "input_identity": {"src/runtime.ts": "1" * 64},
+                "policy_identity": "2" * 64,
+                "runtime_identity": "3" * 64,
+                "authority_identity": "4" * 64,
+                "review_prompt_identity": "5" * 64,
+                "closure_unknown": False,
+                "write_collision": False,
+                "executed": {"commands": 3, "wall_ms": 1200},
+            }
+            value.update(changes)
+            return value
+
+        lineage = {"receipt_path": "/immutable/evidence.json",
+                   "receipt_sha256": "6" * 64, "candidate_sha": "7" * 40,
+                   "snapshot_sha256": rp.digest(snapshot())}
+        previous = {"snapshot": snapshot(), "source_lineage": lineage}
+        cases = [
+            (None, snapshot(), "cold_miss", "tests", True),
+            (previous, snapshot(), "hit", "none", False),
+            (previous, snapshot(input_identity={"src/runtime.ts": "8" * 64}),
+             "input_changed", "tests", True),
+            (previous, snapshot(policy_identity="8" * 64), "policy_changed", "tests", True),
+            (previous, snapshot(runtime_identity="8" * 64), "runtime_changed", "tests", True),
+            (previous, snapshot(authority_identity="8" * 64), "authority_changed", "stop", False),
+            (previous, snapshot(review_prompt_identity="8" * 64),
+             "input_changed", "review", False),
+            (previous, snapshot(write_collision=True), "write_collision", "stop", False),
+            (previous, snapshot(closure_unknown=True), "closure_unknown", "tests", True),
+            ({"snapshot": {"bad": True}, "source_lineage": lineage}, snapshot(),
+             "malformed_evidence", "tests", True),
+        ]
+        for prior, current, code, phase, rerun_tests in cases:
+            with self.subTest(code=code, phase=phase):
+                decision = rp.semantic_reuse_decision(prior, current)
+                self.assertEqual((code, phase, rerun_tests),
+                                 (decision["code"], decision["restart_phase"],
+                                  decision["rerun_tests"]))
+        hit = rp.semantic_reuse_decision(previous, snapshot())
+        self.assertEqual({"executed_commands": 0, "reused_commands": 3,
+                          "avoided_commands": 3, "wall_ms_avoided": 1200,
+                          "phase_reruns": 0, "whole_tree_fallbacks": 0},
+                         hit["metrics"])
+
+    def test_semantic_reuse_changed_input_detail_is_bounded_and_idempotent(self) -> None:
+        def snap(inputs: dict[str, str]) -> dict:
+            return {"schema_version": "juno_semantic_input_snapshot.v1",
+                    "input_identity": inputs, "policy_identity": "2" * 64,
+                    "runtime_identity": "3" * 64, "authority_identity": "4" * 64,
+                    "review_prompt_identity": "5" * 64, "closure_unknown": False,
+                    "write_collision": False,
+                    "executed": {"commands": 2, "wall_ms": 50}}
+        old = snap({f"src/{index}.ts": "1" * 64 for index in range(40)})
+        current = snap({f"src/{index}.ts": "9" * 64 for index in range(40)})
+        previous = {"snapshot": old,
+                    "source_lineage": {"receipt_path": "/immutable/evidence.json",
+                                       "receipt_sha256": "6" * 64,
+                                       "candidate_sha": "7" * 40,
+                                       "snapshot_sha256": rp.digest(old)}}
+        first = rp.semantic_reuse_decision(previous, current)
+        second = rp.semantic_reuse_decision(previous, current)
+        self.assertEqual(first, second)
+        self.assertEqual(16, len(first["changed_inputs"]))
+        self.assertEqual(24, first["omitted_changed_input_count"])
+        self.assertEqual(1, first["metrics"]["phase_reruns"])
+
     def test_validation_short_circuit_metrics_and_receipt_bound(self) -> None:
         plan = self.plan({"src/security/auth.ts": "auth\n"})
         result = self.finish(plan, affected_tests_passed=False, full_suite_admission=None,

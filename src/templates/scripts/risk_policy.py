@@ -77,6 +77,20 @@ EVIDENCE_KEYS = {
     "validation", "reviews", "release_gate", "metrics", "post_cas",
     "semantic_evidence_reused",
 }
+SEMANTIC_SNAPSHOT_SCHEMA = "juno_semantic_input_snapshot.v1"
+SEMANTIC_DECISION_CODES = {
+    "hit", "cold_miss", "input_changed", "policy_changed", "runtime_changed",
+    "authority_changed", "write_collision", "malformed_evidence", "closure_unknown",
+}
+SEMANTIC_SNAPSHOT_KEYS = {
+    "schema_version", "input_identity", "policy_identity", "runtime_identity",
+    "authority_identity", "review_prompt_identity", "closure_unknown",
+    "write_collision", "executed",
+}
+SEMANTIC_LINEAGE_KEYS = {
+    "receipt_path", "receipt_sha256", "candidate_sha", "snapshot_sha256",
+}
+MAX_SEMANTIC_CHANGED_INPUTS = 16
 
 
 class RiskPolicyError(RuntimeError):
@@ -93,6 +107,108 @@ def digest(value: Any) -> str:
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _valid_semantic_snapshot(value: Any) -> bool:
+    if (not isinstance(value, dict) or set(value) != SEMANTIC_SNAPSHOT_KEYS
+            or value.get("schema_version") != SEMANTIC_SNAPSHOT_SCHEMA
+            or not isinstance(value.get("input_identity"), dict)
+            or len(value["input_identity"]) > 10000
+            or any(not isinstance(path, str) or not path or len(path.encode()) > 1024
+                   or not isinstance(mark, str) or not DIGEST_RE.fullmatch(mark)
+                   for path, mark in value["input_identity"].items())
+            or any(not isinstance(value.get(key), str) or not DIGEST_RE.fullmatch(value[key])
+                   for key in ("policy_identity", "runtime_identity", "authority_identity",
+                               "review_prompt_identity"))
+            or not isinstance(value.get("closure_unknown"), bool)
+            or not isinstance(value.get("write_collision"), bool)):
+        return False
+    executed = value.get("executed")
+    return (isinstance(executed, dict) and set(executed) == {"commands", "wall_ms"}
+            and all(isinstance(item, int) and not isinstance(item, bool) and item >= 0
+                    for item in executed.values()))
+
+
+def _valid_semantic_lineage(value: Any, snapshot: dict[str, Any]) -> bool:
+    return (isinstance(value, dict) and set(value) == SEMANTIC_LINEAGE_KEYS
+            and isinstance(value.get("receipt_path"), str) and bool(value["receipt_path"])
+            and isinstance(value.get("receipt_sha256"), str)
+            and DIGEST_RE.fullmatch(value["receipt_sha256"]) is not None
+            and isinstance(value.get("candidate_sha"), str)
+            and SHA_RE.fullmatch(value["candidate_sha"]) is not None
+            and value.get("snapshot_sha256") == digest(snapshot))
+
+
+def semantic_reuse_decision(previous: Any, current: Any, *,
+                            max_changed_inputs: int = MAX_SEMANTIC_CHANGED_INPUTS) -> dict[str, Any]:
+    """Classify semantic reuse without allowing diagnostics to grant authority.
+
+    Inputs are canonical snapshot/receipt projections, not logs.  The returned
+    metrics are recomputed from those immutable inputs on every call, so resume
+    cannot accumulate or double-count derived evidence.
+    """
+    current_valid = _valid_semantic_snapshot(current)
+    prior_snapshot = previous.get("snapshot") if isinstance(previous, dict) else None
+    lineage = previous.get("source_lineage") if isinstance(previous, dict) else None
+    malformed = (not current_valid or (previous is not None and
+                 (set(previous) != {"snapshot", "source_lineage"}
+                  or not _valid_semantic_snapshot(prior_snapshot)
+                  or not _valid_semantic_lineage(lineage, prior_snapshot))))
+    changed: list[dict[str, Any]] = []
+    code, restart = "cold_miss", "tests"
+    if malformed:
+        code, restart = "malformed_evidence", "tests"
+    elif current["write_collision"]:
+        code, restart = "write_collision", "stop"
+    elif current["closure_unknown"] or (prior_snapshot is not None
+                                         and prior_snapshot["closure_unknown"]):
+        code, restart = "closure_unknown", "tests"
+    elif prior_snapshot is None:
+        code, restart = "cold_miss", "tests"
+    elif current["authority_identity"] != prior_snapshot["authority_identity"]:
+        code, restart = "authority_changed", "stop"
+    elif current["policy_identity"] != prior_snapshot["policy_identity"]:
+        code, restart = "policy_changed", "tests"
+    elif current["runtime_identity"] != prior_snapshot["runtime_identity"]:
+        code, restart = "runtime_changed", "tests"
+    else:
+        keys = sorted(set(current["input_identity"]) | set(prior_snapshot["input_identity"]))
+        changed = [{"field": key, "old": prior_snapshot["input_identity"].get(key),
+                    "new": current["input_identity"].get(key)} for key in keys
+                   if prior_snapshot["input_identity"].get(key)
+                   != current["input_identity"].get(key)]
+        prompt_changed = (current["review_prompt_identity"]
+                          != prior_snapshot["review_prompt_identity"])
+        if changed:
+            code, restart = "input_changed", "tests"
+        elif prompt_changed:
+            changed = [{"field": "review_prompt_identity",
+                        "old": prior_snapshot["review_prompt_identity"],
+                        "new": current["review_prompt_identity"]}]
+            code, restart = "input_changed", "review"
+        else:
+            code, restart = "hit", "none"
+    bounded = changed[:max(0, max_changed_inputs)]
+    hit = code == "hit"
+    executed = (prior_snapshot["executed"] if hit else
+                current.get("executed", {"commands": 0, "wall_ms": 0})
+                if current_valid else {"commands": 0, "wall_ms": 0})
+    metrics = {
+        "executed_commands": 0 if hit or restart == "stop" else executed["commands"],
+        "reused_commands": executed["commands"] if hit else 0,
+        "avoided_commands": executed["commands"] if hit else 0,
+        "wall_ms_avoided": executed["wall_ms"] if hit else 0,
+        "phase_reruns": 1 if restart in {"tests", "review"} else 0,
+        "whole_tree_fallbacks": 1 if code == "closure_unknown" else 0,
+    }
+    return {"schema_version": "juno_semantic_reuse_decision.v1", "code": code,
+            "disposition": ("reused" if hit else "stopped" if restart == "stop"
+                            else "unavailable" if code == "cold_miss" else "invalidated"),
+            "restart_phase": restart, "rerun_tests": restart == "tests",
+            "rerun_reviews": restart in {"tests", "review"}, "stop": restart == "stop",
+            "changed_inputs": bounded,
+            "omitted_changed_input_count": max(0, len(changed) - len(bounded)),
+            "source_lineage": lineage if not malformed else None, "metrics": metrics}
 
 
 def load_policy(path: Path) -> dict[str, Any]:
