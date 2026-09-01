@@ -9,7 +9,7 @@ const projectRoot = path.resolve(__dirname, '../../..');
 const wrapper = path.join(projectRoot, 'dist/bin/yylo.sh');
 const fixtures: string[] = [];
 
-async function makeFixture(version = 'yylo-benchmark 0.1.0-rc.1'): Promise<{
+async function makeFixture(version = 'yylo-benchmark 0.1.0-rc.8'): Promise<{
   root: string; env: NodeJS.ProcessEnv; record: string;
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-built-'));
@@ -56,8 +56,15 @@ describe('built yy/yylo benchmark delegate', () => {
   it.each(['yy', 'yylo'])('preserves the %s launch surface and standalone help tail', async (surface) => {
     const fixture = await makeFixture();
     const launcher = path.join(fixture.root, surface);
-    await import('node:fs/promises').then(({ symlink }) => symlink(wrapper, launcher));
-    const result = await execa(launcher, ['benchmark', '--help'], { cwd: fixture.root, env: fixture.env, reject: false });
+    await import('node:fs/promises').then(async ({ symlink }) => {
+      await symlink(wrapper, path.join(fixture.root, 'yy'));
+      await symlink(wrapper, path.join(fixture.root, 'yylo'));
+    });
+    const result = await execa(launcher, ['benchmark', '--help'], {
+      cwd: fixture.root,
+      env: { ...fixture.env, PATH: `${fixture.root}${path.delimiter}${fixture.env.PATH ?? ''}` },
+      reject: false,
+    });
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(await readFile(fixture.record, 'utf8')).argv).toEqual(['--help']);
   });

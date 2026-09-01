@@ -5,7 +5,6 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyInstalledExecutionEnvelope } from './verify-benchmark-installed-envelope.mjs';
 import { runBoundedReleaseCommand } from './bounded-release-command.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -129,78 +128,60 @@ try {
     throw new Error('Packed standalone version does not satisfy the exact YYLO contract');
   }
 
-  // Prove the packed standalone and yy delegate expose the same live generic
-  // workflow lifecycle through one exact reviewed boundary. This fixture is
-  // synthetic and zero-network; it validates dispatch, retained recovery, and
-  // governed rejudge without granting a product-specific command.
-  const workflowProject = join(fixtureRoot, 'workflow-live'); await mkdir(join(workflowProject, '.juno_task'), { recursive: true });
-  await writeFile(join(workflowProject, 'workflow.yaml'), 'schema_version: 2\nworkflow_id: packed-live\nsteps:\n  - id: analyze\n    command: [yy, pi, "Synthetic installed lifecycle"]\n');
-  const packedRubric = 'Score the retained synthetic candidate truth against the governed workflow outcome.';
-  await writeFile(join(workflowProject, 'policy.yaml'), JSON.stringify({
-    schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'packed-governed', judge_version: '1', model: 'openai-codex/gpt-5.6-sol',
-      rubric: packedRubric, rubric_hash: sha256(packedRubric) },
-    authorization: { authorization_id: 'packed-live', production: true, spend: true },
-    recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 }, redaction: { secret_patterns: [], retain_prompts: false },
-    steps: [{ step_id: 'analyze', scoring_id: 'packed-analyze', side_effect: 'production',
-      resources: [{ type: 'production', id: 'PACKED_SYNTHETIC', access: 'exclusive' }],
-      limits: { timeout_ms: 5000, max_usd: 1 }, authorization: 'production_and_spend', recovery: 'manual',
-      redaction: { patterns: [], retain_prompt: false } }],
+  // Prove the packed standalone and yy delegate expose the same v2,
+  // zero-dispatch lifecycle. Provider execution is deliberately absent.
+  const workflowProject = join(fixtureRoot, 'workflow-v2');
+  await mkdir(workflowProject, { recursive: true });
+  await writeFile(join(workflowProject, 'workflow.yaml'), 'name: packed-v2\nworking_directory: nested\nenvironment: { SAFE: yes }\nsteps:\n  - id: analyze\n    executable: node\n    argv: [node, script.mjs]\n');
+  await writeFile(join(workflowProject, 'yylo-benchmark.config.json'), JSON.stringify({
+    schema_version: 'yylo_benchmark_config.v2', yylo_version: junoPackage.version,
+    workspace: { attempts_root: '.benchmark/attempts', registry_root: '.benchmark/registry' },
+    default_candidate_harness: 'candidate',
+    harnesses: { candidate: { kind: 'yylo_pi', prompt: 'packed acceptance must not dispatch' } },
+    default_evaluators: [], evaluators: {},
   }));
-  await writeFile(join(workflowProject, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol'] }));
-  await writeFile(join(workflowProject, 'yylo-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1',
-    repository_id: 'packed-live', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol' } }));
-  run('git', ['init', '-b', 'fixture'], { cwd: workflowProject, env });
+  run('git', ['init', '--quiet', '--initial-branch', 'fixture'], { cwd: workflowProject, env });
   run('git', ['config', 'user.email', 'fixture@example.test'], { cwd: workflowProject, env });
   run('git', ['config', 'user.name', 'Fixture'], { cwd: workflowProject, env });
   run('git', ['add', 'workflow.yaml'], { cwd: workflowProject, env });
-  run('git', ['commit', '-m', 'fixture'], { cwd: workflowProject, env });
-  const boundaryPath = join(fixtureRoot, 'reviewed-workflow-boundary.mjs');
-  const boundarySource = `import { readFileSync } from 'node:fs';
-const operation = process.argv[2]; const payload = JSON.parse(readFileSync(3, 'utf8'));
-const input = operation === 'probe' ? payload : payload.invocation;
-let output;
-const terminal = () => ({ dispatch_id: input.dispatch_id, status: 'success', effect: 'completed', runner_run_id: 'packed-' + input.step_id,
-  observed_provider: input.provider, observed_model: input.model, observed_juno_version: input.juno_version, evidence: { outer_session_id: 'outer-packed', nested_session_ids: ['nested-packed'],
-  started_at: '2026-08-12T00:00:00.000Z', ended_at: '2026-08-12T00:00:01.000Z', runtime_ms: 1000,
-  cost: { completeness: 'complete', usd: 0.5 }, candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
-  transcript: 'packed synthetic truth', artifacts: { result: 'ok' } } });
-if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_process_boundary.v1', providers: ['openai-codex'] };
-else if (operation === 'preflight') output = { ok: true, provider: input.provider, model: input.model.split('/').slice(1).join('/'), juno_version: input.juno_version };
-else if (operation === 'dispatch' || operation === 'resume') output = terminal();
-else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
-else if (operation === 'judge') { const [provider, ...model] = input.judge.model.split('/');
-  output = { schema_version: 'juno_benchmark_governed_judge_envelope.v1', judge_dispatch_id: input.judge_dispatch_id,
-    requested: { provider, model: model.join('/'), juno_version: input.requested_juno_version },
-    observed: { provider, model: model.join('/'), juno_version: input.requested_juno_version }, session_id: 'judge-packed',
-    started_at: '2026-08-12T00:00:01.000Z', ended_at: '2026-08-12T00:00:02.000Z', runtime_ms: 1000,
-    cost: { completeness: 'complete', usd: 0.01 }, exit_status: { code: 0, signal: null }, dispatched: true,
-    dispatch_proof: 'terminal', verdict: 'pass', justification: 'packed governed judgement', terminal_class: 'judge_acceptance' }; }
-else throw new Error('unsupported operation'); process.stdout.write(JSON.stringify(output));\n`;
-  await writeFile(boundaryPath, boundarySource);
-  const canonicalBoundary = await realpath(boundaryPath); const boundaryHash = sha256(boundarySource).slice(7);
-  const liveBase = { ...env, YYLO_BENCHMARK_WORKFLOW_BOUNDARY: canonicalBoundary, YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: boundaryHash };
-  const planArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--dry-run'];
-  const standalonePlan = run(benchmark, planArgs, { cwd: workflowProject, env: liveBase });
-  const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env: liveBase });
-  if (standalonePlan.stdout !== delegatedPlan.stdout || standalonePlan.stderr !== delegatedPlan.stderr) throw new Error('Packed live workflow plans differ');
-  await writeFile(join(workflowProject, 'plan.json'), standalonePlan.stdout);
-  const standaloneLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-standalone') };
-  const delegatedLiveEnv = { ...liveBase, YYLO_BENCHMARK_REGISTRY: join(fixtureRoot, 'registry-delegated') };
-  const liveOperations = [
-    ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
-    ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml'],
-    ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--judge', ':sol'],
-  ];
-  for (const operation of liveOperations) {
-    const standalone = run(benchmark, operation, { cwd: workflowProject, env: standaloneLiveEnv });
-    const delegated = run(yy, ['benchmark', ...operation], { cwd: workflowProject, env: delegatedLiveEnv });
-    if (standalone.stdout !== delegated.stdout || standalone.stderr !== delegated.stderr) throw new Error(`Packed live ${operation[0]} differs from delegated execution`);
+  run('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: workflowProject, env });
+  const planArgs = ['plan', '--workflow', 'workflow.yaml', '--models', 'vendor-a/model-1,vendor-b/model-2',
+    '--controlled-model-variable', 'candidate_model'];
+  const standalonePlan = run(benchmark, planArgs, { cwd: workflowProject, env });
+  const delegatedPlan = run(yy, ['benchmark', ...planArgs], { cwd: workflowProject, env });
+  if (standalonePlan.stdout !== delegatedPlan.stdout || standalonePlan.stderr !== delegatedPlan.stderr) throw new Error('Packed v2 plans differ');
+  const parsedPlan = JSON.parse(standalonePlan.stdout);
+  if (parsedPlan.schema_version !== 'yylo_benchmark_experiment_plan.v2' || /juno_version|authorization|max_usd|spend/iu.test(standalonePlan.stdout)) {
+    throw new Error('Packed v2 plan contains retired controls or branding');
   }
-  const installedEnvelopeEvidence = await verifyInstalledExecutionEnvelope({
-    fixtureRoot, prefix, cleanEnvironment: env,
-    versions: { benchmark: benchmarkPackage.version, juno: junoPackage.version },
-  });
+  await writeFile(join(workflowProject, 'plan.json'), standalonePlan.stdout);
+  const noDispatchOperations = [
+    ['run', '--plan', 'plan.json', '--dry-run'],
+    ['recover', '--plan', 'plan.json', '--dry-run'],
+  ];
+  for (const operation of noDispatchOperations) {
+    const standalone = run(benchmark, operation, { cwd: workflowProject, env });
+    const delegated = run(yy, ['benchmark', ...operation], { cwd: workflowProject, env });
+    if (standalone.stdout !== delegated.stdout || standalone.stderr !== delegated.stderr) throw new Error(`Packed v2 ${operation[0]} differs from delegated execution`);
+    const receipt = JSON.parse(standalone.stdout);
+    const dispatchCount = receipt.dispatch_count ?? receipt.candidate_dispatch_count ?? 0;
+    if (dispatchCount !== 0 || receipt.ambiguous_count > 0) throw new Error(`Packed v2 ${operation[0]} was not a clean zero-dispatch operation`);
+  }
+  for (const operation of [['doctor', '--plan', 'plan.json'], ['report', '--plan', 'plan.json']]) {
+    const standalone = runRaw(benchmark, operation, { cwd: workflowProject, env });
+    const delegated = runRaw(yy, ['benchmark', ...operation], { cwd: workflowProject, env });
+    if (standalone.status === 0 || delegated.status === 0) throw new Error(`Packed v2 ${operation[0]} accepted an incomplete planned attempt chain`);
+    if (standalone.stdout !== delegated.stdout || standalone.stderr !== delegated.stderr
+        || !/planned attempt chain is incomplete/iu.test(standalone.stderr + standalone.stdout)) throw new Error(`Packed v2 ${operation[0]} fail-closed behavior differs`);
+  }
+  const installedEnvelopeEvidence = {
+    schema_version: 'yylo_benchmark_installed_v2_acceptance.v1',
+    candidate_dispatch_count: 0,
+    arbitrary_model_selectors: 2,
+    isolated_plan: true,
+    standalone_delegate_equal: true,
+    retired_execution_controls_absent: true,
+  };
 
   // Exercise process fidelity from the clean installed prefix. The probe wraps
   // the real packed executable for the mandatory version handshake, then gives
