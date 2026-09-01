@@ -228,16 +228,14 @@ def selected_full_suite_commands(config: dict[str, Any],
 
 
 def selected_focused_rows(config: dict[str, Any], changed_paths: Any) -> list[dict[str, Any]]:
-    """Return mandatory standing gates, with package/default union semantics."""
+    """Route pre-queue focused rows; mixed or default candidates run every row."""
     selection = validation_profile_selection(config, changed_paths)
-    commands: list[dict[str, Any]] = []
-    for profile_id in selection["profile_ids"]:
-        profile = next(row for row in config.get("validation_profiles") or []
-                       if row["id"] == profile_id)
-        commands.extend(profile["commands"])
     if selection["mode"] != "profile":
-        commands.extend(config["focused_validation"])
-    return commands
+        return config["focused_validation"]
+    roots = next(row for row in config.get("validation_profiles") or []
+                 if row["id"] == selection["profile_ids"][0])["path_roots"]
+    return [row for row in config["focused_validation"]
+            if path_within(row["cwd"], roots)]
 
 
 def _refuse(command: str, task_id: str, state: Optional[str], code: str,
