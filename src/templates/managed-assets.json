@@ -434,6 +434,12 @@
       "type": "script"
     },
     {
+      "source": "scripts/operation_snapshot.py",
+      "destination": ".juno_task/scripts/operation_snapshot.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
       "source": "scripts/release_train.py",
       "destination": ".juno_task/scripts/release_train.py",
       "installClass": "script",
@@ -466,6 +472,12 @@
     {
       "source": "scripts/tests/test_merge_queue.py",
       "destination": ".juno_task/scripts/tests/test_merge_queue.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_operation_snapshot.py",
+      "destination": ".juno_task/scripts/tests/test_operation_snapshot.py",
       "installClass": "script",
       "type": "script"
     },

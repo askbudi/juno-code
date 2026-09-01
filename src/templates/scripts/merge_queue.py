@@ -26,6 +26,7 @@ import integration_workspace as integration_runtime
 import task_workspace as task_runtime
 import risk_policy as risk_runtime
 import task_workflow_helper as lifecycle_runtime
+import operation_snapshot as operation_runtime
 
 QUEUE_SCHEMA = task_runtime.STATE_SCHEMA
 ATTEMPT_SCHEMA = "juno_merge_queue_attempt.v1"
@@ -55,6 +56,20 @@ INTEGRATION_OWNER_AUTHORITY = "protected-integration.v1"
 
 class MergeQueueError(RuntimeError):
     pass
+
+
+def compile_merge_operation_snapshot(**inputs: Any) -> dict[str, Any]:
+    """Merge-lifecycle seam for the immutable operation/read-set compiler."""
+    return operation_runtime.compile_identity_operation_snapshot(**inputs)
+
+
+def verify_merge_operation_snapshot(snapshot: Any) -> dict[str, Any]:
+    """Fail closed when task-to-merge operation evidence is partial or tampered."""
+    verification = operation_runtime.verify_operation_snapshot(snapshot)
+    if not verification["valid"]:
+        raise MergeQueueError("operation snapshot is missing, tampered, or ambiguous: "
+                              + json.dumps(verification["reasons"], sort_keys=True))
+    return snapshot
 
 
 class PostIntegrationError(MergeQueueError):
@@ -3975,6 +3990,7 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                                                            row.get("duration_ms", 0))))
                                                    for row in validations),
                              "source": "legacy_conservative_execution"}
+    verify_merge_operation_snapshot(standing.get("operation_snapshot"))
     route = standing.get("documentation_route", {})
     changed = record.get("changed_paths") or []
     active_paths = route.get("active_paths", []) if route.get("mode") == "active_audit" else []
@@ -4072,26 +4088,6 @@ def authoritative_validation_rows(controller: Path, config: dict[str, Any],
                          "replay_trace": lifecycle_runtime.evidence_replay_trace(
                              decisions, phase="merge_validation"),
                          "coherence": coherence, "source": "authoritative_cross_stage"}
-
-
-def _assert_controller_clean_before_expensive_evidence(controller: Path) -> None:
-    """Fail the review before, not after, expensive validation.
-
-    The managed reviewer launch refuses a dirty controller; discovering that
-    after a 15-minute green full-suite admission wastes the run. Surface the
-    identical condition up front with the reconciliation hint. Only canonical
-    controllers (config.json present) enforce the full identity contract here;
-    other roots keep the launch-time check.
-    """
-    if not (controller / ".juno_task/config.json").is_file():
-        return
-    import managed_agent_runner as runner
-    try:
-        runner.controller_identity(controller)
-    except runner.RunnerError as exc:
-        raise MergeQueueError(
-            f"controller must be reconciled before review evidence runs ({exc}); "
-            "commit or checkpoint controller metadata, then rerun") from exc
 
 
 def _overlapped_review_and_suite(
@@ -4260,7 +4256,6 @@ def _overlapped_review_and_suite(
 def merge_review(controller: Path, task_id: str, *, overlap_suite: bool = False) -> dict[str, Any]:
     if not task_runtime.TASK_RE.fullmatch(task_id):
         raise MergeQueueError("unsafe task id")
-    _assert_controller_clean_before_expensive_evidence(controller)
     config = task_runtime.load_config(controller)
     repository = task_runtime.product_repository(controller, config)
     with review_lock(repository, task_id):

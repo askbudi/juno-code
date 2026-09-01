@@ -36,6 +36,7 @@ from typing import Any, Callable, Iterator, Optional
 
 import task_workflow_helper as lifecycle_runtime
 import task_workspace_decisions as decisions
+import operation_snapshot as operation_runtime
 
 # --- Pure functional core (Wave 3 pilot of 7djT8N) ---
 # Decision planners live in task_workspace_decisions; this shell keeps only
@@ -4029,6 +4030,44 @@ def _command_input_closure(repository: Path, head: str, row: dict[str, Any],
     )
 
 
+def compile_standing_operation_snapshot(**inputs: Any) -> dict[str, Any]:
+    """Task-lifecycle seam for the immutable operation/read-set compiler."""
+    return operation_runtime.compile_identity_operation_snapshot(**inputs)
+
+
+def _standing_snapshot_inputs(repository: Path, candidate: str, target: str,
+                              planned: list[dict[str, Any]], config: dict[str, Any],
+                              runtime: dict[str, Any], documentation: dict[str, Any]) -> dict[str, Any]:
+    commands = [entry["command"] for entry in planned]
+    routing = {row["id"]: "standing" for row in commands}
+    validation_units = [
+        {"phase": "validation", "id": entry["command"]["id"],
+         "inputs": {"input_closure_sha256": entry["input_closure"]["input_closure_sha256"]}}
+        for entry in planned
+    ] or [{"phase": "validation", "id": "zero-command",
+           "inputs": {"documentation_route": stable_sha256(documentation)}}]
+    policy_path = repository / ".juno_task/config/risk-policy.json"
+    policy_identity = (hashlib.sha256(policy_path.read_bytes()).hexdigest()
+                       if policy_path.is_file() else stable_sha256(config.get("risk_policy", {})))
+    phase_units = [*validation_units,
+        {"phase": "risk", "id": "policy", "inputs": {"policy": policy_identity}},
+        {"phase": "review", "id": "finding-policy",
+         "inputs": {"policy": stable_sha256(config.get("review", config.get("risk", {})))}},
+        {"phase": "documentation", "id": "active-contract",
+         "inputs": {"route": stable_sha256(documentation),
+                    "policy": stable_sha256(config.get("documentation_validation", {}))}},
+        {"phase": "integration", "id": "runtime",
+         "inputs": {"runtime": str(runtime["running_sha256"]),
+                    "target_ref": stable_sha256(config.get("target_ref"))}},
+    ]
+    environment = (planned[0]["input_closure"].get("environment", {}) if planned else {})
+    return {"candidate": candidate, "target": target, "commands": commands,
+            "routing": routing, "environment": environment,
+            "phase_units": phase_units,
+            "managed_outputs": {"task_workspace_runtime": str(runtime["running_sha256"])},
+            "discovery": {"complete": True, "kind": "exact-import-closure"}}
+
+
 def standing_checkpoint(controller: Path, task_id: str,
                         lease_token: Optional[str] = None) -> dict[str, Any]:
     config = load_config(controller)
@@ -4078,12 +4117,15 @@ def standing_checkpoint(controller: Path, task_id: str,
         raise TaskWorkspaceError(
             "grouped coherence failed: " + json.dumps(
                 coherence["findings"], sort_keys=True))
+    operation_snapshot = compile_standing_operation_snapshot(**_standing_snapshot_inputs(
+        repository, head, ref_sha(repository, config["target_ref"]), planned,
+        config, runtime, documentation))
     body = {"schema_version": STANDING_PLAN_SCHEMA, "task_id": task_id,
             "base_sha": frozen["base_sha"], "tip_sha": head,
             "tree_sha": git(repository, "rev-parse", f"{head}^{{tree}}"),
             "branch_ref": frozen["branch_ref"], "changed_paths": changed,
             "changed_path_status": path_status, "documentation_route": documentation,
-            "grouped_coherence": coherence,
+            "grouped_coherence": coherence, "operation_snapshot": operation_snapshot,
             "selection": routing, "commands": planned,
             "created_at_unix_ns": time.time_ns()}
     identity_body = {key: value for key, value in body.items() if key != "created_at_unix_ns"}
@@ -4193,6 +4235,19 @@ def standing_evidence_run(controller: Path, task_id: str,
     _repo, worktree, head, changed = observe_working_task(record, repository, config, task_id)
     if head != plan["tip_sha"] or changed != plan["changed_paths"]:
         raise TaskWorkspaceError("standing checkpoint is stale; create a new task checkpoint")
+    runtime = require_current_runtime(repository, ref_sha(repository, config["target_ref"]), controller)
+    current_planned = [{**entry, "input_closure": _command_input_closure(
+        repository, head, entry["command"], config, runtime)} for entry in plan["commands"]]
+    current_snapshot = compile_standing_operation_snapshot(**_standing_snapshot_inputs(
+        repository, head, ref_sha(repository, config["target_ref"]), current_planned,
+        config, runtime, plan["documentation_route"]))
+    invalidation = operation_runtime.phase_invalidation(
+        plan.get("operation_snapshot"), current_snapshot)
+    affected = [row for row in invalidation
+                if row.get("phase") in {"validation", "documentation"}]
+    if affected:
+        raise TaskWorkspaceError("standing operation snapshot changed; checkpoint a successor: "
+                                 + json.dumps(affected, sort_keys=True))
     lane = _standing_root(controller, task_id) / ".local-lane.lock"
     lane.parent.mkdir(parents=True, exist_ok=True)
     decision_log: list[dict[str, Any]] = []
@@ -4468,6 +4523,7 @@ def _finish_once(controller: Path, task_id: str,
         "active_wall_ms": standing["active_wall_ms"],
         "documentation_route": standing["documentation_route"],
         "grouped_coherence": standing["grouped_coherence"],
+        "operation_snapshot": checkpoint_plan["operation_snapshot"],
         "summary_sha256": stable_sha256(standing),
     }
     closure = {**closure_body, "closure_sha256": stable_sha256(closure_body)}
