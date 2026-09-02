@@ -27,7 +27,7 @@ function parse(argv) {
   if (!['affected', 'seeded', 'hermetic', 'complete'].includes(value.mode)) throw new Error('--mode is required');
   if (!value.receipt) value.receipt = path.join(root, 'test-results/task-workspace', `${value.mode}.json`);
   if (!Number.isFinite(value.timeoutMs) || value.timeoutMs < 100 || value.timeoutMs > 3_600_000) throw new Error('invalid --timeout-ms');
-  value.shards ??= value.testIds.length || value.command || value.mode === 'affected' ? 1 : Math.min(6, os.cpus().length || 1);
+  value.shards ??= value.testIds.length || value.command || value.mode === 'affected' ? 1 : Math.min(8, os.cpus().length || 1);
   if (!Number.isInteger(value.shards) || value.shards < 1 || value.shards > 16) throw new Error('invalid --shards');
   return value;
 }
@@ -102,6 +102,7 @@ async function main() {
     ? path.join(root, 'src/templates') : path.join(root, 'dist/templates');
   const runner = path.join(templateRoot, 'scripts/task_workspace_test_runner.py');
   const testModule = path.join(templateRoot, 'scripts/tests/test_task_workspace.py');
+  const durationWeights = path.join(root, 'scripts/test-performance/task-workspace-duration-weights.v1.json');
   const plans = [];
   if (options.command) {
     plans.push({ command: options.command, args: options.commandArgs, profilePath: null, shard: 0 });
@@ -112,6 +113,7 @@ async function main() {
         '--shard-index', String(shard), '--shard-count', String(options.shards)];
       for (const id of options.testIds) args.push('--test-id', id);
       for (const changedPath of options.changedPaths) args.push('--changed-path', changedPath);
+      if (fs.existsSync(durationWeights)) args.push('--duration-weights', durationWeights);
       plans.push({ command: python, args, profilePath, shard });
     }
   }
@@ -150,7 +152,12 @@ async function main() {
     created_at: new Date().toISOString(),
     started_at: startedAt,
     command: [command, ...args],
-    shards: runs.map(({ shard, run: shardRun }) => ({ index: shard, exit_code: shardRun.code, timeout: shardRun.timedOut, wall_ms: shardRun.wallMs })),
+    shards: runs.map(({ shard, run: shardRun }) => ({
+      index: shard, exit_code: shardRun.code, timeout: shardRun.timedOut,
+      wall_ms: shardRun.wallMs,
+      predicted_ms: profiles[shard]?.shard?.predicted_ms ?? null,
+      weights_identity: profiles[shard]?.shard?.weights_identity ?? null,
+    })),
     timeout_ms: options.timeoutMs,
     timeout: run.timedOut,
     exit_code: run.code ?? (run.timedOut ? 124 : 1),

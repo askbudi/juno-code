@@ -38,6 +38,7 @@
   "files": [
     "dist",
     "scripts/test-task-workspace.mjs",
+    "scripts/test-performance/task-workspace-duration-weights.v1.json",
     "README.md",
     "CHANGELOG.md",
     "assets/yylo-logo-square-neon-green.png"

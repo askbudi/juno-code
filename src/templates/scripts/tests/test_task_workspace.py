@@ -7543,6 +7543,24 @@ class FixtureModeContractTests(unittest.TestCase):
             [(test_id, fixture_registry()[test_id]) for test_id in serial],
         )
 
+    def test_duration_weighted_shards_balance_deterministically(self) -> None:
+        runner_path = Path(fixture_runtime.__file__).resolve().parent.parent / "task_workspace_test_runner.py"
+        specification = __import__("importlib.util").util.spec_from_file_location(
+            "fixture_profile_runner_contract", runner_path)
+        self.assertIsNotNone(specification)
+        runner = __import__("importlib.util").util.module_from_spec(specification)
+        specification.loader.exec_module(runner)
+        tests = ["Suite.test_slow", "Suite.test_medium", "Suite.test_fast_a", "Suite.test_fast_b"]
+        weights = {"Suite.test_slow": 9_000, "Suite.test_medium": 5_000,
+                   "Suite.test_fast_a": 2_000, "Suite.test_fast_b": 1_000}
+        first = runner.balanced_shards(tests, weights, 2)
+        second = runner.balanced_shards(list(reversed(tests)), weights, 2)
+        self.assertEqual(first, second)
+        self.assertEqual(sorted(item for shard in first for item in shard), sorted(tests))
+        loads = [sum(weights[item] for item in shard) for shard in first]
+        round_robin = [sum(weights[item] for item in tests[index::2]) for index in range(2)]
+        self.assertLess(max(loads), max(round_robin))
+
     def test_complete_suite_entrypoint_cannot_select_seeded_only(self) -> None:
         complete = set(selected_fixture_tests("complete"))
         seeded = set(selected_fixture_tests("seeded"))

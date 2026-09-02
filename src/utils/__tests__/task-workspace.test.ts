@@ -266,7 +266,7 @@ describe('Bolt task workspace managed runtime', () => {
     expect(testSource).toContain('test_runtime_bootstrap_refuses_product_bearing_metadata_controller');
     const runner = resolve(repository, 'juno-code/scripts/test-task-workspace.mjs');
     const receipt = resolve(repository, 'juno-code/test-results/task-workspace/vitest-complete.json');
-    execFileSync(process.execPath, [runner, '--mode', 'complete', '--shards', '6',
+    execFileSync(process.execPath, [runner, '--mode', 'complete', '--shards', '8',
       '--timeout-ms', '180_000', '--receipt', receipt], {
       cwd: resolve(repository, 'juno-code'),
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-task-workspace-test-pycache' },

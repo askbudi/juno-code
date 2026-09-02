@@ -12,6 +12,35 @@ import unittest
 from pathlib import Path
 
 SCHEMA = "juno.task_workspace.python_profile.v1"
+WEIGHTS_SCHEMA = "juno.task_workspace.duration_weights.v1"
+
+
+def balanced_shards(test_ids, weights, shard_count):
+    """Deterministic longest-processing-time assignment with stable ties."""
+    if shard_count < 1:
+        raise ValueError("shard_count must be positive")
+    shards = [[] for _ in range(shard_count)]
+    loads = [0.0 for _ in range(shard_count)]
+    for test_id in sorted(test_ids, key=lambda value: (-float(weights.get(value, 1000.0)), value)):
+        index = min(range(shard_count), key=lambda candidate: (loads[candidate], candidate))
+        shards[index].append(test_id)
+        loads[index] += float(weights.get(test_id, 1000.0))
+    for shard in shards:
+        shard.sort()
+    return shards
+
+
+def load_duration_weights(path):
+    if not path:
+        return {}, None
+    value = json.loads(Path(path).read_text())
+    if value.get("schema_version") != WEIGHTS_SCHEMA or not isinstance(value.get("tests"), dict):
+        raise ValueError("invalid task-workspace duration weights")
+    weights = value["tests"]
+    if any(not isinstance(name, str) or not isinstance(duration, (int, float)) or duration < 0
+           for name, duration in weights.items()):
+        raise ValueError("invalid task-workspace duration weight entry")
+    return weights, value.get("source_receipt_sha256")
 
 
 def load_tests_module(path: Path):
@@ -88,6 +117,7 @@ def main() -> int:
     parser.add_argument("--changed-path", action="append", default=[])
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--duration-weights")
     args = parser.parse_args()
 
     tests_path = Path(args.tests).resolve()
@@ -119,7 +149,16 @@ def main() -> int:
         if args.mode == "hermetic" and tier not in {"hermetic", "shared-resource"}:
             continue
         selected.append(test)
-    selected = selected[args.shard_index::args.shard_count]
+    weights, weights_identity = load_duration_weights(args.duration_weights)
+    plan = balanced_shards(
+        [".".join(test.id().split(".")[-2:]) for test in selected],
+        weights, args.shard_count,
+    )
+    selected_ids = set(plan[args.shard_index])
+    selected = [test for test in selected
+                if ".".join(test.id().split(".")[-2:]) in selected_ids]
+    predicted_ms = sum(float(weights.get(test_id, 1000.0))
+                       for test_id in plan[args.shard_index])
 
     git_count = {"value": 0}
     original_git = getattr(module, "git", None)
@@ -154,7 +193,9 @@ def main() -> int:
     payload = {
         "schema_version": SCHEMA,
         "mode": args.mode,
-        "shard": {"index": args.shard_index, "count": args.shard_count},
+        "shard": {"index": args.shard_index, "count": args.shard_count,
+                  "predicted_ms": round(predicted_ms, 3),
+                  "weights_identity": weights_identity},
         "inventory": inventory,
         "selected": [".".join(test.id().split(".")[-2:]) for test in selected],
         "tests": metrics,
