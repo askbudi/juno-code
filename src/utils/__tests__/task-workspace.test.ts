@@ -267,7 +267,7 @@ describe('Bolt task workspace managed runtime', () => {
     const runner = resolve(repository, 'juno-code/scripts/test-task-workspace.mjs');
     const receipt = resolve(repository, 'juno-code/test-results/task-workspace/vitest-complete.json');
     execFileSync(process.execPath, [runner, '--mode', 'complete', '--shards', '8',
-      '--timeout-ms', '180_000', '--receipt', receipt], {
+      '--timeout-ms', '180000', '--receipt', receipt], {
       cwd: resolve(repository, 'juno-code'),
       env: { ...process.env, PYTHONPYCACHEPREFIX: '/tmp/juno-task-workspace-test-pycache' },
       stdio: 'pipe',
