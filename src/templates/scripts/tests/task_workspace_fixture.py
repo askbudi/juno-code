@@ -81,21 +81,30 @@ class Seed:
 
 
 def _remove_owned_tree(root: Path) -> None:
+    class RetryCleanup(Exception):
+        pass
+
     repairs = 0
+
+    def repair(_function, path, exception_info) -> None:
+        nonlocal repairs
+        error = exception_info[1]
+        candidate = Path(path)
+        obstruction = candidate if candidate.is_dir() else candidate.parent
+        if (not isinstance(error, PermissionError) or repairs >= 32
+                or obstruction.is_symlink() or not obstruction.exists()
+                or os.path.commonpath((str(root), str(obstruction.resolve()))) != str(root)):
+            raise error
+        obstruction.chmod(obstruction.stat().st_mode | stat.S_IWUSR | stat.S_IXUSR)
+        repairs += 1
+        raise RetryCleanup
+
     while root.exists():
         try:
-            shutil.rmtree(root)
+            shutil.rmtree(root, onerror=repair)
             return
-        except PermissionError as error:
-            candidate = Path(error.filename or "")
-            if (repairs >= 32 or not candidate.exists() or candidate.is_symlink()
-                    or os.path.commonpath((str(root), str(candidate.resolve()))) != str(root)):
-                raise
-            mode = candidate.stat().st_mode | stat.S_IWUSR
-            if candidate.is_dir():
-                mode |= stat.S_IXUSR
-            candidate.chmod(mode)
-            repairs += 1
+        except RetryCleanup:
+            continue
 
 
 class Instance:
