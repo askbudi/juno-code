@@ -523,8 +523,15 @@ def run(argv: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedP
     return result
 
 
+_ACTIVE_GIT_QUERY_ADAPTER = None
+
+
 def git(root: Path, *args: str) -> str:
-    return run(["git", "-C", str(root), *args], root).stdout.strip()
+    argv = ["git", "-C", str(root), *args]
+    result = run(argv, root).stdout.strip()
+    if _ACTIVE_GIT_QUERY_ADAPTER is not None:
+        _ACTIVE_GIT_QUERY_ADAPTER.observe_external(argv)
+    return result
 
 
 FAKE_KANBAN_SOURCE = '''#!/usr/bin/env python3
@@ -873,6 +880,7 @@ class TaskWorkspaceFixture(unittest.TestCase):
             TaskWorkspaceFixture._topology_seed = fixture_runtime.ensure_seed(inputs, publish)
             TaskWorkspaceFixture._topology_source_root = source_root
             self._acquire_declared_test_resource(tier)
+            self._install_git_query_adapter()
             return
         seed = TaskWorkspaceFixture._topology_seed
         instance = fixture_runtime.create_instance(seed)
@@ -901,6 +909,14 @@ class TaskWorkspaceFixture(unittest.TestCase):
         self.base = git(self.repository, "rev-parse", "refs/heads/product")
         self.board = self.controller / ".juno_task/runtime/fake-kanban.json"
         self._acquire_declared_test_resource(tier)
+        self._install_git_query_adapter()
+
+    def _install_git_query_adapter(self) -> None:
+        global _ACTIVE_GIT_QUERY_ADAPTER
+        self._original_task_runtime_run = task_runtime.run
+        self._git_query_adapter = fixture_runtime.MemoizedGitDispatch(task_runtime.run)
+        task_runtime.run = self._git_query_adapter
+        _ACTIVE_GIT_QUERY_ADAPTER = self._git_query_adapter
 
     def _acquire_declared_test_resource(self, tier: str) -> None:
         if tier == "shared-resource":
@@ -1042,6 +1058,11 @@ class TaskWorkspaceFixture(unittest.TestCase):
         git(self.controller, "read-tree", "-mu", "HEAD")
 
     def tearDown(self) -> None:
+        global _ACTIVE_GIT_QUERY_ADAPTER
+        if getattr(self, "_git_query_adapter", None) is not None:
+            task_runtime.run = self._original_task_runtime_run
+            _ACTIVE_GIT_QUERY_ADAPTER = None
+            self._git_query_adapter = None
         if getattr(self, "_test_resource_token", None):
             _release_resource_lock(RESOURCE_LOCK_PATH, self._test_resource_token)
             self._test_resource_token = None
@@ -7497,6 +7518,29 @@ class FixtureModeContractTests(unittest.TestCase):
                 git(repository, "checkout", "--detach", historical)
                 self.assertEqual(git(repository, "rev-parse", "HEAD^{tree}"), expected_tree)
             finally: instance.release()
+
+    def test_memoized_git_query_adapter_preserves_outputs_and_real_process_canaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "repository"; repository.mkdir()
+            git(repository, "init", "-b", "main")
+            git(repository, "config", "user.email", "fixture@example.invalid")
+            git(repository, "config", "user.name", "Fixture")
+            (repository / "value").write_text("one\n")
+            git(repository, "add", "value"); git(repository, "commit", "-m", "one")
+            adapter = fixture_runtime.MemoizedGitDispatch(task_runtime.run)
+            with mock.patch.object(task_runtime, "run", side_effect=adapter):
+                first = task_runtime.git(repository, "rev-parse", "HEAD")
+                self.assertEqual(task_runtime.git(repository, "rev-parse", "HEAD"), first)
+                (repository / "value").write_text("two\n")
+                task_runtime.git(repository, "add", "value")
+                task_runtime.git(repository, "commit", "-m", "two")
+                second = task_runtime.git(repository, "rev-parse", "HEAD")
+                self.assertEqual(task_runtime.git(repository, "rev-parse", "HEAD"), second)
+            self.assertNotEqual(first, second)
+            self.assertEqual(first, git(repository, "rev-parse", "HEAD^"))
+            self.assertEqual(second, git(repository, "rev-parse", "HEAD"))
+            self.assertEqual(adapter.cache_hits, 2)
+            self.assertEqual(adapter.real_query_processes, 2)
 
     def test_overlay_release_repairs_only_cleanup_obstructions_without_eager_tree_chmod(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

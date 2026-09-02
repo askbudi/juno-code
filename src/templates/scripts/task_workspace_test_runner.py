@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -62,28 +65,55 @@ def flatten(suite):
 
 
 class ProfileResult(unittest.TextTestResult):
-    def __init__(self, *args, metrics, tier_for, **kwargs):
+    def __init__(self, *args, metrics, tier_for, process_metrics, **kwargs):
         super().__init__(*args, **kwargs)
         self.metrics = metrics
         self.tier_for = tier_for
+        self.process_metrics = process_metrics
         self.started = {}
         self.fixture_started = {}
 
     def startTest(self, test):
         self.started[test.id()] = time.monotonic()
+        self.process_metrics["current"] = {"argv": [], "count": 0, "git": 0}
         super().startTest(test)
 
     def stopTest(self, test):
         duration = (time.monotonic() - self.started.pop(test.id())) * 1000
         short = ".".join(test.id().split(".")[-2:])
+        processes = self.process_metrics.pop("current", {"argv": [], "count": 0, "git": 0})
+        outcome = getattr(test, "_yylo_pending_outcome", "passed")
+        argv_identity = hashlib.sha256(json.dumps(
+            processes["argv"], sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
+        commands = {}
+        for argv in processes["argv"]:
+            executable = Path(argv[0]).name if argv else "unknown"
+            command = executable
+            if executable == "git":
+                arguments = iter(argv[1:])
+                for argument in arguments:
+                    if argument == "-C":
+                        next(arguments, None)
+                    elif not argument.startswith("-"):
+                        command = f"git:{argument}"
+                        break
+            commands[command] = commands.get(command, 0) + 1
+        output_identity = hashlib.sha256(json.dumps(
+            {"id": short, "outcome": outcome}, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
         self.metrics.append({
             "id": short,
             "tier": self.tier_for(short),
             "fixture_ms": round(float(getattr(test, "_yylo_fixture_ms", 0.0)), 3),
             "execution_ms": round(max(0.0, duration - float(getattr(test, "_yylo_fixture_ms", 0.0))), 3),
             "wall_ms": round(duration, 3),
-            "git_processes": int(getattr(test, "_yylo_git_processes", 0)),
-            "outcome": getattr(test, "_yylo_pending_outcome", "passed"),
+            "git_processes": processes["git"],
+            "subprocess_processes": processes["count"],
+            "process_argv_identity": argv_identity,
+            "process_commands": dict(sorted(commands.items())),
+            "output_identity": output_identity,
+            "outcome": outcome,
         })
         super().stopTest(test)
 
@@ -182,13 +212,34 @@ def main() -> int:
         fixture.setUp = measured_setup
 
     metrics = []
+    process_metrics = {}
+    process_lock = threading.Lock()
+    original_popen = subprocess.Popen
+
+    def measured_popen(argv, *values, **kwargs):
+        with process_lock:
+            current = process_metrics.get("current")
+            if current is not None:
+                normalized = [str(item) for item in argv] if isinstance(argv, (list, tuple)) else [str(argv)]
+                current["argv"].append(normalized)
+                current["count"] += 1
+                if normalized and Path(normalized[0]).name == "git":
+                    current["git"] += 1
+        return original_popen(argv, *values, **kwargs)
+
+    subprocess.Popen = measured_popen
     stream = sys.stderr
     runner = unittest.TextTestRunner(
         stream=stream, verbosity=1,
-        resultclass=lambda *a, **kw: ProfileResult(*a, metrics=metrics, tier_for=tier_for, **kw),
+        resultclass=lambda *a, **kw: ProfileResult(
+            *a, metrics=metrics, tier_for=tier_for,
+            process_metrics=process_metrics, **kw),
     )
     started = time.monotonic()
-    result = runner.run(unittest.TestSuite(selected))
+    try:
+        result = runner.run(unittest.TestSuite(selected))
+    finally:
+        subprocess.Popen = original_popen
     wall_ms = round((time.monotonic() - started) * 1000, 3)
     payload = {
         "schema_version": SCHEMA,

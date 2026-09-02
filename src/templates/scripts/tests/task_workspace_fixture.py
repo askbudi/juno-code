@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import stat
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +74,63 @@ def seal(root: Path) -> None:
         if not path.is_symlink():
             path.chmod(path.stat().st_mode & ~0o222)
     root.chmod(root.stat().st_mode & ~0o222)
+
+
+class MemoizedGitDispatch:
+    """Per-test exact-output cache for immutable Git queries.
+
+    Every distinct query crosses the real Git process boundary. Ref/index
+    mutations invalidate the cache; working-tree-sensitive reads are never
+    cached. This is a test adapter, not product lifecycle behavior.
+    """
+    CACHEABLE = frozenset({
+        "check-ref-format", "ls-files", "ls-tree", "merge-base", "rev-list",
+        "rev-parse", "show", "show-ref", "symbolic-ref",
+    })
+    UNCACHED_READS = frozenset({"diff", "diff-tree", "status"})
+
+    def __init__(self, dispatch):
+        self.dispatch = dispatch
+        self.cache = {}
+        self.cache_hits = 0
+        self.real_query_processes = 0
+
+    @staticmethod
+    def command_for(argv):
+        values = tuple(str(value) for value in argv)
+        if not values or Path(values[0]).name != "git":
+            return None
+        try:
+            return values[values.index("-C") + 2]
+        except (ValueError, IndexError):
+            return None
+
+    def observe_external(self, argv):
+        command = self.command_for(argv)
+        if command is None or command not in self.CACHEABLE | self.UNCACHED_READS:
+            self.cache.clear()
+
+    def __call__(self, argv, cwd, *, check=True):
+        values = tuple(str(value) for value in argv)
+        command = self.command_for(values)
+        if command is None:
+            return self.dispatch(argv, cwd, check=check)
+        if command in self.CACHEABLE:
+            key = (values, str(Path(cwd).resolve()), bool(check))
+            cached = self.cache.get(key)
+            if cached is not None:
+                self.cache_hits += 1
+                return subprocess.CompletedProcess(
+                    list(argv), cached.returncode, cached.stdout, cached.stderr)
+            result = self.dispatch(argv, cwd, check=check)
+            self.real_query_processes += 1
+            if result.returncode == 0:
+                self.cache[key] = subprocess.CompletedProcess(
+                    list(argv), result.returncode, result.stdout, result.stderr)
+            return result
+        if command not in self.UNCACHED_READS:
+            self.cache.clear()
+        return self.dispatch(argv, cwd, check=check)
 
 
 class Seed:

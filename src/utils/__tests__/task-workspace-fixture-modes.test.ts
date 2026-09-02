@@ -48,6 +48,9 @@ describe('task-workspace supported profiler and runner', () => {
         fixture_ms: expect.any(Number),
         execution_ms: expect.any(Number),
         git_processes: 0,
+        subprocess_processes: expect.any(Number),
+        process_argv_identity: expect.stringMatching(/^[0-9a-f]{64}$/),
+        output_identity: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
     ]);
     expect(value.summary.wall).toEqual(expect.objectContaining({ p50_ms: expect.any(Number), p95_ms: expect.any(Number) }));
