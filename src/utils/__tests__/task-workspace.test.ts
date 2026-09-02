@@ -6,6 +6,26 @@ import { describe, expect, it } from 'vitest';
 const repository = resolve(import.meta.dirname, '../../../..');
 
 describe('Bolt task workspace managed runtime', () => {
+  it('gives only the real-process adapter canary its measured p95 headroom', () => {
+    const expectedTimeouts = [
+      ['task-workspace-decisions', 30],
+      ['task-workspace-adapter-canary', 60],
+      ['integration-workspace', 900],
+      ['script-installer', 900],
+      ['root-scripts-telemetry', 120],
+    ];
+    for (const policyPath of [
+      resolve(repository, '.juno_task/config/task-workspace.json'),
+      resolve(repository, 'juno-code/src/templates/config/task-workspace.json'),
+    ]) {
+      const policy = JSON.parse(readFileSync(policyPath, 'utf8')) as {
+        focused_validation: Array<{ id: string; timeout_seconds: number }>;
+      };
+      expect(policy.focused_validation.map(({ id, timeout_seconds }) => [id, timeout_seconds]))
+        .toEqual(expectedTimeouts);
+    }
+  });
+
   it('schedules only managed-install lock sharers on one exclusive focused lane', () => {
     for (const policyPath of [
       resolve(repository, '.juno_task/config/task-workspace.json'),
@@ -327,7 +347,7 @@ describe('Bolt task workspace managed runtime', () => {
           expect.objectContaining({
             id: 'task-workspace-adapter-canary',
             cwd: '.juno_task/scripts/tests',
-            timeout_seconds: 30,
+            timeout_seconds: 60,
           }),
         ]),
       );
