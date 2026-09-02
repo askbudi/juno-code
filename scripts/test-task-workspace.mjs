@@ -98,8 +98,10 @@ async function main() {
   const comparable = initialLoad[0] <= cpuCount * 2;
   const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yylo-task-workspace-profile-'));
   const python = process.env.PYTHON ?? 'python3';
-  const runner = path.join(root, 'src/templates/scripts/task_workspace_test_runner.py');
-  const testModule = path.join(root, 'src/templates/scripts/tests/test_task_workspace.py');
+  const templateRoot = fs.existsSync(path.join(root, 'src/templates'))
+    ? path.join(root, 'src/templates') : path.join(root, 'dist/templates');
+  const runner = path.join(templateRoot, 'scripts/task_workspace_test_runner.py');
+  const testModule = path.join(templateRoot, 'scripts/tests/test_task_workspace.py');
   const plans = [];
   if (options.command) {
     plans.push({ command: options.command, args: options.commandArgs, profilePath: null, shard: 0 });
