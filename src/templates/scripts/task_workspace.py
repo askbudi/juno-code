@@ -1170,7 +1170,10 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
                 timed_out = True
                 try: os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError: pass
-            for key, _ in selector.select(0.05 if not timed_out else 0.01):
+            # Keep timeout enforcement comfortably inside the public bound;
+            # a 50ms selector quantum made the one-second contract flaky on a
+            # loaded host even though the process group was killed correctly.
+            for key, _ in selector.select(0.01):
                 stream = key.fileobj
                 data = os.read(stream.fileno(), 65536)
                 if not data:

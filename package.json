@@ -37,6 +37,7 @@
   },
   "files": [
     "dist",
+    "scripts/test-task-workspace.mjs",
     "README.md",
     "CHANGELOG.md",
     "assets/yylo-logo-square-neon-green.png"
@@ -54,6 +55,10 @@
     "build:watch": "tsup --watch",
     "test": "vitest run -c ./vitest.fast.config.ts",
     "test:full": "vitest run",
+    "test:task-workspace:affected": "node scripts/test-task-workspace.mjs --mode affected",
+    "test:task-workspace:seeded": "node scripts/test-task-workspace.mjs --mode seeded",
+    "test:task-workspace:hermetic": "node scripts/test-task-workspace.mjs --mode hermetic",
+    "test:task-workspace:complete": "node scripts/test-task-workspace.mjs --mode complete",
     "test:managed-assets": "node scripts/verify-managed-assets.mjs",
     "test:skill-contracts": "node scripts/verify-skill-argument-contracts.mjs",
     "test:template-bytecode-package": "node scripts/verify-template-bytecode-cleanup.mjs",
