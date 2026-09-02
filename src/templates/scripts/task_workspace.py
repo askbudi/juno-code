@@ -1190,7 +1190,7 @@ def run_validation(row: dict[str, Any], cwd: Path, *,
                     except OSError as exc:
                         log_write_error = str(exc)
                         try: os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError: pass
+                        except (ProcessLookupError, PermissionError): pass
                 sys.stderr.write(data.decode("utf-8", errors="replace")); sys.stderr.flush()
     except KeyboardInterrupt:
         interrupted = True
