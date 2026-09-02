@@ -217,20 +217,26 @@
   ],
   "assets": [
     {
-      "source": "config/integration-workspace.json",
-      "destination": ".juno_task/config/integration-workspace.json",
+      "source": "config/worktree-hydration.yaml",
+      "destination": ".juno_task/config/worktree-hydration.yaml",
       "installClass": "project",
       "type": "config"
+    },
+    {
+      "source": "scripts/worktree_hydration.py",
+      "destination": ".juno_task/scripts/worktree_hydration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/install_requirements.sh",
+      "destination": ".juno_task/scripts/install_requirements.sh",
+      "installClass": "script",
+      "type": "script"
     },
     {
       "source": "config/metadata-controller.json",
       "destination": ".juno_task/config/metadata-controller.json",
-      "installClass": "project",
-      "type": "config"
-    },
-    {
-      "source": "config/risk-policy.json",
-      "destination": ".juno_task/config/risk-policy.json",
       "installClass": "project",
       "type": "config"
     },
@@ -241,17 +247,46 @@
       "type": "config"
     },
     {
-      "source": "config/worktree-hydration.yaml",
-      "destination": ".juno_task/config/worktree-hydration.yaml",
+      "source": "config/integration-workspace.json",
+      "destination": ".juno_task/config/integration-workspace.json",
       "installClass": "project",
       "type": "config"
     },
     {
-      "source": "prompts/clean_worktree.md",
-      "destination": ".juno_task/prompts/clean_worktree.md",
+      "source": "config/risk-policy.json",
+      "destination": ".juno_task/config/risk-policy.json",
       "installClass": "project",
-      "type": "prompt",
-      "macro": "clean_worktree"
+      "type": "config"
+    },
+    {
+      "source": "wiki/controller/metadata_controller_boundary.md",
+      "destination": ".juno_task/wiki/metadata_controller_boundary.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/controller/task_dependency_hydration.md",
+      "destination": ".juno_task/wiki/task_dependency_hydration.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/controller/sealed_release_epochs.md",
+      "destination": ".juno_task/wiki/controller/sealed_release_epochs.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/effective_lifecycle_field_guide.md",
+      "destination": ".juno_task/wiki/effective_lifecycle_field_guide.md",
+      "installClass": "project",
+      "type": "wiki"
+    },
+    {
+      "source": "wiki/validation_depth_by_risk.md",
+      "destination": ".juno_task/wiki/validation_depth_by_risk.md",
+      "installClass": "project",
+      "type": "wiki"
     },
     {
       "source": "prompts/life_cycle.md",
@@ -261,22 +296,38 @@
       "macro": "life_cycle"
     },
     {
-      "source": "prompts/lifecycle/merge-semantic-repair.md",
-      "destination": ".juno_task/prompts/lifecycle/merge-semantic-repair.md",
-      "installClass": "controller",
+      "source": "prompts/clean_worktree.md",
+      "destination": ".juno_task/prompts/clean_worktree.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "clean_worktree"
+    },
+    {
+      "source": "prompts/review_commit_parallel_runner.md",
+      "destination": ".juno_task/prompts/review_commit_parallel_runner.md",
+      "installClass": "project",
       "type": "prompt"
     },
     {
-      "source": "prompts/lifecycle/task-implementation.md",
-      "destination": ".juno_task/prompts/lifecycle/task-implementation.md",
-      "installClass": "controller",
-      "type": "prompt"
+      "source": "prompts/reflect.md",
+      "destination": ".juno_task/prompts/reflect.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "reflect"
     },
     {
-      "source": "prompts/lifecycle/task-test-repair.md",
-      "destination": ".juno_task/prompts/lifecycle/task-test-repair.md",
-      "installClass": "controller",
-      "type": "prompt"
+      "source": "prompts/new_task_workflow.md",
+      "destination": ".juno_task/prompts/new_task_workflow.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "new_task_workflow"
+    },
+    {
+      "source": "prompts/run_workflow.md",
+      "destination": ".juno_task/prompts/run_workflow.md",
+      "installClass": "project",
+      "type": "prompt",
+      "macro": "run_workflow"
     },
     {
       "source": "prompts/migrate_controller_wiki_and_hydration.md",
@@ -307,299 +358,14 @@
       "macro": "migrate_juno_kanban_v1_to_v2"
     },
     {
-      "source": "prompts/new_task_workflow.md",
-      "destination": ".juno_task/prompts/new_task_workflow.md",
-      "installClass": "project",
-      "type": "prompt",
-      "macro": "new_task_workflow"
-    },
-    {
-      "source": "prompts/reflect.md",
-      "destination": ".juno_task/prompts/reflect.md",
-      "installClass": "project",
-      "type": "prompt",
-      "macro": "reflect"
-    },
-    {
-      "source": "prompts/review_commit_parallel_runner.md",
-      "destination": ".juno_task/prompts/review_commit_parallel_runner.md",
-      "installClass": "project",
-      "type": "prompt"
-    },
-    {
-      "source": "prompts/run_workflow.md",
-      "destination": ".juno_task/prompts/run_workflow.md",
-      "installClass": "project",
-      "type": "prompt",
-      "macro": "run_workflow"
-    },
-    {
-      "source": "scripts/await_blocker.py",
-      "destination": ".juno_task/scripts/await_blocker.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/controller_checkpoint.py",
-      "destination": ".juno_task/scripts/controller_checkpoint.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/controller_registration.py",
-      "destination": ".juno_task/scripts/controller_registration.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/git_index_lock.py",
-      "destination": ".juno_task/scripts/git_index_lock.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/install_requirements.sh",
-      "destination": ".juno_task/scripts/install_requirements.sh",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/integration_workspace.py",
-      "destination": ".juno_task/scripts/integration_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/invocation_correlation.py",
-      "destination": ".juno_task/scripts/invocation_correlation.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/managed_agent_runner.py",
-      "destination": ".juno_task/scripts/managed_agent_runner.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/merge_queue.py",
-      "destination": ".juno_task/scripts/merge_queue.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/metadata_controller.py",
-      "destination": ".juno_task/scripts/metadata_controller.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/metadata_evacuation.py",
-      "destination": ".juno_task/scripts/metadata_evacuation.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/migration_inventory.py",
-      "destination": ".juno_task/scripts/migration_inventory.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/operation_snapshot.py",
-      "destination": ".juno_task/scripts/operation_snapshot.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/release_gate.py",
-      "destination": ".juno_task/scripts/release_gate.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/release_train.py",
-      "destination": ".juno_task/scripts/release_train.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/risk_policy.py",
-      "destination": ".juno_task/scripts/risk_policy.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/target_runtime_provenance.py",
-      "destination": ".juno_task/scripts/target_runtime_provenance.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/task_workflow_helper.py",
-      "destination": ".juno_task/scripts/task_workflow_helper.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/task_workspace.py",
-      "destination": ".juno_task/scripts/task_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/task_workspace_decisions.py",
-      "destination": ".juno_task/scripts/task_workspace_decisions.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/task_workspace_test_runner.py",
-      "destination": ".juno_task/scripts/task_workspace_test_runner.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
-      "destination": ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/task_workspace_fixture.py",
-      "destination": ".juno_task/scripts/tests/task_workspace_fixture.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_controller_registration.py",
-      "destination": ".juno_task/scripts/tests/test_controller_registration.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_integration_workspace.py",
-      "destination": ".juno_task/scripts/tests/test_integration_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
-      "destination": ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_managed_agent_runner.py",
-      "destination": ".juno_task/scripts/tests/test_managed_agent_runner.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_merge_queue.py",
-      "destination": ".juno_task/scripts/tests/test_merge_queue.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_metadata_controller.py",
-      "destination": ".juno_task/scripts/tests/test_metadata_controller.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_operation_snapshot.py",
-      "destination": ".juno_task/scripts/tests/test_operation_snapshot.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_release_gate.py",
-      "destination": ".juno_task/scripts/tests/test_release_gate.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_release_train.py",
-      "destination": ".juno_task/scripts/tests/test_release_train.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_risk_policy.py",
-      "destination": ".juno_task/scripts/tests/test_risk_policy.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_task_workspace.py",
-      "destination": ".juno_task/scripts/tests/test_task_workspace.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_task_workspace_decisions.py",
-      "destination": ".juno_task/scripts/tests/test_task_workspace_decisions.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/tests/test_workflow_runner_resume_contract.py",
-      "destination": ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/watch_progress.py",
-      "destination": ".juno_task/scripts/watch_progress.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/wiki_lint.py",
-      "destination": ".juno_task/scripts/wiki_lint.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/wiki_lint.sh",
-      "destination": ".juno_task/scripts/wiki_lint.sh",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/workflow_run_evidence.py",
-      "destination": ".juno_task/scripts/workflow_run_evidence.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "scripts/worktree_hydration.py",
-      "destination": ".juno_task/scripts/worktree_hydration.py",
-      "installClass": "script",
-      "type": "script"
-    },
-    {
-      "source": "wiki/controller/sealed_release_epochs.md",
-      "destination": ".juno_task/wiki/controller/sealed_release_epochs.md",
-      "installClass": "project",
-      "type": "wiki"
-    },
-    {
-      "source": "wiki/effective_lifecycle_field_guide.md",
-      "destination": ".juno_task/wiki/effective_lifecycle_field_guide.md",
-      "installClass": "project",
-      "type": "wiki"
-    },
-    {
       "source": "wiki/controller/git_worktree_lifecycle.md",
       "destination": ".juno_task/wiki/git_worktree_lifecycle.md",
       "installClass": "project",
       "type": "wiki"
     },
     {
-      "source": "wiki/controller/metadata_controller_boundary.md",
-      "destination": ".juno_task/wiki/metadata_controller_boundary.md",
+      "source": "wiki/controller/yy_pi_progress.md",
+      "destination": ".juno_task/wiki/watching_progress.md",
       "installClass": "project",
       "type": "wiki"
     },
@@ -616,22 +382,232 @@
       "type": "wiki"
     },
     {
-      "source": "wiki/controller/task_dependency_hydration.md",
-      "destination": ".juno_task/wiki/task_dependency_hydration.md",
-      "installClass": "project",
-      "type": "wiki"
+      "source": "scripts/wiki_lint.py",
+      "destination": ".juno_task/scripts/wiki_lint.py",
+      "installClass": "script",
+      "type": "script"
     },
     {
-      "source": "wiki/validation_depth_by_risk.md",
-      "destination": ".juno_task/wiki/validation_depth_by_risk.md",
-      "installClass": "project",
-      "type": "wiki"
+      "source": "scripts/metadata_controller.py",
+      "destination": ".juno_task/scripts/metadata_controller.py",
+      "installClass": "script",
+      "type": "script"
     },
     {
-      "source": "wiki/controller/yy_pi_progress.md",
-      "destination": ".juno_task/wiki/watching_progress.md",
-      "installClass": "project",
-      "type": "wiki"
+      "source": "scripts/migration_inventory.py",
+      "destination": ".juno_task/scripts/migration_inventory.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/metadata_evacuation.py",
+      "destination": ".juno_task/scripts/metadata_evacuation.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/controller_registration.py",
+      "destination": ".juno_task/scripts/controller_registration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_controller_registration.py",
+      "destination": ".juno_task/scripts/tests/test_controller_registration.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/risk_policy.py",
+      "destination": ".juno_task/scripts/risk_policy.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/release_gate.py",
+      "destination": ".juno_task/scripts/release_gate.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_release_gate.py",
+      "destination": ".juno_task/scripts/tests/test_release_gate.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_risk_policy.py",
+      "destination": ".juno_task/scripts/tests/test_risk_policy.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_metadata_controller.py",
+      "destination": ".juno_task/scripts/tests/test_metadata_controller.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/wiki_lint.sh",
+      "destination": ".juno_task/scripts/wiki_lint.sh",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_managed_agent_runner.py",
+      "destination": ".juno_task/scripts/tests/test_managed_agent_runner.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/git_index_lock.py",
+      "destination": ".juno_task/scripts/git_index_lock.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/await_blocker.py",
+      "destination": ".juno_task/scripts/await_blocker.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/controller_checkpoint.py",
+      "destination": ".juno_task/scripts/controller_checkpoint.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/managed_agent_runner.py",
+      "destination": ".juno_task/scripts/managed_agent_runner.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/invocation_correlation.py",
+      "destination": ".juno_task/scripts/invocation_correlation.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/watch_progress.py",
+      "destination": ".juno_task/scripts/watch_progress.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/task_workspace.py",
+      "destination": ".juno_task/scripts/task_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/task_workspace_decisions.py",
+      "destination": ".juno_task/scripts/task_workspace_decisions.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/target_runtime_provenance.py",
+      "destination": ".juno_task/scripts/target_runtime_provenance.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/integration_workspace.py",
+      "destination": ".juno_task/scripts/integration_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/merge_queue.py",
+      "destination": ".juno_task/scripts/merge_queue.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/operation_snapshot.py",
+      "destination": ".juno_task/scripts/operation_snapshot.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/release_train.py",
+      "destination": ".juno_task/scripts/release_train.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_release_train.py",
+      "destination": ".juno_task/scripts/tests/test_release_train.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_task_workspace.py",
+      "destination": ".juno_task/scripts/tests/test_task_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_task_workspace_decisions.py",
+      "destination": ".juno_task/scripts/tests/test_task_workspace_decisions.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_integration_workspace.py",
+      "destination": ".juno_task/scripts/tests/test_integration_workspace.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_merge_queue.py",
+      "destination": ".juno_task/scripts/tests/test_merge_queue.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_operation_snapshot.py",
+      "destination": ".juno_task/scripts/tests/test_operation_snapshot.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "destination": ".juno_task/scripts/tests/test_lifecycle_evidence_reuse_matrix.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "destination": ".juno_task/scripts/tests/fixtures/lifecycle-evidence-reuse-matrix.v1.json",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/tests/test_workflow_runner_resume_contract.py",
+      "destination": ".juno_task/scripts/tests/test_workflow_runner_resume_contract.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/task_workflow_helper.py",
+      "destination": ".juno_task/scripts/task_workflow_helper.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "scripts/workflow_run_evidence.py",
+      "destination": ".juno_task/scripts/workflow_run_evidence.py",
+      "installClass": "script",
+      "type": "script"
+    },
+    {
+      "source": "workflows/yy-task-run.yaml",
+      "destination": ".juno_task/workflows/yy-task-run.yaml",
+      "installClass": "controller",
+      "type": "workflow"
     },
     {
       "source": "workflows/yy-merge-drive.yaml",
@@ -640,10 +616,22 @@
       "type": "workflow"
     },
     {
-      "source": "workflows/yy-task-run.yaml",
-      "destination": ".juno_task/workflows/yy-task-run.yaml",
+      "source": "prompts/lifecycle/task-implementation.md",
+      "destination": ".juno_task/prompts/lifecycle/task-implementation.md",
       "installClass": "controller",
-      "type": "workflow"
+      "type": "prompt"
+    },
+    {
+      "source": "prompts/lifecycle/task-test-repair.md",
+      "destination": ".juno_task/prompts/lifecycle/task-test-repair.md",
+      "installClass": "controller",
+      "type": "prompt"
+    },
+    {
+      "source": "prompts/lifecycle/merge-semantic-repair.md",
+      "destination": ".juno_task/prompts/lifecycle/merge-semantic-repair.md",
+      "installClass": "controller",
+      "type": "prompt"
     }
   ]
 }

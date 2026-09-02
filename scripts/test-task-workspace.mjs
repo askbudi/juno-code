@@ -100,7 +100,7 @@ async function main() {
   const python = process.env.PYTHON ?? 'python3';
   const templateRoot = fs.existsSync(path.join(root, 'src/templates'))
     ? path.join(root, 'src/templates') : path.join(root, 'dist/templates');
-  const runner = path.join(templateRoot, 'scripts/task_workspace_test_runner.py');
+  const runner = path.join(root, 'scripts/test-support/task_workspace_test_runner.py');
   const testModule = path.join(templateRoot, 'scripts/tests/test_task_workspace.py');
   const durationWeights = path.join(root, 'scripts/test-performance/task-workspace-duration-weights.v1.json');
   const plans = [];

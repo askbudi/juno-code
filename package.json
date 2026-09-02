@@ -38,6 +38,8 @@
   "files": [
     "dist",
     "scripts/test-task-workspace.mjs",
+    "scripts/test-support/task_workspace_test_runner.py",
+    "scripts/test-support/task_workspace_fixture.py",
     "scripts/test-performance/task-workspace-duration-weights.v1.json",
     "README.md",
     "CHANGELOG.md",
