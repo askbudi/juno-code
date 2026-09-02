@@ -303,10 +303,13 @@ describe('Bolt task workspace managed runtime', () => {
     ) as { assets: Array<{ source: string; destination: string; installClass: string }> };
     const decisionsPair = [
       'scripts/task_workspace_decisions.py',
-      'scripts/task_workspace_fixture.py',
-      'scripts/task_workspace_test_runner.py',
       'scripts/tests/test_task_workspace_decisions.py',
     ];
+    for (const source of ['scripts/task_workspace_fixture.py', 'scripts/task_workspace_test_runner.py']) {
+      const entry = managed.assets.find((asset) => asset.source === source);
+      expect(entry?.destination).toBe(`.juno_task/${source}`);
+      expect(entry?.installClass).toBe('script');
+    }
     for (const source of decisionsPair) {
       const destination = `.juno_task/${source}`;
       const entry = managed.assets.find((asset) => asset.source === source);

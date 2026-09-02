@@ -77,7 +77,14 @@ lock = (package / 'package-lock.json').read_bytes()
 sys.path.insert(0, str(SCRIPT.parent))
 import task_workspace as task_runtime  # noqa: E402
 import target_runtime_provenance as provenance_runtime  # noqa: E402
-import task_workspace_fixture as fixture_runtime  # noqa: E402
+try:
+    import task_workspace_fixture as fixture_runtime  # noqa: E402
+except ModuleNotFoundError:
+    # A source checkout may validate the parity-bound root test before the new
+    # managed helper has been installed there. The package template remains the
+    # source of truth and installed packages resolve the adjacent helper.
+    sys.path.insert(0, str(SCRIPT.parents[2] / "juno-code/src/templates/scripts"))
+    import task_workspace_fixture as fixture_runtime  # noqa: E402
 try:
     _fixture = task_runtime.load_package_bound_test_fixture(__file__, "real_git_fixture.py")
 except task_runtime.TaskWorkspaceError as exc:
