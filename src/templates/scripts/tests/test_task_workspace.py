@@ -7498,6 +7498,20 @@ class FixtureModeContractTests(unittest.TestCase):
                 self.assertEqual(git(repository, "rev-parse", "HEAD^{tree}"), expected_tree)
             finally: instance.release()
 
+    def test_overlay_release_repairs_only_cleanup_obstructions_without_eager_tree_chmod(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); cache = root / "bases"; overlays = root / "overlays"
+            seed = fixture_runtime.ensure_seed(self._seed_inputs(), self._seed_builder,
+                                               cache_root=cache)
+            instance = fixture_runtime.create_instance(seed, parent=overlays)
+            obstruction = instance.root / "readonly"
+            obstruction.mkdir(); (obstruction / "payload").write_text("preserve semantics\n")
+            obstruction.chmod(0o500)
+            with mock.patch.object(fixture_runtime, "make_owner_writable",
+                                   side_effect=AssertionError("eager recursive chmod")):
+                instance.release()
+            self.assertFalse(instance.root.exists())
+
     def test_overlay_cleanup_refuses_foreign_or_aliased_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); cache = root / "bases"; overlays = root / "overlays"

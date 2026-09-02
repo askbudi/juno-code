@@ -80,6 +80,24 @@ class Seed:
         self.root, self.key, self.hit, self.invalidation = root, key, hit, invalidation
 
 
+def _remove_owned_tree(root: Path) -> None:
+    repairs = 0
+    while root.exists():
+        try:
+            shutil.rmtree(root)
+            return
+        except PermissionError as error:
+            candidate = Path(error.filename or "")
+            if (repairs >= 32 or not candidate.exists() or candidate.is_symlink()
+                    or os.path.commonpath((str(root), str(candidate.resolve()))) != str(root)):
+                raise
+            mode = candidate.stat().st_mode | stat.S_IWUSR
+            if candidate.is_dir():
+                mode |= stat.S_IXUSR
+            candidate.chmod(mode)
+            repairs += 1
+
+
 class Instance:
     def __init__(self, root: Path, owned_parent: Path, identity: tuple[int, int]):
         self.root, self._parent, self._identity = root, owned_parent, identity
@@ -92,8 +110,10 @@ class Instance:
                 or (entry.st_dev, entry.st_ino) != self._identity
                 or self.root.resolve().parent != parent):
             raise RuntimeError(f"refusing to delete foreign or aliased fixture root: {self.root}")
-        make_owner_writable(self.root)
-        shutil.rmtree(self.root)
+        # Instances are writable when cloned. Avoid a second full-tree walk on
+        # every test; repair only a genuine permission obstruction introduced
+        # by a test while retaining shutil's symlink-safe traversal.
+        _remove_owned_tree(self.root)
 
 
 def default_root() -> Path:
