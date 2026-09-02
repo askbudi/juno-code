@@ -75,9 +75,14 @@ def _bounded_strings(value: Mapping[str, Any], label: str) -> dict[str, str]:
 def _commands(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    allowed = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes", "resource"}
+    identity_fields = {"id", "cwd", "argv", "timeout_seconds", "max_output_bytes", "resource"}
+    # Planner input scopes are represented by each validation unit's exact
+    # input-closure identity. They are not execution-command identity and must
+    # not leak into the canonical command row, while truly unknown fields still
+    # fail closed.
+    planner_fields = {"input_paths"}
     for value in values:
-        if not isinstance(value, Mapping) or set(value) - allowed:
+        if not isinstance(value, Mapping) or set(value) - identity_fields - planner_fields:
             raise OperationSnapshotError("normalized command is malformed or contains unknown fields")
         command_id, argv = value.get("id"), value.get("argv")
         if (not isinstance(command_id, str) or not command_id or command_id in seen
@@ -87,7 +92,7 @@ def _commands(values: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         cwd = value.get("cwd", ".")
         if cwd != ".":
             _relative_path(cwd)
-        row = {key: value[key] for key in sorted(value) if key in allowed}
+        row = {key: value[key] for key in sorted(value) if key in identity_fields}
         _canonical(row)
         rows.append(row); seen.add(command_id)
     return sorted(rows, key=lambda row: row["id"])

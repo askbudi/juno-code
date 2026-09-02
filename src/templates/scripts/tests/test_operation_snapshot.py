@@ -181,6 +181,47 @@ class OperationSnapshotTests(unittest.TestCase):
         self.assertEqual(task_snapshot["snapshot_sha256"], merge_snapshot["snapshot_sha256"])
         self.assertTrue(self.module().verify_operation_snapshot(task_snapshot)["valid"])
 
+    def test_mixed_benchmark_and_juno_code_routing_drops_only_planner_command_fields(self) -> None:
+        module = self.module()
+        kwargs = {
+            "candidate": "a" * 40, "target": "b" * 40,
+            "commands": [
+                {"id": "benchmark-test", "cwd": "juno-benchmark",
+                 "argv": ["npm", "test"], "timeout_seconds": 900,
+                 "max_output_bytes": 32768,
+                 "input_paths": ["juno-benchmark/package.json", "juno-benchmark/src"]},
+                {"id": "juno-code-tests", "cwd": "juno-code",
+                 "argv": ["npm", "test"], "timeout_seconds": 900,
+                 "max_output_bytes": 32768},
+            ],
+            "routing": {"benchmark-test": "standing", "juno-code-tests": "standing"},
+            "environment": {"CI": "1"},
+            "phase_units": [
+                {"phase": "validation", "id": "benchmark-test",
+                 "inputs": {"input_closure_sha256": "1" * 64}},
+                {"phase": "validation", "id": "juno-code-tests",
+                 "inputs": {"input_closure_sha256": "2" * 64}},
+                {"phase": "risk", "id": "policy", "inputs": {"policy": "3" * 64}},
+                {"phase": "review", "id": "prompt", "inputs": {"prompt": "4" * 64}},
+                {"phase": "documentation", "id": "active", "inputs": {"docs": "5" * 64}},
+                {"phase": "integration", "id": "runtime", "inputs": {"runtime": "6" * 64}},
+            ],
+            "managed_outputs": {"task_workspace_runtime": "7" * 64},
+            "discovery": {"complete": True, "kind": "exact-import-closure"},
+        }
+        snapshot = module.compile_identity_operation_snapshot(**kwargs)
+        self.assertNotIn("input_paths", snapshot["commands"][0])
+        changed = {**kwargs, "commands": [dict(row) for row in kwargs["commands"]]}
+        changed["commands"][0]["argv"] = ["npm", "run", "test:full"]
+        self.assertNotEqual(
+            snapshot["snapshot_sha256"],
+            module.compile_identity_operation_snapshot(**changed)["snapshot_sha256"],
+        )
+        malformed = {**kwargs, "commands": [dict(row) for row in kwargs["commands"]]}
+        malformed["commands"][0]["unrecognized"] = True
+        with self.assertRaisesRegex(module.OperationSnapshotError, "unknown fields"):
+            module.compile_identity_operation_snapshot(**malformed)
+
 
 if __name__ == "__main__":
     unittest.main()
