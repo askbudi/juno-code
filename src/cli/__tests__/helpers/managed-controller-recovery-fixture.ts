@@ -9,7 +9,7 @@ import { ManagedProjectAssets } from '../../../utils/managed-project-assets.js';
 const sha256 = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 
 export const REAL_METADATA_CONTROLLER_TARGET_REF =
-  'a0442019d8cc0c80de11682a6b1f1e742a26a3cf';
+  '5993fb2d90bad424429cf7bf4655d33ca2a1aef6';
 export const REAL_STALE_CONTROLLER_SCRIPTS = {
   'managed_agent_runner.py': {
     targetSha256: '01cd94c975de13c4b7744317fb6b1083c62f154328cea2c8cda2f783044fc17b',
@@ -17,7 +17,7 @@ export const REAL_STALE_CONTROLLER_SCRIPTS = {
     staleSha256: '506451eb01ab720bdfe6e32fa4ff435fde53ede01c2fc6c123d4884da83eead5',
   },
   'merge_queue.py': {
-    targetSha256: 'b440e0a3e26bcf3c62d11463906f701f3e6e57b26efe50f5e76744b7e661865b',
+    targetSha256: '0d11220d6998fe456d0aeee8ebc113cbabb601515fa94873ea9f496919881c76',
     staleBlob: '52c166d2ef414ca84547a5bcb42b99fdf9d5e2d6',
     staleSha256: 'd46dca5d1309d3069480ad5b2cdfe67e581925fbe23e127437424a59da05e862',
   },
@@ -27,7 +27,7 @@ export const REAL_STALE_CONTROLLER_SCRIPTS = {
     staleSha256: '4a7a3e916d816057453d6aeb049cbd83a5ed2e86594527afcadcad1a9683119c',
   },
   'task_workspace.py': {
-    targetSha256: '48ea8d25055ca5aa1db930637dcdde0b9fb56f8c10618dbccb9a3719e57f41d0',
+    targetSha256: '38dd5480b036425e007069d419f3634f1750dba92aa85f0afefbdac520c29715',
     staleBlob: '989dfd43547c646d6e88478cfe47a27f7f997d8e',
     staleSha256: '861abba186bc8f87e76c3c1204e50eed8f07b6797bd6f38a582f6c6560e95c48',
   },
@@ -37,7 +37,7 @@ export const REAL_STALE_CONTROLLER_SCRIPTS = {
     staleSha256: '30652580f93cb4150b4435c868e1b750cdfaa7a2e9b188d124fd3668f3d902f4',
   },
   'tests/test_merge_queue.py': {
-    targetSha256: '9e792f6cc12c664ffe0f48e79892bb6707b5ccf984d9625dc02b9124bd6e3ed4',
+    targetSha256: '492a0e93c0edaaf3b3942b308ac24bbbeae16c81556c4cdd344f6cac6abfb710',
     staleBlob: '842f255e1d93470af02b068c5171657e5090f8ec',
     staleSha256: 'a7d3f9619943537660cab3741096aeb51c60d71f7215ece6cf796e798c41d41f',
   },
@@ -47,7 +47,7 @@ export const REAL_STALE_CONTROLLER_SCRIPTS = {
     staleSha256: '05e50092027419bf747fd864ab987c9d30e0f2975f43110e20627bbb757f11f3',
   },
   'tests/test_task_workspace.py': {
-    targetSha256: 'dc868b4c4690c6af590f1742c6328a84c0a9629193f6005fda5402cb4ad964ab',
+    targetSha256: 'ebcd3292c7f1d4db038ca92ab5eb55e58b18eab0edcb6b30b06815431c178a84',
     staleBlob: '8eb5516fbcd6d71da53cc74b424078a304c55561',
     staleSha256: '1a12eee625de2f2f2b81fa4a5ff931a08b64807d8afab3b501a0c4f009791051',
   },

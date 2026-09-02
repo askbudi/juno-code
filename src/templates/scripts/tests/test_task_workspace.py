@@ -7602,7 +7602,7 @@ class FixtureModeContractTests(unittest.TestCase):
         )
 
     def test_duration_weighted_shards_balance_deterministically(self) -> None:
-        runner_path = Path(fixture_runtime.__file__).resolve().parent.parent / "task_workspace_test_runner.py"
+        runner_path = Path(fixture_runtime.__file__).resolve().parent / "task_workspace_test_runner.py"
         specification = __import__("importlib.util").util.spec_from_file_location(
             "fixture_profile_runner_contract", runner_path)
         self.assertIsNotNone(specification)
