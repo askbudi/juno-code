@@ -234,6 +234,10 @@ describe('Bolt task workspace managed runtime', () => {
         destination: '.juno_task/scripts/controller_checkpoint.py',
       },
       {
+        source: 'scripts/controller_resolver.py',
+        destination: '.juno_task/scripts/controller_resolver.py',
+      },
+      {
         source: 'scripts/juno-toolchain-policy.sh',
         destination: '.juno_task/scripts/juno-toolchain-policy.sh',
       },
