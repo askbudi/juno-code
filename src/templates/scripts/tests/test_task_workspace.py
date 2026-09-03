@@ -542,6 +542,9 @@ fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
 value = json.loads(board.read_text())
 argv = sys.argv[1:]
 NL = chr(10)
+if argv == ["--version"]:
+    print("yylo-ledger 2.0.5")
+    raise SystemExit(0)
 
 
 def canon(task):
@@ -857,7 +860,8 @@ class TaskWorkspaceFixture(unittest.TestCase):
 
     def setUp(self) -> None:
         test_id = f"{type(self).__name__}.{self._testMethodName}"
-        tier = fixture_tier_for(test_id)
+        tier = ("hermetic" if self._testMethodName.startswith("build_required_")
+                else fixture_tier_for(test_id))
         mode = os.environ.get("JUNO_TASK_WORKSPACE_FIXTURE_MODE", "complete")
         seeded = (mode in {"affected", "seeded", "complete"}
                   and tier in {"seeded-repository", "seeded-controller", "seeded-history"}
@@ -3595,6 +3599,11 @@ raise SystemExit(17)
         package = json.loads((PACKAGE_ROOT / "package.json").read_text())
         self.assertTrue(PUBLIC_YY.is_file(), f"public yy binary is missing: {PUBLIC_YY}")
         run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
+        canonical_kanban = self.controller / ".venv_juno/bin/juno-kanban"
+        canonical_kanban.parent.mkdir(parents=True, exist_ok=True)
+        canonical_kanban.write_text(
+            FAKE_KANBAN_SOURCE.replace("@BOARD@", repr(str(self.board))))
+        canonical_kanban.chmod(0o755)
         packaged_executable = PACKAGE_ROOT / "dist/bin/cli.mjs"
         identity = self.controller / ".juno_task/runtime/identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
@@ -3676,8 +3685,18 @@ out.mkdir(parents=True)
         creation_identity = failed_record["workspace_identity"]["create_receipt_sha256"]
         workspace = Path(failed_record["worktree"])
 
-        # Simulate the selected managed runtime from the dogfood report: it can
-        # be invoked, but its dispatcher/audit protocol predates task hydrate.
+        # The failed start issued a fencing lease whose holder CLI process has
+        # ended; the honest recovery is one receipt-bound successor before the
+        # hydration retry can present a valid fencing token.
+        successor = json.loads(run(
+            [str(PUBLIC_YY), "task", "lease-successor", "X"], workspace).stdout)
+        self.assertEqual(successor["outcome"], "successor_issued")
+        self.assertEqual(successor["authority_kind"], "successor_death")
+        lease_token = successor["lease_token"]
+
+        # Simulate the selected managed runtime from the dogfood report only
+        # after successor authority exists: its dispatcher predates hydrate,
+        # so the public hydrate command must use the package-bound fallback.
         stale_runtime = self.controller / task_runtime.RUNTIME_PATH
         stale_runtime.write_text("""#!/usr/bin/env python3
 import sys
@@ -3688,15 +3707,6 @@ raise SystemExit(2)
                     self.controller, False)
         self.assertEqual(stale.returncode, 2)
         self.assertIn("unsupported task audit operation: hydrate", stale.stderr)
-
-        # The failed start issued a fencing lease whose holder CLI process has
-        # ended; the honest recovery is one receipt-bound successor before the
-        # hydration retry can present a valid fencing token.
-        successor = json.loads(run(
-            [str(PUBLIC_YY), "task", "lease-successor", "X"], workspace).stdout)
-        self.assertEqual(successor["outcome"], "successor_issued")
-        self.assertEqual(successor["authority_kind"], "successor_death")
-        lease_token = successor["lease_token"]
 
         recovered = run([str(PUBLIC_YY), "task", "hydrate", "X",
                          "--lease-token", lease_token], workspace)
@@ -3730,6 +3740,16 @@ raise SystemExit(2)
 
         updated = run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
         self.assertEqual(updated.returncode, 0)
+        canonical_kanban = self.controller / ".venv_juno/bin/juno-kanban"
+        canonical_kanban.parent.mkdir(parents=True, exist_ok=True)
+        canonical_kanban.write_text(
+            FAKE_KANBAN_SOURCE.replace("@BOARD@", repr(str(self.board))))
+        canonical_kanban.chmod(0o755)
+        git(self.controller, "add", "-u", "--", ".juno_task")
+        git(self.controller, "add", "-f", "--", ".juno_task/managed-assets.json",
+            ".juno_task/prompts", ".juno_task/wiki", ".juno_task/workflows")
+        if git(self.controller, "diff", "--cached", "--name-only"):
+            git(self.controller, "commit", "-m", "install current managed controller generation")
         controller_runtime = self.controller / task_runtime.RUNTIME_PATH
         self.assertEqual(
             controller_runtime.read_bytes(),
@@ -3743,8 +3763,11 @@ raise SystemExit(2)
         self.assertEqual(refused.returncode, 2)
         self.assertIn("yy task runtime-bootstrap --dry-run", refused.stderr)
         self.assertFalse((self.workspaces / "X").exists())
-        self.assertEqual(task_runtime._bootstrap_target_status(self.controller), "",
-                         "public task-start refusal dirtied the configured repository")
+        target_status = task_runtime._bootstrap_target_status(self.controller)
+        self.assertFalse(
+            target_status,
+            f"public task-start refusal dirtied the configured repository:\n{target_status}",
+        )
 
         planned = run(
             [str(PUBLIC_YY), "task", "runtime-bootstrap", "--dry-run"], self.controller)
@@ -3776,6 +3799,16 @@ raise SystemExit(2)
         self.assertEqual(package.get("name"), "@yylo/cli")
         self.assertTrue(PUBLIC_YY.is_file())
         run([str(PUBLIC_YY), "scripts", "update", "--force"], self.controller)
+        canonical_kanban = self.controller / ".venv_juno/bin/juno-kanban"
+        canonical_kanban.parent.mkdir(parents=True, exist_ok=True)
+        canonical_kanban.write_text(
+            FAKE_KANBAN_SOURCE.replace("@BOARD@", repr(str(self.board))))
+        canonical_kanban.chmod(0o755)
+        git(self.controller, "add", "-u", "--", ".juno_task")
+        git(self.controller, "add", "-f", "--", ".juno_task/prompts",
+            ".juno_task/wiki", ".juno_task/workflows")
+        if git(self.controller, "diff", "--cached", "--name-only"):
+            git(self.controller, "commit", "-m", "install current managed controller generation")
         packaged_executable = PACKAGE_ROOT / "dist/bin/cli.mjs"
         identity = self.controller / ".juno_task/runtime/identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
@@ -3786,6 +3819,16 @@ raise SystemExit(2)
             "source": "installed-release", "tracked": False,
         }) + "\n")
         packaged_runtime = PACKAGE_ROOT / "dist/templates/scripts/task_workspace.py"
+        managed_inventory_path = self.controller / ".juno_task/managed-assets.json"
+        managed_inventory = json.loads(managed_inventory_path.read_text())
+        managed_inventory["schemaVersion"] = 1
+        managed_inventory["packageName"] = package["name"]
+        managed_inventory["packageVersion"] = package["version"]
+        runtime_inventory = managed_inventory["assets"][task_runtime.RUNTIME_PATH]
+        runtime_hash = hashlib.sha256(packaged_runtime.read_bytes()).hexdigest()
+        runtime_inventory["sourceSha256"] = runtime_hash
+        runtime_inventory["installedSha256"] = runtime_hash
+        managed_inventory_path.write_text(json.dumps(managed_inventory) + "\n")
         runtime = self.repository / task_runtime.RUNTIME_PATH
         runtime.write_bytes(packaged_runtime.read_bytes())
         git(self.repository, "rm", "juno-code/src/templates/scripts/task_workspace.py",
@@ -3807,6 +3850,12 @@ raise SystemExit(2)
         self.assertEqual(refused.returncode, 2)
         self.assertIn("target-runtime-provenance plan", refused.stderr)
         plan_path = self.root / "package-provenance-plan.json"
+        controller_status = git(
+            self.controller, "status", "--porcelain=v1", "--untracked-files=all")
+        self.assertFalse(
+            controller_status,
+            f"fixture controller must be clean before provenance planning:\n{controller_status}",
+        )
         planned = run([str(PUBLIC_YY), "migrate", "target-runtime-provenance", "plan",
                        "--controller", str(self.controller), "--output", str(plan_path)],
                       self.controller)
@@ -7466,15 +7515,40 @@ class FixtureModeContractTests(unittest.TestCase):
     def test_seed_is_immutable_and_tamper_rebuilds_without_repairing_in_place(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             cache = Path(temporary) / "bases"
-            first = fixture_runtime.ensure_seed(self._seed_inputs(), self._seed_builder,
+            inputs = self._seed_inputs()
+            first = fixture_runtime.ensure_seed(inputs, self._seed_builder,
                                                 cache_root=cache)
             target = first.root / "topology/runtime/task.json"
             target.chmod(0o644); target.write_text("tampered\n"); target.chmod(0o444)
-            second = fixture_runtime.ensure_seed(self._seed_inputs(), self._seed_builder,
+            second = fixture_runtime.ensure_seed(inputs, self._seed_builder,
                                                  cache_root=cache)
             self.assertFalse(second.hit)
             self.assertEqual((second.root / "topology/runtime/task.json").read_text(), "{}\n")
-            self.assertTrue(any(".corrupt-" in item.name for item in cache.iterdir()))
+            manifest_path = second.root / "yylo-fixture-base.json"
+            for field, bad_value in (("immutable", False), ("key", "0" * 64)):
+                manifest_path.chmod(0o644)
+                manifest = json.loads(manifest_path.read_text())
+                manifest[field] = bad_value
+                manifest_path.write_text(json.dumps(manifest) + "\n")
+                manifest_path.chmod(0o444)
+                second = fixture_runtime.ensure_seed(inputs, self._seed_builder,
+                                                     cache_root=cache)
+                self.assertFalse(second.hit)
+                manifest_path = second.root / "yylo-fixture-base.json"
+            manifest_path.chmod(0o644)
+            manifest = json.loads(manifest_path.read_text())
+            manifest["inputs"][fixture_runtime.BOUND_INPUTS[0]] = "wrong"
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            manifest_path.chmod(0o444)
+            second = fixture_runtime.ensure_seed(inputs, self._seed_builder,
+                                                 cache_root=cache)
+            self.assertFalse(second.hit)
+            quarantined = [item for item in cache.iterdir() if ".corrupt-" in item.name]
+            self.assertGreaterEqual(len(quarantined), 4)
+            second.root.rename(cache / f"{second.key}.corrupt-manual")
+            self.assertIsNone(fixture_runtime.find_seed(
+                {fixture_runtime.BOUND_INPUTS[0]: inputs[fixture_runtime.BOUND_INPUTS[0]]},
+                cache_root=cache))
 
     def test_disposable_instances_cannot_observe_each_other(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
