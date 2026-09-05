@@ -1,5 +1,7 @@
 # YYLO CLI
 
+[![Mentioned in Awesome Coding Agents](https://awesome.re/mentioned-badge.svg)](https://github.com/kailiu42/awesome-coding-agents) [![Mentioned in Awesome Gemini CLI](https://awesome.re/mentioned-badge.svg)](https://github.com/Piebald-AI/awesome-gemini-cli)
+
 YYLO is a command-line orchestrator for coding agents, repeatable workflows, and receipt-backed repository changes. It is for developers who want a quick agent loop and for project operators who need typed task, validation, merge, and release-readiness boundaries.
 
 - npm package: [`@yylo/cli`](https://www.npmjs.com/package/%40yylo%2Fcli)
